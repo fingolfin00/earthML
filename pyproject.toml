@@ -1,0 +1,21 @@
+[project]
+name = "earthml"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Jacopo Dall'Aglio", email = "fingolfin00@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "colorlog>=6.10.1",
+    "lightning>=2.5.5",
+    "matplotlib>=3.10.7",
+    "scipy>=1.16.2",
+    "toml>=0.10.2",
+    "xarray>=2025.10.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
