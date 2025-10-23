@@ -11,8 +11,8 @@ dependencies = [
     "colorlog>=6.10.1",
     "lightning>=2.5.5",
     "matplotlib>=3.10.7",
+    "rich>=14.2.0",
     "scipy>=1.16.2",
-    "toml>=0.10.2",
     "xarray>=2025.10.1",
 ]
 
