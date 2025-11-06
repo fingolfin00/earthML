@@ -1,5 +1,8 @@
 from pathlib import Path
 import joblib
+import cf_xarray
+import os, psutil, multiprocessing, tempfile, logging
+from dask.distributed import Client, LocalCluster
 import torch
 from torch.utils.data import random_split, Dataset, DataLoader, SubsetRandomSampler
 import lightning as L
@@ -85,9 +88,6 @@ class Normalize:
         # print(f"Y after norm type: {type(y)} and shape: {y.shape}")
         return x, y
 
-
-
-
 class EpochRandomSplitDataModule (L.LightningDataModule):
     def __init__ (self, dataset, train_fraction=0.9, batch_size=32, seed=42, num_workers=0, per_epoch_replit=False):
         super().__init__()
@@ -168,3 +168,44 @@ class XarrayDataset (Dataset):
         if self.transform:
             x, y = self.transform(x, y, **self.transform_args)
         return x, y
+
+class Dask:
+    def __init__ (self, base_port=8787, n_workers=None):
+        """
+        Start an optimized LocalCluster on HPC or JupyterHub environments.
+
+        - Detects local scratch directory (/scratch, /tmp, $TMPDIR)
+        - Balances n_workers by available CPU and memory (~4 GB per worker)
+        - Registers cf_xarray on workers
+        - Returns (client, cluster)
+        """
+        # Silence Tornado/Bokeh websocket noise (optional)
+        logging.getLogger("tornado.application").setLevel(logging.ERROR)
+        logging.getLogger("bokeh").setLevel(logging.ERROR)
+        # Detect best local scratch directory
+        candidates = [
+            os.environ.get("TMPDIR"),
+            f"/scratch/{os.environ.get('USER')}",
+            "/scratch",
+            tempfile.gettempdir(),
+            os.path.expanduser("~/.dask-tmp")
+        ]
+        local_dir = next((p for p in candidates if p and os.path.exists(p)), tempfile.gettempdir())
+        os.makedirs(local_dir, exist_ok=True)
+        # Auto-tune number of workers
+        n_cores = multiprocessing.cpu_count()
+        total_mem_gb = psutil.virtual_memory().total / 1e9
+        if n_workers is None:
+            n_workers = min(n_cores, max(1, int(total_mem_gb // 4)))  # ~4 GB per worker
+        # Start cluster
+        self.cluster = LocalCluster(
+            n_workers=n_workers,
+            threads_per_worker=1,
+            memory_limit="auto",
+            local_directory=local_dir,
+            dashboard_address=f":{base_port}",  # uses free port if base_port busy
+        )
+        self.client = Client(self.cluster)
+        self.client.run(lambda: __import__("cf_xarray"))
+        print(f"Cores: {n_cores}, Mem: {total_mem_gb} GB -> Dask workers: {n_workers}")
+        print(f"Write Dask local files in {local_dir}")

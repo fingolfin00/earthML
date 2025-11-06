@@ -1,20 +1,17 @@
 # from earthml.manager import Launcher
-from earthml.logging import Logger
+# from earthml.logging import Logger
+from earthml.utils import Dask
 from earthml.experiment import ExperimentMLFC
 # from earthml.source import JunoGribSource
 from earthml.dataclasses import Region, Variable, TimeRange, DataSelection, DataSource, ExperimentConfig
 from pathlib import Path
 import joblib, torch
 from datetime import datetime, timedelta
-from dask.distributed import Client, LocalCluster
 
 if __name__ == "__main__":
-    cluster = LocalCluster(
-        # "http://jupyterhub.juno.cmcc.scc:8000/user/jd19424"
-    )
-    client = Client(cluster)
-    # cluster.adapt(minimum=1, maximum=10)
-    print(cluster.dashboard_link)
+    dask = Dask()
+    client, cluster = dask.client, dask.cluster
+    print("Dask dashboard:", client.dashboard_link)
     # launcher = Launcher("earthml.toml")
     # logger = Logger(
     #         Path("./").joinpath("combo.log"),
