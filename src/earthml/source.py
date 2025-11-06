@@ -1,7 +1,8 @@
 import time
 from abc import ABC, abstractmethod
+# import dask
+import cf_xarray
 import xarray as xr
-import cf_xarray as cfxr
 from pathlib import Path
 from functools import partial
 from datetime import timedelta
@@ -38,24 +39,76 @@ class LocalSource (ABC):
 
     @staticmethod
     def _preprocess(ds: xr.Dataset, data: DataSelection) -> xr.DataArray:
-        # print(f"ds.dims: {ds.dims}")
-        # print(f"ds.coords: {ds.coords}")
-        time_dim = ds.cf['time'].name
-        # print(f"Time dimension: {time_dim}")
+        """
+        Preprocess an xarray.Dataset according to CF conventions and a DataSelection.
+
+        Features:
+        - Ensures 'time' dimension exists and has proper attributes.
+        - Selects spatial region (lon/lat) robustly:
+            • Handles both 0–360 and -180–180 longitude systems.
+            • Supports crossing the Greenwich meridian (e.g., lon=[350, 10]).
+        - Selects vertical level(s) if available.
+        - Returns a CF-aware DataArray ready for ML processing.
+        """
+        import cf_xarray  # ensures .cf accessor is registered on Dask workers
+        import numpy as np
+        import xarray as xr
+
+        def _normalize_bounds(bounds, coord=None):
+            """Safely slice bounds, flipping if coordinate is decreasing."""
+            if bounds is None:
+                return slice(None)
+            if isinstance(bounds, (int, float)):
+                return bounds
+            return slice(*bounds)
+
+        time_dim = ds.cf["time"].name
+        lon_dim = ds.cf["longitude"].name
+        lat_dim = ds.cf["latitude"].name
+        # Handle zero-time-dimension dataset
         if time_dim not in ds.dims:
-            # print("Expanding time dimension")
-            ds = ds.cf.expand_dims(time=[ds.cf["time"].values])
+            ds = ds.expand_dims(**{time_dim: [ds[time_dim].values]})
             ds = ds.assign_coords(
                 **{time_dim: ds[time_dim].assign_attrs(standard_name="time", axis="T")}
             )
-        # if time_dim != "time" and "time" in ds.dims:
-        #     ds = ds.drop_vars("time")
-        # if time_dim == "valid_time":
-        #     ds = ds.rename(valid_time="time")
-        return ds[data.variable.name].cf.sel(
-            longitude=slice(*data.region.lon), latitude=slice(*data.region.lat),
-            # time=slice(data.period.start, data.period.end)
-        )
+        # Vertical level selection
+        level_sel_d = {}
+        levhpa = getattr(data.variable, "levhpa", None)
+        level_dim = None
+        if 'vertical' in ds.cf.coordinates.keys() and levhpa is not None:
+            level_dim = ds.cf["vertical"].name
+            level_sel_d[level_dim] = _normalize_bounds(levhpa)
+        # Spatial selection (lon/lat)
+        lon = np.array(data.region.lon)
+        lat = np.array(data.region.lat)
+        lon_vals = ds[lon_dim].values
+        # Normalize longitude convention
+        if lon_vals.min() >= 0 and lon.min() < 0:
+            # Dataset uses 0–360, region is -180–180
+            lon = (lon + 360) % 360
+        elif lon_vals.min() < 0 and lon.max() > 180:
+            # Dataset uses -180–180, region is 0–360
+            lon = ((lon + 180) % 360) - 180
+        # Build selection dict
+        selection_d = {
+            lon_dim: _normalize_bounds(lon),
+            lat_dim: _normalize_bounds(lat),
+        } | level_sel_d
+        # Select data
+        da = ds[data.variable.name]
+        # Handle longitude wrap-around (e.g., 350°–10° or -10°-40°)
+        if lon[0] > lon[1]:
+            da1 = da.sel(**{lon_dim: slice(lon[0], 360)})
+            da2 = da.sel(**{lon_dim: slice(0, lon[1])})
+            da = xr.concat([da1, da2], dim=lon_dim)
+            # Apply remaining selections (lat, level, etc.)
+            selection_d.pop(lon_dim, None)
+            if selection_d:
+                da = da.sel(**selection_d)
+        else:
+            da = da.sel(**selection_d)
+        return da
+
     
     def load (self) -> xr.DataArray:
         """Get data only if it hasn't been done yet"""
