@@ -1,101 +1,41 @@
-[run_ensemble.hyper]
-    learning_rate           = 1e-3
-    batch_size              = 32
-    epochs                  = 50
-    loss                    = ["MSELoss", "CrossEntropyLoss"] # "L1Loss", "CrossEntropyLoss", "BCEWithLogitsLoss"
-    norm_strategy           = "BatchNorm2d" # "LayerNorm", "InstanceNorm2d"
-    supervised              = true
-    train_percent           = 0.9
-    earlystopping_patience  = 30
-[[run_ensemble.experiment]]
-    net                     = "SmaAt_UNet"
-    variable                = ["v10", "t2m", "d2m", "msl", "u10", "tcc"]
-    region                  = ["ContiguousUS", "Europe"]
-    lead_time               = ["48h", "72h"]
-    source                  = "cmcc"
-    # Replica GFS-ERA5 with ECMWF data
-    train                   = {start_date = "2021-03-23T00:00:00", end_date = "2023-12-31T00:00:00"}
-    test                    = {start_date = "2024-01-01T00:00:00", end_date = "2024-05-31T00:00:00"}
-[[run_ensemble.experiment]]
-    net                     = "SmaAt_UNet"
-    variable                = "gh"
-    region                  = ["ItalianPeninsula", "Pacific"]
-    lead_time               = "72h"
-    source                  = "ecmwf"
-    train.ItalianPeninsula  = { start_date = "2020-01-01T00:00:00", end_date = "2025-01-01T00:00:00" } # 5 years training for cmcc italian peninsula dataset
-    train.Pacific           = { start_date = "2024-03-01T06:00:00", end_date = "2025-03-01T06:00:00" } # annual training for ecmwf
-    test.ItalianPeninsula   = { start_date = "2025-01-02T00:00:00", end_date = "2025-04-02T00:00:00" } # 3-month testing for italian peninsula
-    test.Pacific            = { start_date = "2025-03-02T00:00:00", end_date = "2025-06-02T00:00:00" } # 3-month testing for ecmwf 
+[experiment]
+    name                        = "ML-forecast-correction"
+    seed                        = 42
+    net                         = "SmaAt_UNet"
+    lead_time                   = "48h" #, "72h"]
+    # Hyperparameters
+    learning_rate               = 1e-3
+    batch_size                  = 32
+    epochs                      = 50
+    loss                        = "MSELoss" #, "CrossEntropyLoss"] # "L1Loss", "CrossEntropyLoss", "BCEWithLogitsLoss"
+    norm_strategy            = "BatchNorm2d" # "LayerNorm", "InstanceNorm2d"
+    supervised                  = true
+    train_percent               = 0.9
+    earlystopping_patience      = 30
+    accumulate_grad_batches     = 2
+    [experiment.train]
+        source                  = "juno-grib"
+        variable                = "v10" #, "t2m", "d2m", "msl", "u10", "tcc"]
+        region                  = "ContiguousUS" #, "Europe"]
+        start_date              = "2021-03-23T00:00:00"
+        end_date                = "2023-12-31T00:00:00"
+    [experiment.test]
+        source                  = "juno-grib"
+        variable                = "v10" #, "t2m", "d2m", "msl", "u10", "tcc"]
+        region                  = "ContiguousUS" #, "Europe"]
+        start_date              = "2024-01-01T00:00:00"
+        end_date                = "2024-05-31T00:00:00"
 
-[global]
-    combo_name              = "SmaAt_UNet"
-    work_root_path          = "<WORK_ROOT_PATH>"
-    accumulate_grad_batches = 2
-    saved_data_path         = "<SAVED_DATA_PATH>"
-    print_date_strformat    = "%Y-%m-%d,%H:%M"
-    log_level               = "debug" # info, debug
-
-[global.viz]
-    cmap                    = "jet"
-    cmap_anomaly            = "RdBu"
-    cmap_error              = "bwr"
-
-[data.source.cmcc]
-    forecast_path           = "/data/inputs/METOCEAN/rolling/model/atmos/ECMWF/IFS_010/1.0forecast/"
-    analysis_path           = "/data/inputs/METOCEAN/historical/model/atmos/ECMWF/IFS_010/analysis/"
-    # analysis_path           = "/data/inputs/METOCEAN/rolling/model/atmos/ECMWF/IFS_010/3.1analysis/"
-    origin_frequency        = "12h"
-    prod_freq_forecast      = "1h"
-    prod_freq_analysis      = "6h"
-    file_format_forecast    = "grib"
-    file_format_analysis    = "grib" # "netcdf"
-    lat_res                 = 0.1 # degrees
-    lon_res                 = 0.1 # degrees
-
-[data.source.ecmwf]
-    ensemble_dataype        = "cf" # "pf"
-    origin_frequency        = "6h"
-    lat_res                 = 0.1 # degrees
-    lon_res                 = 0.1 # degrees
-
-[data.region.ContiguousUS]
-    lonini                  = -130 # +230
-    lonfin                  = -90 # -60 --> +300
-    latini                  = 45
-    latfin                  = 30
-
-[data.region.Europe]
-    lonini                  = 0 # +230
-    lonfin                  = 36 # -60 --> +300
-    latini                  = 50
-    latfin                  = 40
-
-[data.region.ItalianPeninsula]
-    lonini                  = 5
-    lonfin                  = 23.5
-    latini                  = 49
-    latfin                  = 25.5
-    full_domain             = true
-
-[data.region.Pacific]
-    lonini                  = -180
-    lonfin                  = -120
-    latini                  = 40
-    latfin                  = 0
-
-[data.variable.v10]
-    unit                    = 'm/s'
-[data.variable.t2m]
-    unit                    = 'K'
-[data.variable.d2m]
-    unit                    = 'K'
-[data.variable.gh]
-    unit                    = 'gpm'
-    var3d                   = true
-    levhpa                  = 500
-[data.variable.msl]
-    unit                    = 'Pa'
-[data.variable.u10]
-    unit                    = 'm/s'
-[data.variable.tcc]
-    unit                    = '[0-1]'
+[source.juno-grib] # juno-grib source parameters
+    [source.juno-grib.input]
+        root_path               = "/data/inputs/METOCEAN/rolling/model/atmos/ECMWF/IFS_010/1.0forecast/1h/grib/"
+        file_path_date_format   = "%Y%m%d"
+        file_header             = "JLS"
+    [source.juno-grib.target]
+        root_path               = "/data/inputs/METOCEAN/historical/model/atmos/ECMWF/IFS_010/analysis/6h/grib/"
+        file_path_date_format   = "%Y/%m"
+        file_header             = "JLD"
+    origin_frequency            = "12h"
+    file_date_format            = "%m%d%H%M"
+    minus_timedelta             = "1h"
+    plus_timedelta              = "1h"

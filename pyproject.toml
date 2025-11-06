@@ -1,21 +1,62 @@
 [project]
 name = "earthml"
 version = "0.1.0"
-description = "Add your description here"
+description = "A library to train ML models from Earth science datasets"
 readme = "README.md"
 authors = [
     { name = "Jacopo Dall'Aglio", email = "fingolfin00@gmail.com" }
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "cf-xarray>=0.10.9",
+    "cfgrib>=0.9.15.1",
     "colorlog>=6.10.1",
-    "lightning>=2.5.5",
+    "dask>=2025.10.0",
+    "joblib>=1.5.2",
+    "lightning[extra]>=2.5.5",
     "matplotlib>=3.10.7",
+    "nvidia-cuda-runtime-cu11>=11.8.89",
     "rich>=14.2.0",
     "scipy>=1.16.2",
-    "xarray>=2025.10.1",
+    "torch==2.6.0",
+    "torchaudio==2.6.0",
+    "torchmetrics>=1.3.1",
+    "torchvision>=0.21.0",
+    "xarray[complete]>=2025.10.1",
 ]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv]
+cache-dir = "/work/cmcc/jd19424/.cache/uv/"
+index-strategy = "unsafe-best-match"
+    [[tool.uv.index]]
+    # name = "torch"
+    url = "https://download.pytorch.org/whl/cu118"
+    # explicit = true
+    # [[tool.uv.index]]
+    # name = "torchaudio"
+    # url = "https://download.pytorch.org/whl/cu118"
+    # explicit = true
+    # [[tool.uv.index]]
+    # name = "torchvision"
+    # url = "https://download.pytorch.org/whl/cu118"
+    # explicit = true
+
+[dependency-groups]
+dev = [
+    "dask-gateway>=2025.4.0",
+    "dask-gateway-server[local]>=2025.4.0",
+    "geoviews>=1.14.1",
+    "hvplot>=0.12.1",
+    "ipykernel>=7.1.0",
+    "ipywidgets>=8.1.7",
+    "ipywidgets-bokeh>=1.0.2",
+    "jupyter-bokeh>=4.0.5",
+    "panel>=1.8.2",
+    "pyviz-comms>=3.0.6",
+    "tensorboard>=2.20.0",
+    "xskillscore>=0.0.27",
+]
