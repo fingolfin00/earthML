@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import List
 # Local imports
 from .logging import Logger
 
@@ -24,7 +25,7 @@ class TimeRange:
 
 @dataclass
 class DataSelection:
-    variable: Variable
+    variable: Variable | List[Variable]
     region: Region
     period: TimeRange
 

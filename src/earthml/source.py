@@ -38,7 +38,7 @@ class LocalSource (ABC):
         self.file_paths = {}
 
     @staticmethod
-    def _preprocess(ds: xr.Dataset, data: DataSelection) -> xr.DataArray:
+    def _preprocess(ds: xr.Dataset, data: DataSelection, var_name: str = None) -> xr.DataArray:
         """
         Preprocess an xarray.Dataset according to CF conventions and a DataSelection.
 
@@ -54,8 +54,8 @@ class LocalSource (ABC):
         import numpy as np
         import xarray as xr
 
-        def _normalize_bounds(bounds, coord=None):
-            """Safely slice bounds, flipping if coordinate is decreasing."""
+        def _normalize_bounds(bounds):
+            """Safely slice bounds"""
             if bounds is None:
                 return slice(None)
             if isinstance(bounds, (int, float)):
@@ -95,7 +95,10 @@ class LocalSource (ABC):
             lat_dim: _normalize_bounds(lat),
         } | level_sel_d
         # Select data
-        da = ds[data.variable.name]
+        if isinstance(data.variable, list):
+            da = ds[var_name]
+        else:
+            da = ds[data.variable.name]
         # Handle longitude wrap-around (e.g., 350°–10° or -10°-40°)
         if lon[0] > lon[1]:
             da1 = da.sel(**{lon_dim: slice(lon[0], 360)})
@@ -108,7 +111,6 @@ class LocalSource (ABC):
         else:
             da = da.sel(**selection_d)
         return da
-
     
     def load (self) -> xr.DataArray:
         """Get data only if it hasn't been done yet"""
@@ -232,89 +234,36 @@ class JunoGribSource (LocalSource):
             "minus_samples": minus_samples,
         }
 
-    # Worker function to open a single file
-    def _open_one(self, fp, backend_kwargs):
-        try:
-            ds = xr.open_dataset(
-                fp,
-                engine="cfgrib",
-                indexpath="",
-                backend_kwargs=backend_kwargs,
-                decode_timedelta=True,
-                decode_cf=True,
-            )
-            return self._preprocess(ds, data=self.data_selection)
-        except Exception as e:
-            import traceback
-            print(f"Failed to open {fp}: {type(e).__name__} – {e}")
-            traceback.print_exc(limit=1)
-            try:
-                ds = xr.open_dataset(
-                    fp,
-                    engine="cfgrib",
-                    indexpath="",
-                    # backend_kwargs=backend_kwargs,
-                    decode_timedelta=True,
-                    decode_cf=True,
-                )
-                print(f"{fp}: opened without filter_by_keys due to {e}")
-                return self._preprocess(ds, data=self.data_selection)
-            except Exception:
-                print(f"Skipping {fp}")
-                return None
-
-
     def _get_data (self) -> xr.DataArray:
         # years = [str(date.year) for date in xr.date_range(start=data.period.start, end=data.period.end, freq='YS')]
         samples = list(self.file_paths['samples'].values())
         print(f"Samples: {len(samples)}, minus: {len(self.file_paths['minus_samples'])}, plus: {len(self.file_paths['plus_samples'])}, missed: {len(self.file_paths['missed_samples'])}")
-        return xr.open_mfdataset(
-            samples,
-            combine="by_coords",
-            coords=["time"],
-            compat="override" if (self.file_paths['minus_samples'] or self.file_paths['plus_samples']) else "no_conflicts",
-            engine="cfgrib",
-            indexpath="",
-            chunks={},  # should make if faster
-            parallel=True,
-            decode_timedelta=True,
-            backend_kwargs={
-                "filter_by_keys": {"cfVarName": self.data_selection.variable.name},
-            },
-            preprocess=partial(self._preprocess, data=self.data_selection),
-            decode_cf=True,
-            errors="warn",
-        )
-
-    def _get_data_processpool (self, max_workers: int = 8) -> xr.DataArray:
-        """
-        Drop-in alternative to _get_data() that opens GRIB files in parallel
-        using multiple processes (since cfgrib is not thread-safe).
-        """
-        samples = self.file_paths['samples']
-        print(f"Samples: {len(samples)}, minus: {len(self.file_paths['minus_samples'])}, "
-            f"plus: {len(self.file_paths['plus_samples'])}, missed: {len(self.file_paths['missed_samples'])}")
-
-        compat = "override" if (
-            len(self.file_paths['minus_samples']) or len(self.file_paths['plus_samples'])
-        ) else "no_conflicts"
-
-        backend_kwargs = {
-            # "filter_by_keys": {"cfVarName": self.data_selection.variable.name},
+        common_args = {
+            "paths": samples,
+            "combine": "by_coords",
+            "coords": ["time"],
+            "compat": "override" if (self.file_paths['minus_samples'] or self.file_paths['plus_samples']) else "no_conflicts",
+            "engine": "cfgrib",
+            "indexpath": "",
+            "chunks": "auto",  # {}, {"time": 1}
+            "parallel": True,
+            "decode_timedelta": True,
+            "backend_kwargs": {},
+            "preprocess": partial(self._preprocess, data=self.data_selection),
+            "decode_cf": True,
+            "errors": "warn",
         }
-
-        # Load files in parallel using separate processes
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            datasets = list(executor.map(self._open_one, samples, backend_kwargs))
-
-        # Filter out any None results
-        datasets = [ds for ds in datasets if ds is not None]
-
-        if not datasets:
-            raise RuntimeError("No datasets could be opened — all failed.")
-
-        # Combine along coordinates (like open_mfdataset does)
-        combined = xr.combine_by_coords(datasets, compat=compat, combine_attrs="override")
-
-        return combined
-
+        if isinstance(self.data_selection.variable, list):
+            var_ds_list = []
+            for var in self.data_selection.variable:
+                common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": var.name}} # not currently possible to filter with a list of keys (see https://github.com/ecmwf/cfgrib/issues/138)
+                common_args["preprocess"] = partial(self._preprocess, data=self.data_selection, var_name=var.name)
+                var_ds_list.append(xr.open_mfdataset(**common_args))
+            return xr.merge(
+                var_ds_list,
+                compat="no_conflicts",
+                combine_attrs="no_conflicts"
+            )
+        else:
+            common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": self.data_selection.variable.name}}
+            return xr.open_mfdataset(**common_args)

@@ -36,15 +36,17 @@ if __name__ == "__main__":
     test_period = TimeRange(start=datetime(2024, 1, 1), end=datetime(2024, 5, 31), freq='12h')
     # test_period = TimeRange(start=datetime(2024, 1, 1), end=datetime(2024, 1, 2), freq='12h')
 
-    var = tcc
+    var = [t2m, tcc]
     datasel_train = DataSelection(variable=var, region=conus, period=train_period)
     datasel_test = DataSelection(variable=var, region=conus, period=test_period)
     train_src = DataSource(source="juno-grib", data_selection=datasel_train)
     test_src = DataSource(source="juno-grib", data_selection=datasel_test)
 
     exp_root_folder = "/work/cmcc/jd19424/test-ML/experiments_earthML/"
-    exp_name = f"exp_{datasel_train.variable.name}-{datasel_train.region.name}-{datasel_train.period.start.strftime('%Y%m%d')}-{datasel_train.period.end.strftime('%Y%m%d')}" \
-               f"_{datasel_test.variable.name}-{datasel_test.region.name}-{datasel_test.period.start.strftime('%Y%m%d')}-{datasel_test.period.end.strftime('%Y%m%d')}"
+    exp_train_var =  ''.join([var.name for var in datasel_train.variable] if isinstance(datasel_train.variable, list) else [datasel_train.variable.name])
+    exp_test_var =  ''.join([var.name for var in datasel_test.variable] if isinstance(datasel_test.variable, list) else [datasel_test.variable.name])
+    exp_name = f"exp_{exp_train_var}-{datasel_train.region.name}-{datasel_train.period.start.strftime('%Y%m%d')}-{datasel_train.period.end.strftime('%Y%m%d')}" \
+               f"_{exp_test_var}-{datasel_test.region.name}-{datasel_test.period.start.strftime('%Y%m%d')}-{datasel_test.period.end.strftime('%Y%m%d')}"
     exp_suffix = "_32bs"
     exp_path = Path(exp_root_folder).joinpath(exp_name+exp_suffix)
     print(f"Experiment path: {exp_path}")
