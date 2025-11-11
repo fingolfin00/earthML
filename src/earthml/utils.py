@@ -201,6 +201,8 @@ class Dask:
         self.cluster = LocalCluster(
             n_workers=n_workers,
             threads_per_worker=1,
+            timeout='600s',  # 10 minutes
+            heartbeat_interval='10s',
             memory_limit="auto",
             local_directory=local_dir,
             dashboard_address=f":{base_port}",  # uses free port if base_port busy
