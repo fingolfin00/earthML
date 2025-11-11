@@ -7,10 +7,13 @@ from earthml.dataclasses import Region, Variable, TimeRange, DataSelection, Data
 from pathlib import Path
 import joblib, torch
 from datetime import datetime, timedelta
+import dask
+from zarr.codecs import BloscCodec
+# from zarr.storage import ZipStore
 
 if __name__ == "__main__":
-    dask = Dask()
-    client, cluster = dask.client, dask.cluster
+    dask_earthml = Dask()
+    client, cluster = dask_earthml.client, dask_earthml.cluster
     print("Dask dashboard:", client.dashboard_link)
     # launcher = Launcher("earthml.toml")
     # logger = Logger(
@@ -36,7 +39,7 @@ if __name__ == "__main__":
     test_period = TimeRange(start=datetime(2024, 1, 1), end=datetime(2024, 5, 31), freq='12h')
     # test_period = TimeRange(start=datetime(2024, 1, 1), end=datetime(2024, 1, 2), freq='12h')
 
-    var = [t2m, tcc]
+    var = t2m
     datasel_train = DataSelection(variable=var, region=conus, period=train_period)
     datasel_test = DataSelection(variable=var, region=conus, period=test_period)
     train_src = DataSource(source="juno-grib", data_selection=datasel_train)
@@ -94,4 +97,23 @@ if __name__ == "__main__":
     )
     # experiment.train()
     experiment.test()
-    torch.save(experiment, exp_path.joinpath("experiment.pt"))
+    # torch.save(experiment, exp_path.joinpath("experiment.pt"))
+    # exp_path.joinpath("data").mkdir(parents=True, exist_ok=True)
+    # store = ZipStore('test_pred.zarr.zip', mode='w')
+    store = exp_path.joinpath("data/test_pred.zarr")
+    compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
+    encoding_zarr = (
+        {v.name: {"compressors": compressor} for v in var}
+        if isinstance(var, list)
+        else {var.name: {"compressors": compressor}}
+    )
+    # experiment.test_pred_ds.to_zarr(
+    #     store,
+    #     mode='w',
+    #     consolidated=False,
+    #     compute=True,
+    #     encoding=encoding_zarr
+    # )
+    # with dask.config.set(scheduler='single-threaded'):
+    experiment.test_pred_ds.to_zarr(store, encoding=encoding_zarr, mode='w', consolidated=False)
+    # experiment.test_pred_ds.to_netcdf(exp_path.joinpath("data/test_pred.nc"))
