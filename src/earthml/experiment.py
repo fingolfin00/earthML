@@ -53,7 +53,7 @@ class ExperimentMLFC:
         print(f"Torch workers in use: {self.torch_workers} ({num_cpus} CPUs // {num_cuda_devices} CUDA devices // 2)")
         L.seed_everything(self.config.seed)
         # Tensorboard
-        self.tl_logger = TensorBoardLogger(self.config.work_path, name=self.config.name) # version=self.run_number
+        self.tl_logger = TensorBoardLogger(self.config.work_path, name="tensorboard_logs") # version=self.run_number
         # Initialize model
         self.Net = globals()[self.config.net]
         self.model = self.Net(
