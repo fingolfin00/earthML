@@ -5,7 +5,7 @@ import cf_xarray
 import xarray as xr
 from pathlib import Path
 from functools import partial
-from datetime import timedelta
+from datetime import datetime, timedelta
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 # Local imports
@@ -14,22 +14,54 @@ from .dataclasses import DataSelection
 class SourceRegistry:
     def __init__ (self, source_name: str):
         self.class_registry = {
-            "juno-grib": JunoGribSource
+            "juno-local": JunoLocalSource,
+            "earthkit": EarthkitSource
         }
         self.source_name = source_name
 
     def get_class (self):
         return self.class_registry.get(self.source_name)
 
-class LocalSource (ABC):
+class BaseSource (ABC):
+    def __init__ (
+        self,
+        data_selection: DataSelection
+    ):
+        self.data_selection = data_selection
+        self.ds = None
+
+    @abstractmethod
+    def _get_data (self) -> xr.DataArray:
+        """
+        Get data for the given data selection. Implement in subclasses.
+        """
+        pass
+
+    def load (self) -> xr.DataArray:
+        """Get data only if it hasn't been done yet"""
+        if not self.ds:
+            print("Get data...")
+            t0 = time.time()
+            self.ds = self._get_data()
+            print(f"Dataset loading time: {time.time() - t0:.2f}s")
+            # t0 = time.time()
+            # self.ds = self._get_data_processpool(max_workers=36)
+            # print(f"processpool time: {time.time() - t0:.2f}s")
+        return self.ds
+
+    def reload (self) -> xr.DataArray:
+        """Force data reload"""
+        self.ds = self._get_data()
+        return self.ds
+
+class LocalSource (BaseSource):
     def __init__ (
         self,
         data_selection: DataSelection,
         root_path: str,
     ):
-        self.ds = None
+        super().__init__ (data_selection)
         self.path = Path(root_path)
-        self.data_selection = data_selection
         self.date_range = xr.date_range(
             start=self.data_selection.period.start,
             end=self.data_selection.period.end,
@@ -111,57 +143,37 @@ class LocalSource (ABC):
         else:
             da = da.sel(**selection_d)
         return da
-    
-    def load (self) -> xr.DataArray:
-        """Get data only if it hasn't been done yet"""
-        if not self.ds:
-            print("Get data...")
-            t0 = time.time()
-            self.ds = self._get_data()
-            print(f"open_mfdataset time: {time.time() - t0:.2f}s")
-            # t0 = time.time()
-            # self.ds = self._get_data_processpool(max_workers=36)
-            # print(f"processpool time: {time.time() - t0:.2f}s")
-        return self.ds
-
-    def reload (self) -> xr.DataArray:
-        """Force data reload"""
-        self.ds = self._get_data()
-        return self.ds
 
     @abstractmethod
     def _get_data_filenames (self) -> dict:
         """
-        Get the local data filenames for the given data selection.
-        """
-        pass
-    
-    @abstractmethod
-    def _get_data (self) -> xr.DataArray:
-        """
-        Get the local data for the given data selection.
+        Get the local data filenames for the given data selection. Implement in subclasses.
         """
         pass
 
-class JunoGribSource (LocalSource):
+class JunoLocalSource (LocalSource):
     """
-    Collect Juno grib data for the given data selection.
+    Collect Juno local data for the given data selection.
     """
     def __init__ (
         self,
         data_selection: DataSelection,
         root_path: str,
+        engine: str,
         file_path_date_format: str,
         file_header: str,
+        file_suffix: str,
         file_date_format: str,
         lead_time: timedelta,
         minus_timedelta: timedelta = None,
         plus_timedelta: timedelta = None
     ):
         super().__init__ (data_selection, root_path)
+        self.engine = engine
         self.file_paths = self._get_data_filenames(
             file_path_date_format,
             file_header,
+            file_suffix,
             file_date_format,
             lead_time,
             minus_timedelta,
@@ -172,6 +184,7 @@ class JunoGribSource (LocalSource):
         self,
         file_path_date_format: str,
         file_header: str,
+        file_suffix: str,
         file_date_format: str,
         lead_time: timedelta,
         minus_timedelta: timedelta = None,
@@ -185,7 +198,7 @@ class JunoGribSource (LocalSource):
         for date in self.date_range:
             forward_date = date + lead_time
             data_path = self.path.joinpath(date.strftime(file_path_date_format))
-            data_glob = f"{file_header}{date.strftime(file_date_format)}{forward_date.strftime(file_date_format)}*"
+            data_glob = f"{file_header}{date.strftime(file_date_format)}{forward_date.strftime(file_date_format)}{file_suffix}"
 
             # files_exact = [p for p in data_path.glob(data_glob) if p.is_file()]
             files_exact = sorted(
@@ -243,7 +256,7 @@ class JunoGribSource (LocalSource):
             "combine": "by_coords",
             "coords": ["time"],
             "compat": "override" if (self.file_paths['minus_samples'] or self.file_paths['plus_samples']) else "no_conflicts",
-            "engine": "cfgrib",
+            "engine": self.engine,
             "indexpath": "",
             "chunks": "auto",  # {}, {"time": 1}
             "parallel": True,
@@ -256,7 +269,9 @@ class JunoGribSource (LocalSource):
         if isinstance(self.data_selection.variable, list):
             var_ds_list = []
             for var in self.data_selection.variable:
-                common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": var.name}} # not currently possible to filter with a list of keys (see https://github.com/ecmwf/cfgrib/issues/138)
+                if self.engine == "cfgrib":
+                    common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": var.name}} # not currently possible to filter with a list of keys (see https://github.com/ecmwf/cfgrib/issues/138)
+                # TODO add support for other engines
                 common_args["preprocess"] = partial(self._preprocess, data=self.data_selection, var_name=var.name)
                 var_ds_list.append(xr.open_mfdataset(**common_args))
             return xr.merge(
@@ -265,5 +280,67 @@ class JunoGribSource (LocalSource):
                 combine_attrs="no_conflicts"
             )
         else:
-            common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": self.data_selection.variable.name}}
+            if self.engine == "cfgrib":
+                common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": self.data_selection.variable.name}}
+            # TODO add support for other engines
             return xr.open_mfdataset(**common_args)
+
+class EarthkitSource (BaseSource):
+    """
+    Collect data using ECMWF new earthkit library.
+    """
+    def __init__ (
+        self,
+        data_selection: DataSelection,
+        provider: str,
+        dataset: str,
+        request_extra_args: dict = None,
+        xarray_args: dict = None
+    ):
+        super().__init__ (data_selection)
+        self.provider = provider
+        self.dataset = dataset
+        self.request_extra_args = request_extra_args
+        self.xarray_args = xarray_args
+
+    @staticmethod
+    def _generate_hours (freq_str):
+        value = int(freq_str[:-1])
+        if freq_str[-1] != 'h':
+            raise ValueError("Only 'h' (hours) frequency supported")
+
+        times = []
+        current = datetime.strptime("00:00", "%H:%M")
+        while current.hour < 24:
+            times.append(current.strftime("%H:%M"))
+            current += timedelta(hours=value)
+            if current.hour == 0:  # wrapped past midnight
+                break
+        return times
+
+    def _get_data (self):
+        import earthkit.data as ekd
+        # samples = list(self.file_paths['samples'].values())
+        var_name_list = [v.name for v in self.data_selection.variable] if isinstance(self.data_selection.variable, list) else [self.data_selection.variable.name]
+        dates = f"{self.data_selection.period.start.strftime('%Y-%m-%d')}/{self.data_selection.period.end.strftime('%Y-%m-%d')}"
+        time_freq = self._generate_hours(self.data_selection.period.freq)
+        area = [
+            self.data_selection.region.lat[0],
+            self.data_selection.region.lon[0],
+            self.data_selection.region.lat[1],
+            self.data_selection.region.lon[1]
+        ]
+        print(f"Requesting {var_name_list} ({dates} {time_freq}) in region {area} from {self.provider}:{self.dataset}")
+        request_d = dict(
+            variable=var_name_list,
+            area=area,
+            date=dates,
+            time=time_freq,
+            **self.request_extra_args
+        )
+        # print(request_d)
+        return ekd.from_source(
+            self.provider,
+            self.dataset,
+            **request_d
+        ).to_xarray(**self.xarray_args)
