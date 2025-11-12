@@ -39,6 +39,7 @@ if __name__ == "__main__":
     test_period = TimeRange(start=datetime(2024, 1, 1), end=datetime(2024, 5, 31), freq='12h')
     # test_period = TimeRange(start=datetime(2024, 1, 1), end=datetime(2024, 1, 2), freq='12h')
 
+    # var = [t2m, msl, u10]
     var = t2m
     datasel_train = DataSelection(variable=var, region=conus, period=train_period)
     datasel_test = DataSelection(variable=var, region=conus, period=test_period)
@@ -58,6 +59,7 @@ if __name__ == "__main__":
         work_path=exp_path,
         seed=42,
         net="SmaAt_UNet",
+        extra_net_args=dict(n_channels=len(var), n_classes=len(var)) if isinstance(var, list) else dict(n_channels=1, n_classes=1),
         # Hyperparameters
         learning_rate=1e-3,
         batch_size=32,
