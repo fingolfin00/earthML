@@ -8,6 +8,7 @@ from functools import partial
 from datetime import datetime, timedelta
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
+from zarr.codecs import BloscCodec
 # Local imports
 from .dataclasses import DataSelection
 
@@ -53,6 +54,18 @@ class BaseSource (ABC):
         """Force data reload"""
         self.ds = self._get_data()
         return self.ds
+
+    def save (self, filepath: str | Path):
+        """Save dataset in Zarr format in filepathc"""
+        if not self.ds:
+            self.ds = self.load()
+        store = Path(filepath).with_suffix(".zarr")
+        print(f"Saving dataset to {store}")
+        compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
+        encoding_zarr = ({
+            v: {"compressors": compressor} for v in self.ds.variables
+        })
+        self.ds.to_zarr(store, encoding=encoding_zarr, mode='w', consolidated=False)
 
 class LocalSource (BaseSource):
     def __init__ (
