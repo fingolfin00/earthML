@@ -61,6 +61,7 @@ class ExperimentMLFC:
             loss=self.config.loss,
             norm=self.config.norm_strategy,
             supervised=self.config.supervised,
+            **self.config.extra_net_args,
         ).to(self.device)
         # Log model info
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)

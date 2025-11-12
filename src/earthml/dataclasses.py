@@ -42,6 +42,7 @@ class ExperimentConfig:
     # NN
     seed: int
     net: str
+    extra_net_args: dict
     # Hyperparameters
     learning_rate: float
     batch_size: int
