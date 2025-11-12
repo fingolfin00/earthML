@@ -233,10 +233,15 @@ class ExperimentMLFC:
             self.source_test_target.load()
         )
         print(f"Test dataset, input {test_dataset.x.shape}, target {test_dataset.y.shape} (source {self.config.test.source}) loaded in {(time.time() - s):.3f}s")
-        print(f"Test dataset input mean: {test_dataset.x.mean()}, std: {test_dataset.x.std()}")
-        print(f"Test dataset target mean: {test_dataset.y.mean()}, std: {test_dataset.y.std()}")
-        rmse_input = np.sqrt(((test_dataset.y - test_dataset.x)**2).mean())
-        print(f"RMSE target-input: {rmse_input}")
+        var_list = self.config.test.data_selection.variable if isinstance(self.config.test.data_selection.variable, list) else [self.config.test.data_selection.variable]
+        mean_input_d = {var.name: test_dataset.x[:,i,:,:].mean().item() for i, var in enumerate(var_list)}
+        std_input_d = {var.name: test_dataset.x[:,i,:,:].std().item() for i, var in enumerate(var_list)}
+        print(f"Test dataset input mean: {mean_input_d}, std: {std_input_d}")
+        mean_target_d = {var.name: test_dataset.y[:,i,:,:].mean().item() for i, var in enumerate(var_list)}
+        std_target_d = {var.name: test_dataset.y[:,i,:,:].std().item() for i, var in enumerate(var_list)}
+        print(f"Test dataset target mean: {mean_target_d}, std: {std_target_d}")
+        rmse_input_d = {var.name: np.sqrt(((test_dataset.y[:,i,:,:] - test_dataset.x[:,i,:,:])**2).mean().item()) for i, var in enumerate(var_list)}
+        print(f"RMSE target-input: {rmse_input_d}")
         # Normalize
         if not self.normalize:
             print(f"Load normalization data from {self.normdata_path}")
@@ -266,17 +271,20 @@ class ExperimentMLFC:
         # Test
         self.test_trainer.test(self.model, dataloaders=self.test_dataloader)
         # print(f"Available attributes in model: {dir(self.model)}")
-        print(f"Normalized prediction shape: {self.model.test_preds.shape}, mean: {self.model.test_preds.mean()}, std: {self.model.test_preds.std()}")
-        # Rescale and squeeze
-        preds = self.normalize.inverse_tensor(self.model.test_preds, self.normdata_path).squeeze()
-        print(f"Rescaled prediction shape: {preds.shape}, mean: {preds.mean()}, std: {preds.std()}")
-        rmse_preds = np.sqrt(((test_dataset.y - preds.unsqueeze(1))**2).mean())
-        print(f"RMSE target-prediction: {rmse_preds}")
+        mean_norm_pred_d = {var.name: self.model.test_preds[:,i,:,:].mean().item() for i, var in enumerate(var_list)}
+        std_norm_pred_d = {var.name: self.model.test_preds[:,i,:,:].std().item() for i, var in enumerate(var_list)}
+        print(f"Normalized prediction shape: {self.model.test_preds.shape}, mean: {mean_norm_pred_d}, std: {std_norm_pred_d}")
+        # Rescale
+        preds = self.normalize.inverse_tensor(self.model.test_preds, self.normdata_path) # .squeeze()
+        mean_pred_d = {var.name: preds[:,i,:,:].mean().item() for i, var in enumerate(var_list)}
+        std_pred_d = {var.name: preds[:,i,:,:].std().item() for i, var in enumerate(var_list)}
+        print(f"Rescaled prediction shape: {preds.shape}, mean: {mean_pred_d}, std: {std_pred_d}")
+        rmse_pred_d = {var.name: np.sqrt(((test_dataset.y[:,i,:,:] - preds[:,i,:,:])**2).mean().item()) for i, var in enumerate(var_list)}
+        print(f"RMSE target-prediction: {rmse_pred_d}")
         # Convert to Xarray using input ds metadata
-        test_var = self.config.test.data_selection.variable.name
         test_input_ds = self.source_test_input.load()
         self.test_pred_ds = xr.Dataset(
-            {test_var: (test_input_ds[test_var].dims, preds.cpu().numpy())},
+            {var.name: (test_input_ds[var.name].dims, preds[:,i,:,:].cpu().numpy()) for i, var in enumerate(var_list)},
             coords={c: test_input_ds.coords[c] for c in test_input_ds.coords},
             attrs=test_input_ds.attrs,
         )
