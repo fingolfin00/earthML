@@ -2,7 +2,6 @@
 # from earthml.logging import Logger
 from earthml.utils import Dask
 from earthml.experiment import ExperimentMLFC
-# from earthml.source import JunoGribSource
 from earthml.dataclasses import Region, Variable, TimeRange, DataSelection, DataSource, ExperimentConfig
 from pathlib import Path
 import joblib, torch
@@ -43,8 +42,8 @@ if __name__ == "__main__":
     var = t2m
     datasel_train = DataSelection(variable=var, region=conus, period=train_period)
     datasel_test = DataSelection(variable=var, region=conus, period=test_period)
-    train_src = DataSource(source="juno-grib", data_selection=datasel_train)
-    test_src = DataSource(source="juno-grib", data_selection=datasel_test)
+    train_src = DataSource(source="juno-local", data_selection=datasel_train)
+    test_src = DataSource(source="juno-local", data_selection=datasel_test)
 
     exp_root_folder = "/work/cmcc/jd19424/test-ML/experiments_earthML/"
     exp_train_var =  ''.join([var.name for var in datasel_train.variable] if isinstance(datasel_train.variable, list) else [datasel_train.variable.name])
@@ -80,8 +79,10 @@ if __name__ == "__main__":
         config=experiment_cfg,
         source_input_args={
             "root_path": "/data/inputs/METOCEAN/rolling/model/atmos/ECMWF/IFS_010/1.0forecast/1h/grib/",
+            "engine": "cfgrib",
             "file_path_date_format": "%Y%m%d",
             "file_header": "JLS",
+            "file_suffx": "*",
             "file_date_format": "%m%d%H%M",
             "lead_time": timedelta(hours=72),
             "minus_timedelta": timedelta(hours=1),
@@ -89,8 +90,10 @@ if __name__ == "__main__":
         },
         source_target_args={
             "root_path": "/data/inputs/METOCEAN/historical/model/atmos/ECMWF/IFS_010/analysis/6h/grib/",
+            "engine": "cfgrib",
             "file_path_date_format": "%Y/%m",
             "file_header": "JLD",
+            "file_suffx": "*",
             "file_date_format": "%m%d%H%M",
             "lead_time": timedelta(hours=0),
             "minus_timedelta": timedelta(hours=1),
