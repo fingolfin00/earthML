@@ -35,6 +35,12 @@ class DataSource:
     data_selection: DataSelection
 
 @dataclass
+class ExperimentDataset:
+    role: str
+    datasource: DataSource
+    source_params: dict = None
+
+@dataclass
 class ExperimentConfig:
     # Globals
     name: str
@@ -55,5 +61,5 @@ class ExperimentConfig:
     accumulate_grad_batches: int
     # Dataset
     lead_time: str
-    train: DataSource
-    test: DataSource
+    train: ExperimentDataset | List[ExperimentDataset]
+    test: ExperimentDataset | List[ExperimentDataset]

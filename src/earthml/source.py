@@ -1,4 +1,7 @@
 import time
+from rich import print
+from rich.pretty import pprint
+from rich.table import Table
 from abc import ABC, abstractmethod
 # import dask
 import cf_xarray
