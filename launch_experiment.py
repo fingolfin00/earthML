@@ -2,13 +2,10 @@
 # from earthml.logging import Logger
 from earthml.utils import Dask
 from earthml.experiment import ExperimentMLFC
-from earthml.dataclasses import Region, Variable, TimeRange, DataSelection, DataSource, ExperimentConfig
+from earthml.dataclasses import Region, Variable, TimeRange, DataSelection, DataSource, ExperimentDataset, ExperimentConfig
 from pathlib import Path
-import joblib, torch
 from datetime import datetime, timedelta
-import dask
-from zarr.codecs import BloscCodec
-# from zarr.storage import ZipStore
+from rich import print
 
 if __name__ == "__main__":
     dask_earthml = Dask()
@@ -42,15 +39,79 @@ if __name__ == "__main__":
     var = t2m
     datasel_train = DataSelection(variable=var, region=conus, period=train_period)
     datasel_test = DataSelection(variable=var, region=conus, period=test_period)
-    train_src = DataSource(source="juno-local", data_selection=datasel_train)
-    test_src = DataSource(source="juno-local", data_selection=datasel_test)
 
+    source_params_junolocal_input = {
+        "root_path": "/data/inputs/METOCEAN/rolling/model/atmos/ECMWF/IFS_010/1.0forecast/1h/grib/",
+        "engine": "cfgrib",
+        "file_path_date_format": "%Y%m%d",
+        "file_header": "JLS",
+        "file_suffix": "*",
+        "file_date_format": "%m%d%H%M",
+        "lead_time": timedelta(hours=72),
+        "minus_timedelta": timedelta(hours=1),
+        "plus_timedelta": timedelta(hours=1)
+    }
+    source_params_junolocal_target = {
+        "root_path": "/data/inputs/METOCEAN/historical/model/atmos/ECMWF/IFS_010/analysis/6h/grib/",
+        "engine": "cfgrib",
+        "file_path_date_format": "%Y/%m",
+        "file_header": "JLD",
+        "file_suffix": "*",
+        "file_date_format": "%m%d%H%M",
+        "lead_time": timedelta(hours=0),
+        "minus_timedelta": timedelta(hours=1),
+        "plus_timedelta": timedelta(hours=1)
+    }
+    source_params_era5_target = {
+        "provider": "cds",
+        "dataset": "reanalysis-era5-single-levels",
+        "request_extra_args": dict(
+            product_type="reanalysis",
+            grid=[.1, .1],
+            # format="netcdf"
+        ),
+        "xarray_args": dict(
+            time_dim_mode="valid_time",
+            chunks={"valid_time": 10},
+            add_earthkit_attrs=False,
+            # backend_kwargs={
+            #     "allow_holes": True,
+            #     "squeeze": False,
+            #     "drop_dims": ["number"],  # Drop the number dimension
+            # }
+        )
+    }
+
+    dataset_train_input = ExperimentDataset(
+        role='input',
+        datasource=DataSource(source="juno-local", data_selection=datasel_train),
+        source_params=source_params_junolocal_input
+    )
+    dataset_train_target = ExperimentDataset(
+        role='target',
+        datasource=DataSource(source="earthkit", data_selection=datasel_train),
+        source_params=source_params_era5_target,
+        # datasource=DataSource(source="juno-local", data_selection=datasel_train),
+        # source_params=source_params_junolocal_target
+    )
+    dataset_test_input = ExperimentDataset(
+        role='input',
+        datasource=DataSource(source="juno-local", data_selection=datasel_test),
+        source_params=source_params_junolocal_input
+    )
+    dataset_test_target = ExperimentDataset(
+        role='target',
+        datasource=DataSource(source="earthkit", data_selection=datasel_test),
+        source_params=source_params_era5_target,
+        # datasource=DataSource(source="juno-local", data_selection=datasel_test),
+        # source_params=source_params_junolocal_target
+    )
     exp_root_folder = "/work/cmcc/jd19424/test-ML/experiments_earthML/"
     exp_train_var =  ''.join([var.name for var in datasel_train.variable] if isinstance(datasel_train.variable, list) else [datasel_train.variable.name])
     exp_test_var =  ''.join([var.name for var in datasel_test.variable] if isinstance(datasel_test.variable, list) else [datasel_test.variable.name])
     exp_name = f"exp_{exp_train_var}-{datasel_train.region.name}-{datasel_train.period.start.strftime('%Y%m%d')}-{datasel_train.period.end.strftime('%Y%m%d')}" \
                f"_{exp_test_var}-{datasel_test.region.name}-{datasel_test.period.start.strftime('%Y%m%d')}-{datasel_test.period.end.strftime('%Y%m%d')}"
-    exp_suffix = "_32bs"
+    exp_suffix = "_32bs_era5"
     exp_path = Path(exp_root_folder).joinpath(exp_name+exp_suffix)
     print(f"Experiment path: {exp_path}")
     experiment_cfg = ExperimentConfig(
@@ -71,54 +132,11 @@ if __name__ == "__main__":
         accumulate_grad_batches=2,
         # Dataset Parameters
         lead_time="72h",
-        train=train_src,
-        test=test_src
+        train=[dataset_train_input, dataset_train_target],
+        test=[dataset_test_input, dataset_test_target]
     )
 
-    experiment = ExperimentMLFC(
-        config=experiment_cfg,
-        source_input_args={
-            "root_path": "/data/inputs/METOCEAN/rolling/model/atmos/ECMWF/IFS_010/1.0forecast/1h/grib/",
-            "engine": "cfgrib",
-            "file_path_date_format": "%Y%m%d",
-            "file_header": "JLS",
-            "file_suffx": "*",
-            "file_date_format": "%m%d%H%M",
-            "lead_time": timedelta(hours=72),
-            "minus_timedelta": timedelta(hours=1),
-            "plus_timedelta": timedelta(hours=1)
-        },
-        source_target_args={
-            "root_path": "/data/inputs/METOCEAN/historical/model/atmos/ECMWF/IFS_010/analysis/6h/grib/",
-            "engine": "cfgrib",
-            "file_path_date_format": "%Y/%m",
-            "file_header": "JLD",
-            "file_suffx": "*",
-            "file_date_format": "%m%d%H%M",
-            "lead_time": timedelta(hours=0),
-            "minus_timedelta": timedelta(hours=1),
-            "plus_timedelta": timedelta(hours=1)
-        }
-    )
-    # experiment.train()
+    experiment = ExperimentMLFC(experiment_cfg)
+    experiment.train()
     experiment.test()
-    # torch.save(experiment, exp_path.joinpath("experiment.pt"))
-    # exp_path.joinpath("data").mkdir(parents=True, exist_ok=True)
-    # store = ZipStore('test_pred.zarr.zip', mode='w')
-    store = exp_path.joinpath("data/test_pred.zarr")
-    compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
-    encoding_zarr = (
-        {v.name: {"compressors": compressor} for v in var}
-        if isinstance(var, list)
-        else {var.name: {"compressors": compressor}}
-    )
-    # experiment.test_pred_ds.to_zarr(
-    #     store,
-    #     mode='w',
-    #     consolidated=False,
-    #     compute=True,
-    #     encoding=encoding_zarr
-    # )
-    # with dask.config.set(scheduler='single-threaded'):
-    experiment.test_pred_ds.to_zarr(store, encoding=encoding_zarr, mode='w', consolidated=False)
-    # experiment.test_pred_ds.to_netcdf(exp_path.joinpath("data/test_pred.nc"))
+    experiment.save(experiment.preds, 'input', 'test_preds')
