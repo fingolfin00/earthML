@@ -1,4 +1,7 @@
 from pathlib import Path
+from rich import print
+from rich.pretty import pprint
+from rich.table import Table
 import joblib
 import cf_xarray
 import os, psutil, multiprocessing, tempfile, logging
@@ -211,3 +214,55 @@ class Dask:
         self.client.run(lambda: __import__("cf_xarray"))
         print(f"Cores: {n_cores}, Mem: {total_mem_gb} GB -> Dask workers: {n_workers}")
         print(f"Write Dask local files in {local_dir}")
+
+from rich.table import Table as RichTable
+from rich.highlighter import ReprHighlighter
+class Table ():
+    """Helper class to create rich Tables from multinested dicts"""
+    def __init__ (self, data: dict, title: str = None, twocols: bool = False) -> RichTable:
+        assert isinstance(data, dict)
+        if len(data.keys()) == 1:
+            assert isinstance(next(iter(data.values())), dict) # there must be data
+            data_name = next(iter(data.keys()))
+            data = data[data_name] # promote first inner dict to actual data
+            title = data_name if title is None else title
+        has_inner_dicts = self._has_inner_dicts(data)
+        rich_params = {
+            "title": title,
+            "show_header": bool(has_inner_dicts and title and not twocols),
+        }
+        self.table = RichTable(**rich_params)
+        rowheads = self._get_rowheads(data) # check only first inner level
+        highligher = ReprHighlighter()
+        if has_inner_dicts and rowheads and not twocols:
+            self.table.add_column("params", style='magenta')
+            for k in data.keys():
+                self.table.add_column(str(k), style='cyan')
+            for r in rowheads:
+                row = {}
+                for k,v in data.items():
+                    row[k] = highligher(str(v)) if r in data.items() else ""
+                self.table.add_row(str(r), *row.values())
+        else:
+            self.table.add_column(title, style='magenta')
+            self.table.add_column("", style='cyan')
+            for k, v in data.items():
+                self.table.add_row(k, highligher(str(v)))
+
+    def _has_inner_dicts (self, d: dict) -> bool:
+        for v in d.values():
+            if isinstance(v, dict):
+                return True or self.has_inner_dicts(v)
+            elif isinstance(v, (list, tuple)):
+                if any(isinstance(i, dict) and self.has_inner_dicts(i) for i in v):
+                    return True
+        return False
+
+    def _get_rowheads (self, d: dict, recursive: bool = False) -> list:
+        rowheads = []
+        for v in d.values():
+            if isinstance(v, dict):
+                rowheads.extend(map(str, v.keys()))
+                if recursive:
+                    rowheads.extend(self._get_rowheads(v, recursive))
+        return rowheads
