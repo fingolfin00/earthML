@@ -29,6 +29,7 @@ class BaseSource (ABC):
         data_selection: DataSelection
     ):
         self.data_selection = data_selection
+        self.file_paths = None
         self.ds = None
 
     @abstractmethod
@@ -80,7 +81,6 @@ class LocalSource (BaseSource):
             end=self.data_selection.period.end,
             freq=self.data_selection.period.freq
         )
-        self.file_paths = {}
 
     @staticmethod
     def _preprocess(ds: xr.Dataset, data: DataSelection, var_name: str = None) -> xr.DataArray:
