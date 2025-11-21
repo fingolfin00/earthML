@@ -270,7 +270,7 @@ from rich.table import Table as RichTable
 from rich.highlighter import ReprHighlighter
 class Table ():
     """Helper class to create rich Tables from multinested dicts"""
-    def __init__ (self, data: dict, title: str = None, twocols: bool = False) -> RichTable:
+    def __init__ (self, data: dict, title: str = None, params_name:str = None, twocols: bool = False) -> RichTable:
         assert isinstance(data, dict)
         if len(data.keys()) == 1:
             assert isinstance(next(iter(data.values())), dict) # there must be data
@@ -285,15 +285,19 @@ class Table ():
         self.table = RichTable(**rich_params)
         rowheads = self._get_rowheads(data) # check only first inner level
         highligher = ReprHighlighter()
+        params_name = 'params' if params_name is None else params_name
         if has_inner_dicts and rowheads and not twocols:
             self.table.add_column("params", style='magenta')
             for k in data.keys():
                 self.table.add_column(str(k), style='cyan')
+            row = {}
+            for i,r in enumerate(rowheads):
+                row[r] = []
+                for v in data.values():
+                    if isinstance(v, dict):
+                        row[r].append(highligher(str(list(v.values())[i]))) if r in v.keys() else ""
             for r in rowheads:
-                row = {}
-                for k,v in data.items():
-                    row[k] = highligher(str(v)) if r in data.items() else ""
-                self.table.add_row(str(r), *row.values())
+                self.table.add_row(str(r), *row[r])
         else:
             self.table.add_column(title, style='magenta')
             self.table.add_column("", style='cyan')
@@ -316,4 +320,4 @@ class Table ():
                 rowheads.extend(map(str, v.keys()))
                 if recursive:
                     rowheads.extend(self._get_rowheads(v, recursive))
-        return rowheads
+        return list(dict.fromkeys(rowheads))
