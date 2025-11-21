@@ -1,7 +1,8 @@
-import os, time, copy, multiprocessing
+import os, time, copy, multiprocessing, pickle, joblib
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 from datetime import datetime, timedelta
 from pathlib import Path
+from copy import deepcopy
 from itertools import zip_longest
 from typing import List
 from rich import print
@@ -21,7 +22,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
 from lightning.pytorch.loggers import TensorBoardLogger
 # Local imports
 from .source import SourceRegistry
-from .dataclasses import ExperimentDataset, ExperimentConfig
+from .dataclasses import ExperimentDataset, ExperimentConfig, DataSource
 from .utils import EpochRandomSplitDataModule, XarrayDataset, Normalize, Table
 from .nets.smaatunet import SmaAt_UNet
 
@@ -72,21 +73,46 @@ class ExperimentMLFC:
         # Log model info
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         print(f"Net {self.Net.__name__} trainable parameters: {trainable_params:,}")
-        # Initialize data objects used and populated in train() and test()
-        deltas = [pd.to_timedelta(self.config.lead_time), pd.to_timedelta(0)]
-        self.source_test_data = self._generate_source_data(self.config.test, 'test', deltas)
-        self.source_train_data = self._generate_source_data(self.config.train, 'train', deltas)
+        # Init
         self.normalize = None
         self.train_datamodule = None
-        # Initialize trainer for train and test
-        self._init_trainer()
+        # Init predictions
+        preds_filename = "test_preds"
+        self.consolidated_zarr = False
+        self.preds_store = self.config.work_path.joinpath(Path(preds_filename).with_suffix(".zarr"))
+        preds_exp = ExperimentDataset(
+            role='prediction',
+            datasource=DataSource(
+                "xarray-local",
+                self.config.test[0].datasource.data_selection,
+            ),
+            source_params={
+                'root_path': self.preds_store,
+                'xarray_args': {'consolidated': self.consolidated_zarr}
+            }
+        )
+        self.config.test.append(preds_exp)
+        # Init source data objects
+        self.source_test_data = self._init_source_data(self.config.test, 'test') #, deltas)
+        self.source_train_data = self._init_source_data(self.config.train, 'train') # ), deltas)
+        # Save experiment
+        with open(self.work_path.joinpath("experiment.cfg"), 'wb') as f:
+            joblib.dump({
+                'config': self.config,
+                'device': self.device,
+                'torch_workers': self.torch_workers,
+                'tl_logger': self.tl_logger,
+                # 'model': self.model,
+                'test_data': self.source_test_data,
+                'train_data': self.source_train_data
+            }, f)
 
     def _path_setup (self):
         self.work_path = Path(self.config.work_path)
         # Weights location
         self.weights_folder_path = self.work_path.joinpath("./weights")
         self.weights_filename = f"{self.config.name}_weights"
-        # self.weights_path = self.weights_folder_path.joinpath(self.weights_filename)
+        self.weights_path = self.weights_folder_path.joinpath(self.weights_filename+'.ckpt')
         # Train dataset normalization data location
         norm_data_folder_path = self.work_path.joinpath("./normdata")
         normdata_filename = f"{self.config.name}_normdata.gz"
@@ -102,35 +128,38 @@ class ExperimentMLFC:
         except:
             self.ckpt_path = self.ckpt_folder_path.joinpath(f"{self.ckpt_filename}.ckpt")
 
-    def _generate_source_data (self, exp_ds: ExperimentDataset | List[ExperimentDataset], source_type: str, deltas: List[timedelta] = None):
+    def _init_source_data (self, exp_ds: ExperimentDataset | List[ExperimentDataset], source_type: str, deltas: List[timedelta] = None):
         """Returns populated selected Source instances"""
         if not isinstance(exp_ds, list):
             exp_ds = [exp_ds]
         sources = {}
         for i, e in enumerate(exp_ds):
             Source = SourceRegistry(e.datasource.source).get_class()
-            data_sel = e.datasource.data_selection
-            data_sel.period.start += deltas[i] if deltas else data_sel.period.start
-            data_sel.period.end += deltas[i] if deltas else data_sel.period.end
-            self.rich_console.print(Table({f"Source {source_type} {e.role} params": e.source_params}, twocols=True).table)
+            # data_sel = e.datasource.data_selection
+            # data_sel.period.start += deltas[i] if deltas else data_sel.period.start
+            # data_sel.period.end += deltas[i] if deltas else data_sel.period.end
+            self.rich_console.print(Table({f"Source {source_type} {e.role} params": e.source_params}, twocols=True).table) # TODO move tables to source.py
             sources[e.role] = Source(
-                data_selection=data_sel,
+                datasource=e.datasource,
                 **e.source_params
             )
         # Clear missing samples if supported
         missed = set()
         for source in sources.values():
-            if source.file_paths:
-                missed |= {p for p in source.file_paths.get('missed_samples', [])} # missed is a set
-        # missed = {p for source in sources.values() for p in source.file_paths.get('missed_samples', [])} # missed is a set
-        if missed:
-            for role, source in sources.items():
-                source.file_paths['samples'] = {k: v for k, v in source.file_paths['samples'].items() if k not in missed}
-                print(f"Removed missed data {missed} from {role}")
-                print(f"Number of {source_type} {role}: {len(source.file_paths['samples'])}")
+            if isinstance(source.elements.samples, dict):
+                missed |= {p for p in source.elements.missed} # missed is a set
+        print(f"Missed dates ({source_type}): {missed}")
+        for source in sources.values():
+            source.elements.missed = missed
+        # missed = {p for source in sources.values() for p in source.elements.get('missed_samples', [])} # missed is a set
+        # if missed:
+        #     for role, source in sources.items():
+        #         source.elements.samples = {k: v for k, v in source.elements.samples.items() if k not in missed}
+        #         print(f"Removed missed data {missed} from {role}")
+        #         print(f"Number of {source_type} {role}: {len(source.elements.samples)}")
         return sources
 
-    def _init_trainer (self):
+    def _init_callbacks (self):
         # Initialize trainer callbacks
         callbacks = []
         # Early stopping
@@ -157,8 +186,12 @@ class ExperimentMLFC:
             mode="min",
             filename=self.weights_filename
         )
-        callbacks.append(best_weights_callback)# Initialize Lightning trainer
-        self.train_trainer = L.Trainer(
+        callbacks.append(best_weights_callback)
+        return callbacks
+
+    def _init_train_trainer (self):
+        # Initialize Lightning trainer
+        return L.Trainer(
             max_epochs=self.config.epochs,
             precision="16-mixed",
             # gradient_clip_val=1.0,           # Recommended starting value (e.g., 0.5, 1.0, 5.0)
@@ -166,10 +199,12 @@ class ExperimentMLFC:
             log_every_n_steps=1,
             logger=self.tl_logger,
             accumulate_grad_batches=self.config.accumulate_grad_batches,
-            callbacks=callbacks,
+            callbacks=self._init_callbacks(),
             # deterministic=True
         )
-        self.test_trainer = L.Trainer(
+
+    def _init_test_trainer (self):
+        return L.Trainer(
             max_epochs=self.config.epochs,
             precision="16-mixed",
             # gradient_clip_val=1.0,           # Recommended starting value (e.g., 0.5, 1.0, 5.0)
@@ -211,7 +246,7 @@ class ExperimentMLFC:
             per_epoch_replit=False
         )
         # Train
-        self.train_trainer.fit(self.model, datamodule=self.train_datamodule)
+        self._init_train_trainer().fit(self.model, datamodule=self.train_datamodule)
 
     def test (self, weights_filename=None):
         # Generate torch test dataset
@@ -221,7 +256,7 @@ class ExperimentMLFC:
             self.source_test_data['target'].load()
         )
         loading_time = time.time() - s
-        self.rich_console.print(Table({'Train dataset': {
+        self.rich_console.print(Table({'Test dataset': {
             'input': {
                 'shape': test_dataset.x.shape,
                 'source': self.config.test[0].datasource.source
@@ -231,14 +266,14 @@ class ExperimentMLFC:
                 'source': self.config.test[1].datasource.source
             },
             'loading_time': loading_time
-        }}).table)
-        self.rich_console.print(Table({"Test dataset": {
+        }}, params_name='data type').table)
+        self.rich_console.print(Table({"Test dataset metrics": {
                 'input mean': {var.name: test_dataset.x[:,i,:,:].mean().item() for i, var in enumerate(self.test_var_list)},
                 'input std': {var.name: test_dataset.x[:,i,:,:].std().item() for i, var in enumerate(self.test_var_list)},
                 'target mean': {var.name: test_dataset.y[:,i,:,:].mean().item() for i, var in enumerate(self.test_var_list)},
                 'target std': {var.name: test_dataset.y[:,i,:,:].std().item() for i, var in enumerate(self.test_var_list)},
                 'rmse target-input': {var.name: np.sqrt(((test_dataset.y[:,i,:,:] - test_dataset.x[:,i,:,:])**2).mean().item()) for i, var in enumerate(self.test_var_list)}
-        }}).table)
+        }}, params_name='metric').table)
         # Normalize
         if not self.normalize:
             print(f"Load normalization data from {self.normdata_path}")
@@ -260,13 +295,15 @@ class ExperimentMLFC:
             # print(f"Last callback: {last_key}")
             # print(f"Available keys in callback {last_key}: {last_callback.keys()}")
             # dict_keys(['monitor', 'best_model_score', 'best_model_path', 'current_score', 'dirpath', 'best_k_models', 'kth_best_model_path', 'kth_value', 'last_model_path'])
-            weights_filename = last_callback["best_model_path"]
+            weights_file = Path(last_callback["best_model_path"])
+            if not weights_file.is_file(): # fallback to config weights filename
+                weights_file = Path(self.weights_path)
         # Load weights
-        print(f"Load weights from file: {weights_filename}")
-        weights = torch.load(weights_filename, map_location=self.device)
+        print(f"Load weights from file: {weights_file}")
+        weights = torch.load(weights_file, map_location=self.device)
         self.model.load_state_dict(weights['state_dict'])
         # Test
-        self.test_trainer.test(self.model, dataloaders=self.test_dataloader)
+        self._init_test_trainer().test(self.model, dataloaders=self.test_dataloader)
         # print(f"Available attributes in model: {dir(self.model)}")
         mean_norm_pred_d = {var.name: self.model.test_preds[:,i,:,:].mean().item() for i, var in enumerate(self.test_var_list)}
         std_norm_pred_d = {var.name: self.model.test_preds[:,i,:,:].std().item() for i, var in enumerate(self.test_var_list)}
@@ -278,8 +315,9 @@ class ExperimentMLFC:
         print(f"Rescaled prediction shape: {self.preds.shape}, mean: {mean_pred_d}, std: {std_pred_d}")
         rmse_pred_d = {var.name: np.sqrt(((test_dataset.y[:,i,:,:] - self.preds[:,i,:,:])**2).mean().item()) for i, var in enumerate(self.test_var_list)}
         print(f"RMSE target-prediction: {rmse_pred_d}")
+        self.save(self.preds, 'input')
 
-    def save (self, data: torch.Tensor, metadata_source: xr.Dataset, data_path: str = "data"):
+    def save (self, data: torch.Tensor, metadata_source: xr.Dataset):
         """Convert torch.Tensor to xarray.Dataset using metadata_source as ds metadata and save it to Zarr storage"""
         meta_ds = self.source_test_data[metadata_source].load()
         ds = xr.Dataset(
@@ -287,10 +325,10 @@ class ExperimentMLFC:
             coords={c: meta_ds.coords[c] for c in meta_ds.coords},
             attrs=meta_ds.attrs,
         )
-        store = self.config.work_path.joinpath(Path(data_path).with_suffix(".zarr"))
         compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
         encoding_zarr = (
             {v.name: {"compressors": compressor} for v in self.test_var_list}
         )
-        ds.to_zarr(store, encoding=encoding_zarr, mode='w', consolidated=False)
+        print(f"Save to {self.preds_store}")
+        ds.to_zarr(self.preds_store, encoding=encoding_zarr, mode='w', consolidated=self.consolidated_zarr)
         return ds
