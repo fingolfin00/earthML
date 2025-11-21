@@ -1,7 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Set
 # Local imports
 from .logging import Logger
 
@@ -33,6 +33,12 @@ class DataSelection:
 class DataSource:
     source: str
     data_selection: DataSelection
+
+@dataclass
+class Sample:
+    samples: dict | List[datetime] = field(default_factory=dict)
+    missed: Set[datetime] = field(default_factory=set)
+    extra: dict = None
 
 @dataclass
 class ExperimentDataset:

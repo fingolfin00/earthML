@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 # import dask
 import cf_xarray
 import xarray as xr
+import pandas as pd
 from pathlib import Path
 from functools import partial
 from datetime import datetime, timedelta
@@ -13,11 +14,12 @@ from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from zarr.codecs import BloscCodec
 # Local imports
-from .dataclasses import DataSelection
+from .dataclasses import DataSource, DataSelection, Sample
 
 class SourceRegistry:
     def __init__ (self, source_name: str):
         self.class_registry = {
+            "xarray-local": XarrayLocalSource,
             "juno-local": JunoLocalSource,
             "earthkit": EarthkitSource
         }
@@ -29,11 +31,26 @@ class SourceRegistry:
 class BaseSource (ABC):
     def __init__ (
         self,
-        data_selection: DataSelection
+        datasource: DataSource
     ):
-        self.data_selection = data_selection
-        self.file_paths = None
+        self.data_selection = datasource.data_selection
+        self.source_name = datasource.source
+        self.date_range = self._generate_date_range()
+        print(f"Date range: length {len(self.date_range)}, {self.date_range[0]} to {self.date_range[-1]}")
+        self.elements = Sample()
         self.ds = None
+
+    def _generate_date_range (self):
+        freq = pd.to_timedelta(self.data_selection.period.freq)
+        start = self.data_selection.period.start
+        end = self.data_selection.period.end
+        end += freq if freq < pd.to_timedelta('24h') else pd.to_timedelta(0)
+        return xr.date_range(
+            start=start,
+            end=end,
+            freq=freq,
+            inclusive='both'
+        )
 
     @abstractmethod
     def _get_data (self) -> xr.DataArray:
@@ -45,10 +62,11 @@ class BaseSource (ABC):
     def load (self) -> xr.DataArray:
         """Get data only if it hasn't been done yet"""
         if not self.ds:
-            print("Get data...")
+            print(f"Load data from {self.source_name}...")
             t0 = time.time()
             self.ds = self._get_data()
-            print(f"Dataset loading time: {time.time() - t0:.2f}s")
+            print(f" → loading time: {time.time() - t0:.2f}s")
+            print(f" → dataset shape: {self.ds.sizes}")
             # t0 = time.time()
             # self.ds = self._get_data_processpool(max_workers=36)
             # print(f"processpool time: {time.time() - t0:.2f}s")
@@ -60,7 +78,7 @@ class BaseSource (ABC):
         return self.ds
 
     def save (self, filepath: str | Path):
-        """Save dataset in Zarr format in filepathc"""
+        """Save dataset in Zarr format in filepath"""
         if not self.ds:
             self.ds = self.load()
         store = Path(filepath).with_suffix(".zarr")
@@ -71,19 +89,30 @@ class BaseSource (ABC):
         })
         self.ds.to_zarr(store, encoding=encoding_zarr, mode='w', consolidated=False)
 
-class LocalSource (BaseSource):
+class XarrayLocalSource (BaseSource):
     def __init__ (
         self,
-        data_selection: DataSelection,
+        datasource: DataSource,
+        root_path: str,
+        xarray_args: dict = None
+    ):
+        super().__init__ (datasource)
+        self.path = Path(root_path)
+        self.elements.samples = self.date_range
+        self.xarray_args = xarray_args
+
+    def _get_data (self) -> xr.DataArray:
+        self.ds = xr.open_dataset(self.path, **self.xarray_args)
+        return self.ds
+
+class MFXarrayLocalSource (BaseSource):
+    def __init__ (
+        self,
+        datasource: DataSource,
         root_path: str,
     ):
-        super().__init__ (data_selection)
+        super().__init__ (datasource)
         self.path = Path(root_path)
-        self.date_range = xr.date_range(
-            start=self.data_selection.period.start,
-            end=self.data_selection.period.end,
-            freq=self.data_selection.period.freq
-        )
 
     @staticmethod
     def _preprocess(ds: xr.Dataset, data: DataSelection, var_name: str = None) -> xr.DataArray:
@@ -161,19 +190,19 @@ class LocalSource (BaseSource):
         return da
 
     @abstractmethod
-    def _get_data_filenames (self) -> dict:
+    def _get_data_filenames (self) -> Sample:
         """
         Get the local data filenames for the given data selection. Implement in subclasses.
         """
         pass
 
-class JunoLocalSource (LocalSource):
+class JunoLocalSource (MFXarrayLocalSource):
     """
     Collect Juno local data for the given data selection.
     """
     def __init__ (
         self,
-        data_selection: DataSelection,
+        datasource: DataSource,
         root_path: str,
         engine: str,
         file_path_date_format: str,
@@ -184,9 +213,9 @@ class JunoLocalSource (LocalSource):
         minus_timedelta: timedelta = None,
         plus_timedelta: timedelta = None
     ):
-        super().__init__ (data_selection, root_path)
+        super().__init__ (datasource, root_path)
         self.engine = engine
-        self.file_paths = self._get_data_filenames(
+        self.elements = self._get_data_filenames(
             file_path_date_format,
             file_header,
             file_suffix,
@@ -205,16 +234,14 @@ class JunoLocalSource (LocalSource):
         lead_time: timedelta,
         minus_timedelta: timedelta = None,
         plus_timedelta: timedelta = None
-    ) -> dict:
+    ) -> Sample:
         """Get the data filenames for the given data selection."""
 
-        samples, missed_samples, plus_samples, minus_samples = {}, [], [], []
-
-        print(f"Date range length: {len(self.date_range)}")
+        s = Sample(extra={"plus_samples": [], "minus_samples": []})
         for date in self.date_range:
-            forward_date = date + lead_time
-            data_path = self.path.joinpath(date.strftime(file_path_date_format))
-            data_glob = f"{file_header}{date.strftime(file_date_format)}{forward_date.strftime(file_date_format)}{file_suffix}"
+            previous_date = date - lead_time
+            data_path = self.path.joinpath(previous_date.strftime(file_path_date_format))
+            data_glob = f"{file_header}{previous_date.strftime(file_date_format)}{date.strftime(file_date_format)}{file_suffix}"
 
             # files_exact = [p for p in data_path.glob(data_glob) if p.is_file()]
             files_exact = sorted(
@@ -230,7 +257,7 @@ class JunoLocalSource (LocalSource):
 
             # Try direct match first
             if files_exact:
-                samples[date] = files_exact[0]
+                s.samples[date] = files_exact[0]
                 continue
 
             # Fallback search
@@ -238,40 +265,36 @@ class JunoLocalSource (LocalSource):
             if minus_timedelta and plus_timedelta:
                 # print(minus_timedelta, plus_timedelta)
                 for delta, store in [
-                    (-minus_timedelta, minus_samples),
-                    (plus_timedelta, plus_samples),
+                    (-minus_timedelta, s.extra['minus_samples']),
+                    (plus_timedelta, s.extra['plus_samples']),
                 ]:
-                    test_date = forward_date + delta
-                    test_glob = f"{file_header}{date.strftime(file_date_format)}{test_date.strftime(file_date_format)}*"
+                    test_date = date + delta
+                    test_glob = f"{file_header}{previous_date.strftime(file_date_format)}{test_date.strftime(file_date_format)}*"
                     test_files = [p for p in data_path.glob(test_glob) if p.is_file()]
                     # print(f"New file {delta}: {test_files}")
                     if test_files:
-                        samples[date] = test_files[0]
-                        # samples.extend(test_files)
+                        s.samples[date] = test_files[0]
+                        # s.samples.extend(test_files)
                         store.append(date)
                         found = True
                         break
 
             if not found:
                 print(f"Missed sample: {date}")
-                missed_samples.append(date)
+                s.missed.add(date)
 
-        return {
-            "samples": samples,
-            "missed_samples": missed_samples,
-            "plus_samples": plus_samples,
-            "minus_samples": minus_samples,
-        }
+        return s
 
     def _get_data (self) -> xr.DataArray:
-        # years = [str(date.year) for date in xr.date_range(start=data.period.start, end=data.period.end, freq='YS')]
-        samples = list(self.file_paths['samples'].values())
-        print(f"Samples: {len(samples)}, minus: {len(self.file_paths['minus_samples'])}, plus: {len(self.file_paths['plus_samples'])}, missed: {len(self.file_paths['missed_samples'])}")
+        # years = [str(date.year) for date in xr.date_range(start=data.period.start, end=data.period.end, freq='YS', inclusive='left')]
+        # print(f"{self.source_name} missed dates: {self.elements.missed}")
+        samples = [s for date, s in self.elements.samples.items() if date not in self.elements.missed]
+        print(f"Samples: {len(samples)}, minus: {len(self.elements.extra['minus_samples'])}, plus: {len(self.elements.extra['plus_samples'])}, missed: {len(self.elements.missed)}")
         common_args = {
             "paths": samples,
             "combine": "by_coords",
             "coords": ["time"],
-            "compat": "override" if (self.file_paths['minus_samples'] or self.file_paths['plus_samples']) else "no_conflicts",
+            "compat": "override" if (self.elements.extra['minus_samples'] or self.elements.extra['plus_samples']) else "no_conflicts",
             "engine": self.engine,
             "indexpath": "",
             "chunks": "auto",  # {}, {"time": 1}
@@ -307,15 +330,18 @@ class EarthkitSource (BaseSource):
     """
     def __init__ (
         self,
-        data_selection: DataSelection,
+        datasource: DataSource,
         provider: str,
         dataset: str,
+        split_request: bool = False,
         request_extra_args: dict = None,
         xarray_args: dict = None
     ):
-        super().__init__ (data_selection)
+        super().__init__ (datasource)
+        self.elements.samples = self.date_range
         self.provider = provider
         self.dataset = dataset
+        self.split_request = split_request
         self.request_extra_args = request_extra_args
         self.xarray_args = xarray_args
 
@@ -336,9 +362,13 @@ class EarthkitSource (BaseSource):
 
     def _get_data (self):
         import earthkit.data as ekd
-        # samples = list(self.file_paths['samples'].values())
+        # samples = list(self.elements['samples'].values())
+        samples = [s for s in self.elements.samples if s not in self.elements.missed] # TODO refactor to BaseSource?
+        print(f"Samples: {len(samples)}, missed: {len(self.elements.missed)}")
         var_name_list = [v.name for v in self.data_selection.variable] if isinstance(self.data_selection.variable, list) else [self.data_selection.variable.name]
-        dates = f"{self.data_selection.period.start.strftime('%Y-%m-%d')}/{self.data_selection.period.end.strftime('%Y-%m-%d')}"
+        start = self.data_selection.period.start
+        end = self.data_selection.period.end
+        dates = f"{start.strftime('%Y-%m-%d')}/{end.strftime('%Y-%m-%d')}"
         time_freq = self._generate_hours(self.data_selection.period.freq)
         area = [
             self.data_selection.region.lat[0],
@@ -347,16 +377,57 @@ class EarthkitSource (BaseSource):
             self.data_selection.region.lon[1]
         ]
         print(f"Requesting {var_name_list} ({dates} {time_freq}) in region {area} from {self.provider}:{self.dataset}")
-        request_d = dict(
-            variable=var_name_list,
-            area=area,
-            date=dates,
-            time=time_freq,
-            **self.request_extra_args
-        )
-        # print(request_d)
-        return ekd.from_source(
-            self.provider,
-            self.dataset,
-            **request_d
-        ).to_xarray(**self.xarray_args)
+        print(f"Check request status: https://cds.climate.copernicus.eu/requests?tab=all")
+        years = xr.date_range(start=start, end=end, freq="YS")
+        # print(years)
+        if self.split_request and end - start > pd.to_timedelta('365 days'):
+            # Split into yearly chunks
+            if years[0] > start:
+                years = xr.date_range(start, start, periods=1).append(years)
+            if years[-1] <= end: # last date needs to be one day ahead to compensate for inclusive end
+                years = years.append(xr.date_range(end+timedelta(days=1), end+timedelta(days=1), periods=1))
+            # print(years)
+            datasets = []
+            for y1, y2 in zip(years[:-1], years[1:]):
+                y2 = y2 - timedelta(days=1)  # inclusive end
+                print(f" → Fetching chunk: {y1:%Y-%m-%d} to {y2:%Y-%m-%d}")
+                request_d = dict(
+                    variable=var_name_list,
+                    area=area,
+                    date=f"{y1:%Y-%m-%d}/{y2:%Y-%m-%d}",
+                    time=time_freq,
+                    **self.request_extra_args,
+                )
+                ds_chunk = ekd.from_source(self.provider, self.dataset, **request_d).to_xarray(**self.xarray_args)
+                time_dim = ds_chunk.cf['time'].name
+                datasets.append(ds_chunk)
+            # for i, ds in enumerate(datasets):
+            #     print(f"\n==== Dataset {i}: VARIABLES ====")
+            #     for v in ds.variables:
+            #         print(v, ds[v].dims, ds[v].shape)
+            # print(time_dim)
+            # Combine all datasets
+            ds_all = xr.concat(
+                datasets,
+                dim=time_dim,
+                # coords='minimal',  # Only use coords that vary along concat dimension
+                # compat='override',  # Override minor inconsistencies
+                combine_attrs='override'  # Handle attribute conflicts
+            )
+        else:
+            request_d = dict(
+                variable=var_name_list,
+                area=area,
+                date=dates,
+                time=time_freq,
+                **self.request_extra_args,
+            )
+            ds_all = ekd.from_source(self.provider, self.dataset, **request_d).to_xarray(**self.xarray_args)
+            time_dim = ds_all.cf['time'].name
+        # for v in ds_all.variables:
+        #     print(v, ds_all[v].dims, ds_all[v].shape)
+        # Drop missing samples
+        ds_all = ds_all.drop_sel({time_dim: list(self.elements.missed)})
+        # for v in ds_all.variables:
+        #     print(v, ds_all[v].dims, ds_all[v].shape)
+        return ds_all
