@@ -17,6 +17,7 @@ if __name__ == "__main__":
     #         log_level="info"
     # ).logger
     t2m = Variable(name="t2m", unit="K")
+    t2m_era5 = Variable(name="2t", unit="K")
     msl = Variable(name="msl", unit="Pa")
     u10 = Variable(name="u10", unit="m/s")
     v10 = Variable(name="v10", unit="m/s")
@@ -37,8 +38,11 @@ if __name__ == "__main__":
 
     # var = [t2m, msl, u10]
     var = t2m
+    var_era5 = t2m_era5
     datasel_train = DataSelection(variable=var, region=conus, period=train_period)
+    datasel_train_era5 = DataSelection(variable=var_era5, region=conus, period=train_period)
     datasel_test = DataSelection(variable=var, region=conus, period=test_period)
+    datasel_test_era5 = DataSelection(variable=var_era5, region=conus, period=test_period)
 
     source_params_junolocal_input = {
         "root_path": "/data/inputs/METOCEAN/rolling/model/atmos/ECMWF/IFS_010/1.0forecast/1h/grib/",
@@ -65,6 +69,7 @@ if __name__ == "__main__":
     source_params_era5_target = {
         "provider": "cds",
         "dataset": "reanalysis-era5-single-levels",
+        "split_request": True,
         "request_extra_args": dict(
             product_type="reanalysis",
             grid=[.1, .1],
@@ -72,7 +77,7 @@ if __name__ == "__main__":
         ),
         "xarray_args": dict(
             time_dim_mode="valid_time",
-            chunks={"valid_time": 10},
+            chunks={"valid_time": 1},
             add_earthkit_attrs=False,
             # backend_kwargs={
             #     "allow_holes": True,
@@ -89,10 +94,10 @@ if __name__ == "__main__":
     )
     dataset_train_target = ExperimentDataset(
         role='target',
-        datasource=DataSource(source="earthkit", data_selection=datasel_train),
-        source_params=source_params_era5_target,
-        # datasource=DataSource(source="juno-local", data_selection=datasel_train),
-        # source_params=source_params_junolocal_target
+        # datasource=DataSource(source="earthkit", data_selection=datasel_train_era5),
+        # source_params=source_params_era5_target,
+        datasource=DataSource(source="juno-local", data_selection=datasel_train),
+        source_params=source_params_junolocal_target
     )
     dataset_test_input = ExperimentDataset(
         role='input',
@@ -101,17 +106,18 @@ if __name__ == "__main__":
     )
     dataset_test_target = ExperimentDataset(
         role='target',
-        datasource=DataSource(source="earthkit", data_selection=datasel_test),
-        source_params=source_params_era5_target,
-        # datasource=DataSource(source="juno-local", data_selection=datasel_test),
-        # source_params=source_params_junolocal_target
+        # datasource=DataSource(source="earthkit", data_selection=datasel_test_era5),
+        # source_params=source_params_era5_target,
+        datasource=DataSource(source="juno-local", data_selection=datasel_test),
+        source_params=source_params_junolocal_target
     )
-    exp_root_folder = "/work/cmcc/jd19424/test-ML/experiments_earthML/"
+    # exp_root_folder = "/work/cmcc/jd19424/test-ML/experiments_earthML/"
+    exp_root_folder = "/data/cmcc/jd19424/ML/experiments_earthML/"
     exp_train_var =  ''.join([var.name for var in datasel_train.variable] if isinstance(datasel_train.variable, list) else [datasel_train.variable.name])
     exp_test_var =  ''.join([var.name for var in datasel_test.variable] if isinstance(datasel_test.variable, list) else [datasel_test.variable.name])
     exp_name = f"exp_{exp_train_var}-{datasel_train.region.name}-{datasel_train.period.start.strftime('%Y%m%d')}-{datasel_train.period.end.strftime('%Y%m%d')}" \
                f"_{exp_test_var}-{datasel_test.region.name}-{datasel_test.period.start.strftime('%Y%m%d')}-{datasel_test.period.end.strftime('%Y%m%d')}"
-    exp_suffix = "_32bs_era5"
+    exp_suffix = "_32bs_juno"
     exp_path = Path(exp_root_folder).joinpath(exp_name+exp_suffix)
     print(f"Experiment path: {exp_path}")
     experiment_cfg = ExperimentConfig(
@@ -139,4 +145,3 @@ if __name__ == "__main__":
     experiment = ExperimentMLFC(experiment_cfg)
     experiment.train()
     experiment.test()
-    experiment.save(experiment.preds, 'input', 'test_preds')
