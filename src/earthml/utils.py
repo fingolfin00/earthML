@@ -6,6 +6,7 @@ import joblib
 import cf_xarray
 import os, psutil, multiprocessing, tempfile, logging
 from dask.distributed import Client, LocalCluster
+import numpy as np
 import torch
 from torch.utils.data import random_split, Dataset, DataLoader, SubsetRandomSampler
 import lightning as L
@@ -144,6 +145,7 @@ class EpochRandomSplitDataModule (L.LightningDataModule):
             # re-split at every epoch
             self._resplit()
 
+# import xesmf as xe
 class XarrayDataset (Dataset):
     def __init__(self, input_ds, target_ds, transform=None, transform_args=None):
         """
@@ -157,12 +159,61 @@ class XarrayDataset (Dataset):
         self.transform = transform
         self.transform_args = transform_args or {}
 
+        # print("Dataset before regrid")
+        # for ds in [input_ds, target_ds]:
+        #     for v in ds.variables:
+        #         print(v, ds[v].dims, ds[v].shape)
+        # Ensure identical spatial grid
+        self.target_ds = self.regrid(self.input_ds, self.target_ds)
+        # for ds in [input_ds, target_ds]:
+        #     for v in ds.variables:
+        #         print(v, ds[v].dims, ds[v].shape)
+        # print("Dataset after regrid")
+
         self.time_dim = self.input_ds.cf['time'].name
         self.time = self.input_ds[self.time_dim].values
 
         self.x = torch.tensor(self.input_ds.to_array().values, dtype=torch.float32).permute(1, 0, 2, 3)
         self.y = torch.tensor(self.target_ds.to_array().values, dtype=torch.float32).permute(1, 0, 2, 3)
+        assert len(self.x) == len(self.y), f"Mismatched dataset length: x={len(self.x)}, y={len(self.y)}"
 
+    @staticmethod
+    def regrid(input_ds, target_ds):
+        """Ensure target has same lat/lon dims & coords as input, regrid if needed."""
+        # Get dimension names from CF
+        lat_in = input_ds.cf['latitude'].name
+        lon_in = input_ds.cf['longitude'].name
+        lat_tg = target_ds.cf['latitude'].name
+        lon_tg = target_ds.cf['longitude'].name
+
+        same_dims = (lat_in == lat_tg) and (lon_in == lon_tg)
+        same_shape = (input_ds[lat_in].shape == target_ds[lat_tg].shape) and \
+                     (input_ds[lon_in].shape == target_ds[lon_tg].shape)
+        same_coords = (
+            np.array_equal(input_ds[lat_in].values, target_ds[lat_tg].values) and
+            np.array_equal(input_ds[lon_in].values, target_ds[lon_tg].values)
+        )
+        if same_dims and same_shape and same_coords:
+            return target_ds  # perfect match, nothing to do
+        # Build regridder once
+        print("Regridding...")
+        # TODO need to compile esmf and esmpy from source https://github.com/esmf-org/esmf (not available in pip)
+        # regridder = xe.Regridder(
+        #     target_ds,
+        #     input_ds,
+        #     method="bilinear",
+        #     periodic=False,
+        #     reuse_weights=False,
+        # )
+        # return regridder(target_ds)
+        # Fallback to interpolation
+        return target_ds.interp(
+            {
+                lat_tg: input_ds[lat_in],
+                lon_tg: input_ds[lon_in],
+            },
+            method="nearest"
+        )
     def __len__ (self):
         return len(self.x)
 
