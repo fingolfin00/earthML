@@ -1,3 +1,8 @@
+import certifi, os
+# Ensure SSL and Requests use certifi CA bundle
+os.environ["SSL_CERT_FILE"] = certifi.where()
+os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
+
 import time
 from rich import print
 from rich.pretty import pprint
@@ -13,6 +18,7 @@ from datetime import datetime, timedelta
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from zarr.codecs import BloscCodec
+import earthkit.data as ekd
 # Local imports
 from .dataclasses import DataSource, DataSelection, Sample
 
@@ -361,7 +367,6 @@ class EarthkitSource (BaseSource):
         return times
 
     def _get_data (self):
-        import earthkit.data as ekd
         # samples = list(self.elements['samples'].values())
         samples = [s for s in self.elements.samples if s not in self.elements.missed] # TODO refactor to BaseSource?
         print(f"Samples: {len(samples)}, missed: {len(self.elements.missed)}")
