@@ -409,7 +409,8 @@ class JunoLocalSource (MFXarrayLocalSource):
             "compat": "override" if (self.elements.extra['minus_samples'] or self.elements.extra['plus_samples']) else "no_conflicts",
             "engine": self.engine,
             "indexpath": "",
-            "chunks": "auto",  # {}, {"time": 1}
+            "chunks": {"time": -1},
+            # "chunks": "auto",  # {}, {"time": 1}
             "parallel": True,
             "decode_timedelta": True,
             "backend_kwargs": {},
