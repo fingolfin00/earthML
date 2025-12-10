@@ -200,9 +200,11 @@ class MFXarrayLocalSource (BaseSource):
         self,
         datasource: DataSource,
         root_path: str,
+        concat_dim: str = None,
     ):
         super().__init__ (datasource)
         self.path = Path(root_path)
+        self.concat_dim = concat_dim
 
     def _preprocess(
         self,
@@ -309,9 +311,10 @@ class JunoLocalSource (MFXarrayLocalSource):
         file_date_format: str,
         lead_time: timedelta,
         minus_timedelta: timedelta = None,
-        plus_timedelta: timedelta = None
+        plus_timedelta: timedelta = None,
+        concat_dim: str = None,
     ):
-        super().__init__ (datasource, root_path)
+        super().__init__ (datasource, root_path, concat_dim)
         self.engine = engine
         self.elements = self._get_data_filenames(
             file_path_date_format,
@@ -390,8 +393,10 @@ class JunoLocalSource (MFXarrayLocalSource):
         print(f"Samples: {len(samples)}, minus: {len(self.elements.extra['minus_samples'])}, plus: {len(self.elements.extra['plus_samples'])}, missed: {len(self.elements.missed)}")
         common_args = {
             "paths": samples,
-            "combine": "by_coords",
-            "coords": ["time"],
+            "combine": "nested" if self.concat_dim else "by_coords",
+            "concat_dim": self.concat_dim,
+            "coords": "different", # ["time"],
+            # if minus/plus_samples time coordinate stepping might be irregular so override
             "compat": "override" if (self.elements.extra['minus_samples'] or self.elements.extra['plus_samples']) else "no_conflicts",
             "engine": self.engine,
             "indexpath": "",
