@@ -4,23 +4,28 @@ os.environ["SSL_CERT_FILE"] = certifi.where()
 os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
 
 import time
+# from copy import deepcopy
 from rich import print
-from rich.pretty import pprint
-from rich.table import Table
+# from rich.pretty import pprint
+# from rich.table import Table
 from abc import ABC, abstractmethod
-# import dask
+import dask
+from dask.distributed import wait
 import cf_xarray
 import xarray as xr
 import pandas as pd
 from pathlib import Path
 from functools import partial
 from datetime import datetime, timedelta
-from concurrent.futures import ProcessPoolExecutor
+from dateutil.relativedelta import relativedelta
+# from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from zarr.codecs import BloscCodec
 import earthkit.data as ekd
 # Local imports
 from .dataclasses import DataSource, DataSelection, Sample
+from .utils import generate_date_range, _guess_dim_name, get_lonlat_coords, get_ds_resolution, \
+    generate_hours, subset_ds, regrid_to_rectilinear, print_ds_info
 
 class SourceRegistry:
     def __init__ (self, source_name: str):
@@ -41,44 +46,31 @@ class BaseSource (ABC):
     ):
         self.data_selection = datasource.data_selection
         self.source_name = datasource.source
-        self.date_range = self._generate_date_range()
+        self.date_range = generate_date_range(self.data_selection.period)
         print(f"Date range: length {len(self.date_range)}, {self.date_range[0]} to {self.date_range[-1]}")
+        # print(self.date_range)
         self.elements = Sample()
         self.ds = None
 
-    def _generate_date_range (self):
-        freq = pd.to_timedelta(self.data_selection.period.freq)
-        start = self.data_selection.period.start
-        end = self.data_selection.period.end
-        end += freq if freq < pd.to_timedelta('24h') else pd.to_timedelta(0)
-        return xr.date_range(
-            start=start,
-            end=end,
-            freq=freq,
-            inclusive='both'
-        )
 
     @abstractmethod
-    def _get_data (self) -> xr.DataArray:
+    def _get_data (self) -> xr.Dataset:
         """
         Get data for the given data selection. Implement in subclasses.
         """
         pass
 
-    def load (self) -> xr.DataArray:
-        """Get data only if it hasn't been done yet"""
-        if not self.ds:
+    def load(self) -> xr.Dataset:
+        """Get data only if it hasn't loaded yet"""
+        if self.ds is None:
             print(f"Load data from {self.source_name}...")
             t0 = time.time()
             self.ds = self._get_data()
             print(f" → loading time: {time.time() - t0:.2f}s")
             print(f" → dataset shape: {self.ds.sizes}")
-            # t0 = time.time()
-            # self.ds = self._get_data_processpool(max_workers=36)
-            # print(f"processpool time: {time.time() - t0:.2f}s")
         return self.ds
 
-    def reload (self) -> xr.DataArray:
+    def reload (self) -> xr.Dataset:
         """Force data reload"""
         self.ds = self._get_data()
         return self.ds
@@ -99,15 +91,15 @@ class XarrayLocalSource (BaseSource):
     def __init__ (
         self,
         datasource: DataSource,
-        root_path: str,
+        root_path: str | Path,
         xarray_args: dict = None
     ):
         super().__init__ (datasource)
         self.path = Path(root_path)
         self.elements.samples = self.date_range
-        self.xarray_args = xarray_args
+        self.xarray_args = {} if xarray_args is None else xarray_args
 
-    def _get_data (self) -> xr.DataArray:
+    def _get_data (self) -> xr.Dataset:
         self.ds = xr.open_dataset(self.path, **self.xarray_args)
         return self.ds
 
@@ -120,8 +112,12 @@ class MFXarrayLocalSource (BaseSource):
         super().__init__ (datasource)
         self.path = Path(root_path)
 
-    @staticmethod
-    def _preprocess(ds: xr.Dataset, data: DataSelection, var_name: str = None) -> xr.DataArray:
+    def _preprocess(
+        self,
+        ds: xr.Dataset,
+        data: DataSelection,
+        var_name: str | None = None,
+    ) -> xr.Dataset:
         """
         Preprocess an xarray.Dataset according to CF conventions and a DataSelection.
 
@@ -133,8 +129,7 @@ class MFXarrayLocalSource (BaseSource):
         - Selects vertical level(s) if available.
         - Returns a CF-aware DataArray ready for ML processing.
         """
-        import cf_xarray  # ensures .cf accessor is registered on Dask workers
-        import numpy as np
+        import cf_xarray  # ensure .cf accessor on workers
         import xarray as xr
 
         def _normalize_bounds(bounds):
@@ -152,7 +147,12 @@ class MFXarrayLocalSource (BaseSource):
         if time_dim not in ds.dims:
             ds = ds.expand_dims(**{time_dim: [ds[time_dim].values]})
             ds = ds.assign_coords(
-                **{time_dim: ds[time_dim].assign_attrs(standard_name="time", axis="T")}
+                **{
+                    time_dim: ds[time_dim].assign_attrs(
+                        standard_name="time",
+                        axis="T",
+                    )
+                }
             )
         # Vertical level selection
         level_sel_d = {}
@@ -259,7 +259,7 @@ class JunoLocalSource (MFXarrayLocalSource):
             if len(files_exact) > 1:
                 print(f"{date}: {len(files_exact)} matches, keeping {files_exact[:1]}")
                 files_exact = files_exact[:1]  # keep latest only, still a list
-            # print(files_exact)
+            # print(f"{date}, path:", files_exact)
 
             # Try direct match first
             if files_exact:
@@ -291,7 +291,7 @@ class JunoLocalSource (MFXarrayLocalSource):
 
         return s
 
-    def _get_data (self) -> xr.DataArray:
+    def _get_data (self) -> xr.Dataset:
         # years = [str(date.year) for date in xr.date_range(start=data.period.start, end=data.period.end, freq='YS', inclusive='left')]
         # print(f"{self.source_name} missed dates: {self.elements.missed}")
         samples = [s for date, s in self.elements.samples.items() if date not in self.elements.missed]
@@ -351,21 +351,6 @@ class EarthkitSource (BaseSource):
         self.request_extra_args = request_extra_args
         self.xarray_args = xarray_args
 
-    @staticmethod
-    def _generate_hours (freq_str):
-        value = int(freq_str[:-1])
-        if freq_str[-1] != 'h':
-            raise ValueError("Only 'h' (hours) frequency supported")
-
-        times = []
-        current = datetime.strptime("00:00", "%H:%M")
-        while current.hour < 24:
-            times.append(current.strftime("%H:%M"))
-            current += timedelta(hours=value)
-            if current.hour == 0:  # wrapped past midnight
-                break
-        return times
-
     def _get_data (self):
         # samples = list(self.elements['samples'].values())
         samples = [s for s in self.elements.samples if s not in self.elements.missed] # TODO refactor to BaseSource?
@@ -374,7 +359,6 @@ class EarthkitSource (BaseSource):
         start = self.data_selection.period.start
         end = self.data_selection.period.end
         dates = f"{start.strftime('%Y-%m-%d')}/{end.strftime('%Y-%m-%d')}"
-        time_freq = self._generate_hours(self.data_selection.period.freq)
         area = [
             self.data_selection.region.lat[0],
             self.data_selection.region.lon[0],
@@ -384,6 +368,8 @@ class EarthkitSource (BaseSource):
         print(f"Requesting {var_name_list} ({dates} {time_freq}) in region {area} from {self.provider}:{self.dataset}")
         print(f"Check request status: https://cds.climate.copernicus.eu/requests?tab=all")
         years = xr.date_range(start=start, end=end, freq="YS")
+        print(f"Requesting {var_name_list} ({dates}, {self.data_selection.period.freq}) in region {area} from {self.provider}:{self.dataset}")
+        print(f"Check request status: https://cds.climate.copernicus.eu/requests?tab=all")
         # print(years)
         if self.split_request and end - start > pd.to_timedelta('365 days'):
             # Split into yearly chunks
