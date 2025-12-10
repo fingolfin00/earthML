@@ -546,6 +546,7 @@ class EarthkitSource (BaseSource):
                 )
                 # print(request_d)
                 ds_chunk = ekd.from_source(self.provider, self.dataset, **request_d).to_xarray(**self.xarray_args)
+                # print(ds_chunk)
                 xarray_concat_dim = ds_chunk.cf['time'].name if not self.xarray_concat_dim else self.xarray_concat_dim
                 datasets.append(ds_chunk)
             # Combine all datasets
@@ -587,7 +588,6 @@ class EarthkitSource (BaseSource):
         if self.select_area_after_request:
             ds_all = subset_ds(self.data_selection, ds_all)
 
-        print(ds_all)
         # Grid resolution
         lat_res, lon_res = get_ds_resolution(ds_all)
         print(f"Native resolutions: lat {lat_res:.2f}, lon {lon_res:.2f}")
@@ -602,5 +602,4 @@ class EarthkitSource (BaseSource):
             )
             lat_res_regrid, lon_res_regrid = get_ds_resolution(ds_all)
             print(f"Target rectilinear resolutions: lat {lat_res_regrid:.2f}, lon {lon_res_regrid:.2f}")
-
         return ds_all
