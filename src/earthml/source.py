@@ -213,33 +213,39 @@ class MFXarrayLocalSource (BaseSource):
         var_name: str | None = None,
     ) -> xr.Dataset:
         """
-        Preprocess an xarray.Dataset according to CF conventions and a DataSelection.
+        Lightweight per-file preprocess for open_mfdataset.
 
-        Features:
-        - Ensures 'time' dimension exists and has proper attributes.
-        - Selects spatial region (lon/lat) robustly:
-            • Handles both 0–360 and -180–180 longitude systems.
-            • Supports crossing the Greenwich meridian (e.g., lon=[350, 10]).
-        - Selects vertical level(s) if available.
-        - Returns a CF-aware DataArray ready for ML processing.
+        Responsibilities:
+        - optionally select a single variable
+        - ensure a time-like dimension exists (for concatenation)
+        - optionally select a specific leadtime if present
         """
         import cf_xarray  # ensure .cf accessor on workers
         import xarray as xr
+        import pandas as pd
 
-        def _normalize_bounds(bounds):
-            """Safely slice bounds"""
-            if bounds is None:
-                return slice(None)
-            if isinstance(bounds, (int, float)):
-                return bounds
-            return slice(*bounds)
+        # --- Leadtime handling -----------------------------------------
+        # Use first variable's leadtime if `data.variable` is a list
+        var0 = data.variable[0] if isinstance(data.variable, list) else data.variable
+        leadtime = var0.leadtime
 
-        time_dim = ds.cf["time"].name
-        lon_dim = ds.cf["longitude"].name
-        lat_dim = ds.cf["latitude"].name
-        # Handle zero-time-dimension dataset
-        if time_dim not in ds.dims:
-            ds = ds.expand_dims(**{time_dim: [ds[time_dim].values]})
+        # --- Guess time-like dimension name -----------------------------
+        # If we have a leadtime axis, we often want to use that name directly
+        if leadtime is not None:
+            # e.g. leadtime.name == "leadtime"
+            time_dim = _guess_dim_name(ds, leadtime.name)
+        else:
+            # Fall back to CF time / common time dim names
+            time_dim = _guess_dim_name(ds, "time", ["valid_time", "time_counter"])
+
+        if not time_dim:
+            raise ValueError("Could not find a time dimension or CF time axis")
+
+        # --- Ensure this dimension exists in ds.dims --------------------
+        # Some files may have a scalar time coordinate: make it a length-1 dimension
+        if time_dim not in ds.dims and time_dim in ds.coords:
+            coord = ds[time_dim]
+            ds = ds.expand_dims({time_dim: [coord.values]})
             ds = ds.assign_coords(
                 **{
                     time_dim: ds[time_dim].assign_attrs(
@@ -248,46 +254,38 @@ class MFXarrayLocalSource (BaseSource):
                     )
                 }
             )
-        # Vertical level selection
-        level_sel_d = {}
-        levhpa = getattr(data.variable, "levhpa", None)
-        level_dim = None
-        if 'vertical' in ds.cf.coordinates.keys() and levhpa is not None:
-            level_dim = ds.cf["vertical"].name
-            level_sel_d[level_dim] = _normalize_bounds(levhpa)
-        # Spatial selection (lon/lat)
-        lon = np.array(data.region.lon)
-        lat = np.array(data.region.lat)
-        lon_vals = ds[lon_dim].values
-        # Normalize longitude convention
-        if lon_vals.min() >= 0 and lon.min() < 0:
-            # Dataset uses 0–360, region is -180–180
-            lon = (lon + 360) % 360
-        elif lon_vals.min() < 0 and lon.max() > 180:
-            # Dataset uses -180–180, region is 0–360
-            lon = ((lon + 180) % 360) - 180
-        # Build selection dict
-        selection_d = {
-            lon_dim: _normalize_bounds(lon),
-            lat_dim: _normalize_bounds(lat),
-        } | level_sel_d
-        # Select data
-        if isinstance(data.variable, list):
+
+        lon_coord, lat_coord = get_lonlat_coords(ds)
+        # print("Lon coord:", lon_coord, ", lat coord:", lat_coord)
+        # if ds[lon_coord].ndim > 1:
+        #     print(ds[lon_coord].values)
+
+        # --- Select variable --------------------------------------------
+        if var_name is not None:
             da = ds[var_name]
         else:
-            da = ds[data.variable.name]
-        # Handle longitude wrap-around (e.g., 350°–10° or -10°-40°)
-        if lon[0] > lon[1]:
-            da1 = da.sel(**{lon_dim: slice(lon[0], 360)})
-            da2 = da.sel(**{lon_dim: slice(0, lon[1])})
-            da = xr.concat([da1, da2], dim=lon_dim)
-            # Apply remaining selections (lat, level, etc.)
-            selection_d.pop(lon_dim, None)
-            if selection_d:
-                da = da.sel(**selection_d)
-        else:
-            da = da.sel(**selection_d)
-        return da
+            if isinstance(data.variable, list):
+                da = ds[var0.name]  # use first variable's name
+            else:
+                da = ds[var0.name]
+
+        # --- Select leadtime if present ---------------------------------
+        if leadtime is not None:
+            # Build target timedelta from value + unit (e.g. "3 days", "12 hours")
+            td = pd.to_timedelta(f"{leadtime.value} {leadtime.unit}")
+
+            # Cast to same dtype as coord (usually timedelta64[ns])
+            coord_dtype = ds[leadtime.name].dtype
+            target = td.to_numpy().astype(coord_dtype)
+
+            da = da.sel({leadtime.name: target}, method="nearest")
+
+        # We need to return a xr.Dataset otherwise xr.open_mfdataset with combine="nested"
+        # returns a DataArray, which would break consistency further ahead
+        return xr.Dataset(
+            {da.name or var_name or var0.name: da},
+            {lon_coord: ds[lon_coord], lat_coord: ds[lat_coord]} if lon_coord and lat_coord else None
+        )
 
     @abstractmethod
     def _get_data_filenames (self) -> Sample:
