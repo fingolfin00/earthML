@@ -65,6 +65,7 @@ class ExperimentMLFC:
         self.model = self.Net(
             learning_rate=self.config.learning_rate,
             loss=self.config.loss,
+            loss_params=self.config.loss_params,
             norm=self.config.norm_strategy,
             supervised=self.config.supervised,
             **self.config.extra_net_args,
