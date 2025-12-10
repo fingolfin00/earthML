@@ -408,7 +408,6 @@ class JunoLocalSource (MFXarrayLocalSource):
             # if minus/plus_samples time coordinate stepping might be irregular so override
             "compat": "override" if (self.elements.extra['minus_samples'] or self.elements.extra['plus_samples']) else "no_conflicts",
             "engine": self.engine,
-            "indexpath": "",
             "chunks": {"time": -1},
             # "chunks": "auto",  # {}, {"time": 1}
             "parallel": True,
@@ -423,7 +422,8 @@ class JunoLocalSource (MFXarrayLocalSource):
             for var in self.data_selection.variable:
                 if self.engine == "cfgrib":
                     common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": var.name}} # not currently possible to filter with a list of keys (see https://github.com/ecmwf/cfgrib/issues/138)
-                # TODO add support for other engines
+                    common_args["indexpath"] = ""
+                # untested support for netcdf4
                 common_args["preprocess"] = partial(self._preprocess, data=self.data_selection, var_name=var.name)
                 var_ds_list.append(xr.open_mfdataset(**common_args))
             return xr.merge(
@@ -434,7 +434,8 @@ class JunoLocalSource (MFXarrayLocalSource):
         else:
             if self.engine == "cfgrib":
                 common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": self.data_selection.variable.name}}
-            # TODO add support for other engines
+                common_args["indexpath"] = ""
+            # Tested support for netcdf4
             return xr.open_mfdataset(**common_args)
 
         # Regrid if required
