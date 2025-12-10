@@ -469,6 +469,9 @@ class EarthkitSource (BaseSource):
         select_area_after_request: bool = False,
         request_type: bool = "subseasonal",
         request_extra_args: dict = None,
+        xarray_args: dict = None,
+        xarray_concat_dim: str = None,
+        xarray_concat_extra_args: dict = None,
         regrid_resolution=None,  # float or (lat_res, lon_res) in degrees
         regrid_vars=None,
     ):
@@ -481,6 +484,8 @@ class EarthkitSource (BaseSource):
         self.request_type = request_type
         self.request_extra_args = request_extra_args
         self.xarray_args = xarray_args
+        self.xarray_concat_dim = xarray_concat_dim
+        self.xarray_concat_extra_args = xarray_concat_extra_args
         self.regrid_resolution = regrid_resolution
         self.regrid_vars = regrid_vars
 
@@ -539,15 +544,13 @@ class EarthkitSource (BaseSource):
                 )
                 # print(request_d)
                 ds_chunk = ekd.from_source(self.provider, self.dataset, **request_d).to_xarray(**self.xarray_args)
-                time_dim = ds_chunk.cf['time'].name
+                xarray_concat_dim = ds_chunk.cf['time'].name if not self.xarray_concat_dim else self.xarray_concat_dim
                 datasets.append(ds_chunk)
             # Combine all datasets
             ds_all = xr.concat(
                 datasets,
-                dim=time_dim,
-                # coords='minimal',  # Only use coords that vary along concat dimension
-                # compat='override',  # Override minor inconsistencies
-                combine_attrs='override'  # Handle attribute conflicts
+                dim=xarray_concat_dim,
+                **self.xarray_concat_extra_args,
             )
         else:
             if self.request_type == "subseasonal":
@@ -570,9 +573,8 @@ class EarthkitSource (BaseSource):
                 **self.request_extra_args,
             )
             ds_all = ekd.from_source(self.provider, self.dataset, **request_d).to_xarray(**self.xarray_args)
-            time_dim = ds_all.cf['time'].name
-        # for v in ds_all.variables:
-        #     print(v, ds_all[v].dims, ds_all[v].shape)
+            xarray_concat_dim = ds_all.cf['time'].name if not self.xarray_concat_dim else self.xarray_concat_dim
+
         # Drop missing samples
         if self.elements.missed:
             ds_all = ds_all.drop_sel({xarray_concat_dim: list(self.elements.missed)})
