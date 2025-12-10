@@ -19,11 +19,16 @@ class Leadtime:
 
 @dataclass
 class Variable:
-    name: str
-    unit: str
-    levhpa: int = None # level in hPa
-    levm: int = None   # level in meter
-    leadtime: Leadtime = None
+    name:     str
+    longname: Optional[str] = None
+    unit:     Optional[str] = None
+    levhpa:   Optional[int] = None # level in hPa
+    levm:     Optional[int] = None # level in meter
+    leadtime: Optional[Leadtime] = None
+
+    def __post_init__(self):
+        if self.longname is None:
+            self.longname = self.name
 
 @dataclass
 class TimeRange:
