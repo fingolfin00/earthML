@@ -312,6 +312,8 @@ class JunoLocalSource (MFXarrayLocalSource):
         minus_timedelta: timedelta = None,
         plus_timedelta: timedelta = None,
         concat_dim: str = None,
+        regrid_resolution=None,  # float or (lat_res, lon_res) in degrees
+        regrid_vars=None,
     ):
         super().__init__ (datasource, root_path, concat_dim)
         self.engine = engine
@@ -325,6 +327,8 @@ class JunoLocalSource (MFXarrayLocalSource):
             minus_timedelta,
             plus_timedelta
         )
+        self.regrid_resolution = regrid_resolution
+        self.regrid_vars = regrid_vars
 
     def _get_data_filenames(
         self,
@@ -432,6 +436,21 @@ class JunoLocalSource (MFXarrayLocalSource):
             # TODO add support for other engines
             return xr.open_mfdataset(**common_args)
 
+        # Regrid if required
+        if self.regrid_resolution is not None:
+            print(f"Regridding to rectilinear grid with resolution {self.regrid_resolution}")
+            ds = regrid_to_rectilinear(
+                src_ds=ds,
+                region=self.data_selection.region,
+                resolution=self.regrid_resolution,
+                vars_to_regrid=self.regrid_vars,
+            )
+
+            lat_res_regrid, lon_res_regrid = get_ds_resolution(ds)
+            print(f"Target rectilinear resolutions: lat {lat_res_regrid:.2f}, lon {lon_res_regrid:.2f}")
+
+        return ds
+
 class EarthkitSource (BaseSource):
     """
     Collect data using ECMWF new earthkit library.
@@ -443,7 +462,8 @@ class EarthkitSource (BaseSource):
         dataset: str,
         split_request: bool = False,
         request_extra_args: dict = None,
-        xarray_args: dict = None
+        regrid_resolution=None,  # float or (lat_res, lon_res) in degrees
+        regrid_vars=None,
     ):
         super().__init__ (datasource)
         self.elements.samples = self.date_range
@@ -452,6 +472,8 @@ class EarthkitSource (BaseSource):
         self.split_request = split_request
         self.request_extra_args = request_extra_args
         self.xarray_args = xarray_args
+        self.regrid_resolution = regrid_resolution
+        self.regrid_vars = regrid_vars
 
     def _get_data (self):
         # samples = list(self.elements['samples'].values())
@@ -523,4 +545,20 @@ class EarthkitSource (BaseSource):
         ds_all = ds_all.drop_sel({time_dim: list(self.elements.missed)})
         # for v in ds_all.variables:
         #     print(v, ds_all[v].dims, ds_all[v].shape)
+
+        # Grid resolution
+        lat_res, lon_res = get_ds_resolution(ds_all)
+        print(f"Native resolutions: lat {lat_res:.2f}, lon {lon_res:.2f}")
+        # Regrid if required
+        if self.regrid_resolution is not None:
+            print(f"Regridding to rectilinear grid with resolution {self.regrid_resolution}")
+            ds_all = regrid_to_rectilinear(
+                src_ds=ds_all,
+                region=self.data_selection.region,
+                resolution=self.regrid_resolution,
+                vars_to_regrid=self.regrid_vars,
+            )
+            lat_res_regrid, lon_res_regrid = get_ds_resolution(ds_all)
+            print(f"Target rectilinear resolutions: lat {lat_res_regrid:.2f}, lon {lon_res_regrid:.2f}")
+
         return ds_all
