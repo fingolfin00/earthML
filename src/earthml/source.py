@@ -94,17 +94,17 @@ class BaseSource (ABC):
         self.ds = self._get_data()
         return self.ds
 
-    def save (self, filepath: str | Path):
+    def save (self, filepath: str | Path, consolidated: bool = False):
         """Save dataset in Zarr format in filepath"""
         if not self.ds:
             self.ds = self.load()
-        store = Path(filepath).with_suffix(".zarr")
+        store = Path(filepath)
         print(f"Saving dataset to {store}")
         compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
         encoding_zarr = ({
             v: {"compressors": compressor} for v in self.ds.variables
         })
-        self.ds.to_zarr(store, encoding=encoding_zarr, mode='w', consolidated=False)
+        self.ds.to_zarr(store, encoding=encoding_zarr, mode='w', consolidated=consolidated)
 
 class SumSource (BaseSource):
     def __init__(self, left: BaseSource, right: BaseSource):
