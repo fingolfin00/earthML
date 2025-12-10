@@ -1,10 +1,14 @@
+import importlib, joblib
+import numpy as np
+import xarray as xr
 import torch
 from torch import nn
+from torch.utils.data import random_split, Dataset, DataLoader, SubsetRandomSampler
 import torch.nn.functional as F
 import lightning as L
 from torchmetrics import MeanAbsoluteError, MeanSquaredError, Metric
 from torchmetrics.image import SpatialCorrelationCoefficient
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
 class EarthMLLightningModule (L.LightningModule):
@@ -298,3 +302,261 @@ class EarthMLLightningModule (L.LightningModule):
             'frequency': 1
         }
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
+
+class EpochRandomSplitDataModule (L.LightningDataModule):
+    def __init__ (self, dataset, train_fraction=0.9, batch_size=32, seed=42, num_workers=0, per_epoch_replit=False):
+        super().__init__()
+        self.dataset = dataset
+        self.train_fraction = train_fraction
+        self.batch_size = batch_size
+        self.seed = seed
+        self.num_workers = num_workers
+        self.per_epoch_replit = per_epoch_replit
+
+    def setup (self, stage=None):
+        # initial split
+        self._resplit()
+
+    def _resplit (self):
+        torch.manual_seed(self.seed)
+
+        num_samples = len(self.dataset)
+        indices = torch.randperm(num_samples)
+        subset_size = int(num_samples * self.train_fraction)
+
+        train_indices = indices[:subset_size]
+        valid_indices = indices[subset_size:]
+
+        train_sampler = SubsetRandomSampler(train_indices)
+        valid_sampler = SubsetRandomSampler(valid_indices)
+
+        self._train_dl = DataLoader(
+            self.dataset,
+            batch_size=self.batch_size,
+            sampler=train_sampler,
+            num_workers=self.num_workers,
+            pin_memory=True,
+        )
+        self._val_dl = DataLoader(
+            self.dataset,
+            batch_size=self.batch_size,
+            sampler=valid_sampler,
+            num_workers=self.num_workers,
+            pin_memory=True,
+        )
+
+    def train_dataloader (self):
+        return self._train_dl
+
+    def val_dataloader (self):
+        return self._val_dl
+
+    def on_train_epoch_start (self):
+        if self.per_epoch_replit:
+            # re-split at every epoch
+            self._resplit()
+
+class HeteroBiasCorrectionLoss(nn.Module):
+    """
+    Loss for bias correction with:
+    - variance-normalized MSE
+    - identity-preserving term when true bias is small
+    """
+    def __init__(
+        self,
+        lambda_identity: float = 0.1,
+        bias_scale: float = 0.5,
+        eps: float = 1e-6,
+    ):
+        super().__init__()
+        self.lambda_identity = lambda_identity
+        self.bias_scale = bias_scale
+        self.eps = eps
+        self.loss_components = None
+
+    def forward(
+        self,
+        y_pred: torch.Tensor,        # corrected forecast (field)
+        y_true: torch.Tensor,        # analysis
+        x_input: torch.Tensor,       # raw forecast
+        var_field: torch.Tensor | None = None,
+    ):
+        # --- variance-normalized MSE term ---
+        sq_err = (y_pred - y_true) ** 2
+
+        if var_field is not None:
+            denom = var_field + self.eps
+        else:
+            # per-channel variance estimated from batch
+            est_var = y_true.var(dim=(0, 2, 3), keepdim=True)
+            denom = est_var + self.eps
+
+        var_norm_mse = (sq_err / denom).mean()
+
+        # --- identity-preserving term ---
+        # true bias between raw input and target
+        true_bias = y_true - x_input
+        bias_mag = true_bias.abs()
+
+        # weight strong where true bias is small
+        w_id = torch.exp(-bias_mag / self.bias_scale)
+
+        # penalize changing the input when its bias is small
+        id_err = (y_pred - x_input) ** 2
+        identity_loss = (w_id * id_err).mean()
+
+        total_loss = var_norm_mse + self.lambda_identity * identity_loss
+
+        self.loss_components = {
+            "var_norm_mse": var_norm_mse.detach(),
+            "identity_loss": identity_loss.detach(),
+        }
+        return total_loss
+
+class Normalize:
+    def __init__ (self, mean=None, std=None):
+        """
+        mean, std: optional scalars or tensors for normalization.
+                   If None, must call fit(dataset) before using.
+        """
+        self.mean = mean
+        self.std = std
+
+    @staticmethod
+    def _masked_stats(data, mask):
+        """
+        Compute per-channel mean/std using only masked-valid entries.
+
+        data: [N, C, H, W] float tensor (possibly contains zeros)
+        mask: [N, C, H, W] bool or 0/1 tensor
+        """
+        mask = mask.bool()
+        # Number of valid entries per-channel
+        count = mask.sum(dim=(0, 2, 3), keepdim=True)  # shape [1, C, 1, 1]
+
+        # Avoid divide-by-zero for channels with no valid data
+        count = count.clamp(min=1)
+
+        # Masked mean
+        sum_vals = (data * mask).sum(dim=(0, 2, 3), keepdim=True)
+        mean = sum_vals / count
+
+        # Masked variance
+        var = ((data - mean) ** 2 * mask).sum(dim=(0, 2, 3), keepdim=True) / count
+        std = torch.sqrt(var + 1e-6)
+
+        return mean, std
+
+    def _norm (self, data, epsilon=1e-6):
+        return (data - self.mean) / (self.std + epsilon)
+
+    def _denorm (self, data):
+        return self.std * data + self.mean
+
+    def _check_filepath (self, filepath):
+        if self.mean is None or self.std is None:
+            try:
+                self = self.load(filepath)
+            except Exception as e:
+                print(e)
+                raise ValueError("Transform not fitted.")
+
+    def save (self, filepath):
+        joblib.dump(self, filepath)
+
+    def load (self, filepath):
+        return joblib.load(filepath)
+
+    def fit(self, dataset, filepath, dim="x"):
+        """
+        Fit mean/std only on valid pixels.
+        dataset.<dim>      = tensor [N, C, H, W]
+        dataset.<dim>_mask = tensor [N, C, H, W]
+        dim: select the data to fit, input (x) or target (y)
+        """
+        data = getattr(dataset, dim)
+        mask = getattr(dataset, f"{dim}_mask")
+
+        self.mean, self.std = self._masked_stats(data, mask)
+
+        print(f"Masked (mean, std) for normalization: ({self.mean.flatten().tolist()}, {self.std.flatten().tolist()})")
+
+        self.save(filepath)
+        return self
+
+    def inverse (self, dataset, filepath=None):
+        """
+        Return a new dataset with denormalized data.
+        Does not modify the original dataset in-place.
+        """
+        self._check_filepath(filepath)
+
+        new_dataset = dataset.__class__.__new__(dataset.__class__)
+        new_dataset.__dict__ = dataset.__dict__.copy()
+
+        if hasattr(dataset, "x") and dataset.x is not None:
+            new_dataset.x = self._denorm(dataset.x)
+        if hasattr(dataset, "y") and dataset.y is not None:
+            new_dataset.y = self._denorm(dataset.y)
+
+        return new_dataset
+
+    def inverse_tensor (self, data, filepath=None):
+        """
+        Return denormalized data.
+        """
+        self._check_filepath(filepath)
+        return self._denorm(data)
+
+    def __call__ (self, x, y, epsilon=1e-6):
+        if self.mean is None or self.std is None:
+            raise ValueError("Transform not fitted")
+
+        # Remove time dimension because we call this in Dataset __getitem__
+        x = self._norm(x, epsilon=epsilon).squeeze(0)
+        # print(f"X after norm type: {type(x)} and shape: {x.shape}")
+        y = self._norm(y, epsilon=epsilon).squeeze(0)
+        # print(f"Y after norm type: {type(y)} and shape: {y.shape}")
+        return x, y
+
+class XarrayDataset (Dataset):
+    def __init__(self, input_ds: xr.Dataset, target_ds: xr.Dataset, transform=None, transform_args=None):
+        """
+        input_ds: xarray.Dataset
+        target_ds: xarray.Dataset
+        transform: callable with signature (x, y, **kwargs) -> (x, y)
+        transform_args: dict of keyword args to pass to transform
+        """
+        self.target_ds = target_ds # .load(scheduler="synchronous")
+        self.input_ds = input_ds
+        assert isinstance(self.input_ds, xr.Dataset) and isinstance(self.target_ds, xr.Dataset), f"Input ds type: {self.input_ds}, target ds type: {self.target_ds}"
+
+        self.transform = transform
+        self.transform_args = transform_args or {}
+
+        x_np = self.input_ds.to_array().to_numpy()      # with NaNs where masked
+        mask_x_np = np.isfinite(x_np)                   # True where valid, False where masked
+        x_np_filled = np.where(mask_x_np, x_np, 0.0)
+        y_np = self.target_ds.to_array().to_numpy()     # with NaNs where masked
+        mask_y_np = np.isfinite(y_np)                   # True where valid, False where masked
+        y_np_filled = np.where(mask_y_np, y_np, 0.0)
+        # print(f"Dataset x mean: {np.nanmean(x_np)}, std: {np.nanstd(x_np)}")
+        # print(f"Dataset y mean: {np.nanmean(y_np)}, std: {np.nanstd(y_np)}")
+
+        self.x = torch.tensor(x_np_filled, dtype=torch.float32).permute(1, 0, 2, 3)
+        self.x_mask = torch.tensor(mask_x_np, dtype=torch.bool).permute(1, 0, 2, 3)
+        self.y = torch.tensor(y_np_filled, dtype=torch.float32).permute(1, 0, 2, 3)
+        self.y_mask = torch.tensor(mask_y_np, dtype=torch.bool).permute(1, 0, 2, 3)
+
+        # self.x = torch.tensor(self.input_ds.to_array().values, dtype=torch.float32).permute(1, 0, 2, 3)
+        # self.y = torch.tensor(self.target_ds.to_array().values, dtype=torch.float32).permute(1, 0, 2, 3)
+        assert len(self.x) == len(self.y), f"Mismatched dataset length: x={len(self.x)}, y={len(self.y)}"
+
+    def __len__ (self):
+        return len(self.x)
+
+    def __getitem__ (self, idx):
+        x, y = self.x[idx], self.y[idx]
+        if self.transform:
+            x, y = self.transform(x, y, **self.transform_args)
+        return x, y
