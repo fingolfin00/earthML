@@ -93,8 +93,8 @@ class ExperimentMLFC:
         )
         self.config.test.append(preds_exp)
         # Init source data objects
-        self.source_test_data = self._init_source_data(self.config.test, 'test') #, deltas)
-        self.source_train_data = self._init_source_data(self.config.train, 'train') # ), deltas)
+        self.source_train_data = self._init_source_data(self.config.train, 'train')
+        self.source_test_data = self._init_source_data(self.config.test, 'test')
         # Save experiment
         with open(self.work_path.joinpath("experiment.cfg"), 'wb') as f:
             joblib.dump({
