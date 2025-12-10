@@ -494,7 +494,7 @@ class EarthkitSource (BaseSource):
         # samples = list(self.elements['samples'].values())
         samples = [s for s in self.elements.samples if s not in self.elements.missed] # TODO refactor to BaseSource?
         print(f"Samples: {len(samples)}, missed: {len(self.elements.missed)}")
-        var_name_list = [v.name for v in self.data_selection.variable] if isinstance(self.data_selection.variable, list) else [self.data_selection.variable.name]
+        var_longname_list = [v.longname for v in self.data_selection.variable] if isinstance(self.data_selection.variable, list) else [self.data_selection.variable.longname]
         start = self.data_selection.period.start
         end = self.data_selection.period.end
         dates = f"{start.strftime('%Y-%m-%d')}/{end.strftime('%Y-%m-%d')}"
@@ -505,11 +505,11 @@ class EarthkitSource (BaseSource):
             self.data_selection.region.lon[1]
         ]
         if self.select_area_after_request:
-            request_args = dict(variable=var_name_list)
+            request_args = dict(variable=var_longname_list)
         else:
-            request_args = dict(variable=var_name_list, area=area)
+            request_args = dict(variable=var_longname_list, area=area)
         years = xr.date_range(start=start, end=end, freq="YS")
-        print(f"Requesting {var_name_list} ({dates}, {self.data_selection.period.freq}) in region {area} from {self.provider}:{self.dataset}")
+        print(f"Requesting {var_longname_list} ({dates}, {self.data_selection.period.freq}) in region {area} from {self.provider}:{self.dataset}")
         print(f"Check request status: https://cds.climate.copernicus.eu/requests?tab=all")
         # print(years)
         if self.split_request and end - start > pd.to_timedelta('365 days'):
