@@ -307,7 +307,7 @@ class JunoLocalSource (MFXarrayLocalSource):
         file_header: str,
         file_suffix: str,
         file_date_format: str,
-        lead_time: timedelta,
+        lead_time: relativedelta,
         minus_timedelta: timedelta = None,
         plus_timedelta: timedelta = None,
         concat_dim: str = None,
@@ -330,9 +330,9 @@ class JunoLocalSource (MFXarrayLocalSource):
         file_header: str,
         file_suffix: str,
         file_date_format: str,
-        lead_time: timedelta,
-        minus_timedelta: timedelta = None,
-        plus_timedelta: timedelta = None
+        lead_time: relativedelta,
+        minus_timedelta: relativedelta = None,
+        plus_timedelta: relativedelta = None
     ) -> Sample:
         """Get the data filenames for the given data selection."""
 
