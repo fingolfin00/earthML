@@ -75,7 +75,16 @@ class BaseSource (ABC):
         if self.ds is None:
             print(f"Load data from {self.source_name}...")
             t0 = time.time()
-            self.ds = self._get_data()
+            ds = self._get_data()
+
+            # Persist here to materialise the dataset on the cluster
+            # and shrink the graph that lives on the client.
+            if hasattr(ds, "chunk"):  # i.e. Dask-backed
+                ds = ds.chunk()   # ensure it’s dask-backed (no-op if already)
+                ds = ds.persist()
+                wait(ds) # block load() until materialised
+
+            self.ds = ds
             print(f" → loading time: {time.time() - t0:.2f}s")
             print(f" → dataset shape: {self.ds.sizes}")
         return self.ds
