@@ -426,17 +426,20 @@ class JunoLocalSource (MFXarrayLocalSource):
                 # untested support for netcdf4
                 common_args["preprocess"] = partial(self._preprocess, data=self.data_selection, var_name=var.name)
                 var_ds_list.append(xr.open_mfdataset(**common_args))
-            return xr.merge(
+            ds = subset_ds(self.data_selection, xr.merge(
                 var_ds_list,
                 compat="no_conflicts",
                 combine_attrs="no_conflicts"
-            )
+            ))
         else:
             if self.engine == "cfgrib":
                 common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": self.data_selection.variable.name}}
                 common_args["indexpath"] = ""
             # Tested support for netcdf4
-            return xr.open_mfdataset(**common_args)
+            ds = xr.open_mfdataset(**common_args)
+            lat_res, lon_res = get_ds_resolution(ds)
+            print(f"Native resolutions: lat {lat_res:.2f}, lon {lon_res:.2f}")
+            ds = subset_ds(self.data_selection, ds)
 
         # Regrid if required
         if self.regrid_resolution is not None:
