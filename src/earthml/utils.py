@@ -603,7 +603,7 @@ def _fallback_curvilinear_res(lat2d, lon2d):
 
     return lat_res, lon_res
 
-def get_ds_resolution(self, ds: xr.Dataset):
+def get_ds_resolution(ds: xr.Dataset):
     """
     Estimate latitude/longitude resolution (in degrees) for rectilinear or
     curvilinear grids.
@@ -616,7 +616,7 @@ def get_ds_resolution(self, ds: xr.Dataset):
         * else fall back to a more general heuristic on neighbor diffs.
     - Mixed 1D/2D dims are treated individually.
     """
-    lon_coord, lat_coord = self._get_lonlat_coords(ds)
+    lon_coord, lat_coord = get_lonlat_coords(ds)
     # print(f"Coords name lon: {lon_coord}, lat: {lat_coord}")
 
     lat_da = ds[lat_coord]
