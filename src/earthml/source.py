@@ -44,6 +44,7 @@ class BaseSource (ABC):
         self,
         datasource: DataSource
     ):
+        self.datasource = datasource
         self.data_selection = datasource.data_selection
         self.source_name = datasource.source
         self.date_range = generate_date_range(self.data_selection.period)
