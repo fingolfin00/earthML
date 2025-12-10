@@ -128,21 +128,55 @@ class ExperimentMLFC:
         except:
             self.ckpt_path = self.ckpt_folder_path.joinpath(f"{self.ckpt_filename}.ckpt")
 
-    def _init_source_data (self, exp_ds: ExperimentDataset | List[ExperimentDataset], source_type: str, deltas: List[timedelta] = None):
-        """Returns populated selected Source instances"""
+    def _init_source_data (self, exp_ds: ExperimentDataset | List[ExperimentDataset], source_type: str):
+        """Returns populated Source instances"""
+
+        def _create_xarray_local_source (save_path: str | Path, datasource: DataSource):
+            Source = SourceRegistry("xarray-local").get_class()
+            source_params = dict(
+                root_path=save_path,
+                xarray_args={
+                    'consolidated': self.consolidated_zarr,
+                    'decode_times': False
+                }
+            )
+            datasource_sum = sum(datasource)
+            datasource_sum.source = "xarray-local"
+            return source_params, Source(
+                datasource=datasource_sum,
+                **source_params
+            )
+
         if not isinstance(exp_ds, list):
             exp_ds = [exp_ds]
         sources = {}
-        for i, e in enumerate(exp_ds):
-            Source = SourceRegistry(e.datasource.source).get_class()
-            # data_sel = e.datasource.data_selection
-            # data_sel.period.start += deltas[i] if deltas else data_sel.period.start
-            # data_sel.period.end += deltas[i] if deltas else data_sel.period.end
-            self.rich_console.print(Table({f"Source {source_type} {e.role} params": e.source_params}, twocols=True).table) # TODO move tables to source.py
-            sources[e.role] = Source(
-                datasource=e.datasource,
-                **e.source_params
-            )
+        for e in exp_ds:
+            datasource = e.datasource
+            source_params = e.source_params
+            if not isinstance(datasource, list) and not isinstance(source_params, list):
+                datasource = [datasource]
+                source_params = [source_params]
+            save_path = self.config.work_path.joinpath(Path(f"{source_type}_{e.role}")).with_suffix(".zarr")
+            if e.save and save_path.exists():
+                xr_loc_source_params, sources[e.role] = _create_xarray_local_source(save_path, datasource)
+                self.rich_console.print(Table({f"Source '{sources[e.role].datasource.source}' {source_type} {e.role} [{i}] params": xr_loc_source_params}, twocols=True).table)
+            else:
+                sources_list, source_params_list = [], []
+                for i, (d, sp) in enumerate(zip(datasource, source_params)):
+                    Source = SourceRegistry(d.source).get_class()
+                    source_params_list.append(sp)
+                    sources_list.append(Source(
+                        datasource=d,
+                        **sp
+                    ))
+                    self.rich_console.print(Table({f"Source '{d.source}' {source_type} {e.role} [{i}] params": sp}, twocols=True).table)
+                sources[e.role] = sum(sources_list)
+                # Save datasets if requested
+                if e.save: # and not save_path.exists():
+                    sources[e.role].save(save_path)
+                    # Regenerate as xarray-local source type
+                    xr_loc_source_params, sources[e.role] = _create_xarray_local_source(save_path, datasource)
+                    self.rich_console.print(Table({f"Source '{sources[e.role].datasource.source}' {source_type} {e.role} params": xr_loc_source_params}, twocols=True).table)
         # Clear missing samples if supported
         missed = set()
         for source in sources.values():
