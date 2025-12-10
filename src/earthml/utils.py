@@ -267,20 +267,22 @@ def subset_ds (
     # -------------------------------------------------------------------------
     # Leadtime selection
     leadtime = data_selection.variable.leadtime
+    leadtime_sel_d = {}
     if leadtime is not None: # TODO refactor, it's used also in _preprocess
         # Build target timedelta from value + unit (e.g. "3 days", "12 hours")
         td = pd.to_timedelta(f"{leadtime.value} {leadtime.unit}")
         # Cast to same dtype as coord (usually timedelta64[ns])
         coord_dtype = ds[leadtime.name].dtype
         target = td.to_numpy().astype(coord_dtype)
-    leadtime_sel_d = _dim_selection(
-        ds, leadtime.name, ["lead_time, leadtime"], target
-    ) if leadtime else {}
+        leadtime_sel_d = _dim_selection(
+            ds, leadtime.name, ["lead_time", "leadtime"], target
+        )
     # If only one leadtime, remove selection
-    leadtime_dim = next(iter(leadtime_sel_d))
-    # print("Leadtime dim name:", leadtime_dim, "ndim:", ds[leadtime_dim].ndim, "shape:", ds[leadtime_dim].shape)
-    if ds[leadtime_dim].ndim == 1 and ds[leadtime_dim].shape[0] == 1:
-        leadtime_sel_d = {}
+    if leadtime_sel_d:
+        leadtime_dim = next(iter(leadtime_sel_d))
+        # print("Leadtime dim name:", leadtime_dim, "ndim:", ds[leadtime_dim].ndim, "shape:", ds[leadtime_dim].shape)
+        if ds[leadtime_dim].ndim == 1 and ds[leadtime_dim].shape[0] == 1:
+            leadtime_sel_d = {}
 
     # Vertical level selection
     levhpa = data_selection.variable.levhpa
