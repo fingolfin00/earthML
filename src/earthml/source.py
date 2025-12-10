@@ -308,6 +308,7 @@ class JunoLocalSource (MFXarrayLocalSource):
         file_suffix: str,
         file_date_format: str,
         lead_time: relativedelta,
+        both_data_and_previous_date_in_file: bool = True,
         minus_timedelta: timedelta = None,
         plus_timedelta: timedelta = None,
         concat_dim: str = None,
@@ -320,6 +321,7 @@ class JunoLocalSource (MFXarrayLocalSource):
             file_suffix,
             file_date_format,
             lead_time,
+            both_data_and_previous_date_in_file,
             minus_timedelta,
             plus_timedelta
         )
@@ -331,6 +333,7 @@ class JunoLocalSource (MFXarrayLocalSource):
         file_suffix: str,
         file_date_format: str,
         lead_time: relativedelta,
+        both_data_and_previous_date_in_file: bool = True,
         minus_timedelta: relativedelta = None,
         plus_timedelta: relativedelta = None
     ) -> Sample:
@@ -340,7 +343,11 @@ class JunoLocalSource (MFXarrayLocalSource):
         for date in self.date_range:
             previous_date = date - lead_time
             data_path = self.path.joinpath(previous_date.strftime(file_path_date_format))
-            data_glob = f"{file_header}{previous_date.strftime(file_date_format)}{date.strftime(file_date_format)}{file_suffix}"
+            if both_data_and_previous_date_in_file:
+                data_glob = f"{file_header}{previous_date.strftime(file_date_format)}{file_suffix}"
+            else:
+                data_glob = f"{file_header}{previous_date.strftime(file_date_format)}{date.strftime(file_date_format)}{file_suffix}"
+            # print(f"{date}, glob:", data_path / data_glob)
 
             # files_exact = [p for p in data_path.glob(data_glob) if p.is_file()]
             files_exact = sorted(
