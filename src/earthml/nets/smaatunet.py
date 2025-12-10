@@ -204,15 +204,16 @@ class OutConv (nn.Module):
 class SmaAt_UNet (EarthMLLightningModule):
     def __init__(
         self, loss, learning_rate, norm, supervised,
+        loss_params: dict = None,
         n_channels=1, n_classes=1,
         kernels_per_layer=2,
         bilinear=True,
         reduction_ratio=16,
     ):
-        super(SmaAt_UNet, self).__init__()
+        super(SmaAt_UNet, self).__init__(**loss_params['net'])
         
         # self.extra_logger = extra_logger
-        self.loss = getattr(nn, loss)()
+        self.loss = self.resolve_loss(loss, loss_params['loss'])
         self.learning_rate = learning_rate
         self.supervised = supervised
         

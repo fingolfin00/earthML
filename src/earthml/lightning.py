@@ -12,9 +12,11 @@ from torchmetrics.image import SpatialCorrelationCoefficient
 import matplotlib.cm as cm
 
 class EarthMLLightningModule (L.LightningModule):
-    def __init__ (self):
+    def __init__ (self, use_first_input=False):
         super().__init__()
         # self.extra_logger = extra_logger
+
+        self.use_first_input = use_first_input
 
         # Metrics
         self.train_mae = MeanAbsoluteError()
@@ -37,6 +39,18 @@ class EarthMLLightningModule (L.LightningModule):
         self.pic_log_interval = 1 # set to 1 to log at every epoch
         self.last_val_pred = None
         self.last_val_target = None
+
+    @staticmethod
+    def resolve_loss (name, params):
+        # simple name -> try torch.nn
+        if "." not in name:
+            if hasattr(nn, name):
+                return getattr(nn, name)(**params)
+            raise ValueError(f"Loss '{name}' not found in torch.nn")
+        # dotted path -> dynamic import
+        module_path, class_name = name.rsplit(".", 1)
+        module = importlib.import_module(module_path)
+        return getattr(module, class_name)(**params)
 
     @staticmethod
     def center_crop_to (x, target_h, target_w):
@@ -186,7 +200,11 @@ class EarthMLLightningModule (L.LightningModule):
         # ensure contiguous
         pred = pred.contiguous()
         y = y.contiguous()
-        loss = self.loss(pred, y)
+
+        if self.use_first_input:
+            loss = self.loss(pred, y, x[0])
+        else:
+            loss = self.loss(pred, y)
 
         self.train_mae.update(pred, y)
         self.train_rmse.update(pred, y)
@@ -194,6 +212,12 @@ class EarthMLLightningModule (L.LightningModule):
         # self.train_acc.update(pred, y)
 
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        try:
+            comps = self.loss.loss_components
+            for k,v in comps.items():
+                self.log(f"train_{k}", v)
+        except:
+            pass
         self.log("train_mae", self.train_mae, on_step=False, on_epoch=True)
         self.log("train_rmse", self.train_rmse, on_step=False, on_epoch=True)
         self.log("train_scc", self.train_scc, on_step=False, on_epoch=True)
@@ -211,14 +235,24 @@ class EarthMLLightningModule (L.LightningModule):
         # ensure contiguous
         pred = pred.contiguous()
         y = y.contiguous()
-        loss = self.loss(pred, y)
+
+        if self.use_first_input:
+            loss = self.loss(pred, y, x[0])
+        else:
+            loss = self.loss(pred, y)
 
         self.val_mae.update(pred, y)
         self.val_rmse.update(pred, y)
         self.val_scc.update(pred, y)
         # self.val_acc.update(pred, y)
 
-        self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True) # Corrected: use `loss`
+        self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        try:
+            comps = self.loss.loss_components
+            for k,v in comps.items():
+                self.log(f"val_{k}", v)
+        except:
+            pass
         self.log("val_mae", self.val_mae, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log("val_rmse", self.val_rmse, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log("val_scc", self.val_scc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
