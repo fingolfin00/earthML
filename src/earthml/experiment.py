@@ -255,14 +255,20 @@ class ExperimentMLFC:
             self.source_train_data['target'].load()
         )
         loading_time = time.time() - s
+        x_mean, x_std = Normalize._masked_stats(train_dataset.x, train_dataset.x_mask)
+        y_mean, y_std = Normalize._masked_stats(train_dataset.y, train_dataset.y_mask)
         self.rich_console.print(Table({'Train dataset': {
             'input': {
                 'shape': train_dataset.x.shape,
-                'source': self.config.train[0].datasource.source
+                'mean': x_mean,
+                'std': x_std,
+                # 'source': self.config.train[0].datasource.source
             },
             'target': {
                 'shape': train_dataset.y.shape,
-                'source': self.config.train[1].datasource.source
+                'mean': y_mean,
+                'std': y_std,
+                # 'source': self.config.train[1].datasource.source
             },
             'loading_time': loading_time
         }}).table)
@@ -290,24 +296,42 @@ class ExperimentMLFC:
             self.source_test_data['target'].load()
         )
         loading_time = time.time() - s
-        self.rich_console.print(Table({'Test dataset': {
+        x_mean, x_std = Normalize._masked_stats(test_dataset.x)
+        y_mean, y_std = Normalize._masked_stats(test_dataset.y)
+        self.rich_console.print(Table({'Train dataset': {
             'input': {
                 'shape': test_dataset.x.shape,
-                'source': self.config.test[0].datasource.source
+                'mean': x_mean,
+                'std': x_std,
+                # 'source': self.config.test[1].datasource.source
             },
             'target': {
                 'shape': test_dataset.y.shape,
-                'source': self.config.test[1].datasource.source
+                'mean': y_mean,
+                'std': y_std,
+                'rmse target-input': {var.name: np.sqrt(((test_dataset.y[:,i,:,:] - test_dataset.x[:,i,:,:])**2).mean().item()) for i, var in enumerate(self.test_var_list)}
+                # 'source': self.config.test[0].datasource.source
             },
             'loading_time': loading_time
-        }}, params_name='data type').table)
-        self.rich_console.print(Table({"Test dataset metrics": {
-                'input mean': {var.name: test_dataset.x[:,i,:,:].mean().item() for i, var in enumerate(self.test_var_list)},
-                'input std': {var.name: test_dataset.x[:,i,:,:].std().item() for i, var in enumerate(self.test_var_list)},
-                'target mean': {var.name: test_dataset.y[:,i,:,:].mean().item() for i, var in enumerate(self.test_var_list)},
-                'target std': {var.name: test_dataset.y[:,i,:,:].std().item() for i, var in enumerate(self.test_var_list)},
-                'rmse target-input': {var.name: np.sqrt(((test_dataset.y[:,i,:,:] - test_dataset.x[:,i,:,:])**2).mean().item()) for i, var in enumerate(self.test_var_list)}
         }}, params_name='metric').table)
+        # self.rich_console.print(Table({'Test dataset': {
+        #     'input': {
+        #         'shape': test_dataset.x.shape,
+        #         'source': self.config.test[0].datasource.source
+        #     },
+        #     'target': {
+        #         'shape': test_dataset.y.shape,
+        #         'source': self.config.test[1].datasource.source
+        #     },
+        #     'loading_time': loading_time
+        # }}, params_name='data type').table)
+        # self.rich_console.print(Table({"Test dataset metrics": {
+        #         'input mean': {var.name: test_dataset.x[:,i,:,:].mean().item() for i, var in enumerate(self.test_var_list)},
+        #         'input std': {var.name: test_dataset.x[:,i,:,:].std().item() for i, var in enumerate(self.test_var_list)},
+        #         'target mean': {var.name: test_dataset.y[:,i,:,:].mean().item() for i, var in enumerate(self.test_var_list)},
+        #         'target std': {var.name: test_dataset.y[:,i,:,:].std().item() for i, var in enumerate(self.test_var_list)},
+        #         'rmse target-input': {var.name: np.sqrt(((test_dataset.y[:,i,:,:] - test_dataset.x[:,i,:,:])**2).mean().item()) for i, var in enumerate(self.test_var_list)}
+        # }}, params_name='metric').table)
         # Normalize
         if not self.normalize:
             print(f"Load normalization data from {self.normdata_path}")
