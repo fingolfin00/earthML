@@ -488,7 +488,8 @@ class EarthkitSource (BaseSource):
         self.xarray_concat_dim = xarray_concat_dim
         self.xarray_concat_extra_args = xarray_concat_extra_args
         self.regrid_resolution = regrid_resolution
-        self.regrid_vars = regrid_vars
+        self.var_name_list = [v.name for v in self.data_selection.variable] if isinstance(self.data_selection.variable, list) else [self.data_selection.variable.name]
+        self.regrid_vars = regrid_vars if regrid_vars is not None else self.var_name_list
 
     def _get_data (self):
         # samples = list(self.elements['samples'].values())
@@ -576,6 +577,8 @@ class EarthkitSource (BaseSource):
             ds_all = ekd.from_source(self.provider, self.dataset, **request_d).to_xarray(**self.xarray_args)
             xarray_concat_dim = ds_all.cf['time'].name if not self.xarray_concat_dim else self.xarray_concat_dim
 
+        # Drop unused variables
+        ds_all = ds_all.drop_vars([v for v in ds_all.data_vars if v not in self.var_name_list])
         # Drop missing samples
         if self.elements.missed:
             ds_all = ds_all.drop_sel({xarray_concat_dim: list(self.elements.missed)})
@@ -584,12 +587,13 @@ class EarthkitSource (BaseSource):
         if self.select_area_after_request:
             ds_all = subset_ds(self.data_selection, ds_all)
 
+        print(ds_all)
         # Grid resolution
         lat_res, lon_res = get_ds_resolution(ds_all)
         print(f"Native resolutions: lat {lat_res:.2f}, lon {lon_res:.2f}")
         # Regrid if required
         if self.regrid_resolution is not None:
-            print(f"Regridding to rectilinear grid with resolution {self.regrid_resolution}")
+            print(f"Regridding {self.regrid_vars} to rectilinear grid with resolution {self.regrid_resolution}")
             ds_all = regrid_to_rectilinear(
                 src_ds=ds_all,
                 region=self.data_selection.region,
