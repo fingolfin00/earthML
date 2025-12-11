@@ -518,6 +518,8 @@ class EarthkitSource (BaseSource):
             [m for m in all_months[i:i+self.split_month] if m not in self.split_month_jump]
             for i in range(0, len(all_months), self.split_month)
         ]
+        # Convert singletons to strings
+        months_splitted = [chunk[0] if len(chunk) == 1 else chunk for chunk in months_splitted]
         # print(months_splitted)
         area = [
             self.data_selection.region.lat[0],
