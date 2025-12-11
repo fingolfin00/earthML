@@ -26,7 +26,7 @@ from .dataclasses import DataSelection, TimeRange
 #---------------
 
 class Dask:
-    def __init__ (self, base_port=8787, n_workers=None, processes=True):
+    def __init__ (self, base_port=8787, n_workers=None, processes=True, nanny=True):
         """
         Start an optimized LocalCluster on HPC or JupyterHub environments.
 
@@ -64,6 +64,7 @@ class Dask:
             memory_limit="auto",
             local_directory=local_dir,
             dashboard_address=f":{base_port}",  # uses free port if base_port busy
+            nanny=nanny,
         )
         self.client = Client(self.cluster)
         self.client.run(lambda: __import__("cf_xarray"))
