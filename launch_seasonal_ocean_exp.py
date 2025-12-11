@@ -206,6 +206,18 @@ if __name__ == "__main__":
     exp_suffix = "_32bs_ocean_cds"
     exp_path = Path(exp_root_folder).joinpath(exp_name+exp_suffix)
     print(f"Experiment path: {exp_path}")
+
+    def preprocess_fix_salinity_analysis (input_ds, target_ds):
+        # Custom fix for wrong salinity units in analysis
+        for (name_target, da_target), (name_input, da_input) in zip(target_ds.data_vars.items(), input_ds.data_vars.items()):
+            if name_target == "sss_m" and name_input == "sos":
+                mean_target = float(da_target.mean().values)
+                mean_input = float(da_input.mean().values)
+                if mean_target > 1.8 * mean_input:
+                    print(f"Target {name_target} ~ input {mean_target / mean_input:.1f}x {name_input}. Assume target is 2x input")
+                    target_ds[name_target] = target_ds[name_target] / 2.0
+        return input_ds, target_ds
+
     experiment_cfg = ExperimentConfig(
         name=exp_name,
         work_path=exp_path,
@@ -236,6 +248,7 @@ if __name__ == "__main__":
         lead_time="15d",
         train=[dataset_train_input, dataset_train_target],
         test=[dataset_test_input, dataset_test_target],
+        # torch_preprocess_fn=preprocess_fix_salinity_analysis,
     )
 
     experiment = ExperimentMLFC(experiment_cfg)
