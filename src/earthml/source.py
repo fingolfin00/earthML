@@ -468,6 +468,7 @@ class EarthkitSource (BaseSource):
         dataset: str,
         split_request: bool = False,
         split_month: int = 12,
+        split_month_jump: list = None,
         select_area_after_request: bool = False,
         request_type: str = "subseasonal",
         request_extra_args: dict = None,
@@ -483,6 +484,7 @@ class EarthkitSource (BaseSource):
         self.dataset = dataset
         self.split_request = split_request
         self.split_month = split_month
+        self.split_month_jump = split_month_jump if split_month_jump else []
         self.select_area_after_request = select_area_after_request
         self.request_type = request_type
         self.request_extra_args = request_extra_args
@@ -502,7 +504,7 @@ class EarthkitSource (BaseSource):
         end = self.data_selection.period.end
         dates = f"{start.strftime('%Y-%m-%d')}/{end.strftime('%Y-%m-%d')}"
         all_months = ['01', '02' , '03', '04', '05', '06', '07', '08', '09', '10', '11', '12']
-        months_splitted = [all_months[i:i+self.split_month] for i in range(0, len(all_months), self.split_month)]
+        months_splitted = [all_months[i:i+self.split_month] for i in range(0, len(all_months), self.split_month) if all_months[i] not in self.split_month_jump]
         # print(months_splitted)
         area = [
             self.data_selection.region.lat[0],
