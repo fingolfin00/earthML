@@ -504,7 +504,10 @@ class EarthkitSource (BaseSource):
         end = self.data_selection.period.end
         dates = f"{start.strftime('%Y-%m-%d')}/{end.strftime('%Y-%m-%d')}"
         all_months = ['01', '02' , '03', '04', '05', '06', '07', '08', '09', '10', '11', '12']
-        months_splitted = [all_months[i:i+self.split_month] for i in range(0, len(all_months), self.split_month) if all_months[i] not in self.split_month_jump]
+        months_splitted = [
+            [m for m in all_months[i:i+self.split_month] if m not in self.split_month_jump]
+            for i in range(0, len(all_months), self.split_month)
+        ]
         # print(months_splitted)
         area = [
             self.data_selection.region.lat[0],
