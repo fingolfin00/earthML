@@ -54,9 +54,9 @@ class ExperimentMLFC:
         self._path_setup()
         # General torch and Lightning setup
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        num_cpus, num_cuda_devices = multiprocessing.cpu_count(), torch.cuda.device_count() 
-        self.torch_workers = max(1, num_cpus // num_cuda_devices // 2) # could be moved in datamodule definition, but in test() still using dataloader
-        print(f"Torch workers in use: {self.torch_workers} ({num_cpus} CPUs // {num_cuda_devices} CUDA devices // 2)")
+        num_cpus, num_gpus = multiprocessing.cpu_count(), torch.cuda.device_count() if torch.cuda.is_available() else 1 # torch.backends.mps.is_available()
+        self.torch_workers = max(1, num_cpus // num_gpus // 2) if not torch.backends.mps.is_available() else 1 # could be moved in datamodule definition, but in test() still using dataloader
+        print(f"Torch workers in use: {self.torch_workers} ({num_cpus} CPUs // {num_gpus} GPU (CUDA or others) devices // 2)")
         L.seed_everything(self.config.seed)
         # Tensorboard
         self.tl_logger = TensorBoardLogger(self.config.work_path, name="tensorboard_logs") # version=self.run_number
