@@ -494,6 +494,16 @@ class EarthkitSource (BaseSource):
         self.regrid_resolution = regrid_resolution
         self.var_name_list = [v.name for v in self.data_selection.variable] if isinstance(self.data_selection.variable, list) else [self.data_selection.variable.name]
         self.regrid_vars = regrid_vars if regrid_vars is not None else self.var_name_list
+        # Populate missed if some months are skipped for seasonal requests
+        if self.request_type == "seasonal":
+            self.elements.missed = set()
+            current = self.data_selection.period.start
+
+            while current <= self.data_selection.period.end:
+                if f"{current.month:02d}" in self.split_month_jump:
+                    self.elements.missed.add(current)
+                current += timedelta(days=1)
+
 
     def _get_data (self):
         # samples = list(self.elements['samples'].values())
