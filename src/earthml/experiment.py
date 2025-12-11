@@ -159,7 +159,7 @@ class ExperimentMLFC:
             save_path = self.config.work_path.joinpath(Path(f"{source_type}_{e.role}")).with_suffix(".zarr")
             if e.save and save_path.exists():
                 xr_loc_source_params, sources[e.role] = _create_xarray_local_source(save_path, datasource)
-                self.rich_console.print(Table({f"Source '{sources[e.role].datasource.source}' {source_type} {e.role} [{i}] params": xr_loc_source_params}, twocols=True).table)
+                self.rich_console.print(Table({f"Source '{sources[e.role].datasource.source}' {source_type} {e.role} params": xr_loc_source_params}, twocols=True).table)
             else:
                 sources_list, source_params_list = [], []
                 for i, (d, sp) in enumerate(zip(datasource, source_params)):
@@ -296,8 +296,8 @@ class ExperimentMLFC:
             self.source_test_data['target'].load()
         )
         loading_time = time.time() - s
-        x_mean, x_std = Normalize._masked_stats(test_dataset.x)
-        y_mean, y_std = Normalize._masked_stats(test_dataset.y)
+        x_mean, x_std = Normalize._masked_stats(test_dataset.x, test_dataset.x_mask)
+        y_mean, y_std = Normalize._masked_stats(test_dataset.y, test_dataset.y_mask)
         self.rich_console.print(Table({'Train dataset': {
             'input': {
                 'shape': test_dataset.x.shape,
