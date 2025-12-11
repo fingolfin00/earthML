@@ -467,8 +467,9 @@ class EarthkitSource (BaseSource):
         provider: str,
         dataset: str,
         split_request: bool = False,
+        split_month: int = 12,
         select_area_after_request: bool = False,
-        request_type: bool = "subseasonal",
+        request_type: str = "subseasonal",
         request_extra_args: dict = None,
         xarray_args: dict = None,
         xarray_concat_dim: str = None,
@@ -481,6 +482,7 @@ class EarthkitSource (BaseSource):
         self.provider = provider
         self.dataset = dataset
         self.split_request = split_request
+        self.split_month = split_month
         self.select_area_after_request = select_area_after_request
         self.request_type = request_type
         self.request_extra_args = request_extra_args
@@ -499,6 +501,9 @@ class EarthkitSource (BaseSource):
         start = self.data_selection.period.start
         end = self.data_selection.period.end
         dates = f"{start.strftime('%Y-%m-%d')}/{end.strftime('%Y-%m-%d')}"
+        all_months = ['01', '02' , '03', '04', '05', '06', '07', '08', '09', '10', '11', '12']
+        months_splitted = [all_months[i:i+self.split_month] for i in range(0, len(all_months), self.split_month)]
+        # print(months_splitted)
         area = [
             self.data_selection.region.lat[0],
             self.data_selection.region.lon[0],
@@ -513,6 +518,22 @@ class EarthkitSource (BaseSource):
         print(f"Requesting {var_longname_list} ({dates}, {self.data_selection.period.freq}) in region {area} from {self.provider}:{self.dataset}")
         print(f"Check request status: https://cds.climate.copernicus.eu/requests?tab=all")
         # print(years)
+
+        def _fetch_chunks (request_time_args_list, start, end, request_other_args):
+            """Helper to fetch chunked datasets using ekd"""
+            ds_chunks = []
+            for req_time_arg in request_time_args_list:
+                print(f" → Fetching chunk: {start:%Y-%m-%d} to {end:%Y-%m-%d} {req_time_arg['month']}")
+                request_d = dict(
+                    **request_other_args,
+                    **req_time_arg,
+                )
+                ds_chunk = ekd.from_source(self.provider, self.dataset, **request_d).to_xarray(**self.xarray_args)
+                # print(ds_chunk)
+                xarray_concat_dim = ds_chunk.cf['time'].name if not self.xarray_concat_dim else self.xarray_concat_dim
+                ds_chunks.append(ds_chunk)
+            return xarray_concat_dim, ds_chunks
+
         if self.split_request and end - start > pd.to_timedelta('365 days'):
             # Split into yearly chunks
             if years[0] > start:
@@ -523,32 +544,27 @@ class EarthkitSource (BaseSource):
             datasets = []
             for y1, y2 in zip(years[:-1], years[1:]):
                 y2 = y2 - timedelta(days=1)  # inclusive end
+                request_time_args_list = []
                 if self.request_type == "subseasonal":
                     time_freq = generate_hours(self.data_selection.period.freq)
                     request_time_args = dict(
                         date=f"{y1:%Y-%m-%d}/{y2:%Y-%m-%d}",
                         time=time_freq,
-                        )
+                    )
+                    request_time_args_list.append(request_time_args)
                 elif self.request_type == "seasonal":
-                    time_freq = ['01', '02' , '03', '04', '05', '06', '07', '08', '09', '10', '11', '12']
                     y22 = y2-relativedelta(years=1) if y2.strftime("%Y") != y1.strftime("%Y") else y2
-                    request_time_args = dict(
-                        year=xr.date_range(start=y1, end=y22, freq="YS").strftime("%Y").tolist(),
-                        month=time_freq,
+                    for m in months_splitted:
+                        request_time_args = dict(
+                            year=xr.date_range(start=y1, end=y22, freq="YS").strftime("%Y").tolist(),
                         )
+                        if "month" not in self.request_extra_args:
+                            request_time_args['month'] = m
+                        request_time_args_list.append(request_time_args)
                 else:
                     raise ValueError(f"Unsupported earthkit request type {self.request_type}")
-                print(f" → Fetching chunk: {y1:%Y-%m-%d} to {y2:%Y-%m-%d}")
-                request_d = dict(
-                    **request_args,
-                    **request_time_args,
-                    **self.request_extra_args,
-                )
-                # print(request_d)
-                ds_chunk = ekd.from_source(self.provider, self.dataset, **request_d).to_xarray(**self.xarray_args)
-                # print(ds_chunk)
-                xarray_concat_dim = ds_chunk.cf['time'].name if not self.xarray_concat_dim else self.xarray_concat_dim
-                datasets.append(ds_chunk)
+                xarray_concat_dim, ds_chunks = _fetch_chunks(request_time_args_list, y1, y2, request_args | self.request_extra_args)
+                datasets.extend(ds_chunks)
             # Combine all datasets
             ds_all = xr.concat(
                 datasets,
@@ -556,31 +572,36 @@ class EarthkitSource (BaseSource):
                 **self.xarray_concat_extra_args,
             )
         else:
+            request_time_args_list = []
             if self.request_type == "subseasonal":
                 time_freq = generate_hours(self.data_selection.period.freq)
                 request_time_args = dict(
                     date=f"{start:%Y-%m-%d}/{end:%Y-%m-%d}",
                     time=time_freq,
-                    )
+                )
+                request_time_args_list.append(request_time_args)
             elif self.request_type == "seasonal":
-                time_freq = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12'] # TODO only monthly timeseries supported
                 request_time_args = dict(
                     year=xr.date_range(start=start, end=end, freq="YS").strftime("%Y").tolist(),
-                    month=time_freq,
-                    )
+                )
+                for m in months_splitted:
+                    if "month" not in self.request_extra_args:
+                        request_time_args['month'] = m
+                    request_time_args_list.append(request_time_args)
             else:
                 raise ValueError(f"Unsupported earthkit request type {self.request_type}")
-            request_d = dict(
-                **request_args,
-                **request_time_args,
-                **self.request_extra_args,
+            xarray_concat_dim, datasets = _fetch_chunks(request_time_args_list, start, end, request_args | self.request_extra_args)
+            # Combine all datasets
+            ds_all = xr.concat(
+                datasets,
+                dim=xarray_concat_dim,
+                **self.xarray_concat_extra_args,
             )
-            ds_all = ekd.from_source(self.provider, self.dataset, **request_d).to_xarray(**self.xarray_args)
-            xarray_concat_dim = ds_all.cf['time'].name if not self.xarray_concat_dim else self.xarray_concat_dim
 
         # Drop unused variables
         ds_all = ds_all.drop_vars([v for v in ds_all.data_vars if v not in self.var_name_list])
         # Drop missing samples
+        xarray_concat_dim = ds_all.cf['time'].name if not self.xarray_concat_dim else self.xarray_concat_dim
         if self.elements.missed:
             ds_all = ds_all.drop_sel({xarray_concat_dim: list(self.elements.missed)})
 
@@ -588,7 +609,7 @@ class EarthkitSource (BaseSource):
         if self.select_area_after_request:
             ds_all = subset_ds(self.data_selection, ds_all)
 
-        # Grid resolution
+        # Grid resolution # TODO maybe refactor to BaseSource
         lat_res, lon_res = get_ds_resolution(ds_all)
         print(f"Native resolutions: lat {lat_res:.2f}, lon {lon_res:.2f}")
         # Regrid if required
