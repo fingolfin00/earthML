@@ -1,7 +1,8 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import List, Set, Dict, Optional
+from typing import List, Set, Dict, Optional, Callable, Tuple
+import xarray as xr
 # Local imports
 from .logging import Logger
 
@@ -116,6 +117,7 @@ class ExperimentDataset:
     source_params: dict | List[dict] = None
     save: bool = False
 
+PreprocessFn = Callable[[xr.Dataset, xr.Dataset], Tuple[xr.Dataset, xr.Dataset]]
 @dataclass
 class ExperimentConfig:
     # Globals
@@ -140,3 +142,5 @@ class ExperimentConfig:
     lead_time: str
     train: ExperimentDataset | List[ExperimentDataset]
     test: ExperimentDataset | List[ExperimentDataset]
+    # Optional
+    torch_preprocess_fn: Optional[PreprocessFn] = None # called after Xarray dataset loading, before torch dataset generation
