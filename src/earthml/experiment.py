@@ -250,10 +250,11 @@ class ExperimentMLFC:
     def _generate_torch_dataset (self, source_data: Dict[str, BaseSource], experiments: ExperimentDataset | List[ExperimentDataset], data_type: str):
         if not isinstance(experiments, list):
             experiments = [experiments]
-        exp_roles = [e.role for e in experiments]
+        exp_roles = [e.role for e in experiments if e.role != 'prediction']
         ds_d = {}
         s = time.time()
         for role in exp_roles:
+            # print(role)
             ds_d[role] = source_data[role].load()
         loading_time = time.time() - s
         print(f"{data_type} loading time: {loading_time:.1f}s")
