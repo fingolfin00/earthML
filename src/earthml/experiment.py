@@ -4,7 +4,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 from pathlib import Path
 # from copy import deepcopy
 # from itertools import zip_longest
-from typing import List
+from typing import List, Dict
 from rich import print
 # from rich.pretty import pprint
 from rich.console import Console
@@ -19,7 +19,7 @@ import lightning as L
 from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
 from lightning.pytorch.loggers import TensorBoardLogger
 # Local imports
-from .source import SourceRegistry
+from .source import SourceRegistry, BaseSource
 from .dataclasses import ExperimentDataset, ExperimentConfig, DataSource
 from .utils import Table, print_ds_info
 from .lightning import XarrayDataset, Normalize, EpochRandomSplitDataModule
@@ -43,7 +43,7 @@ class ExperimentRegistry:
 class ExperimentMLFC:
     def __init__(
         self,
-        config: ExperimentConfig
+        config: ExperimentConfig,
     ):
         self.config = config
         self.rich_console = Console()
@@ -247,31 +247,50 @@ class ExperimentMLFC:
             # deterministic=True
         )
 
-    def train (self):
-        # Generate torch train dataset
+    def _generate_torch_dataset (self, source_data: Dict[BaseSource], experiments: ExperimentDataset | List[ExperimentDataset], data_type: str):
+        if not isinstance(experiments, list):
+            experiments = [experiments]
+        exp_roles = [e.role for e in experiments]
+        ds_d = {}
         s = time.time()
-        train_dataset = XarrayDataset(
-            self.source_train_data['input'].load(),
-            self.source_train_data['target'].load()
-        )
+        for role in exp_roles:
+            ds_d[role] = source_data[role].load()
         loading_time = time.time() - s
-        x_mean, x_std = Normalize._masked_stats(train_dataset.x, train_dataset.x_mask)
-        y_mean, y_std = Normalize._masked_stats(train_dataset.y, train_dataset.y_mask)
-        self.rich_console.print(Table({'Train dataset': {
+        print(f"{data_type} loading time: {loading_time:.1f}s")
+
+        # For now only support input and target roles
+        assert "input" in exp_roles and "target" in exp_roles
+        input_ds, target_ds = ds_d['input'], ds_d['target']
+
+        # Hook preprocessing function
+        if self.config.torch_preprocess_fn is not None:
+            input_ds, target_ds = self.config.torch_preprocess_fn(input_ds, target_ds)
+
+        torch_dataset = XarrayDataset(input_ds, target_ds)
+        x_mean, x_std = Normalize._masked_stats(torch_dataset.x, torch_dataset.x_mask)
+        y_mean, y_std = Normalize._masked_stats(torch_dataset.y, torch_dataset.y_mask)
+
+        self.rich_console.print(Table({f'{data_type} dataset': {
             'input': {
-                'shape': train_dataset.x.shape,
+                'shape': torch_dataset.x.shape,
                 'mean': x_mean,
                 'std': x_std,
-                # 'source': self.config.train[0].datasource.source
+                'source': source_data['input'].datasource.source
             },
             'target': {
-                'shape': train_dataset.y.shape,
+                'shape': torch_dataset.y.shape,
                 'mean': y_mean,
                 'std': y_std,
-                # 'source': self.config.train[1].datasource.source
+                'source': source_data['target'].datasource.source
             },
-            'loading_time': loading_time
+            # 'loading_time': loading_time
         }}).table)
+
+        return torch_dataset
+
+    def train (self):
+        # Generate torch train dataset
+        train_dataset = self._generate_torch_dataset(self.source_train_data, self.config.train, 'Train')
         # Normalize
         self.normalize = Normalize().fit(train_dataset, filepath=self.normdata_path, dim='x') # uses mean and std of train input (x) data
         # print(f"Normalize type: {type(self.normalize.mean)} and shape: {self.normalize.mean.shape}")
@@ -289,31 +308,7 @@ class ExperimentMLFC:
         self._init_train_trainer().fit(self.model, datamodule=self.train_datamodule)
 
     def test (self, weights_filename=None):
-        # Generate torch test dataset
-        s = time.time()
-        test_dataset = XarrayDataset(
-            self.source_test_data['input'].load(),
-            self.source_test_data['target'].load()
-        )
-        loading_time = time.time() - s
-        x_mean, x_std = Normalize._masked_stats(test_dataset.x, test_dataset.x_mask)
-        y_mean, y_std = Normalize._masked_stats(test_dataset.y, test_dataset.y_mask)
-        self.rich_console.print(Table({'Train dataset': {
-            'input': {
-                'shape': test_dataset.x.shape,
-                'mean': x_mean,
-                'std': x_std,
-                # 'source': self.config.test[1].datasource.source
-            },
-            'target': {
-                'shape': test_dataset.y.shape,
-                'mean': y_mean,
-                'std': y_std,
-                'rmse target-input': {var.name: np.sqrt(((test_dataset.y[:,i,:,:] - test_dataset.x[:,i,:,:])**2).mean().item()) for i, var in enumerate(self.test_var_list)}
-                # 'source': self.config.test[0].datasource.source
-            },
-            'loading_time': loading_time
-        }}, params_name='metric').table)
+        test_dataset = self._generate_torch_dataset(self.source_test_data, self.config.test, 'Test')
         # self.rich_console.print(Table({'Test dataset': {
         #     'input': {
         #         'shape': test_dataset.x.shape,
@@ -363,6 +358,8 @@ class ExperimentMLFC:
         # Test
         self._init_test_trainer().test(self.model, dataloaders=self.test_dataloader)
         # print(f"Available attributes in model: {dir(self.model)}")
+
+        # TODO use Table to pretty print this info
         mean_norm_pred_d = {var.name: self.model.test_preds[:,i,:,:].mean().item() for i, var in enumerate(self.test_var_list)}
         std_norm_pred_d = {var.name: self.model.test_preds[:,i,:,:].std().item() for i, var in enumerate(self.test_var_list)}
         print(f"Normalized prediction shape: {self.model.test_preds.shape}, mean: {mean_norm_pred_d}, std: {std_norm_pred_d}")
