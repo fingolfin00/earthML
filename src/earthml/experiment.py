@@ -247,7 +247,7 @@ class ExperimentMLFC:
             # deterministic=True
         )
 
-    def _generate_torch_dataset (self, source_data: Dict[BaseSource], experiments: ExperimentDataset | List[ExperimentDataset], data_type: str):
+    def _generate_torch_dataset (self, source_data: Dict[str, BaseSource], experiments: ExperimentDataset | List[ExperimentDataset], data_type: str):
         if not isinstance(experiments, list):
             experiments = [experiments]
         exp_roles = [e.role for e in experiments]
