@@ -125,7 +125,7 @@ if __name__ == "__main__":
             concat_dim='leadtime',
             combine='nested'
         ),
-        "xarray_concat_dim": "leadtime",
+        "xarray_concat_dim": "time",
         "xarray_concat_extra_args": dict(
             # combine_attrs='no_conflicts',
             # join='override',
