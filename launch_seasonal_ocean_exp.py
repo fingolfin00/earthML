@@ -21,11 +21,12 @@ if __name__ == "__main__":
 
     mld00_1 = Variable(name='mixed_layer_depth_0_01', unit='m')
     sss_oras5_an = Variable(longname='sea_surface_salinity', name='sosaline')
-    sss_cds_hc = Variable(longname='sea_surface_salinity', name='sosaline')
     sos_juno_fc = Variable(name='sos', levm=0, leadtime=Leadtime('leadtime', 'days', leadtime_days))
     sos_juno_an = Variable(name='sss_m', levm=0)
-    d14c = Variable(name='depth_of_14_c_isotherm', unit='m')
-    ssh = Variable(name='sea_surface_heigth_above_geoid', unit='m')
+    t14d_oras5_an = Variable(longname='depth_of_14_c_isotherm', name='so14chgt', unit='m')
+    t14d_juno_fc = Variable(name='t14d', leadtime=Leadtime('leadtime', 'days', leadtime_days))
+    ssh_oras5_an = Variable(name= 'ssh', longname='sea_surface_heigth_above_geoid', unit='m')
+    ssh_juno_fc = Variable(name='ssh', levm=0, leadtime=Leadtime('leadtime', 'days', leadtime_days))
 
     north_atl = Region(name="NorthAtlantic", lon=(-80, -20), lat=(60, 20))
     conus = Region(name="ConUS", lon=(-130, -90), lat=(45, 30))
