@@ -164,7 +164,8 @@ if __name__ == "__main__":
             # join='override',
             coords='minimal',
             compat='override',
-        )
+        ),
+        "earthkit_cache_dir": "/work/cmcc/jd19424/.earthkit-cache/",
     }
     from copy import deepcopy
     source_params_cds_ocean_target_operational = deepcopy(source_params_cds_ocean_target_consolidated)

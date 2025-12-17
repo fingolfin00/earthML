@@ -590,8 +590,13 @@ class EarthkitSource (BaseSource):
         xarray_concat_extra_args: dict = None,
         regrid_resolution=None,  # float or (lat_res, lon_res) in degrees
         regrid_vars=None,
+        earthkit_cache_dir=Path("/tmp/earthkit-cache/"),
     ):
         super().__init__ (datasource)
+
+        ekd.config.set("cache-policy", "user")
+        ekd.config.set("user-cache-directory", earthkit_cache_dir)
+
         self.elements.samples = self.date_range
         self.provider = provider
         self.dataset = dataset
