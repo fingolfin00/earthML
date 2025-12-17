@@ -11,6 +11,8 @@ from rich import print
 from abc import ABC, abstractmethod
 import dask
 from dask.distributed import wait
+from dask.utils import SerializableLock
+import numpy as np
 import cf_xarray
 import xarray as xr
 import pandas as pd
@@ -319,6 +321,7 @@ class JunoLocalSource (MFXarrayLocalSource):
         file_date_format: str,
         lead_time: relativedelta,
         both_data_and_previous_date_in_file: bool = True,
+        realizations: int | str = 1,
         minus_timedelta: timedelta = None,
         plus_timedelta: timedelta = None,
         concat_dim: str = None,
@@ -334,6 +337,7 @@ class JunoLocalSource (MFXarrayLocalSource):
             file_date_format,
             lead_time,
             both_data_and_previous_date_in_file,
+            realizations,
             minus_timedelta,
             plus_timedelta
         )
@@ -348,12 +352,14 @@ class JunoLocalSource (MFXarrayLocalSource):
         file_date_format: str,
         lead_time: relativedelta,
         both_data_and_previous_date_in_file: bool = True,
+        realizations: int | str = 1,
         minus_timedelta: relativedelta = None,
         plus_timedelta: relativedelta = None
     ) -> Sample:
         """Get the data filenames for the given data selection."""
 
         s = Sample(extra={"plus_samples": [], "minus_samples": []})
+        assert realizations == 'all' or realizations > 0
         for date in self.date_range:
             previous_date = date - lead_time
             data_path = self.path.joinpath(previous_date.strftime(file_path_date_format))
@@ -371,13 +377,18 @@ class JunoLocalSource (MFXarrayLocalSource):
             )
 
             if len(files_exact) > 1:
-                print(f"{date}: {len(files_exact)} matches, keeping {files_exact[:1]}")
-                files_exact = files_exact[:1]  # keep latest only, still a list
+                if realizations == 'all':
+                    r = len(files_exact)
+                else:
+                    r = realizations
+                print(f"{date}: {len(files_exact)} matches")
+                # print(f"{date}: {len(files_exact)} matches, keeping {files_exact[:r]}")
+                files_exact = files_exact[:r]  # keep latest only, still a list
             # print(f"{date}, path:", files_exact)
 
             # Try direct match first
             if files_exact:
-                s.samples[date] = files_exact[0]
+                s.samples[date] = files_exact
                 continue
 
             # Fallback search
@@ -396,7 +407,11 @@ class JunoLocalSource (MFXarrayLocalSource):
                     test_files = [p for p in data_path.glob(test_glob) if p.is_file()]
                     # print(f"New file {delta}: {test_files}")
                     if test_files:
-                        s.samples[date] = test_files[0]
+                        if realizations == 'all':
+                            r = len(test_files)
+                        else:
+                            r = realizations
+                        s.samples[date] = test_files[:r]
                         # s.samples.extend(test_files)
                         store.append(date)
                         found = True
@@ -411,48 +426,134 @@ class JunoLocalSource (MFXarrayLocalSource):
     def _get_data (self) -> xr.Dataset:
         # years = [str(date.year) for date in xr.date_range(start=data.period.start, end=data.period.end, freq='YS', inclusive='left')]
         # print(f"{self.source_name} missed dates: {self.elements.missed}")
-        samples = [s for date, s in self.elements.samples.items() if date not in self.elements.missed]
+        samples = [s for date, s in self.elements.samples.items() if date not in self.elements.missed] # list of lists
+        dates = [date for date in self.elements.samples.keys() if date not in self.elements.missed]
         print(f"Samples: {len(samples)}, minus: {len(self.elements.extra['minus_samples'])}, plus: {len(self.elements.extra['plus_samples'])}, missed: {len(self.elements.missed)}")
+        samples_d = {}
+        lock = SerializableLock()
+        if not hasattr(self, "concat_dim"): # backward compat
+            self.concat_dim = None
         common_args = {
-            "paths": samples,
             "combine": "nested" if self.concat_dim else "by_coords",
-            "concat_dim": self.concat_dim,
-            "coords": "different", # ["time"],
+            "concat_dim": "realization",
+            "coords": "minimal" if (self.elements.extra['minus_samples'] or self.elements.extra['plus_samples']) else "different", # ["time"],
             # if minus/plus_samples time coordinate stepping might be irregular so override
             "compat": "override" if (self.elements.extra['minus_samples'] or self.elements.extra['plus_samples']) else "no_conflicts",
             "engine": self.engine,
-            "chunks": {"time": -1},
-            # "chunks": "auto",  # {}, {"time": 1}
+            # "chunks": {'time': -1},
+            "chunks": "auto",
             "parallel": True,
             "decode_timedelta": True,
             "backend_kwargs": {},
             "preprocess": partial(self._preprocess, data=self.data_selection),
             "decode_cf": True,
             "errors": "warn",
+            "lock": lock,
         }
-        if isinstance(self.data_selection.variable, list):
-            var_ds_list = []
-            for var in self.data_selection.variable:
+         # backward compat for old experiments without realization support
+        if not isinstance(samples[0], list):
+            # print(samples)
+            print("Engine:", self.engine)
+            common_args['paths'] = samples
+            common_args["concat_dim"] = self.concat_dim
+            common_args["decode_times"] = False
+            if isinstance(self.data_selection.variable, list):
+                var_ds_list = []
+                for var in self.data_selection.variable:
+                    if self.engine == "cfgrib":
+                        common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": var.name}} # not currently possible to filter with a list of keys (see https://github.com/ecmwf/cfgrib/issues/138)
+                        common_args["indexpath"] = ""
+                    # untested support for netcdf4
+                    common_args["preprocess"] = partial(self._preprocess, data=self.data_selection, var_name=var.name)
+                    var_ds_list.append(xr.open_mfdataset(**common_args))
+                # lat_res, lon_res = get_ds_resolution(var_ds_list[0])
+                # print(f"Native resolutions ({self.data_selection.variable[0]}): lat {lat_res:.2f}, lon {lon_res:.2f}")
+                ds = subset_ds(self.data_selection, xr.merge(
+                    var_ds_list,
+                    compat="no_conflicts",
+                    combine_attrs="no_conflicts"
+                ))
+                # Load time coord
+                if self.concat_dim in ds.coords:
+                    ds = ds.assign_coords({self.concat_dim: ds[self.concat_dim].load()})
+            else:
                 if self.engine == "cfgrib":
-                    common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": var.name}} # not currently possible to filter with a list of keys (see https://github.com/ecmwf/cfgrib/issues/138)
+                    common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": self.data_selection.variable.name}}
                     common_args["indexpath"] = ""
-                # untested support for netcdf4
-                common_args["preprocess"] = partial(self._preprocess, data=self.data_selection, var_name=var.name)
-                var_ds_list.append(xr.open_mfdataset(**common_args))
-            ds = subset_ds(self.data_selection, xr.merge(
-                var_ds_list,
-                compat="no_conflicts",
-                combine_attrs="no_conflicts"
-            ))
+                # Tested support for netcdf4
+                ds = xr.open_mfdataset(**common_args)
+                # lat_res, lon_res = get_ds_resolution(ds_sample)
+                # print(f"Native resolutions: lat {lat_res:.2f}, lon {lon_res:.2f}")
+                ds = subset_ds(self.data_selection, ds)
+                # Load time coord
+                if self.concat_dim in ds_sample.coords:
+                    ds = ds.assign_coords({self.concat_dim: ds[self.concat_dim].load()})
+
         else:
-            if self.engine == "cfgrib":
-                common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": self.data_selection.variable.name}}
-                common_args["indexpath"] = ""
-            # Tested support for netcdf4
-            ds = xr.open_mfdataset(**common_args)
-            lat_res, lon_res = get_ds_resolution(ds)
-            print(f"Native resolutions: lat {lat_res:.2f}, lon {lon_res:.2f}")
-            ds = subset_ds(self.data_selection, ds)
+            for sample, date in zip(samples, dates):
+                assert isinstance(sample, list), f"Sample should be a list but it is {type(sample)}"
+                # print(sample)
+                common_args['paths'] = sample
+                common_args["concat_dim"] = "realization"
+                if isinstance(self.data_selection.variable, list):
+                    var_ds_list = []
+                    for var in self.data_selection.variable:
+                        if self.engine == "cfgrib":
+                            common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": var.name}} # not currently possible to filter with a list of keys (see https://github.com/ecmwf/cfgrib/issues/138)
+                            common_args["indexpath"] = ""
+                        # untested support for netcdf4
+                        common_args["preprocess"] = partial(self._preprocess, data=self.data_selection, var_name=var.name)
+                        var_ds_list.append(xr.open_mfdataset(**common_args))
+                    # lat_res, lon_res = get_ds_resolution(var_ds_list[0])
+                    # print(f"Native resolutions ({self.data_selection.variable[0]}): lat {lat_res:.2f}, lon {lon_res:.2f}")
+                    ds_sample = subset_ds(self.data_selection, xr.merge(
+                        var_ds_list,
+                        compat="no_conflicts",
+                        combine_attrs="no_conflicts"
+                    ))
+                    # Load time coord
+                    if self.concat_dim in ds_sample.coords:
+                        ds_sample = ds_sample.assign_coords({self.concat_dim: ds_sample[self.concat_dim].load()})
+                else:
+                    if self.engine == "cfgrib":
+                        common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": self.data_selection.variable.name}}
+                        common_args["indexpath"] = ""
+                    # Tested support for netcdf4
+                    ds_sample = xr.open_mfdataset(**common_args)
+                    # lat_res, lon_res = get_ds_resolution(ds_sample)
+                    # print(f"Native resolutions: lat {lat_res:.2f}, lon {lon_res:.2f}")
+                    ds_sample = subset_ds(self.data_selection, ds_sample)
+                    # Load time coord
+                    if self.concat_dim in ds_sample.coords:
+                        ds_sample = ds_sample.assign_coords({self.concat_dim: ds_sample[self.concat_dim].load()})
+
+                samples_d[date] = ds_sample
+
+            # Combine realizations
+            samples_len = [ds.sizes.get("realization", 1) for ds in samples_d.values()]
+            # print(f"Samples length: {samples_len}")
+            min_R = min(samples_len)
+            for date, ds in samples_d.items():
+                if "realization" in ds.dims:
+                    dsR = ds.isel(realization=slice(0, min_R))
+                    # Wipe realization coord info
+                    R = dsR.sizes["realization"]
+                    samples_d[date] = dsR.assign_coords(realization=np.arange(R))
+            # for d in list(sorted(samples_d))[:3]:
+            #     ds = samples_d[d]
+            #     print(d, ds.sizes.get("realization"), ds.coords.get("realization").values, ds.coords["realization"].dtype)
+            times = np.array(sorted(samples_d.keys()), dtype="datetime64[ns]")
+            objs = [samples_d[d] for d in sorted(samples_d)]
+            ds = xr.concat(
+                objs=objs,
+                dim=xr.IndexVariable(self.concat_dim, times) if self.concat_dim in ('time', 'valid_time', 'time_counter') else self.concat_dim,
+                compat="broadcast_equals",
+                join='exact',
+                combine_attrs='drop_conflicts'
+            )
+
+        lat_res, lon_res = get_ds_resolution(ds)
+        print(f"Horizontal resolutions: lat {lat_res:.2f}, lon {lon_res:.2f}")
 
         # Regrid if required
         if self.regrid_resolution is not None:
