@@ -194,6 +194,14 @@ class XarrayLocalSource (BaseSource):
 
     def _get_data (self) -> xr.Dataset:
         self.ds = xr.open_dataset(self.path, **self.xarray_args)
+        if self.elements.missed:
+            time_coord = _guess_coord_name(self.ds, "time", ["valid_time", "time_counter"])
+            for var in self.ds:
+                print(self.ds[var].shape)
+            # self.ds[time_coord] = [d for d in self.date_range if d not in self.elements.missed]
+            self.ds[time_coord] = self.date_range
+            print(self.ds[time_coord])
+            self.ds = self.ds.drop_sel({time_coord: list(self.elements.missed)})
         return self.ds
 
 class MFXarrayLocalSource (BaseSource):
