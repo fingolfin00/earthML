@@ -20,6 +20,7 @@ from pathlib import Path
 from functools import partial
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
+from dateutil.rrule import rrule, MONTHLY
 # from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from zarr.codecs import BloscCodec
@@ -612,15 +613,21 @@ class EarthkitSource (BaseSource):
         self.regrid_resolution = regrid_resolution
         self.var_name_list = [v.name for v in self.data_selection.variable] if isinstance(self.data_selection.variable, list) else [self.data_selection.variable.name]
         self.regrid_vars = regrid_vars if regrid_vars is not None else self.var_name_list
-        # Populate missed if some months are skipped for seasonal requests
-        if self.request_type == "seasonal":
-            self.elements.missed = set()
-            current = self.data_selection.period.start
 
-            while current <= self.data_selection.period.end:
-                if f"{current.month:02d}" in self.split_month_jump:
-                    self.elements.missed.add(current)
-                current += timedelta(days=1)
+        self._populate_missed()
+
+    def _populate_missed (self):
+        """Populate missed if some months are skipped for seasonal requests"""
+        if self.request_type == "seasonal":
+            start = self.data_selection.period.start
+            end = self.data_selection.period.end
+            skip_months = set(self.split_month_jump)
+
+            self.elements.missed = {
+                dt for dt in rrule(MONTHLY, dtstart=start, until=end) # TODO we only support monthly seasonal datasets
+                if f"{dt.month:02d}" in skip_months
+            }
+
 
 
     def _get_data (self):
