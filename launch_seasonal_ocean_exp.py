@@ -25,7 +25,8 @@ if __name__ == "__main__":
     sos_juno_an = Variable(name='sss_m', levm=0)
     t14d_oras5_an = Variable(longname='depth_of_14_c_isotherm', name='so14chgt', unit='m')
     t14d_juno_fc = Variable(name='t14d', leadtime=Leadtime('leadtime', 'days', leadtime_days))
-    ssh_oras5_an = Variable(name= 'ssh', longname='sea_surface_heigth_above_geoid', unit='m')
+    ssh_oras5_an = Variable(name= 'sossheig', longname='sea_surface_height', unit='m')
+    ssh_cds_fc = Variable(name= 'ssh', longname='sea_surface_height_above_geoid', leadtime=Leadtime('leadtime', 'days', leadtime_days), unit='m')
     ssh_juno_fc = Variable(name='ssh', levm=0, leadtime=Leadtime('leadtime', 'days', leadtime_days))
 
     north_atl = Region(name="NorthAtlantic", lon=(-80, -20), lat=(60, 20))
