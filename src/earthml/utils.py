@@ -281,9 +281,6 @@ def subset_ds (
 
     This runs once on the full combined dataset, not per file.
     """
-    # -------------------------------------------------------------------------
-    # 1. Level / leadtime selection setup
-    # -------------------------------------------------------------------------
     # Leadtime selection
     leadtime = data_selection.variable.leadtime
     leadtime_sel_d = {}
@@ -309,53 +306,60 @@ def subset_ds (
     level_value = next((lv for lv in (levhpa, levm) if lv is not None), None)
     level_sel_d = _dim_selection(ds, "vertical", ["level", "z"], level_value)
 
-    # -------------------------------------------------------------------------
-    # 2. Requested region as floats
-    # -------------------------------------------------------------------------
     lon_req = np.array(data_selection.region.lon, dtype=float)
     lat_req = np.array(data_selection.region.lat, dtype=float)
 
     lon_min_req, lon_max_req = float(lon_req.min()), float(lon_req.max())
     lat_min_req, lat_max_req = float(lat_req.min()), float(lat_req.max())
 
-    # -------------------------------------------------------------------------
-    # 3. Lon/lat coordinate discovery
-    # -------------------------------------------------------------------------
+    # Lon/lat coordinate discovery
     lon_coord = _guess_coord_name(ds, "longitude", ["lon", "nav_lon"])
     lat_coord = _guess_coord_name(ds, "latitude", ["lat", "nav_lat"])
     if lon_coord is None or lat_coord is None:
         raise ValueError("Could not determine longitude/latitude coordinate names")
-
-    lon_da = ds[lon_coord]
-    lat_da = ds[lat_coord]
-
-    lon_vals = lon_da.values
-    lat_vals = lat_da.values
-
-    print(f"Fields shape lon: {lon_da.shape}, lat: {lat_da.shape}")
-
-    lon_grid_min = float(np.nanmin(lon_vals))
-    lon_grid_max = float(np.nanmax(lon_vals))
-    lat_grid_min = float(np.nanmin(lat_vals))
-    lat_grid_max = float(np.nanmax(lat_vals))
-
-    # -------------------------------------------------------------------------
-    # 4. normalize requested longitude to grid convention
-    # -------------------------------------------------------------------------
-
-    lon_min_req, lon_max_req = _normalize_lon_bounds(
-        lon_min_req, lon_max_req, lon_grid_min
-    )
-
-    # -------------------------------------------------------------------------
-    # 5. Rectilinear vs curvilinear detection
-    # -------------------------------------------------------------------------
+    lat_da, lon_da = ds[lat_coord], ds[lon_coord]
+    # Get coordinate extremes
+    (lon_grid_min, lon_grid_max), (lat_grid_min, lat_grid_max) = _get_grid_extremes(ds, lon_coord, lat_coord)
+    # Normalize request to ds grid
+    lon_min_req, lon_max_req = _normalize_lon_bounds(lon_min_req, lon_max_req, lon_grid_min)
+    # Rectilinear vs curvilinear detection
     is_rectilinear = (
         lon_da.ndim == 1
         and lat_da.ndim == 1
         and lon_coord in ds.indexes
         and lat_coord in ds.indexes
     )
+    grid_type = "rectilinear" if is_rectilinear else "curvilinear"
+    # print(
+    #     f"{grid_type} grid, limits: "
+    #     f"lon ({lon_grid_min}, {lon_grid_max}), "
+    #     f"lat ({lat_grid_min}, {lat_grid_max})"
+    # )
+    # print(
+    #     f"lon requested: ({lon_min_req}, {lon_max_req}), "
+    #     f"lat requested: ({lat_min_req}, {lat_max_req})"
+    # )
+    # print(ds)
+    # Roll if request crosses longitude cut-line (like dateline or Greenwich)
+    ds = _roll_ds(ds, (lon_min_req, lon_max_req))
+    # if 'sosaline' in ds.data_vars:
+    #     quickplot(ds, 'sosaline', "/data/cmcc/jd19424/ML/experiments_earthML/", 'subset_ds_after_roll.png')
+    (lon_grid_min, lon_grid_max), (lat_grid_min, lat_grid_max) = _get_grid_extremes(ds, lon_coord, lat_coord)
+    lon_dim = _guess_dim_name(ds, 'longitude', ['lon', 'x'])
+    _, cutting_lon = _get_cutting_lon(lon_da, lon_dim, (lon_min_req, lon_max_req))
+    # print(f"subset_ds, cutting lon: {cutting_lon}")
+    lon_min_req, lon_max_req = _wrap_longitudes((lon_min_req, lon_max_req), cutting_lon)
+    # print(ds)
+    # print(
+    #     f"{grid_type} grid, limits (after rolling): "
+    #     f"lon ({lon_grid_min}, {lon_grid_max}), "
+    #     f"lat ({lat_grid_min}, {lat_grid_max})"
+    # )
+    # print(
+    #     f"lon requested (after rolling): ({lon_min_req}, {lon_max_req}), "
+    #     f"lat requested (after rolling): ({lat_min_req}, {lat_max_req})"
+    # )
+    lat_da, lon_da = ds[lat_coord], ds[lon_coord]
 
     # For final logging
     sel_lon_min = None
@@ -363,18 +367,9 @@ def subset_ds (
     sel_lat_min = None
     sel_lat_max = None
 
-    # -------------------------------------------------------------------------
-    # 6. Rectilinear grid selection
-    # -------------------------------------------------------------------------
     if is_rectilinear:
-        print(
-            "Rectilinear grid, limits: "
-            f"lon ({lon_grid_min}, {lon_grid_max}), "
-            f"lat ({lat_grid_min}, {lat_grid_max})"
-        )
-
         # Respect latitude orientation (south->north or north->south)
-        lat_vals_1d = lat_vals
+        lat_vals_1d = lat_da.values
         if lat_vals_1d[0] < lat_vals_1d[-1]:
             # south -> north
             lat_slice = (lat_min_req, lat_max_req)
@@ -384,7 +379,10 @@ def subset_ds (
 
         lon_slice = (lon_min_req, lon_max_req)
 
-        print(f"Lon requested {lon_slice}, lat requested {lat_slice}")
+        # print(
+        #     f"lat requested after reorientation {lon_slice}, "
+        #     f"lat requested after reorientation {lat_slice})"
+        # )
 
         selection_d = {
             lon_coord: _normalize_bounds(lon_slice),
@@ -399,7 +397,7 @@ def subset_ds (
             ds = xr.concat([ds1, ds2], dim=lon_coord)
             selection_d.pop(lon_coord, None)
 
-        print(f"Selection: {selection_d}")
+        # print(f"Selection: {selection_d}")
         if selection_d:
             ds = ds.sel(**selection_d)
 
@@ -409,35 +407,25 @@ def subset_ds (
         sel_lat_min = float(np.nanmin(ds[lat_coord].values))
         sel_lat_max = float(np.nanmax(ds[lat_coord].values))
 
-    # -------------------------------------------------------------------------
-    # 7. Curvilinear grid selection (2D lon/lat)
-    # -------------------------------------------------------------------------
+    # Curvilinear grid
     else:
-        print(
-            "Curvilinear grid, limits: "
-            f"lon ({lon_grid_min}, {lon_grid_max}), "
-            f"lat ({lat_grid_min}, {lat_grid_max})"
-        )
-
-        print(
-            f"Lon requested ({lon_min_req}, {lon_max_req}), "
-            f"lat requested ({lat_min_req}, {lat_max_req})"
-        )
-
-        # Longitude mask (with possible dateline crossing)
+        # Longitude mask (with possible cutline crossing)
         if lon_min_req <= lon_max_req:
             lon_mask = (lon_da >= lon_min_req) & (lon_da < lon_max_req)
         else:
+            # print("Subset: cutline crossing")
             lon_mask = (lon_da >= lon_min_req) | (lon_da < lon_max_req)
 
         # Latitude mask
         lat_mask = (lat_da >= lat_min_req) & (lat_da < lat_max_req)
 
         mask = (lon_mask & lat_mask).load()  # Dask-safe
+        # print(mask)
 
         # For logging: compute extents from the masked coordinates
         masked_lon = lon_da.where(mask)
         masked_lat = lat_da.where(mask)
+        # quickplot(mask, '', "/data/cmcc/jd19424/ML/experiments_earthML/", 'mask.png')
 
         if np.all(np.isnan(masked_lon)):
             raise ValueError("No longitude points in requested region.")
@@ -457,20 +445,18 @@ def subset_ds (
         if selection_d:
             ds = ds.sel(**selection_d)
 
-    # -------------------------------------------------------------------------
-    # 8. Final sanity check / logging
-    # -------------------------------------------------------------------------
+    # Final sanity check
     if ds[lon_coord].size == 0 or ds[lat_coord].size == 0:
         raise ValueError(
             "Subset resulted in an empty dataset. "
             "Requested region may not overlap the dataset."
         )
 
-    print(
-        "Selected limits "
-        f"lon: ({sel_lon_min}, {sel_lon_max}), "
-        f"lat: ({sel_lat_min}, {sel_lat_max})"
-    )
+    # print(
+    #     "Selected limits "
+    #     f"lon: ({sel_lon_min}, {sel_lon_max}), "
+    #     f"lat: ({sel_lat_min}, {sel_lat_max})"
+    # )
 
     return ds
 
