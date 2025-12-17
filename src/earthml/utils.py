@@ -796,6 +796,13 @@ def regrid_to_rectilinear (
 
     lon0_norm, lon1_norm = _normalize_lon_bounds(lon0, lon1, lon_grid_min)
 
+    if "sosaline" in src_ds.data_vars:
+        quickplot(src_ds, "sosaline", "/data/cmcc/jd19424/ML/experiments_earthML/", "before_regrid.png")
+    # Roll if request crosses longitude cut-line (like dateline or Greenwich)
+    # src_ds = _roll_ds(src_ds, (lon0_norm, lon1_norm))
+    # if "sosaline" in src_ds.data_vars:
+    #     quickplot(src_ds, "sosaline", "/data/cmcc/jd19424/ML/experiments_earthML/", "rolled_sosaline.png")
+
     # --- Resolution handling ---------------------------------------------
     if isinstance(resolution, (tuple, list)):
         lat_res, lon_res = float(resolution[0]), float(resolution[1])
@@ -843,13 +850,20 @@ def regrid_to_rectilinear (
             method="linear",
         )
 
+        # Bilinear inpainting on the rectilinear grid using index positions
+        regridded = (
+            regridded
+            .interpolate_na(dim=lat_name, method="linear", use_coordinate=False)
+            .interpolate_na(dim=lon_name, method="linear", use_coordinate=False)
+        )
+
         # Force coords exactly to our target (avoid tiny FP diffs)
         regridded = regridded.assign_coords(
             {lat_name: lat_tgt_da, lon_name: lon_tgt_da}
         )
         return regridded
 
-    # ===== Case 2: curvilinear source (2D lat/lon) → rectilinear target =====
+    # ===== Case 2: curvilinear (2D) source (lat/lon 2D) → rectilinear (1D) target =====
     print("Regrid: curvilinear (2D) source → rectilinear (1D) target via scipy.griddata.")
 
     if lat_da.ndim != 2 or lon_da.ndim != 2:
@@ -860,20 +874,20 @@ def regrid_to_rectilinear (
 
     y_dim_src, x_dim_src = lat_da.dims  # e.g. ("y", "x")
 
-    # Source grid as flat points
-    lat_src_2d = lat_da.values
+    lat_src_2d = lat_da.values  # [Ny_src, Nx_src]
     lon_src_2d = lon_da.values
-    points = np.column_stack([
-        lon_src_2d.ravel(),
-        lat_src_2d.ravel(),
-    ])  # [Nsrc, 2]
+
+    # Ny_src, Nx_src = lat_src_2d.shape
+
+    # Flatten source coords
+    lat_flat = lat_src_2d.ravel()
+    lon_flat = lon_src_2d.ravel()
+
+    points = np.column_stack([lon_flat, lat_flat])
 
     # Target grid as flat xi
     lon_out_2d, lat_out_2d = np.meshgrid(lon_target, lat_target)  # [Ny, Nx]
-    xi = np.column_stack([
-        lon_out_2d.ravel(),
-        lat_out_2d.ravel(),
-    ])  # [Ntgt, 2]
+    xi = np.column_stack([lon_out_2d.ravel(), lat_out_2d.ravel()])  # [Ntgt, 2]
 
     data_vars_out = {}
 
@@ -883,7 +897,6 @@ def regrid_to_rectilinear (
             continue
 
         if y_dim_src not in da.dims or x_dim_src not in da.dims:
-            # not a field on the spatial grid
             data_vars_out[name] = da
             continue
 
@@ -894,7 +907,7 @@ def regrid_to_rectilinear (
             *[d for d in da.dims if d not in (y_dim_src, x_dim_src)],
             y_dim_src, x_dim_src,
         )
-        data_np = da_spatial.values  # NumPy array
+        data_np = da_spatial.values  # [..., Ny_src, Nx_src]
 
         leading_dims = da_spatial.dims[:-2]
         leading_shape = data_np.shape[:-2]
@@ -904,18 +917,13 @@ def regrid_to_rectilinear (
 
         out_slices = []
         for i in range(arr.shape[0]):
-            zi = arr[i, :]
+            zi = arr[i, :]          # [Nsrc]
 
-            # Linear interp
-            zi_interp = griddata(points, zi, xi, method="linear")
+            zi_interp = griddata(points, zi, xi, method="linear")  # [Ntgt]
 
-            # Fill NaNs with nearest
-            if np.any(np.isnan(zi_interp)):
-                zi_nn = griddata(points, zi, xi, method="nearest")
-                mask = np.isnan(zi_interp)
-                zi_interp[mask] = zi_nn[mask]
+            zi_interp_2d = zi_interp.reshape(Ny, Nx)
 
-            out_slices.append(zi_interp.reshape(Ny, Nx))
+            out_slices.append(zi_interp_2d)
 
         out = np.stack(out_slices, axis=0).reshape(
             *leading_shape,
@@ -923,10 +931,8 @@ def regrid_to_rectilinear (
             Nx,
         )
 
-        # Output dims: keep leading dims, then (lat_name, lon_name)
         out_dims = leading_dims + (lat_name, lon_name)
 
-        # Coords: copy leading coords from src, and new lat/lon
         out_coords = {
             **{d: da_spatial.coords[d] for d in leading_dims if d in da_spatial.coords},
             lat_name: xr.DataArray(lat_target, dims=(lat_name,)),
@@ -939,6 +945,22 @@ def regrid_to_rectilinear (
             coords=out_coords,
             attrs=da.attrs,
         )
+
+        da_out = xr.DataArray(
+            out,
+            dims=out_dims,
+            coords=out_coords,
+            attrs=da.attrs,
+        )
+
+        # Bilinear inpainting on the rectilinear grid using index positions
+        da_out = (
+            da_out
+            .interpolate_na(dim=lat_name, method="linear", use_coordinate=False)
+            .interpolate_na(dim=lon_name, method="linear", use_coordinate=False)
+        )
+
+        data_vars_out[name] = da_out
 
     # Dataset coords: keep non-lat/lon coords from src, override lat/lon
     coord_out = {
