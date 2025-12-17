@@ -185,7 +185,7 @@ class XarrayLocalSource (BaseSource):
         self,
         datasource: DataSource,
         root_path: str | Path,
-        xarray_args: dict = None
+        xarray_args: dict = None,
     ):
         super().__init__ (datasource)
         self.path = Path(root_path)
@@ -266,7 +266,7 @@ class MFXarrayLocalSource (BaseSource):
             )
 
         lon_coord, lat_coord = get_lonlat_coords(ds)
-        # print("Lon coord:", lon_coord, ", lat coord:", lat_coord)
+        # print("Time coord", time_coord, "Lon coord:", lon_coord, ", lat coord:", lat_coord)
         # if ds[lon_coord].ndim > 1:
         #     print(ds[lon_coord].values)
 
@@ -358,9 +358,9 @@ class JunoLocalSource (MFXarrayLocalSource):
             previous_date = date - lead_time
             data_path = self.path.joinpath(previous_date.strftime(file_path_date_format))
             if both_data_and_previous_date_in_file:
-                data_glob = f"{file_header}{previous_date.strftime(file_date_format)}{file_suffix}"
-            else:
                 data_glob = f"{file_header}{previous_date.strftime(file_date_format)}{date.strftime(file_date_format)}{file_suffix}"
+            else:
+                data_glob = f"{file_header}{previous_date.strftime(file_date_format)}{file_suffix}"
             # print(f"{date}, glob:", data_path / data_glob)
 
             # files_exact = [p for p in data_path.glob(data_glob) if p.is_file()]
@@ -389,7 +389,10 @@ class JunoLocalSource (MFXarrayLocalSource):
                     (plus_timedelta, s.extra['plus_samples']),
                 ]:
                     test_date = date + delta
-                    test_glob = f"{file_header}{previous_date.strftime(file_date_format)}{test_date.strftime(file_date_format)}*"
+                    if both_data_and_previous_date_in_file:
+                        test_glob = f"{file_header}{previous_date.strftime(file_date_format)}{test_date.strftime(file_date_format)}{file_suffix}"
+                    else:
+                        test_glob = f"{file_header}{previous_date.strftime(file_date_format)}{file_suffix}" # TODO look better into this
                     test_files = [p for p in data_path.glob(test_glob) if p.is_file()]
                     # print(f"New file {delta}: {test_files}")
                     if test_files:
