@@ -244,9 +244,11 @@ def _normalize_lon_bounds(lon_min, lon_max, grid_min):
     if grid_min >= 0 and lon_min < 0:
         lon_min = (lon_min + 360.0) % 360.0
         lon_max = (lon_max + 360.0) % 360.0
-    elif grid_min < 0 and lon_max > 180.0:
+    elif (grid_min < 0 and lon_max > 180.0) or (grid_min < 0 and lon_min < -180.0):
         lon_min = ((lon_min + 180.0) % 360.0) - 180.0
         lon_max = ((lon_max + 180.0) % 360.0) - 180.0
+    # else:
+    #     print("Unmanaged lon bound normalization")
 
     return lon_min, lon_max
 
