@@ -10,6 +10,7 @@ from torchmetrics import MeanAbsoluteError, MeanSquaredError, Metric
 from torchmetrics.image import SpatialCorrelationCoefficient
 # import matplotlib.pyplot as plt
 import matplotlib.cm as cm
+from .utils import _guess_dim_name
 
 class EarthMLLightningModule (L.LightningModule):
     def __init__ (self, use_first_input=False):
@@ -470,6 +471,7 @@ class Normalize:
 
         # Avoid divide-by-zero for channels with no valid data
         count = count.clamp(min=1)
+        print(f"Normalization, masked count: {count}")
 
         # Masked mean
         sum_vals = (data * mask).sum(dim=(0, 2, 3), keepdim=True)
@@ -548,9 +550,9 @@ class Normalize:
 
         # Remove time dimension because we call this in Dataset __getitem__
         x = self._norm(x, epsilon=epsilon).squeeze(0)
-        # print(f"X after norm type: {type(x)} and shape: {x.shape}")
+        # print(f"X normalized shape: {x.shape}, mean: {x.mean()}, std: {x.std()}")
         y = self._norm(y, epsilon=epsilon).squeeze(0)
-        # print(f"Y after norm type: {type(y)} and shape: {y.shape}")
+        # print(f"Y normalized shape: {y.shape}, mean: {y.mean()}, std: {y.std()}")
         return x, y
 
 class XarrayDataset (Dataset):
@@ -568,23 +570,85 @@ class XarrayDataset (Dataset):
         self.transform = transform
         self.transform_args = transform_args or {}
 
-        x_np = self.input_ds.to_array().to_numpy()      # with NaNs where masked
-        mask_x_np = np.isfinite(x_np)                   # True where valid, False where masked
+        x_np = self._transpose_dims_ds_to_da(self.input_ds).to_numpy()
+        assert len(x_np.shape) > 3 and len(x_np.shape) < 6, f"Input has shape {x_np.shape}"
+        # if x_np.ndim == 5 and x_np.shape[1] == 1:
+        #     x_np = x_np.squeeze(1)          # C,T,H,W squeeze R dimension if present
+        mask_x_np = np.isfinite(x_np)       # True where valid, False where masked
         x_np_filled = np.where(mask_x_np, x_np, 0.0)
-        y_np = self.target_ds.to_array().to_numpy()     # with NaNs where masked
-        mask_y_np = np.isfinite(y_np)                   # True where valid, False where masked
+        y_np = self._transpose_dims_ds_to_da(self.target_ds).to_numpy()
+        assert len(y_np.shape) > 3 and len(y_np.shape) < 6, f"Target has shape {y_np.shape}"
+        # if y_np.ndim == 5 and y_np.shape[1] == 1:
+        #     y_np = y_np.squeeze(1)
+        mask_y_np = np.isfinite(y_np)
         y_np_filled = np.where(mask_y_np, y_np, 0.0)
         # print(f"Dataset x mean: {np.nanmean(x_np)}, std: {np.nanstd(x_np)}")
         # print(f"Dataset y mean: {np.nanmean(y_np)}, std: {np.nanstd(y_np)}")
 
-        self.x = torch.tensor(x_np_filled, dtype=torch.float32).permute(1, 0, 2, 3)
-        self.x_mask = torch.tensor(mask_x_np, dtype=torch.bool).permute(1, 0, 2, 3)
-        self.y = torch.tensor(y_np_filled, dtype=torch.float32).permute(1, 0, 2, 3)
-        self.y_mask = torch.tensor(mask_y_np, dtype=torch.bool).permute(1, 0, 2, 3)
+        # Realizations
+        if len(x_np.shape) == 5: # C,T,R,H,W
+            self.x = torch.tensor(x_np_filled, dtype=torch.float32).flatten(start_dim=1, end_dim=2).permute(1, 0, 2, 3) # (T*R),C,H,W
+            self.x_mask = torch.tensor(mask_x_np, dtype=torch.bool).flatten(start_dim=1, end_dim=2).permute(1, 0, 2, 3)
+        else: # C,T,H,W
+            if len(y_np.shape) == 5: # C,T,R,H,W
+                R = y_np.shape[2]
+                x = torch.tensor(x_np_filled, dtype=torch.float32)      # C,T,H,W
+                x = x.unsqueeze(2).repeat(1, 1, R, 1, 1)                # C,T,R,H,W
+                self.x = x.flatten(1, 2).permute(1, 0, 2, 3)            # (T*R),C,H,W
+                x_mask = torch.tensor(mask_x_np, dtype=torch.bool)      # C,T,H,W
+                x_mask = x_mask.unsqueeze(2).repeat(1, 1, R, 1, 1)      # C,T,R,H,W
+                self.x_mask = x_mask.flatten(1, 2).permute(1, 0, 2, 3)  # (T*R),C,H,W
+            else:
+                self.x = torch.tensor(x_np_filled, dtype=torch.float32).permute(1, 0, 2, 3) # T,C,H,W
+                self.x_mask = torch.tensor(mask_x_np, dtype=torch.bool).permute(1, 0, 2, 3)
+        if len(y_np.shape) == 5:
+            self.y = torch.tensor(y_np_filled, dtype=torch.float32).flatten(start_dim=1, end_dim=2).permute(1, 0, 2, 3)
+            self.y_mask = torch.tensor(mask_y_np, dtype=torch.bool).flatten(start_dim=1, end_dim=2).permute(1, 0, 2, 3)
+        else:
+            if len(x_np.shape) == 5: # C,R,T,H,W
+                R = x_np.shape[2]
+                y = torch.tensor(y_np_filled, dtype=torch.float32)      # C,T,H,W
+                y = y.unsqueeze(2).repeat(1, 1, R, 1, 1)                # C,T,R,H,W
+                self.y = y.flatten(1, 2).permute(1, 0, 2, 3)            # (T*R),C,H,W
+                y_mask = torch.tensor(mask_y_np, dtype=torch.bool)
+                y_mask = y_mask.unsqueeze(2).repeat(1, 1, R, 1, 1)
+                self.y_mask = y_mask.flatten(1, 2).permute(1, 0, 2, 3)
+            else:
+                self.y = torch.tensor(y_np_filled, dtype=torch.float32).permute(1, 0, 2, 3)
+                self.y_mask = torch.tensor(mask_y_np, dtype=torch.bool).permute(1, 0, 2, 3)
 
         # self.x = torch.tensor(self.input_ds.to_array().values, dtype=torch.float32).permute(1, 0, 2, 3)
         # self.y = torch.tensor(self.target_ds.to_array().values, dtype=torch.float32).permute(1, 0, 2, 3)
         assert len(self.x) == len(self.y), f"Mismatched dataset length: x={len(self.x)}, y={len(self.y)}"
+
+    @staticmethod
+    def _transpose_dims_ds_to_da (ds: xr.Dataset) -> xr.DataArray:
+        da = ds.to_array()
+        required_dims = {
+            'time': _guess_dim_name(ds, "time", ['valid_time', 'time_counter']),
+            'y': _guess_dim_name(ds, "y", ['lat', 'latitude', 'nav_lat']),
+            'x': _guess_dim_name(ds, "x", ['lon', 'longitude', 'nav_lon']),
+        }
+        if set(required_dims.values()) - set(da.dims):
+            raise ValueError(f"Unexpected dims: {da.dims}")
+
+        if 'realization' in da.dims and da.ndim == 5:
+            return da.transpose(
+                "variable",
+                required_dims['time'],
+                "realization",
+                required_dims['y'],
+                required_dims['x'],
+            )
+        elif 'realization' not in da.dims and da.ndim == 4:
+            return da.transpose(
+                "variable",
+                required_dims['time'],
+                required_dims['y'],
+                required_dims['x'],
+            )
+        else:
+            return da
 
     def __len__ (self):
         return len(self.x)
