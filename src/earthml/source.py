@@ -793,10 +793,10 @@ class EarthkitSource (BaseSource):
                 )
                 request_time_args_list.append(request_time_args)
             elif self.request_type == "seasonal":
-                request_time_args = dict(
-                    year=xr.date_range(start=start, end=end, freq="YS").strftime("%Y").tolist(),
-                )
                 for m in months_splitted:
+                    request_time_args = dict(
+                        year=xr.date_range(start=start, end=end, freq="YS").strftime("%Y").tolist(),
+                    )
                     if "month" not in self.request_extra_args:
                         request_time_args['month'] = m
                     request_time_args_list.append(request_time_args)
