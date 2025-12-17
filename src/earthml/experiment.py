@@ -306,7 +306,15 @@ class ExperimentMLFC:
             per_epoch_replit=False
         )
         # Train
-        self._init_train_trainer().fit(self.model, datamodule=self.train_datamodule)
+        trainer = self._init_train_trainer()
+        ckpt_path = Path(self.ckpt_path) if Path(self.ckpt_path).exists() else None
+        if ckpt_path is None:
+            print("Starting training from scratch")
+        trainer.fit(
+            self.model,
+            datamodule=self.train_datamodule,
+            ckpt_path=ckpt_path,
+        )
 
     def test (self, weights_filename=None):
         test_dataset = self._generate_torch_dataset(self.source_test_data, self.config.test, 'Test')
