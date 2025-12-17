@@ -21,7 +21,7 @@ from lightning.pytorch.loggers import TensorBoardLogger
 # Local imports
 from .source import SourceRegistry, BaseSource
 from .dataclasses import ExperimentDataset, ExperimentConfig, DataSource
-from .utils import Table, print_ds_info
+from .utils import Table, print_ds_info, _guess_dim_name
 from .lightning import XarrayDataset, Normalize, EpochRandomSplitDataModule
 from .nets.smaatunet import SmaAt_UNet
 
@@ -376,8 +376,24 @@ class ExperimentMLFC:
     def save (self, data: torch.Tensor, metadata_source: xr.Dataset):
         """Convert torch.Tensor to xarray.Dataset using metadata_source as ds metadata and save it to Zarr storage"""
         meta_ds = self.source_test_data[metadata_source].load()
+        # Permute data to have channels (variables) as first dim
+        data_permuted = data.permute(1, 0, 2, 3)
+        meta_ds_ndims = [meta_ds[var.name].ndim for var in self.test_var_list]
+        meta_ds_shapes = [meta_ds[var.name].shape for var in self.test_var_list]
+        if len(set(meta_ds_ndims)) > 1:
+            raise ValueError(f"Unhandled mixed dimensions {meta_ds_ndims} for vars {self.test_var_list}")
+        print(f"Input dataset shape: {len(meta_ds_ndims)},{meta_ds_shapes[0]}, permuted pred tensor shape: {data_permuted.shape}")
+        # if len(self.test_dataloader. input_tensor.shape) == 4: # C,T,H,W
+        #     T = input_tensor.shape[1]
+        #     R = 1
+        if meta_ds_ndims[0] == 4: # T,R,H,W
+            T = meta_ds[_guess_dim_name(meta_ds, 'time', ['valid_time', 'time_counter'])].size
+            R = meta_ds[_guess_dim_name(meta_ds, 'realization')].size
+            data_permuted = data_permuted.unflatten(1, (T,R))
+        else:
+            raise ValueError(f"Unexpected meta dataset shape: {len(meta_ds_ndims)},{meta_ds_shapes[0]}")
         ds = xr.Dataset(
-            {var.name: (meta_ds[var.name].dims, data[:,i,:,:].cpu().numpy()) for i, var in enumerate(self.test_var_list)},
+            {var.name: (meta_ds[var.name].dims, data_permuted[i].cpu().numpy()) for i, var in enumerate(self.test_var_list)},
             coords={c: meta_ds.coords[c] for c in meta_ds.coords},
             attrs=meta_ds.attrs,
         )
