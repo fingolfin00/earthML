@@ -973,6 +973,56 @@ def regrid_to_rectilinear (
     out_ds = xr.Dataset(data_vars_out, coords=coord_out, attrs=src_ds.attrs)
     return out_ds
 
+def _inpaint_nans_bilinear_2d(arr_2d):
+    """
+    Inpaint NaNs in a 2D array using bilinear interpolation in index space.
+    This is: linear along rows, then along columns. Works on a regular grid.
+    """
+    import numpy as np
+    from scipy.interpolate import griddata
+
+    if not np.isnan(arr_2d).any():
+        return arr_2d
+
+    ny, nx = arr_2d.shape
+    jj, ii = np.meshgrid(np.arange(nx), np.arange(ny))  # (ny, nx)
+
+    mask_valid = ~np.isnan(arr_2d)
+    if mask_valid.sum() < 4:
+        # Not enough valid points to do any meaningful bilinear interpolation
+        return arr_2d
+
+    pts_valid = np.column_stack([
+        ii[mask_valid].ravel(),
+        jj[mask_valid].ravel(),
+    ])
+    vals_valid = arr_2d[mask_valid].ravel()
+
+    pts_all = np.column_stack([
+        ii.ravel(),
+        jj.ravel(),
+    ])
+
+    arr_interp = griddata(
+        pts_valid,
+        vals_valid,
+        pts_all,
+        method="linear",
+    ).reshape(ny, nx)
+
+    # If still NaNs (e.g., outside convex hull), fall back to nearest
+    if np.isnan(arr_interp).any():
+        arr_nn = griddata(
+            pts_valid,
+            vals_valid,
+            pts_all,
+            method="nearest",
+        ).reshape(ny, nx)
+        mask = np.isnan(arr_interp)
+        arr_interp[mask] = arr_nn[mask]
+
+    return arr_interp
+
 def _build_torch_sampling_grid(lat_src, lon_src, lat_tgt, lon_tgt, device):
     """
     Build a grid for torch.nn.functional.grid_sample.
