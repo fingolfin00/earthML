@@ -614,6 +614,7 @@ class EarthkitSource (BaseSource):
         self.var_name_list = [v.name for v in self.data_selection.variable] if isinstance(self.data_selection.variable, list) else [self.data_selection.variable.name]
         self.regrid_vars = regrid_vars if regrid_vars is not None else self.var_name_list
 
+        self._create_leadtime_dict()
         self._populate_missed()
 
     def _populate_missed (self):
@@ -628,7 +629,43 @@ class EarthkitSource (BaseSource):
                 if f"{dt.month:02d}" in skip_months
             }
 
+    def _create_leadtime_dict (self):
+        vars_ = (
+            self.data_selection.variable
+            if isinstance(self.data_selection.variable, list)
+            else [self.data_selection.variable]
+        )
 
+        leadtime_pairs = []
+
+        for v in vars_:
+            lt = getattr(v, "leadtime", None)
+            if lt is None:
+                continue
+
+            # resolve timedelta
+            if hasattr(lt, "value") and hasattr(lt, "unit"):
+                td = pd.to_timedelta(f"{lt.value} {lt.unit}")
+            else:
+                td = pd.to_timedelta(lt)
+
+            name = getattr(lt, "name", "leadtime")
+            leadtime_pairs.append((name, td))
+
+        if not leadtime_pairs:
+            self.leadtime_d = {}
+        else:
+            names = {n for n, _ in leadtime_pairs}
+            times = {t for _, t in leadtime_pairs}
+
+            if len(names) > 1 or len(times) > 1:
+                raise ValueError(
+                    f"Leadtime inconsistent across variables: "
+                    f"names={sorted(names)}, leadtimes={sorted(times)}"
+                )
+
+            name, td = leadtime_pairs[0]
+            self.leadtime_d = {name: td}
 
     def _get_data (self):
         # samples = list(self.elements['samples'].values())
@@ -672,7 +709,39 @@ class EarthkitSource (BaseSource):
                 )
                 ds_chunk = ekd.from_source(self.provider, self.dataset, **request_d).to_xarray(**self.xarray_args)
                 # print(ds_chunk)
+
+                if self.leadtime_d:
+                    print(f"Using leadtime {self.leadtime_d}")
+                    td = next(iter(self.leadtime_d.values()))
+                    leadtime_name = next(iter(self.leadtime_d.keys()))
+                    if "leadtime" in ds_chunk.coords and td is not None:
+                        lt_values = ds_chunk[leadtime_name].values
+                        unique_lt = np.unique(lt_values)
+                        # coord_u = np.unique(coord)
+                        # Cast to same dtype as coord (usually timedelta64[ns])
+                        coord_dtype = ds_chunk[leadtime_name].dtype
+                        target = td.to_numpy().astype(coord_dtype)
+                        nearest_lt = unique_lt[np.argmin(np.abs(unique_lt - target))]
+                        mask = (lt_values == nearest_lt)
+                        ds_sel = ds_chunk.isel({leadtime_name: mask})
+                        if "realization" in ds_sel.coords and "realization" not in ds_sel.dims:
+                            # keep old realization as metadata
+                            ds_sel = ds_sel.assign_attrs(source_realization=str(ds_sel["realization"].values))
+                            ds_sel = ds_sel.drop_vars("realization")
+                        ds_sel = ds_sel.rename({leadtime_name: "realization"})
+                        ds_sel = ds_sel.assign_coords(realization=np.arange(ds_sel.sizes["realization"]))
+                        ds_sel = ds_sel.assign_coords({leadtime_name: nearest_lt})
+                        if "time" in ds_sel.coords and "realization" in ds_sel["time"].dims:
+                            t = ds_sel["time"].values
+                            if np.all(t == t[0]):
+                                ds_sel = ds_sel.assign_coords(time=t[0])
+                            else:
+                                # if not identical, pick one (or decide a rule)
+                                ds_sel = ds_sel.assign_coords(time=t[0])
+                        # make time a 1-length dimension for concat
+                        ds_chunk = ds_sel.expand_dims(time=[ds_sel["time"].item()])
                 xarray_concat_dim = ds_chunk.cf['time'].name if not self.xarray_concat_dim else self.xarray_concat_dim
+                # print(xarray_concat_dim)
                 ds_chunks.append(ds_chunk)
             return xarray_concat_dim, ds_chunks
 
