@@ -252,6 +252,22 @@ def _normalize_lon_bounds(lon_min, lon_max, grid_min):
 
     return lon_min, lon_max
 
+def _get_grid_extremes (ds: xr.Dataset, lon_coord, lat_coord) -> tuple:
+    lon_da = ds[lon_coord]
+    lat_da = ds[lat_coord]
+
+    lon_vals = lon_da.values
+    lat_vals = lat_da.values
+
+    # print(f"Fields shape lon: {lon_da.shape}, lat: {lat_da.shape}")
+
+    lon_grid_min = float(np.nanmin(lon_vals))
+    lon_grid_max = float(np.nanmax(lon_vals))
+    lat_grid_min = float(np.nanmin(lat_vals))
+    lat_grid_max = float(np.nanmax(lat_vals))
+
+    return (lon_grid_min, lon_grid_max), (lat_grid_min, lat_grid_max)
+
 def subset_ds (
     data_selection: DataSelection,
     ds: xr.Dataset,
