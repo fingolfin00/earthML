@@ -743,6 +743,41 @@ def _build_target_rect_grid (region, resolution):
 
     return lat_vals.astype("float32"), lon_vals.astype("float32")
 
+def _wrap_longitudes(lon, center):
+    """
+    Wrap longitudes into a continuous interval centered at `center`,
+    i.e. (center - 180, center + 180].
+    """
+    return ((lon - center + 180.0) % 360.0) - 180.0 + center
+
+def _get_cutting_lon (lon_da: xr.DataArray, lon_dim: str, req_lon: tuple) -> tuple:
+    if lon_da.ndim == 1: # rectilinear
+        lon1d = lon_da.values
+    elif lon_da.ndim == 2: # regular curvilinear
+        non_lon_dims = [d for d in lon_da.dims if d != lon_dim]
+        lon1d = lon_da.mean(dim=non_lon_dims).values
+    else:
+        raise ValueError(f"Not supporting rolling if DataArray dimension > 2: {lon_da.ndim}")
+    idx = int(np.abs(lon1d - req_lon[0]).argmin())
+    cutting_lon_idx = idx - 1
+    cutting_lon = lon1d[cutting_lon_idx]
+    return cutting_lon_idx, cutting_lon
+
+def _roll_ds (ds: xr.Dataset, req_lon: tuple) -> xr.Dataset:
+    if req_lon[0] < req_lon[1]: # nothing to do
+        return ds
+
+    lon_coord, lat_coord = get_lonlat_coords(ds)
+    lon_dim = _guess_dim_name(ds, 'longitude', ['lon', 'x'])
+    lon_da, lat_da = ds[lon_coord], ds[lat_coord]
+
+    cutting_lon_idx, cutting_lon = _get_cutting_lon(lon_da, lon_dim, req_lon)
+    # print(f"_roll_ds: req_lon {req_lon}, cutting_lon_idx: {cutting_lon_idx}, cutting_lon: {cutting_lon}")
+    # print(f"_roll_ds: lon_da.sizes {lon_da.sizes}, lat_da.sizes: {lat_da.sizes}")
+
+    ds = ds.assign_coords(**{lon_coord: _wrap_longitudes(ds[lon_coord], cutting_lon)})
+    return ds.roll(**{lon_dim: cutting_lon_idx}, roll_coords=True)
+
 def regrid_to_rectilinear (
     src_ds: xr.Dataset,
     region,
