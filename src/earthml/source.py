@@ -776,6 +776,7 @@ class EarthkitSource (BaseSource):
                     raise ValueError(f"Unsupported earthkit request type {self.request_type}")
                 xarray_concat_dim, ds_chunks = _fetch_chunks(request_time_args_list, y1, y2, request_args | self.request_extra_args)
                 datasets.extend(ds_chunks)
+
             # Combine all datasets
             ds_all = xr.concat(
                 datasets,
@@ -814,7 +815,7 @@ class EarthkitSource (BaseSource):
         # Drop missing samples
         xarray_concat_dim = ds_all.cf['time'].name if not self.xarray_concat_dim else self.xarray_concat_dim
         if self.elements.missed:
-            ds_all = ds_all.drop_sel({xarray_concat_dim: list(self.elements.missed)})
+            ds_all = ds_all.drop_sel({xarray_concat_dim: list(self.elements.missed)}, errors='ignore')
 
         # Select area if necessary
         if self.select_area_after_request:
