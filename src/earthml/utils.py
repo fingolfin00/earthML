@@ -1272,6 +1272,31 @@ def regrid_torch_or_scipy (input_ds: xr.Dataset, target_ds: xr.Dataset, vars_to_
     out_ds = xr.Dataset(data_vars_out, coords=coord_out, attrs=target_ds.attrs)
     return out_ds
 
+import matplotlib.pyplot as plt
+def quickplot (ds, varname="", folder="./", filename="rolled.png", t_idx=0):
+    """Quick diagnostic plot of a 2D field in ds."""
+    da = ds[varname] if isinstance(ds, xr.Dataset) else ds
+
+    # Select time slice
+    while da.ndim > 2:
+        da = da.isel({da.dims[0]: t_idx})
+
+    # Get lon/lat
+    lon_coord, lat_coord = get_lonlat_coords(ds)
+    lon = ds[lon_coord]
+    lat = ds[lat_coord]
+
+    plt.figure(figsize=(10,5))
+    plt.pcolormesh(lon, lat, da, shading="auto")
+    plt.colorbar(label=varname)
+    plt.title(f"{varname}")
+    plt.xlabel("Longitude")
+    plt.ylabel("Latitude")
+    plt.tight_layout()
+    name, _, ext = filename.rpartition('.')
+    plt.savefig(f"{folder}/{name}_{t_idx}.{ext}", dpi=150)
+    plt.close()
+
 def print_ds_info (
     ds: xr.Dataset,
     quantiles: Optional[Sequence[float]] = None,
