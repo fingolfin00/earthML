@@ -24,8 +24,8 @@ from zarr.codecs import BloscCodec
 import earthkit.data as ekd
 # Local imports
 from .dataclasses import DataSource, DataSelection, Sample
-from .utils import generate_date_range, _guess_dim_name, get_lonlat_coords, get_ds_resolution, \
-    generate_hours, subset_ds, regrid_to_rectilinear, print_ds_info
+from .utils import generate_date_range, _guess_dim_name, _guess_coord_name, get_lonlat_coords, get_ds_resolution, \
+    generate_hours, subset_ds, regrid_to_rectilinear, print_ds_info, quickplot
 
 class SourceRegistry:
     def __init__ (self, source_name: str):
@@ -207,8 +207,8 @@ class MFXarrayLocalSource (BaseSource):
         self.path = Path(root_path)
         self.concat_dim = concat_dim
 
+    @staticmethod
     def _preprocess(
-        self,
         ds: xr.Dataset,
         data: DataSelection,
         var_name: str | None = None,
@@ -234,22 +234,23 @@ class MFXarrayLocalSource (BaseSource):
         # If we have a leadtime axis, we often want to use that name directly
         if leadtime is not None:
             # e.g. leadtime.name == "leadtime"
-            time_dim = _guess_dim_name(ds, leadtime.name)
+            time_coord = _guess_coord_name(ds, leadtime.name)
         else:
             # Fall back to CF time / common time dim names
-            time_dim = _guess_dim_name(ds, "time", ["valid_time", "time_counter"])
+            time_coord = _guess_coord_name(ds, "time", ["valid_time", "time_counter"])
 
-        if not time_dim:
-            raise ValueError("Could not find a time dimension or CF time axis")
+        if not time_coord:
+            print("Could not find a time coord or CF time axis, try to assign it")
 
+        # print("time coord", time_coord)
         # --- Ensure this dimension exists in ds.dims --------------------
         # Some files may have a scalar time coordinate: make it a length-1 dimension
-        if time_dim not in ds.dims and time_dim in ds.coords:
-            coord = ds[time_dim]
-            ds = ds.expand_dims({time_dim: [coord.values]})
+        if time_coord not in ds.dims and time_coord in ds.coords:
+            coord = ds[time_coord]
+            ds = ds.expand_dims({time_coord: [coord.values]})
             ds = ds.assign_coords(
                 **{
-                    time_dim: ds[time_dim].assign_attrs(
+                    time_coord: ds[time_coord].assign_attrs(
                         standard_name="time",
                         axis="T",
                     )
