@@ -704,34 +704,64 @@ class EarthkitSource (BaseSource):
             """Helper to fetch chunked datasets using ekd"""
             ds_chunks = []
             for req_time_arg in request_time_args_list:
-                print(f" → Fetching chunk: {start:%Y-%m-%d} to {end:%Y-%m-%d} {req_time_arg['month']}")
+                months_req = req_time_arg['month'] if isinstance(req_time_arg['month'], list) else [req_time_arg['month']]
+                n_months_req = len(months_req)
+                print(f" → Fetching chunk: {start:%Y-%m-%d} to {end:%Y-%m-%d} {months_req}")
                 request_d = dict(
                     **request_other_args,
                     **req_time_arg,
                 )
                 ds_chunk = ekd.from_source(self.provider, self.dataset, **request_d).to_xarray(**self.xarray_args)
-                # print(ds_chunk)
+                print(f"   Chunk size: {ds_chunk.sizes}")
+                # print(f"   Chunk coords: {ds_chunk.coords}")
 
                 if self.leadtime_d:
-                    print(f"Using leadtime {self.leadtime_d}")
                     td = next(iter(self.leadtime_d.values()))
                     leadtime_name = next(iter(self.leadtime_d.keys()))
-                    if "leadtime" in ds_chunk.coords and td is not None:
+                    # TODO we currently support only the case with 'time' coord to infer realizations
+                    if "leadtime" in ds_chunk.coords and 'time' in ds_chunk.coords and td is not None:
+                        print(f"   Using leadtime {self.leadtime_d}")
                         lt_values = ds_chunk[leadtime_name].values
                         unique_lt = np.unique(lt_values)
+                        time_values = ds_chunk['time'].values
+                        unique_time = np.unique(time_values)
+                        n_unique_time = len(unique_time)
+                        n_leadtime = n_unique_time - n_months_req + 1
+                        print(f"   leadtimes detected: {n_leadtime}")
+                        n_realizations = len(lt_values) / n_months_req / n_leadtime
+                        assert n_realizations.is_integer(), f"Number of realizations cannot be computed, check the dataset"
+                        n_realizations = int(n_realizations)
+                        print(f"   realizations detected: {n_realizations}")
                         # coord_u = np.unique(coord)
                         # Cast to same dtype as coord (usually timedelta64[ns])
                         coord_dtype = ds_chunk[leadtime_name].dtype
                         target = td.to_numpy().astype(coord_dtype)
+                        # print(f"   requested leadtime {target}")
                         nearest_lt = unique_lt[np.argmin(np.abs(unique_lt - target))]
+                        print(f"   selected leadtime {pd.Timedelta(nearest_lt)}")
                         mask = (lt_values == nearest_lt)
+                        # print(f"   leadtime sel mask: {mask}")
+                        # print(f"   total leadtimes: {lt_values}")
                         ds_sel = ds_chunk.isel({leadtime_name: mask})
+                        # print(f"   Size after leadtime sel: {ds_sel.sizes}")
+                        n_sel_lt = len(ds_sel['leadtime'].values)
+                        n_sel_re = n_sel_lt / n_months_req
+                        assert n_sel_re.is_integer() and int(n_sel_re) == n_realizations, f"Number of realizations not coherent, try single-month requests"
+                        # print(f"   Coords after leadtime sel: {ds_sel.coords}")
+                        re_values = ds_sel['leadtime'].values
+                        # unique_re = np.unique(re_values)
+                        # print(f"   Total leadtimes: {len(lt_values)}, times: {len(time_values)}, realizations: {re_values}")
+                        # print(f"   Unique leadtimes: {len(unique_lt)}, times: {len(unique_time)}, realizations: {unique_re}")
+                        # print(f"   Uniques leadtimes: {unique_lt}")
+                        # print(f"   Uniques times: {unique_time}")
+                        # print(unique_lt)
+                        # print(unique_re)
                         if "realization" in ds_sel.coords and "realization" not in ds_sel.dims:
-                            # keep old realization as metadata
+                        # keep old realization as metadata
                             ds_sel = ds_sel.assign_attrs(source_realization=str(ds_sel["realization"].values))
                             ds_sel = ds_sel.drop_vars("realization")
                         ds_sel = ds_sel.rename({leadtime_name: "realization"})
-                        ds_sel = ds_sel.assign_coords(realization=np.arange(ds_sel.sizes["realization"]))
+                        ds_sel = ds_sel.assign_coords(realization=np.arange(len(re_values)))
                         ds_sel = ds_sel.assign_coords({leadtime_name: nearest_lt})
                         if "time" in ds_sel.coords and "realization" in ds_sel["time"].dims:
                             t = ds_sel["time"].values
@@ -742,6 +772,7 @@ class EarthkitSource (BaseSource):
                                 ds_sel = ds_sel.assign_coords(time=t[0])
                         # make time a 1-length dimension for concat
                         ds_chunk = ds_sel.expand_dims(time=[ds_sel["time"].item()])
+                        print(f"   Size after all processing: {ds_chunk.sizes}")
                 xarray_concat_dim = ds_chunk.cf['time'].name if not self.xarray_concat_dim else self.xarray_concat_dim
                 # print(xarray_concat_dim)
                 ds_chunks.append(ds_chunk)
