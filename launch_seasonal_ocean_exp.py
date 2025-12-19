@@ -109,11 +109,13 @@ if __name__ == "__main__":
         "dataset": "seasonal-monthly-ocean",
         "regrid_resolution": 0.25,
         "split_request": True,
-        "split_month": 2,
-        # "split_month_jump": ['03'], # CMCC missing march
+        "split_month": 1,
+        "split_month_jump": ['03'], #  CMCC and MeteoFrance missing March
         "request_type": "seasonal",
         "request_extra_args": dict(
             forecast_type="hindcast",
+            # originating_centre="cmcc",
+            # system="4",
             originating_centre="meteo_france",
             system="9",
             # grid=[.25, .25],
