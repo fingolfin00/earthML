@@ -11,9 +11,9 @@ logging.getLogger("distributed.scheduler").setLevel(logging.ERROR)
 # from earthml.manager import Launcher
 # from earthml.logging import Logger
 from earthml.utils import Dask
-from earthml.experiment import ExperimentMLFC
+from earthml.experiments import build_experiment
 from earthml.dataclasses import TimeRange, DataSelection, DataSource, ExperimentDataset, ExperimentConfig
-import earthml.catalog as catalog
+from earthml import catalog
 
 if __name__ == "__main__":
 
@@ -204,6 +204,6 @@ if __name__ == "__main__":
     client, cluster = dask_earthml.client, dask_earthml.cluster
     print("Dask dashboard:", client.dashboard_link)
 
-    experiment = ExperimentMLFC(experiment_cfg)
+    experiment = build_experiment("ML-forecast-correction", config=experiment_cfg)
     experiment.train()
     experiment.test()
