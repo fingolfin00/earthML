@@ -1,43 +1,31 @@
-# from earthml.manager import Launcher
-# from earthml.logging import Logger
-from earthml.utils import Dask
-from earthml.experiment import ExperimentMLFC
-from earthml.dataclasses import Region, Leadtime, Variable, TimeRange, DataSelection, DataSource, ExperimentDataset, ExperimentConfig
 from pathlib import Path
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 from rich import print
+
 import warnings, logging
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 logging.getLogger("distributed.scheduler").setLevel(logging.ERROR)
 
+from earthml.utils import Dask
+from earthml.experiment import ExperimentMLFC
+from earthml.dataclasses import TimeRange, DataSelection, DataSource, ExperimentDataset, ExperimentConfig
+import earthml.catalog as catalog
+
 if __name__ == "__main__":
-    dask_earthml = Dask(n_workers=None)
-    client, cluster = dask_earthml.client, dask_earthml.cluster
-    print("Dask dashboard:", client.dashboard_link)
 
+    # --------------------+
+    # Experiment settings |
+    # --------------------+
+
+    exp_root_folder = "/work/cmcc/jd19424/test-ML/experiments_earthML/"
+    # exp_root_folder = "/data/cmcc/jd19424/ML/experiments_earthML/"
+    # exp_suffix = "_32bs_juno_heteroloss"
+    exp_suffix = "_32bs_mse_allrel_ocean_cmcc_oras5"
     leadtime_days = 15
-
-    mld00_1 = Variable(name='mixed_layer_depth_0_01', unit='m')
-    sss_oras5_an = Variable(longname='sea_surface_salinity', name='sosaline')
-    sos_juno_fc = Variable(name='sos', levm=0, leadtime=Leadtime('leadtime', 'days', leadtime_days))
-    sos_juno_an = Variable(name='sss_m', levm=0)
-    t14d_oras5_an = Variable(longname='depth_of_14_c_isotherm', name='so14chgt', unit='m')
-    t14d_juno_fc = Variable(name='t14d', leadtime=Leadtime('leadtime', 'days', leadtime_days))
-    t17d_oras5_an = Variable(longname='depth_of_17_c_isotherm', name='so17chgt', unit='m')
-    t17d_juno_fc = Variable(name='t17d', leadtime=Leadtime('leadtime', 'days', leadtime_days))
-    t20d_oras5_an = Variable(longname='depth_of_20_c_isotherm', name='so20chgt', unit='m')
-    t20d_juno_fc = Variable(name='t20d', leadtime=Leadtime('leadtime', 'days', leadtime_days))
-    ssh_oras5_an = Variable(name= 'sossheig', longname='sea_surface_height', unit='m')
-    ssh_cds_fc = Variable(name= 'ssh', longname='sea_surface_height_above_geoid', leadtime=Leadtime('leadtime', 'days', leadtime_days), unit='m')
-    ssh_juno_fc = Variable(name='ssh', levm=0, leadtime=Leadtime('leadtime', 'days', leadtime_days))
-
-    north_atl = Region(name="NorthAtlantic", lon=(-80, -20), lat=(60, 20))
-    conus = Region(name="ConUS", lon=(-130, -90), lat=(45, 30))
-    europe = Region(name="Europe", lon=(-10, 36), lat=(55, 35))
-    italy = Region(name="ItalianPeninsula", lon=(5, 23.5), lat=(49, 25.5))
-    pacific = Region(name="CentralPacific", lon=(-200, -120), lat=(30, -30))
+    # input_src, target_src = 'juno-local', 'juno-local'
+    input_src, target_src = 'earthkit', 'earthkit'
 
     # Full experiment
     train_period = TimeRange(start=datetime(1995, 1, 1), end=datetime(2020, 12, 31), freq='MS', shifted=dict(days=leadtime_days))
@@ -51,20 +39,35 @@ if __name__ == "__main__":
     # train_period_after2014 = TimeRange(start=datetime(2015, 1, 1), end=datetime(2015, 12, 31), freq='MS', shifted=dict(days=leadtime_days))
     # test_period = TimeRange(start=datetime(2024, 1, 1), end=datetime(2024, 12, 31), freq='MS', shifted=dict(days=leadtime_days))
 
-    # var = [t2m, msl, u10, v10, d2m, tcc]
-    var_fc = sos_juno_fc
-    # var_fc = sss_cds_hc
-    # var_an = sos_juno_an
-    var_an = sss_oras5_an
-    region = pacific
+    cat = catalog.make_catalog(leadtime=leadtime_days, leadtime_unit='days')
+    # var_fc = cat.var.sos_juno_fc
+    # var_an = cat.var.sss_oras5_an
+    var_fc = cat.var.t20d_juno_fc
+    var_an = cat.var.t20d_oras5_an
+    region = cat.var.pacific
+
+    # ----------------------
+
     datasel_train_fc = DataSelection(variable=var_fc, region=region, period=train_period)
-    datasel_train_an_until2014 = DataSelection(variable=var_an, region=region, period=train_period_until2014)
-    datasel_train_an_after2014 = DataSelection(variable=var_an, region=region, period=train_period_after2014)
+    datasel_train_an = [
+        DataSelection(variable=var_an, region=region, period=train_period_until2014),
+        DataSelection(variable=var_an, region=region, period=train_period_after2014),
+    ]
     datasel_test_fc = DataSelection(variable=var_fc, region=region, period=test_period)
     datasel_test_an = DataSelection(variable=var_an, region=region, period=test_period)
 
+    datasource_train_fc = DataSource(source=input_src, data_selection=datasel_train_fc)
+    datasource_train_an = [
+        DataSource(source=target_src, data_selection=datasel_train_an[0]),
+        DataSource(source=target_src, data_selection=datasel_train_an[1]),
+    ]
+    datasource_test_fc = DataSource(source=input_src, data_selection=datasel_test_fc)
+    datasource_test_an = DataSource(source=target_src, data_selection=datasel_test_an)
+
+    source_params_fc, source_params_an = {}, {}
+
     realization = "*" # ensemble member
-    source_params_junolocal_ocean_input = {
+    source_params_fc['juno-local'] = {
         "root_path": "/work/cmcc/cp1/CMCC-CM/archive/C3S/",
         # "engine": "netcdf4",
         "engine": "h5netcdf",
@@ -83,7 +86,7 @@ if __name__ == "__main__":
     }
 
     realization = '*'
-    source_params_junolocal_ocean_target = {
+    source_params_an['juno-local'] = {
         # "root_path": "/work/cmcc/cp1/CMCC-CM/archive/C3S/",
         "root_path": "/data/cmcc/cp1/archive/IC/NEMO_CPS1",
         "engine": "netcdf4",
@@ -99,13 +102,13 @@ if __name__ == "__main__":
         "concat_dim": "time",
     }
 
-    source_params_cds_ocean_input = {
+    source_params_fc['earthkit'] = {
         "provider": "cds",
         "dataset": "seasonal-monthly-ocean",
         "regrid_resolution": 0.25,
         "split_request": True,
         "split_month": 2,
-        # "split_month_jump": ['03'],
+        # "split_month_jump": ['03'], # CMCC missing march
         "request_type": "seasonal",
         "request_extra_args": dict(
             forecast_type="hindcast",
@@ -137,7 +140,9 @@ if __name__ == "__main__":
             compat='override',
         )
     }
-    source_params_cds_ocean_target_consolidated = {
+
+    source_params_an['earthkit'] = [None, None]
+    source_params_an['earthkit'][0] = {
         "provider": "cds",
         "dataset": "reanalysis-oras5",
         "split_request": True,
@@ -173,56 +178,40 @@ if __name__ == "__main__":
         "earthkit_cache_dir": "/work/cmcc/jd19424/.earthkit-cache/",
     }
     from copy import deepcopy
-    source_params_cds_ocean_target_operational = deepcopy(source_params_cds_ocean_target_consolidated)
-    source_params_cds_ocean_target_operational["request_extra_args"]["product_type"] = "operational"
+    source_params_an['earthkit'][1] = deepcopy(source_params_an['earthkit'][0])
+    source_params_an['earthkit'][1]["request_extra_args"]["product_type"] = "operational"
 
     dataset_train_input = ExperimentDataset(
         role='input',
-        datasource=DataSource(source="juno-local", data_selection=datasel_train_fc),
-        source_params=source_params_junolocal_ocean_input,
-        # datasource=DataSource(source="earthkit", data_selection=datasel_train_fc),
-        # source_params=source_params_cds_ocean_input,
         save=True,
+        datasource=datasource_train_fc,
+        source_params=source_params_fc[input_src]
     )
     dataset_train_target = ExperimentDataset(
         role='target',
-        datasource=[
-            DataSource(source="earthkit", data_selection=datasel_train_an_until2014),
-            DataSource(source="earthkit", data_selection=datasel_train_an_after2014),
-        ],
-        source_params=[
-            source_params_cds_ocean_target_consolidated,
-            source_params_cds_ocean_target_operational
-        ],
         save=True,
-        # datasource=DataSource(source="juno-local", data_selection=datasel_train_an),
-        # source_params=source_params_junolocal_ocean_target,
+        datasource=datasource_train_an,
+        source_params=source_params_an[target_src],
     )
     dataset_test_input = ExperimentDataset(
         role='input',
-        datasource=DataSource(source="juno-local", data_selection=datasel_test_fc),
-        source_params=source_params_junolocal_ocean_input,
         save=True,
-        # datasource=DataSource(source="earthkit", data_selection=datasel_test_fc),
-        # source_params=source_params_cds_ocean_input,
+        datasource=datasource_test_fc,
+        source_params=source_params_fc[input_src]
     )
     dataset_test_target = ExperimentDataset(
         role='target',
-        datasource=DataSource(source="earthkit", data_selection=datasel_test_an),
-        source_params=source_params_cds_ocean_target_operational,
         save=True,
-        # datasource=DataSource(source="juno-local", data_selection=datasel_test_an),
-        # source_params=source_params_junolocal_ocean_target,
+        datasource=datasource_test_an,
+        source_params=source_params_an[target_src]
     )
-    exp_root_folder = "/work/cmcc/jd19424/test-ML/experiments_earthML/"
-    # exp_root_folder = "/data/cmcc/jd19424/ML/experiments_earthML/"
+
     # Use forecast for experiment naming
     exp_train_var =  ''.join([var.name for var in datasel_train_fc.variable] if isinstance(datasel_train_fc.variable, list) else [datasel_train_fc.variable.name])
     exp_test_var =  ''.join([var.name for var in datasel_test_fc.variable] if isinstance(datasel_test_fc.variable, list) else [datasel_test_fc.variable.name])
     exp_name = f"exp_{exp_train_var}-{datasel_train_fc.region.name}-{datasel_train_fc.period.start.strftime('%Y%m%d')}-{datasel_train_fc.period.end.strftime('%Y%m%d')}" \
                f"_{exp_test_var}-{datasel_test_fc.region.name}-{datasel_test_fc.period.start.strftime('%Y%m%d')}-{datasel_test_fc.period.end.strftime('%Y%m%d')}"
-    # exp_suffix = "_32bs_juno_heteroloss"
-    exp_suffix = "_32bs_mse_allrel_ocean_cmcc_oras5"
+
     exp_path = Path(exp_root_folder).joinpath(exp_name+exp_suffix)
     print(f"Experiment path: {exp_path}")
 
@@ -264,11 +253,15 @@ if __name__ == "__main__":
         earlystopping_patience=30,
         accumulate_grad_batches=2,
         # Dataset Parameters
-        lead_time="15d",
         train=[dataset_train_input, dataset_train_target],
         test=[dataset_test_input, dataset_test_target],
         # torch_preprocess_fn=preprocess_fix_salinity_analysis,
     )
+
+    # Dask init
+    dask_earthml = Dask(n_workers=None)
+    client, cluster = dask_earthml.client, dask_earthml.cluster
+    print("Dask dashboard:", client.dashboard_link)
 
     experiment = ExperimentMLFC(experiment_cfg)
     experiment.train()
