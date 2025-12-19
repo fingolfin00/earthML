@@ -115,7 +115,7 @@ if __name__ == "__main__":
             # month=["01", "02"]
             # format="netcdf"
         ),
-        "xarray_args": dict(
+        "to_xarray_args": dict(
             # engine="h5netcdf",
             decode_timedelta=True, # maybe dropped in the future
             data_vars='all',
@@ -150,7 +150,7 @@ if __name__ == "__main__":
             # grid=[1.0, 1.0],
             # format="netcdf"
         ),
-        "xarray_args": dict(
+        "to_xarray_args": dict(
             decode_timedelta=True,
             data_vars='all',
             combine="by_coords",

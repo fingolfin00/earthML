@@ -586,7 +586,7 @@ class EarthkitSource (BaseSource):
         select_area_after_request: bool = False,
         request_type: str = "subseasonal",
         request_extra_args: dict = None,
-        xarray_args: dict = None,
+        to_xarray_args: dict = None,
         xarray_concat_dim: str = None,
         xarray_concat_extra_args: dict = None,
         regrid_resolution=None,  # float or (lat_res, lon_res) in degrees
@@ -607,7 +607,7 @@ class EarthkitSource (BaseSource):
         self.select_area_after_request = select_area_after_request
         self.request_type = request_type
         self.request_extra_args = request_extra_args
-        self.xarray_args = xarray_args
+        self.to_xarray_args = to_xarray_args
         self.xarray_concat_dim = xarray_concat_dim
         self.xarray_concat_extra_args = xarray_concat_extra_args
         self.regrid_resolution = regrid_resolution
@@ -704,14 +704,16 @@ class EarthkitSource (BaseSource):
             """Helper to fetch chunked datasets using ekd"""
             ds_chunks = []
             for req_time_arg in request_time_args_list:
-                months_req = req_time_arg['month'] if isinstance(req_time_arg['month'], list) else [req_time_arg['month']]
-                n_months_req = len(months_req)
+                months_req = ""
+                if 'month' in req_time_arg:
+                    months_req = req_time_arg['month'] if isinstance(req_time_arg['month'], list) else [req_time_arg['month']]
+                    n_months_req = len(months_req)
                 print(f" → Fetching chunk: {start:%Y-%m-%d} to {end:%Y-%m-%d} {months_req}")
                 request_d = dict(
                     **request_other_args,
                     **req_time_arg,
                 )
-                ds_chunk = ekd.from_source(self.provider, self.dataset, **request_d).to_xarray(**self.xarray_args)
+                ds_chunk = ekd.from_source(self.provider, self.dataset, **request_d).to_xarray(**self.to_xarray_args)
                 print(f"   Chunk size: {ds_chunk.sizes}")
                 # print(f"   Chunk coords: {ds_chunk.coords}")
 

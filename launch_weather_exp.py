@@ -86,7 +86,7 @@ if __name__ == "__main__":
             # grid=[.1, .1],
             # format="netcdf"
         ),
-        "xarray_args": dict(
+        "to_xarray_args": dict(
             time_dim_mode="valid_time",
             chunks={"valid_time": 1},
             add_earthkit_attrs=False,
