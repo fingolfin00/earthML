@@ -4,6 +4,7 @@ from rich import print
 from rich.pretty import pprint
 from rich.table import Table as RichTable
 from rich.highlighter import ReprHighlighter
+from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 import cf_xarray
 import xarray as xr
@@ -467,14 +468,17 @@ def get_lonlat_coords (ds: xr.Dataset):
     if lat_coord is None: lat_coord = _guess_data_var_name(ds, "latitude", ["lat", "nav_lat"])
     return lon_coord, lat_coord
 
-def generate_hours (freq_str):
+def generate_hours (freq_str, output_type='string'):
     value = int(freq_str[:-1])
     if freq_str[-1] != 'h':
         raise ValueError("Only 'h' (hours) frequency supported")
     times = []
     current = datetime.strptime("00:00", "%H:%M")
     while current.hour < 24:
-        times.append(current.strftime("%H:%M"))
+        if output_type == 'int':
+            times.append(int(current.strftime("%H")))
+        else:
+            times.append(current.strftime("%H:%M"))
         current += timedelta(hours=value)
         if current.hour == 0:  # wrapped past midnight
             break
