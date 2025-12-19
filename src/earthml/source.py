@@ -179,7 +179,7 @@ class SumSource (BaseSource):
         ds_right_sel = ds_right_sel.drop_vars(list(only_right_coords), errors="ignore")
 
         # Concatenate lazily (xarray + dask)
-        ds_combined = xr.concat([ds_left, ds_right], dim=time_dim)
+        ds_combined = xr.concat([ds_left_sel, ds_right_sel], dim=time_dim)
 
         return ds_combined
 
