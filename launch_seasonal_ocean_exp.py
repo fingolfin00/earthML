@@ -46,7 +46,7 @@ if __name__ == "__main__":
     # var_an = cat.var.sss_oras5_an
     var_fc = cat.var.t20d_juno_fc
     var_an = cat.var.t20d_oras5_an
-    region = cat.var.pacific
+    region = cat.region.pacific
 
     # ----------------------
 
