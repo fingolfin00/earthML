@@ -1,50 +1,31 @@
-import os, time, copy, multiprocessing, pickle, joblib
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-# from datetime import datetime, timedelta
+import time, multiprocessing, joblib
 from pathlib import Path
-# from copy import deepcopy
-# from itertools import zip_longest
 from typing import List, Dict
 from rich import print
-# from rich.pretty import pprint
 from rich.console import Console
 import numpy as np
 import pandas as pd
 import xarray as xr
 from zarr.codecs import BloscCodec
-# from zarr.storage import ZipStore
 import torch
 from torch.utils.data import DataLoader
 import lightning as L
 from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
 from lightning.pytorch.loggers import TensorBoardLogger
-# Local imports
-from .source import SourceRegistry, BaseSource
-from .dataclasses import ExperimentDataset, ExperimentConfig, DataSource
-from .utils import Table, print_ds_info, _guess_dim_name
-from .lightning import XarrayDataset, Normalize, EpochRandomSplitDataModule
-from .nets.smaatunet import SmaAt_UNet
 
-torch.set_float32_matmul_precision('medium')  # or 'high'
-# Ensure deterministic behavior
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False 
-
-class ExperimentRegistry:
-    def __init__ (self, source_name: str):
-        self.class_registry = {
-            "ML-forecast-correction": ExperimentMLFC
-        }
-        self.source_name = source_name
-
-    def get_class (self):
-        return self.class_registry.get(self.source_name)
+from ..sources.registry import build_source
+from ..sources.base import BaseSource
+from ..dataclasses import ExperimentDataset, ExperimentConfig, DataSource
+from ..utils import Table, print_ds_info, _guess_dim_name
+from ..lightning import XarrayDataset, Normalize, EpochRandomSplitDataModule
+from ..nets.registry import build_net
 
 class ExperimentMLFC:
     def __init__(
         self,
         config: ExperimentConfig,
     ):
+        self._configure_torch_env()
         self.config = config
         self.rich_console = Console()
         # Get test variable list, TODO I have doubts on this implementation
@@ -60,9 +41,10 @@ class ExperimentMLFC:
         L.seed_everything(self.config.seed)
         # Tensorboard
         self.tl_logger = TensorBoardLogger(self.config.work_path, name="tensorboard_logs") # version=self.run_number
+
         # Initialize model
-        self.Net = globals()[self.config.net]
-        self.model = self.Net(
+        self.model = build_net(
+            self.config.net,
             learning_rate=self.config.learning_rate,
             loss=self.config.loss,
             loss_params=self.config.loss_params,
@@ -70,9 +52,10 @@ class ExperimentMLFC:
             supervised=self.config.supervised,
             **self.config.extra_net_args,
         ).to(self.device)
+
         # Log model info
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        print(f"Net {self.Net.__name__} trainable parameters: {trainable_params:,}")
+        print(f"Net {type(self.model).__name__} trainable parameters: {trainable_params:,}")
         # Init
         self.normalize = None
         self.train_datamodule = None
@@ -107,6 +90,16 @@ class ExperimentMLFC:
                 'train_data': self.source_train_data
             }, f)
 
+    def _configure_torch_env (self):
+        import os
+        os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+    def _configure_torch_runtime (self):
+        torch.set_float32_matmul_precision('medium')  # or 'high'
+        # Ensure deterministic behavior
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False 
+
     def _path_setup (self):
         self.work_path = Path(self.config.work_path)
         # Weights location
@@ -131,21 +124,24 @@ class ExperimentMLFC:
     def _init_source_data (self, exp_ds: ExperimentDataset | List[ExperimentDataset], source_type: str):
         """Returns populated Source instances"""
 
-        def _create_xarray_local_source (save_path: str | Path, datasource: DataSource):
-            Source = SourceRegistry("xarray-local").get_class()
+        def _create_xarray_local_source(save_path: str | Path, datasource_list: list[DataSource]):
             source_params = dict(
                 root_path=save_path,
                 xarray_args={
-                    'consolidated': self.consolidated_zarr,
-                    'decode_times': False
-                }
+                    "consolidated": self.consolidated_zarr,
+                    "decode_times": False,
+                },
             )
-            datasource_sum = sum(datasource)
+
+            datasource_sum = sum(datasource_list)
             datasource_sum.source = "xarray-local"
-            return source_params, Source(
+
+            src = build_source(
+                "xarray-local",
                 datasource=datasource_sum,
-                **source_params
+                **source_params,
             )
+            return source_params, src
 
         if not isinstance(exp_ds, list):
             exp_ds = [exp_ds]
@@ -153,6 +149,7 @@ class ExperimentMLFC:
         for e in exp_ds:
             datasource = e.datasource
             source_params = e.source_params
+            # Normalize to lists
             if not isinstance(datasource, list) and not isinstance(source_params, list):
                 datasource = [datasource]
                 source_params = [source_params]
@@ -161,14 +158,15 @@ class ExperimentMLFC:
                 xr_loc_source_params, sources[e.role] = _create_xarray_local_source(save_path, datasource)
                 self.rich_console.print(Table({f"Source '{sources[e.role].datasource.source}' {source_type} {e.role} params": xr_loc_source_params}, twocols=True).table)
             else:
-                sources_list, source_params_list = [], []
+                sources_list: list[BaseSource] = []
                 for i, (d, sp) in enumerate(zip(datasource, source_params)):
-                    Source = SourceRegistry(d.source).get_class()
-                    source_params_list.append(sp)
-                    sources_list.append(Source(
-                        datasource=d,
-                        **sp
-                    ))
+                    sources_list.append(
+                        build_source(
+                            d.source,
+                            datasource=d,
+                            **sp,
+                        )
+                    )
                     self.rich_console.print(Table({f"Source '{d.source}' {source_type} {e.role} [{i}] params": sp}, twocols=True).table)
                 sources[e.role] = sum(sources_list)
                 # Save datasets if requested
@@ -224,6 +222,7 @@ class ExperimentMLFC:
         return callbacks
 
     def _init_train_trainer (self):
+        self._configure_torch_runtime()
         # Initialize Lightning trainer
         return L.Trainer(
             max_epochs=self.config.epochs,
@@ -238,6 +237,7 @@ class ExperimentMLFC:
         )
 
     def _init_test_trainer (self):
+        self._configure_torch_runtime()
         return L.Trainer(
             max_epochs=self.config.epochs,
             precision="16-mixed",

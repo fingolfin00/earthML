@@ -4,7 +4,7 @@ from .dataclasses import Variable, Region, Leadtime
 def make_var (
         leadtime: int | None = None,
         leadtime_unit: str | None = None
-    ):
+):
     lt = None if leadtime is None and leadtime_unit is None else Leadtime("leadtime", leadtime_unit, leadtime)
 
     return SimpleNamespace(
@@ -53,7 +53,7 @@ def make_catalog (
         *,
         leadtime: int | None = None,
         leadtime_unit: str | None = None
-    ):
+):
     return SimpleNamespace(
         var=make_var(leadtime=leadtime, leadtime_unit=leadtime_unit),
         region=make_region(),
