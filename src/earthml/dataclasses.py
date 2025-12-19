@@ -139,7 +139,6 @@ class ExperimentConfig:
     earlystopping_patience: int
     accumulate_grad_batches: int
     # Dataset
-    lead_time: str
     train: ExperimentDataset | List[ExperimentDataset]
     test: ExperimentDataset | List[ExperimentDataset]
     # Optional
