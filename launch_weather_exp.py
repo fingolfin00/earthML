@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
@@ -14,6 +15,12 @@ from earthml.utils import Dask
 from earthml.experiments import build_experiment
 from earthml.dataclasses import TimeRange, DataSelection, DataSource, ExperimentDataset, ExperimentConfig
 from earthml import catalog
+
+def configure_ca_bundle():
+    bundle = Path.home() / "certs" / "earthml-ca-bundle.pem"
+    if bundle.is_file():
+        os.environ["REQUESTS_CA_BUNDLE"] = str(bundle)
+        os.environ["SSL_CERT_FILE"] = str(bundle)
 
 if __name__ == "__main__":
 
@@ -203,6 +210,9 @@ if __name__ == "__main__":
     dask_earthml = Dask(n_workers=None)
     client, cluster = dask_earthml.client, dask_earthml.cluster
     print("Dask dashboard:", client.dashboard_link)
+
+    if input_src == 'earthkit' or target_src == 'earthkit':
+        configure_ca_bundle()
 
     experiment = build_experiment("ML-forecast-correction", config=experiment_cfg)
     experiment.train()
