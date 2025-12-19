@@ -579,7 +579,7 @@ class EarthkitSource (BaseSource):
         self,
         datasource: DataSource,
         provider: str,
-        dataset: str,
+        dataset: str = None,
         split_request: bool = False,
         split_month: int = 12,
         split_month_jump: list = None,
@@ -713,7 +713,10 @@ class EarthkitSource (BaseSource):
                     **request_other_args,
                     **req_time_arg,
                 )
-                ds_chunk = ekd.from_source(self.provider, self.dataset, **request_d).to_xarray(**self.to_xarray_args)
+                if self.dataset:
+                    ds_chunk = ekd.from_source(self.provider, self.dataset, **request_d).to_xarray(**self.to_xarray_args)
+                else:
+                    ds_chunk = ekd.from_source(self.provider, **request_d).to_xarray(**self.to_xarray_args)
                 print(f"   Chunk size: {ds_chunk.sizes}")
                 # print(f"   Chunk coords: {ds_chunk.coords}")
 
