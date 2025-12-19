@@ -23,6 +23,8 @@ if __name__ == "__main__":
     # exp_root_folder = "/data/cmcc/jd19424/ML/experiments_earthML/"
     # exp_suffix = "_32bs_juno_heteroloss"
     exp_suffix = "_32bs_mse_allrel_ocean_cmcc_oras5"
+    earthkit_cache_dir = "/work/cmcc/jd19424/.earthkit-cache/"
+
     leadtime_days = 15
     # input_src, target_src = 'juno-local', 'juno-local'
     input_src, target_src = 'earthkit', 'earthkit'
@@ -138,7 +140,8 @@ if __name__ == "__main__":
             # join='override',
             coords='minimal',
             compat='override',
-        )
+        ),
+        "earthkit_cache_dir": earthkit_cache_dir,
     }
 
     source_params_an['earthkit'] = [None, None]
@@ -175,7 +178,7 @@ if __name__ == "__main__":
             coords='minimal',
             compat='override',
         ),
-        "earthkit_cache_dir": "/work/cmcc/jd19424/.earthkit-cache/",
+        "earthkit_cache_dir": earthkit_cache_dir,
     }
     from copy import deepcopy
     source_params_an['earthkit'][1] = deepcopy(source_params_an['earthkit'][0])
