@@ -33,7 +33,8 @@ if __name__ == "__main__":
     exp_root_folder = "/work/cmcc/jd19424/test-ML/experiments_earthML/"
     # exp_root_folder = "/data/cmcc/jd19424/ML/experiments_earthML/"
     # exp_suffix = "_32bs_heteroloss_weather_juno"
-    exp_suffix = "_32bs_mse_weather_ecmwf_era5"
+    # exp_suffix = "_32bs_mse_weather_ecmwf_era5"
+    exp_suffix = "_32bs_mse_weather_ecmwf_local"
     leadtime_hours = 10*24
     # input_src, target_src = 'juno-local', 'juno-local'
     input_src, target_src = 'earthkit', 'earthkit'
@@ -48,8 +49,10 @@ if __name__ == "__main__":
 
     cat = catalog.make_catalog(leadtime=leadtime_hours, leadtime_unit='hours')
     # var = [t2m, msl, u10, v10, d2m, tcc]
-    var_fc = cat.var.t2m_era5
-    var_an = cat.var.t2m_era5
+    # var_fc = cat.var.t2m_era5
+    # var_an = cat.var.t2m_era5
+    var_fc = cat.var.t2m_juno
+    var_an = cat.var.t2m_juno
     region = cat.region.conus
 
     # ----------------------
