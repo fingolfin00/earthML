@@ -713,6 +713,7 @@ class EarthkitSource (BaseSource):
                     **request_other_args,
                     **req_time_arg,
                 )
+                print(request_d)
                 if self.dataset:
                     ds_chunk = ekd.from_source(self.provider, self.dataset, **request_d).to_xarray(**self.to_xarray_args)
                 else:
@@ -795,7 +796,10 @@ class EarthkitSource (BaseSource):
                 y2 = y2 - timedelta(days=1)  # inclusive end
                 request_time_args_list = []
                 if self.request_type == "subseasonal":
-                    time_freq = generate_hours(self.data_selection.period.freq)
+                    if self.provider == "ecmwf-open-data":
+                        time_freq = generate_hours(self.data_selection.period.freq, 'int')
+                    else:
+                        time_freq = generate_hours(self.data_selection.period.freq)
                     request_time_args = dict(
                         date=f"{y1:%Y-%m-%d}/{y2:%Y-%m-%d}",
                         time=time_freq,
@@ -824,7 +828,10 @@ class EarthkitSource (BaseSource):
         else:
             request_time_args_list = []
             if self.request_type == "subseasonal":
-                time_freq = generate_hours(self.data_selection.period.freq)
+                if self.provider == "ecmwf-open-data":
+                    time_freq = generate_hours(self.data_selection.period.freq, 'int')
+                else:
+                    time_freq = generate_hours(self.data_selection.period.freq)
                 request_time_args = dict(
                     date=f"{start:%Y-%m-%d}/{end:%Y-%m-%d}",
                     time=time_freq,
