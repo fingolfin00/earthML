@@ -111,6 +111,11 @@ class Sample:
     extra: dict = None
 
 @dataclass
+class ProviderSpec:
+    source: str          # e.g. "earthkit" or "juno-local"
+    params: dict
+
+@dataclass
 class ExperimentDataset:
     role: str
     datasource: DataSource | List[DataSource]
