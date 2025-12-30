@@ -28,11 +28,14 @@ class ExperimentMLFC:
         self._configure_torch_env()
         self.config = config
         self.rich_console = Console()
+
         # Get test variable list, TODO I have doubts on this implementation
         test_config_datasel = self.config.test[0].datasource.data_selection if isinstance(self.config.test, list) else self.config.test.datasource.data_selection
         self.test_var_list = test_config_datasel.variable if isinstance(test_config_datasel.variable, list) else [test_config_datasel.variable]
+
         # Setup paths and make dirs if necessary
         self._path_setup()
+
         # General torch and Lightning setup
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         num_cpus, num_gpus = multiprocessing.cpu_count(), torch.cuda.device_count() if torch.cuda.is_available() else 1 # torch.backends.mps.is_available()
@@ -56,9 +59,11 @@ class ExperimentMLFC:
         # Log model info
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         print(f"Net {type(self.model).__name__} trainable parameters: {trainable_params:,}")
+
         # Init
         self.normalize = None
         self.train_datamodule = None
+
         # Init predictions
         preds_filename = "test_preds"
         self.consolidated_zarr = False
@@ -75,9 +80,11 @@ class ExperimentMLFC:
             }
         )
         self.config.test.append(preds_exp)
+
         # Init source data objects
         self.source_train_data = self._init_source_data(self.config.train, 'train')
         self.source_test_data = self._init_source_data(self.config.test, 'test')
+
         # Save experiment
         with open(self.work_path.joinpath("experiment.cfg"), 'wb') as f:
             joblib.dump({
@@ -129,7 +136,7 @@ class ExperimentMLFC:
                 root_path=save_path,
                 xarray_args={
                     "consolidated": self.consolidated_zarr,
-                    "decode_times": False,
+                    "decode_times": True,
                 },
             )
 
@@ -154,7 +161,7 @@ class ExperimentMLFC:
                 datasource = [datasource]
                 source_params = [source_params]
             save_path = self.config.work_path.joinpath(Path(f"{source_type}_{e.role}")).with_suffix(".zarr")
-            if e.save and save_path.exists():
+            if e.save and save_path.exists(): # TODO weak check, make more robust
                 xr_loc_source_params, sources[e.role] = _create_xarray_local_source(save_path, datasource)
                 self.rich_console.print(Table({f"Source '{sources[e.role].datasource.source}' {source_type} {e.role} params": xr_loc_source_params}, twocols=True).table)
             else:
@@ -175,11 +182,16 @@ class ExperimentMLFC:
                     # Regenerate as xarray-local source type
                     xr_loc_source_params, sources[e.role] = _create_xarray_local_source(save_path, datasource)
                     self.rich_console.print(Table({f"Source '{sources[e.role].datasource.source}' {source_type} {e.role} params": xr_loc_source_params}, twocols=True).table)
-        # Clear missing samples if supported
+
+        # Detect missing samples
         missed = set()
-        for source in sources.values():
+        for role, source in sources.items():
             if isinstance(source.elements.samples, dict):
                 missed |= {p for p in source.elements.missed} # missed is a set
+            if source.source_name == "xarray-local" and role != "prediction":
+                ds = source.load()
+                if "missed_time" in ds:
+                    missed |= set(pd.to_datetime(ds["missed_time"].values).to_pydatetime())
         print(f"Missed dates ({source_type}): {missed}")
         for source in sources.values():
             source.elements.missed = missed
