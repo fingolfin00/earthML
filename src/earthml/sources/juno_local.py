@@ -1,13 +1,15 @@
 from datetime import timedelta
 from dateutil.relativedelta import relativedelta
 from functools import partial
+import re, time
 import numpy as np
+import pandas as pd
 import xarray as xr
 from dask.utils import SerializableLock
 from rich import print
 
 from ..dataclasses import DataSource, Sample
-from ..utils import get_ds_resolution, subset_ds, regrid_to_rectilinear
+from ..utils import retry_fetch_after_hdf_err, get_ds_resolution, subset_ds, regrid_to_rectilinear, _guess_coord_name
 from .xarray_local import MFXarrayLocalSource
 from ._preprocess import preprocess_mfdataset
 
@@ -132,6 +134,7 @@ class JunoLocalSource (MFXarrayLocalSource):
         # years = [str(date.year) for date in xr.date_range(start=data.period.start, end=data.period.end, freq='YS', inclusive='left')]
         # print(f"{self.source_name} missed dates: {self.elements.missed}")
         samples = [s for date, s in self.elements.samples.items() if date not in self.elements.missed] # list of lists
+        assert len(samples) > 0, "No samples obtained."
         dates = [date for date in self.elements.samples.keys() if date not in self.elements.missed]
         print(f"Samples: {len(samples)}, minus: {len(self.elements.extra['minus_samples'])}, plus: {len(self.elements.extra['plus_samples'])}, missed: {len(self.elements.missed)}")
         samples_d = {}
@@ -155,107 +158,116 @@ class JunoLocalSource (MFXarrayLocalSource):
             "errors": "warn",
             "lock": lock,
         }
-         # backward compat for old experiments without realization support
-        if not isinstance(samples[0], list):
-            # print(samples)
-            print("Engine:", self.engine)
-            common_args['paths'] = samples
-            common_args["concat_dim"] = self.concat_dim
-            common_args["decode_times"] = False
+        for sample, date in zip(samples, dates):
+            assert isinstance(sample, list), f"Sample should be a list but it is {type(sample)}"
+            # print(sample)
+            common_args['paths'] = sample
+            common_args["concat_dim"] = "realization"
             if isinstance(self.data_selection.variable, list):
                 var_ds_list = []
                 for var in self.data_selection.variable:
                     if self.engine == "cfgrib":
                         common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": var.name}} # not currently possible to filter with a list of keys (see https://github.com/ecmwf/cfgrib/issues/138)
                         common_args["indexpath"] = ""
-                    # untested support for netcdf4
-                    common_args["preprocess"] = partial(preprocess_mfdataset, data=self.data_selection, var_name=var.name)
-                    var_ds_list.append(xr.open_mfdataset(**common_args))
-                # lat_res, lon_res = get_ds_resolution(var_ds_list[0])
-                # print(f"Native resolutions ({self.data_selection.variable[0]}): lat {lat_res:.2f}, lon {lon_res:.2f}")
-                ds = subset_ds(self.data_selection, xr.merge(
-                    var_ds_list,
-                    compat="no_conflicts",
-                    combine_attrs="no_conflicts"
-                ))
+                    common_args["preprocess"] = partial(preprocess_mfdataset, data=self.data_selection, var_name=var.name, date=date)
+
+                    def _open_mfdataset ():
+                        return xr.open_mfdataset(**common_args)
+                    var_ds_list.append(retry_fetch_after_hdf_err(_open_mfdataset, error_re=r"Unspecified error in H5DSget_num_scales.*"))
+
+                ds_sample = xr.merge(var_ds_list, compat="no_conflicts", combine_attrs="no_conflicts")
+
                 # Load time coord
-                if self.concat_dim in ds.coords:
-                    ds = ds.assign_coords({self.concat_dim: ds[self.concat_dim].load()})
+                if self.concat_dim in ds_sample.coords:
+                    ds_sample = ds_sample.assign_coords({self.concat_dim: ds_sample[self.concat_dim].load()})
             else:
                 if self.engine == "cfgrib":
                     common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": self.data_selection.variable.name}}
                     common_args["indexpath"] = ""
+
+                common_args["preprocess"] = partial(preprocess_mfdataset, data=self.data_selection, var_name=self.data_selection.variable.name, date=date)
+
                 # Tested support for netcdf4
-                ds = xr.open_mfdataset(**common_args)
-                # lat_res, lon_res = get_ds_resolution(ds_sample)
-                # print(f"Native resolutions: lat {lat_res:.2f}, lon {lon_res:.2f}")
-                ds = subset_ds(self.data_selection, ds)
+                def _open_mfdataset ():
+                    return xr.open_mfdataset(**common_args)
+
+                ds_sample = retry_fetch_after_hdf_err(_open_mfdataset, error_re=r"Unspecified error in H5DSget_num_scales.*")
+
                 # Load time coord
                 if self.concat_dim in ds_sample.coords:
-                    ds = ds.assign_coords({self.concat_dim: ds[self.concat_dim].load()})
+                    ds_sample = ds_sample.assign_coords({self.concat_dim: ds_sample[self.concat_dim].load()})
 
-        else:
-            for sample, date in zip(samples, dates):
-                assert isinstance(sample, list), f"Sample should be a list but it is {type(sample)}"
-                # print(sample)
-                common_args['paths'] = sample
-                common_args["concat_dim"] = "realization"
-                if isinstance(self.data_selection.variable, list):
-                    var_ds_list = []
-                    for var in self.data_selection.variable:
-                        if self.engine == "cfgrib":
-                            common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": var.name}} # not currently possible to filter with a list of keys (see https://github.com/ecmwf/cfgrib/issues/138)
-                            common_args["indexpath"] = ""
-                        # untested support for netcdf4
-                        common_args["preprocess"] = partial(preprocess_mfdataset, data=self.data_selection, var_name=var.name)
-                        var_ds_list.append(xr.open_mfdataset(**common_args))
-                    # lat_res, lon_res = get_ds_resolution(var_ds_list[0])
-                    # print(f"Native resolutions ({self.data_selection.variable[0]}): lat {lat_res:.2f}, lon {lon_res:.2f}")
-                    ds_sample = subset_ds(self.data_selection, xr.merge(
-                        var_ds_list,
-                        compat="no_conflicts",
-                        combine_attrs="no_conflicts"
-                    ))
-                    # Load time coord
-                    if self.concat_dim in ds_sample.coords:
-                        ds_sample = ds_sample.assign_coords({self.concat_dim: ds_sample[self.concat_dim].load()})
+            samples_d[date] = ds_sample
+
+        # Combine realizations
+        samples_len = [ds.sizes.get("realization", 1) for ds in samples_d.values()]
+        # print(f"Samples length: {samples_len}")
+        min_R = min(samples_len)
+        for date, ds in samples_d.items():
+            if "realization" in ds.dims:
+                dsR = ds.isel(realization=slice(0, min_R))
+                # Wipe realization coord info
+                R = dsR.sizes["realization"]
+                samples_d[date] = dsR.assign_coords(realization=np.arange(R))
+
+        # Count extra missed in preprocess
+        missing_mask, missing_times = [], []
+        for d in list(sorted(samples_d)):
+            ds = samples_d[d]
+            missing_mask.append(ds["_has_var"].values)
+            if ~ds["_has_var"]:
+                time_coord = _guess_coord_name(ds, "time", ["valid_time", "time_counter"])
+                if time_coord is None and "source_time" in ds.data_vars:
+                    missing_times.append(ds["source_time"].values)
                 else:
-                    if self.engine == "cfgrib":
-                        common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": self.data_selection.variable.name}}
-                        common_args["indexpath"] = ""
-                    # Tested support for netcdf4
-                    ds_sample = xr.open_mfdataset(**common_args)
-                    # lat_res, lon_res = get_ds_resolution(ds_sample)
-                    # print(f"Native resolutions: lat {lat_res:.2f}, lon {lon_res:.2f}")
-                    ds_sample = subset_ds(self.data_selection, ds_sample)
-                    # Load time coord
-                    if self.concat_dim in ds_sample.coords:
-                        ds_sample = ds_sample.assign_coords({self.concat_dim: ds_sample[self.concat_dim].load()})
+                    raise ValueError("Couldn't find time coord in processed dataset, aborting.")
 
-                samples_d[date] = ds_sample
+        # Flatten arrays
+        missing_mask = np.array([a.item() for a in missing_mask])
+        missing_times = [np.asarray(x).item() for x in missing_times]
 
-            # Combine realizations
-            samples_len = [ds.sizes.get("realization", 1) for ds in samples_d.values()]
-            # print(f"Samples length: {samples_len}")
-            min_R = min(samples_len)
-            for date, ds in samples_d.items():
-                if "realization" in ds.dims:
-                    dsR = ds.isel(realization=slice(0, min_R))
-                    # Wipe realization coord info
-                    R = dsR.sizes["realization"]
-                    samples_d[date] = dsR.assign_coords(realization=np.arange(R))
-            # for d in list(sorted(samples_d))[:3]:
-            #     ds = samples_d[d]
-            #     print(d, ds.sizes.get("realization"), ds.coords.get("realization").values, ds.coords["realization"].dtype)
-            times = np.array(sorted(samples_d.keys()), dtype="datetime64[ns]")
-            objs = [samples_d[d] for d in sorted(samples_d)]
-            ds = xr.concat(
-                objs=objs,
-                dim=xr.IndexVariable(self.concat_dim, times) if self.concat_dim in ('time', 'valid_time', 'time_counter') else self.concat_dim,
-                compat="broadcast_equals",
-                join='exact',
-                combine_attrs='drop_conflicts'
-            )
+        # Number of missing timesteps
+        n_missing = int(sum(~missing_mask))
+        if n_missing > 0:
+            print(f"Missed {n_missing} timesteps during preprocess")
+            # List the times that were missing
+            # missing_times = ds["time"].where(missing_mask, drop=True).values
+            # print(missing_times)
+            self.elements.missed.update(pd.to_datetime(missing_times).to_pydatetime().tolist())
+            # # Keep only valid timesteps
+            # ds = ds.where(ds["_has_var"], drop=True)
+        # print(self.elements.missed)
+
+        # Concatenate
+        times = np.array([d for d in sorted(samples_d.keys()) if d not in self.elements.missed], dtype="datetime64[ns]")
+        objs = [samples_d[d] for d in sorted(samples_d) if d not in self.elements.missed]
+        # print(objs)
+        ds = xr.concat(
+            objs=objs,
+            dim=xr.IndexVariable(self.concat_dim, times) if self.concat_dim in ('time', 'valid_time', 'time_counter') else self.concat_dim,
+            coords='minimal',
+            # compat="broadcast_equals",
+            compat="override",
+            join='outer',
+            # join='exact',
+            combine_attrs='drop_conflicts'
+        )
+
+        # Add missed info to dataset
+        missed_sorted = sorted(self.elements.missed)
+        missed_np = np.array(missed_sorted, dtype="datetime64[ns]")
+        # print(missed_np)
+        ds = ds.assign(missed_time=("missed_time", missed_np))
+        ds = ds.set_coords("missed_time")
+        ds["missed_time"].encoding.update({
+            "units": "nanoseconds since 1970-01-01 00:00:00",
+            "calendar": "proleptic_gregorian",
+        })
+        # if "missed_time" in ds:
+        #     print("just saved dtype:", ds["missed_time"].dtype)
+        #     print("just saved head:", ds["missed_time"].values)
+
+        ds = subset_ds(self.data_selection, ds)
 
         lat_res, lon_res = get_ds_resolution(ds)
         print(f"Horizontal resolutions: lat {lat_res:.2f}, lon {lon_res:.2f}")
