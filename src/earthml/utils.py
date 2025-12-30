@@ -9,7 +9,8 @@ from dateutil.relativedelta import relativedelta
 import cf_xarray
 import xarray as xr
 import pandas as pd
-import os, psutil, multiprocessing, tempfile, logging
+from earthkit.data.sources.empty import EmptySource
+import os, psutil, multiprocessing, tempfile, logging, re, time
 import dask
 from dask.distributed import Client, LocalCluster
 import numpy as np
@@ -169,7 +170,92 @@ class Table ():
 # Module-level functions
 #------------------------
 
-def generate_date_range(period: TimeRange):
+def _extract_nc_path_from_oserror (e: Exception) -> Path | None:
+    # netCDF4 often formats it like: "...: '/path/file.nc'"
+    m = re.search(r"['\"](/[^'\"]+\.nc)['\"]", str(e))
+    return Path(m.group(1)) if m else None
+
+
+def retry_fetch_after_hdf_err_eks_source(
+    fetch_fn: Callable,
+    *,
+    tries: int = 5,
+    base_sleep: float = 1.5,
+):
+    for attempt in range(1, tries + 1):
+        src = fetch_fn()
+        return src
+
+    raise ValueError("Couldn't fetch requested Earthkit source")
+
+def _set_ekd_cache_dir (cache_dir: str = Path("/tmp/earthkit-cache/")):
+    import earthkit.data as ekd
+    ekd.config.set("cache-policy", "user")
+    ekd.config.set("user-cache-directory", cache_dir)
+
+def _get_ekd_cache_dir ():
+    import earthkit.data as ekd
+    return ekd.config.get("user-cache-directory")
+
+def retry_fetch_after_hdf_err (
+    fetch_fn: Callable[[], xr.Dataset | EmptySource],
+    *,
+    error_re: str | None = None,
+    tries: int = 5,
+    base_sleep: float = 1.5,
+    delete_bad_file: bool = False,
+    delete_bad_parent: bool = False,
+):
+    """fetch_fn(): should return an xr.Dataset"""
+    pat = re.compile(error_re, re.I) if error_re else None
+    last_e: Exception | None = None
+    orig_ekd_cache_dir = _get_ekd_cache_dir()
+
+    for attempt in range(1, tries + 1):
+        try:
+            data = fetch_fn()
+            if isinstance(data, EmptySource):
+                print(f"   EmptySource returned, setting tmp cache dir ({attempt}/{tries})")
+                _set_ekd_cache_dir()
+                # time.sleep(base_sleep * (2 ** (attempt - 1)))
+                continue
+            else:
+                _set_ekd_cache_dir(orig_ekd_cache_dir)
+                return data
+        # except (OSError, RuntimeError, KeyError) as e:
+        except Exception as e:
+            print("   Attempt", attempt)
+            last_e = e
+            p = _extract_nc_path_from_oserror(e) if Exception in (OSError, KeyError) else None
+            if p:
+                msg = str(e)
+                if not pat.search(msg):
+                    raise
+                print(f"   HDF error opening {p}, wait {base_sleep}s (attempt {attempt}/{tries})")
+
+                if delete_bad_file and p.exists():
+                    try:
+                        p.unlink()
+                        print(f"   → deleted corrupt cache file: {p}")
+                    except Exception as del_e:
+                        print(f"   → failed to delete {p}: {del_e}")
+                cache_subdir = p.parent
+
+                if delete_bad_parent and cache_subdir.exists():
+                    try:
+                        cache_subdir.rmdir()
+                        print(f"   → deleted corrupt cache parent subdir: {cache_subdir}")
+                    except Exception as del_e:
+                        print(f"   → failed to delete {cache_subdir}: {del_e}")
+            else:
+                print(e)
+                # print(f"HDF error (attempt {attempt}/{tries}) but could not locate file path")
+
+        time.sleep(base_sleep * (2 ** (attempt - 1)))
+
+    raise RuntimeError
+
+def generate_date_range (period: TimeRange):
     freq = period.freq
     start = period.start
     end = period.end
