@@ -2,6 +2,8 @@ from pathlib import Path
 from datetime import timedelta
 from dateutil.relativedelta import relativedelta
 from dateutil.rrule import rrule, MONTHLY
+import tempfile, os, shutil
+os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -9,7 +11,7 @@ import earthkit.data as ekd
 from rich import print
 
 from ..dataclasses import DataSource
-from ..utils import generate_hours, get_ds_resolution, subset_ds, regrid_to_rectilinear
+from ..utils import retry_fetch_after_hdf_err, generate_hours, get_ds_resolution, subset_ds, regrid_to_rectilinear
 from .base import BaseSource
 
 class EarthkitSource (BaseSource):
@@ -30,9 +32,9 @@ class EarthkitSource (BaseSource):
         to_xarray_args: dict = None,
         xarray_concat_dim: str = None,
         xarray_concat_extra_args: dict = None,
-        regrid_resolution=None,  # float or (lat_res, lon_res) in degrees
-        regrid_vars=None,
-        earthkit_cache_dir=Path("/tmp/earthkit-cache/"),
+        regrid_resolution: float | tuple[float, float] = None,  # float or (lat_res, lon_res) in degrees
+        regrid_vars: list[str] = None,
+        earthkit_cache_dir: str = Path("/tmp/earthkit-cache/"),
     ):
         super().__init__ (datasource)
 
@@ -147,8 +149,27 @@ class EarthkitSource (BaseSource):
         print(f"Check request status: https://cds.climate.copernicus.eu/requests?tab=all")
         # print(years)
 
+        def _earthkit_source_path (src) -> Path | None:
+            """
+            Try to get a real filesystem path from an earthkit source.
+            Works for file-backed sources.
+            """
+            for attr in ("path", "path_or_url", "url"):
+                p = getattr(src, attr, None)
+                if isinstance(p, str) and p.startswith("/"):
+                    return Path(p)
+            # some earthkit objects expose a list of files/parts
+            parts = getattr(src, "parts", None)
+            if parts:
+                for part in parts:
+                    p = getattr(part, "path", None) or getattr(part, "path_or_url", None)
+                    if isinstance(p, str) and p.startswith("/"):
+                        return Path(p)
+            return None
+
         def _fetch_chunks (request_time_args_list, start, end, request_other_args):
             """Helper to fetch chunked datasets using ekd"""
+
             ds_chunks = []
             for req_time_arg in request_time_args_list:
                 months_req = ""
@@ -160,11 +181,30 @@ class EarthkitSource (BaseSource):
                     **request_other_args,
                     **req_time_arg,
                 )
-                print(request_d)
+                # print(request_d)
+
                 if self.dataset:
-                    ds_chunk = ekd.from_source(self.provider, self.dataset, **request_d).to_xarray(**self.to_xarray_args)
+                    src_ekd_params = {"name": self.provider, "dataset": self.dataset} | request_d
+                    # src_ekd = ekd.from_source(self.provider, self.dataset, **request_d)
                 else:
-                    ds_chunk = ekd.from_source(self.provider, **request_d).to_xarray(**self.to_xarray_args)
+                    src_ekd_params = {"name": self.provider} | request_d
+
+                # print(src_ekd_params)
+                def _fetch_ekd_src ():
+                    return ekd.from_source(**src_ekd_params)
+                src_ekd = retry_fetch_after_hdf_err(_fetch_ekd_src, base_sleep=2, tries=2, delete_bad_file=True, delete_bad_parent=True)
+
+                def _fetch_ekd ():
+                    # tmpdir = Path(tempfile.mkdtemp(prefix="ekd_"))
+                    # out = tmpdir / "data.nc"
+                    # print("Save to tmp file:", out)
+                    return src_ekd.to_xarray(**(self.to_xarray_args or {}))
+
+                # print(src_ekd)
+                # print(self.to_xarray_args)
+                ds_chunk = retry_fetch_after_hdf_err(_fetch_ekd, error_re=r"NetCDF:.*HDF error", base_sleep=2, delete_bad_file=False)
+                # print(ds_chunk)
+
                 print(f"   Chunk size: {ds_chunk.sizes}")
                 # print(f"   Chunk coords: {ds_chunk.coords}")
 
