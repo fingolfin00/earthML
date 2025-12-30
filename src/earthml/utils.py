@@ -1,10 +1,11 @@
 from pathlib import Path
-from typing import Sequence, Optional, Literal
+from typing import Sequence, Optional, Literal, Callable, List
 from rich import print
 from rich.pretty import pprint
 from rich.table import Table as RichTable
 from rich.highlighter import ReprHighlighter
 from datetime import datetime, timedelta
+from datetime import time as datetime_time
 from dateutil.relativedelta import relativedelta
 import cf_xarray
 import xarray as xr
@@ -1537,3 +1538,47 @@ def print_ds_info (
                 r_mean = float(r.mean().values)
                 r_std = float(r.std().values)
                 print(f"  regime {i} mean/std: {r_mean:.4g} / {r_std:.4g}")
+
+def _floor_to_midnight (dt: datetime) -> datetime:
+    return datetime.combine(dt.date(), datetime_time.min, tzinfo=dt.tzinfo)
+
+def half_train_periods_days (
+    base: TimeRange,
+    min_months: int = 3,
+    anchor: str = "end",  # "end" or "start"
+) -> List[TimeRange]:
+    if base.end <= base.start:
+        raise ValueError("base.end must be after base.start")
+    if anchor not in {"end", "start"}:
+        raise ValueError("anchor must be 'end' or 'start'")
+
+    # Normalize endpoints to midnight to avoid hour drift
+    start0 = _floor_to_midnight(base.start)
+    end0   = _floor_to_midnight(base.end)
+
+    # Minimum length in days, calendar months threshold
+    if anchor == "end":
+        min_start = end0 - relativedelta(months=min_months)
+        min_days = (end0 - _floor_to_midnight(min_start)).days
+    else:
+        min_end = start0 + relativedelta(months=min_months)
+        min_days = (_floor_to_midnight(min_end) - start0).days
+
+    total_days = (end0 - start0).days
+    if total_days <= 0:
+        raise ValueError("After midnight alignment, range has no full days.")
+
+    out: List[TimeRange] = []
+    days = total_days
+    while days >= min_days:
+        if anchor == "end":
+            tr_start = end0 - timedelta(days=days)
+            tr_end = end0
+        else:
+            tr_start = start0
+            tr_end = start0 + timedelta(days=days)
+
+        out.append(TimeRange(start=tr_start, end=tr_end, freq=base.freq, shifted=base.shifted))
+        days //= 2  # day-granular
+
+    return out
