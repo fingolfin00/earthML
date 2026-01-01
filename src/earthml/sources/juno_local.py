@@ -210,30 +210,71 @@ class JunoLocalSource (MFXarrayLocalSource):
                 R = dsR.sizes["realization"]
                 samples_d[date] = dsR.assign_coords(realization=np.arange(R))
 
-        # Count extra missed in preprocess
-        missing_mask, missing_times = [], []
-        for d in list(sorted(samples_d)):
-            ds = samples_d[d]
-            missing_mask.append(ds["_has_var"].values)
-            if ~ds["_has_var"]:
-                time_coord = _guess_coord_name(ds, "time", ["valid_time", "time_counter"])
-                if time_coord is None and "source_time" in ds.data_vars:
-                    missing_times.append(ds["source_time"].values)
+        # Handle missing vars and realizations
+        missing_mask_list, missing_times_list = [], []
+        for key in sorted(samples_d):
+            ds = samples_d[key]
+            time_coord = _guess_coord_name(ds, "time", ["valid_time", "time_counter"])
+            if time_coord is None:
+                print(ds)
+                if "source_time" in ds:
+                    time_coord = "source_time"
                 else:
                     raise ValueError("Couldn't find time coord in processed dataset, aborting.")
 
-        # Flatten arrays
-        missing_mask = np.array([a.item() for a in missing_mask])
-        missing_times = [np.asarray(x).item() for x in missing_times]
+            non_realization_dims = tuple(d for d in ds["_has_var"].dims if d != "realization")
+            realization_bool = ds["_has_var"].all(dim=non_realization_dims) if non_realization_dims else ds["_has_var"]
+            # Make sure at least one realization is present
+            if "realization" not in realization_bool.dims:
+                realization_bool = realization_bool.expand_dims(realization=[0])
+            # print(realization_bool)
 
+            rb2d = realization_bool.expand_dims({time_coord: ds[time_coord]})
+            rb2d = rb2d.transpose("realization", time_coord)  # enforce dim order
+            rb2d.name = "missing_mask"  # True means "present/valid"
+
+            missing_mask_list.append(rb2d)
+
+            if not realization_bool.any().item():
+                # Count extra missed in preprocess
+                if "source_time" in ds.data_vars:
+                    # source_time can be scalar or 1-length, normalize to 1D
+                    st = np.atleast_1d(ds["source_time"].values)
+                    missing_times_list.extend(st.tolist())
+                else:
+                    # fall back to the actual time coord values if available
+                    missing_times_list.extend(np.atleast_1d(ds[time_coord].values).tolist())
+            else:
+                # Drop invalid realizations
+                ds = ds.sel(realization=realization_bool)
+
+        all_realizations = np.unique(np.concatenate([m["realization"].values for m in missing_mask_list]))
+        missing_mask_list = [m.reindex(realization=all_realizations, fill_value=False) for m in missing_mask_list]
+        missing_mask = xr.concat(missing_mask_list, dim=time_coord)
+        missing_mask = missing_mask.transpose("realization", time_coord)
+        # print(missing_mask)
+
+        missing_times_list = np.array(missing_times_list)
+        missing_times_list = pd.to_datetime(missing_times_list).values  # datetime64[ns]
+        missing_times_list = np.unique(missing_times_list)
+
+        missing_times = xr.DataArray(
+            missing_times_list,
+            dims=(time_coord,),
+            coords={time_coord: missing_times_list},
+            name="missing_times",
+        )
+        # print(missing_times)
+
+        time_missing = ~missing_mask.any("realization")  # dims: (time_coord,)
         # Number of missing timesteps
-        n_missing = int(sum(~missing_mask))
+        n_missing = int(time_missing.sum().item())
         if n_missing > 0:
             print(f"Missed {n_missing} timesteps during preprocess")
             # List the times that were missing
             # missing_times = ds["time"].where(missing_mask, drop=True).values
             # print(missing_times)
-            self.elements.missed.update(pd.to_datetime(missing_times).to_pydatetime().tolist())
+            self.elements.missed.update(pd.to_datetime(missing_times.values).to_pydatetime().tolist())
             # # Keep only valid timesteps
             # ds = ds.where(ds["_has_var"], drop=True)
         # print(self.elements.missed)
@@ -258,7 +299,7 @@ class JunoLocalSource (MFXarrayLocalSource):
         missed_np = np.array(missed_sorted, dtype="datetime64[ns]")
         # print(missed_np)
         ds = ds.assign(missed_time=("missed_time", missed_np))
-        ds = ds.set_coords("missed_time")
+        ds["missed_time"].attrs.update({"standard_name": "time"})
         ds["missed_time"].encoding.update({
             "units": "nanoseconds since 1970-01-01 00:00:00",
             "calendar": "proleptic_gregorian",
