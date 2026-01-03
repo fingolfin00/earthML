@@ -5,14 +5,17 @@ from earthml.utils import halved_windows_split_by_cutoff, half_train_periods_day
 
 if __name__ == "__main__":
 
+    max_retries = 4
+
     full_leadtimes = (15, 45, 75, 105, 135, 165)
     # start_train_date = datetime(1993, 1, 1)
     # end_train_date = datetime(2020, 12, 31)
+    # Short exp for debug
     start_train_date = datetime(1993, 1, 1)
     end_train_date = datetime(1994, 12, 31)
 
     full_train_period_target = TimeRange(start=start_train_date, end=end_train_date, freq='MS')
-    cutoff_consolidated = datetime(2014, 12, 31)
+    cutoff_consolidated = datetime(2014, 12, 31) # cutoff date between consolidated and operational ORAS5 datasets
     train_periods_target = halved_windows_split_by_cutoff(full_train_period_target, cutoff_consolidated, min_months=12, anchor="end")
 
     earthkit_consolidated = dict(
@@ -76,7 +79,6 @@ if __name__ == "__main__":
                 earlystopping_patience=30,
             )
 
-            max_retries = 4
             success = False
 
             for _ in range(max_retries):
