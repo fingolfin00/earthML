@@ -22,6 +22,7 @@ def make_var (
         # Ocean
         mld00_1=Variable(name="mixed_layer_depth_0_01", unit="m"),
 
+        sss_cds_fc=Variable(name="ssh", longname="sea_surface_salinity", leadtime=lt),
         sss_juno_fc=Variable(name="sos", levm=0, leadtime=lt), # leadtime in var only if multimple leadtime in same file
         sss_oras5_an=Variable(longname="sea_surface_salinity", name="sosaline"),
         sss_juno_an=Variable(name="sss_m", levm=0),
