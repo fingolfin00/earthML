@@ -1,9 +1,10 @@
 from abc import abstractmethod
 from pathlib import Path
+import numpy as np
 import xarray as xr
 from rich import print
 
-from ..utils import _guess_coord_name
+from ..utils import _guess_dim_name
 from ..dataclasses import DataSource, Sample
 from .base import BaseSource
 
@@ -21,14 +22,18 @@ class XarrayLocalSource (BaseSource):
 
     def _get_data (self) -> xr.Dataset:
         self.ds = xr.open_dataset(self.path, **self.xarray_args)
+
+        # Select only non-missed samples
         if self.elements.missed:
-            time_coord = _guess_coord_name(self.ds, "time", ["valid_time", "time_counter"])
-            for var in self.ds:
-                print(self.ds[var].shape)
-            # self.ds[time_coord] = [d for d in self.date_range if d not in self.elements.missed]
-            self.ds[time_coord] = self.date_range
-            print(self.ds[time_coord])
-            self.ds = self.ds.drop_sel({time_coord: list(self.elements.missed)})
+            time_dim = _guess_dim_name(self.ds, "time", ["valid_time", "time_counter"])
+            missed = xr.DataArray(list(self.elements.missed), dims="missed_time", name="missed_time")
+            keep_mask = ~self.ds[time_dim].isin(missed)
+            self.ds = self.ds.sel({time_dim: keep_mask})
+
+            # Update missed_time coord if present
+            if "missed_time" in self.ds.coords:
+                self.ds = self.ds.assign_coords(missed_time=missed)
+
         return self.ds
 
 class MFXarrayLocalSource (BaseSource):
