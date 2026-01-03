@@ -192,7 +192,7 @@ class EarthkitSource (BaseSource):
                 # print(src_ekd_params)
                 def _fetch_ekd_src ():
                     return ekd.from_source(**src_ekd_params)
-                src_ekd = retry_fetch_after_hdf_err(_fetch_ekd_src, base_sleep=2, tries=2, delete_bad_file=True, delete_bad_parent=True)
+                src_ekd = retry_fetch_after_hdf_err(_fetch_ekd_src, error_re=r"NetCDF:.*HDF error", base_sleep=5, tries=2, delete_bad_file=True, delete_bad_parent=True)
 
                 def _fetch_ekd ():
                     # tmpdir = Path(tempfile.mkdtemp(prefix="ekd_"))
