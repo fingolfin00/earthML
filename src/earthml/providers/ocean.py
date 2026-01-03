@@ -43,7 +43,7 @@ def earthkit_cds_monthly_hindcast_ocean_netcdf (
     var_name: str,
     leadtime_value: int,
     leadtime_unit: str,
-    originating_centre: str = "CMCC",
+    originating_centre: str = "cmcc",
     system: str = "4",
     regrid_resolution: float = 0.25,
     split_month: int = 1,
