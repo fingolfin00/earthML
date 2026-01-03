@@ -56,6 +56,7 @@ class EarthkitSource (BaseSource):
         self.regrid_resolution = regrid_resolution
         self.var_name_list = [v.name for v in self.data_selection.variable] if isinstance(self.data_selection.variable, list) else [self.data_selection.variable.name]
         self.regrid_vars = regrid_vars if regrid_vars is not None else self.var_name_list
+        self.ekd_version = ekd.__version__
 
         self._create_leadtime_dict()
         self._populate_missed()
@@ -145,7 +146,7 @@ class EarthkitSource (BaseSource):
         else:
             request_args = dict(variable=var_longname_list, area=area)
         years = xr.date_range(start=start, end=end, freq="YS")
-        print(f"Requesting {var_longname_list} ({dates}, {self.data_selection.period.freq}) in region {area} from {self.provider}:{self.dataset}")
+        print(f"Requesting {var_longname_list} ({dates}, {self.data_selection.period.freq}) in region {area} from {self.provider}:{self.dataset} (ekd_ver={self.ekd_version})")
         print(f"Check request status: https://cds.climate.copernicus.eu/requests?tab=all")
         # print(years)
 
