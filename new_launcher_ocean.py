@@ -1,4 +1,5 @@
 from datetime import datetime
+from dateutil.relativedelta import relativedelta
 from earthml.dataclasses import TimeRange
 from earthml.launchers.mlfc import MLFCScenario, MLFCRunner
 from earthml.utils import halved_windows_split_by_cutoff, half_train_periods_days
@@ -17,6 +18,17 @@ if __name__ == "__main__":
     full_train_period_target = TimeRange(start=start_train_date, end=end_train_date, freq='MS')
     cutoff_consolidated = datetime(2014, 12, 31) # cutoff date between consolidated and operational ORAS5 datasets
     train_periods_target = halved_windows_split_by_cutoff(full_train_period_target, cutoff_consolidated, min_months=12, anchor="end")
+
+    for i, p in enumerate(train_periods_target, 1):
+        if isinstance(p, list):
+            p_start = p[0].start
+            p_end = p[-1].end
+        else:
+            p_start = p.start
+            p_end = p.end
+        rd = relativedelta(p_end, p_start)
+        months = rd.years * 12 + rd.months
+        print(i, p_start.date(), "->", p_end.date(), "months:", months)
 
     earthkit_consolidated = dict(
         earthkit_cache_dir="/work/cmcc/jd19424/.earthkit-cache",
