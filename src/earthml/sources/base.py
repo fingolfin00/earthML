@@ -23,13 +23,13 @@ class BaseSource (ABC):
         self.elements = Sample()
         self.ds = None
 
-    def __add__(self, other: "BaseSource") -> "BaseSource":
+    def __add__ (self, other: "BaseSource") -> "BaseSource":
         if not isinstance(other, BaseSource):
             return NotImplemented
         from .combinators import SumSource
         return SumSource(self, other)
 
-    def __radd__(self, other: "BaseSource") -> "BaseSource":
+    def __radd__ (self, other: "BaseSource") -> "BaseSource":
         # so sum([s1, s2, s3]) works
         if other == 0:
             return self
@@ -42,7 +42,7 @@ class BaseSource (ABC):
         """
         pass
 
-    def load(self) -> xr.Dataset:
+    def load (self) -> xr.Dataset:
         """Get data only if it hasn't loaded yet"""
         if self.ds is None:
             print(f"Load data from {self.source_name}...")
@@ -63,7 +63,8 @@ class BaseSource (ABC):
 
     def reload (self) -> xr.Dataset:
         """Force data reload"""
-        self.ds = self._get_data()
+        self.ds = None
+        self.load()
         return self.ds
 
     def save (self, filepath: str | Path, consolidated: bool = False):
