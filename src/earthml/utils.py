@@ -198,6 +198,15 @@ def _get_ekd_cache_dir ():
     import earthkit.data as ekd
     return ekd.config.get("user-cache-directory")
 
+def rmdir (directory):
+    directory = Path(directory)
+    for item in directory.iterdir():
+        if item.is_dir():
+            rmdir(item)
+        else:
+            item.unlink()
+    directory.rmdir()
+
 def retry_fetch_after_hdf_err (
     fetch_fn: Callable[[], xr.Dataset | EmptySource],
     *,
@@ -227,7 +236,7 @@ def retry_fetch_after_hdf_err (
         except Exception as e:
             print("   Attempt", attempt)
             last_e = e
-            p = _extract_nc_path_from_oserror(e) if Exception in (OSError, KeyError) else None
+            p = _extract_nc_path_from_oserror(e) # if e in (OSError, KeyError) else None
             if p:
                 msg = str(e)
                 if not pat.search(msg):
@@ -244,7 +253,7 @@ def retry_fetch_after_hdf_err (
 
                 if delete_bad_parent and cache_subdir.exists():
                     try:
-                        cache_subdir.rmdir()
+                        rmdir(cache_subdir)
                         print(f"   → deleted corrupt cache parent subdir: {cache_subdir}")
                     except Exception as del_e:
                         print(f"   → failed to delete {cache_subdir}: {del_e}")
