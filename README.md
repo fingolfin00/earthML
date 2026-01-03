@@ -4,7 +4,7 @@
 
 ## SSL / HTTPS access (HPC & enterprise environments)
 
-earthml does not modify SSL or certificate settings at runtime.
+earthML does not modify SSL or certificate settings at runtime.
 
 On some HPC or enterprise systems, HTTPS endpoints are signed by CAs that are not included in the default system trust store. In these cases, Python libraries such as requests or earthkit may fail with:
 
