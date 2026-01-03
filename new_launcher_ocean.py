@@ -98,7 +98,8 @@ if __name__ == "__main__":
                     runner.run(mode="dryrun")
                     success = True
                     break
-                except (RuntimeError, OSError):
+                except (RuntimeError, OSError) as e:
+                    print(e)
                     pass
 
             if not success:
