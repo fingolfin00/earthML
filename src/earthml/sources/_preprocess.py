@@ -6,7 +6,7 @@ from rich import print
 from ..dataclasses import DataSelection
 from ..utils import _guess_coord_name, get_lonlat_coords
 
-def _status_da(ds: xr.Dataset, time_coord: str, ok: bool, name: str = "_has_var"):
+def _status_da (ds: xr.Dataset, time_coord: str | None, ok: bool, name: str = "_has_var"):
     import xarray as xr
 
     # ensure a length-1 time dim if scalar
@@ -44,32 +44,24 @@ def ensure_time_dim (
     import numpy as np
     import xarray as xr
 
-    # 1) Choose a time name
     tname = time_coord
-
-    # 2) If still nothing, create placeholder time dim
+    # If no tname, return
     if tname is None:
-        tname = "time"
-        if tname in ds.coords or tname in ds.data_vars:  # avoid collision
-            tname = "__time__"
-        ds2 = ds.expand_dims({tname: 1})
-        ds2 = ds2.assign_coords({tname: np.array([np.datetime64("NaT")], dtype="datetime64[ns]")})
-        ds2[tname].attrs.update({"standard_name": standard_name, "axis": "T"})
-        return ds2, tname
+        return ds, tname
 
-    # 3) If already a dimension, just ensure attrs (and if scalar coord exists too, leave it)
+    # If already a dimension, just ensure attrs (and if scalar coord exists too, leave it)
     if tname in ds.dims:
         ds2 = ds
         if tname in ds2.coords:
             ds2[tname].attrs.update({"standard_name": standard_name, "axis": "T"})
         return ds2, tname
 
-    # 4) Get time "values" as a DataArray (coord preferred, else data_var)
+    # Get time "values" as a DataArray (coord preferred, else data_var)
     t = ds.coords.get(tname, None)
     if t is None:
         t = ds[tname]  # data_var
 
-    # 5) Promote scalar time to a dimension (no name collision)
+    # Promote scalar time to a dimension (no name collision)
     if t.ndim == 0:
         # Create a dummy dim that definitely doesn't collide
         dummy = "__time_dummy__"
@@ -85,7 +77,7 @@ def ensure_time_dim (
         ds2[tname].attrs.update({"standard_name": standard_name, "axis": "T"})
         return ds2, tname
 
-    # 6) If time is 1D on some other dim, swap that dim to time
+    # If time is 1D on some other dim, swap that dim to time
     if t.ndim == 1:
         base_dim = t.dims[0]
         ds2 = ds.swap_dims({base_dim: tname})
@@ -118,16 +110,18 @@ def preprocess_mfdataset (ds: xr.Dataset, data: DataSelection, var_name: str | N
         # propagate “missing var” info in a concat-safe way
         out = xr.Dataset()
         out["_has_var"] = _status_da(ds, time_coord, False, name="_has_var")
-        # keep coords you care about
+        # keep coords lon and lat coords
         if lon_coord and lat_coord:
             out = out.assign_coords({lon_coord: ds[lon_coord], lat_coord: ds[lat_coord]})
-        # keep a useful breadcrumb (often set by xarray backends)
+        # keep var name and source file name as attributes
         out.attrs["_missing_var_name"] = var_name
         out.attrs["_source"] = ds.encoding.get("source", "")
         # Assign at least time coord
         if not time_coord:
             # print(date)
-            out["source_time"] = date
+            out = out.assign_coords({"source_time": date})
+            out = out.expand_dims("source_time")
+        # print(out)
         return out
 
     # Normal case
@@ -141,7 +135,6 @@ def preprocess_mfdataset (ds: xr.Dataset, data: DataSelection, var_name: str | N
         dist = abs(da[leadtime.name] - target)
         idx = int(dist.argmin(time_coord).compute())
         da = da.isel({time_coord: idx})
-        # da = da.sel({leadtime.name: target}, method="nearest")
 
     out = xr.Dataset({da.name or var_name: da})
     out["_has_var"] = _status_da(out, time_coord, True, name="_has_var")
@@ -155,4 +148,5 @@ def preprocess_mfdataset (ds: xr.Dataset, data: DataSelection, var_name: str | N
         # print("Reset extra time coordinate")
         out = out.reset_coords("time", drop=True)
 
+    # print(out)
     return out
