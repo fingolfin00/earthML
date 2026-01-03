@@ -344,10 +344,20 @@ class EarthkitSource (BaseSource):
 
         # Drop unused variables
         ds_all = ds_all.drop_vars([v for v in ds_all.data_vars if v not in self.var_name_list])
+
         # Drop missing samples
         xarray_concat_dim = ds_all.cf['time'].name if not self.xarray_concat_dim else self.xarray_concat_dim
         if self.elements.missed:
             ds_all = ds_all.drop_sel({xarray_concat_dim: list(self.elements.missed)}, errors='ignore')
+
+        # Add missed info to dataset
+        missed_np = np.array(sorted(self.elements.missed), dtype="datetime64[ns]")
+        # print(missed_np)
+        ds_all = ds_all.assign_coords(missed_time=("missed_time", missed_np))
+        ds_all["missed_time"].encoding.update({
+            "units": "nanoseconds since 1970-01-01 00:00:00",
+            "calendar": "proleptic_gregorian",
+        })
 
         # Select area if necessary
         if self.select_area_after_request:
