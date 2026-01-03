@@ -161,7 +161,7 @@ class ExperimentMLFC:
                 datasource = [datasource]
                 source_params = [source_params]
             save_path = self.config.work_path.joinpath(Path(f"{source_type}_{e.role}")).with_suffix(".zarr")
-            if e.save and save_path.exists(): # TODO weak check, make more robust
+            if e.save and save_path.exists(): # TODO weak check, make more robust, like check it is really a zarr store
                 xr_loc_source_params, sources[e.role] = _create_xarray_local_source(save_path, datasource)
                 self.rich_console.print(Table({f"Source '{sources[e.role].datasource.source}' {source_type} {e.role} params": xr_loc_source_params}, twocols=True).table)
             else:
@@ -193,8 +193,16 @@ class ExperimentMLFC:
                 if "missed_time" in ds:
                     missed |= set(pd.to_datetime(ds["missed_time"].values).to_pydatetime())
         print(f"Missed dates ({source_type}): {missed}")
-        for source in sources.values():
-            source.elements.missed = missed
+
+        # Reload to remove union of missed elements from all datasets (for dimension consistency)
+        if missed:
+            for role, source in sources.items():
+                if source.source_name == "xarray-local" and role != "prediction":
+                    source.elements.missed = missed
+                    source.reload()
+        # source_table_dict = {f"{source.source_name} [{role}]": source.load().sizes for role, source in sources.items() if role != "prediction"}
+        # self.rich_console.print(Table({f"Reloaded source shapes": source_table_dict}).table)
+
         # missed = {p for source in sources.values() for p in source.elements.get('missed_samples', [])} # missed is a set
         # if missed:
         #     for role, source in sources.items():
@@ -267,7 +275,10 @@ class ExperimentMLFC:
         s = time.time()
         for role in exp_roles:
             # print(role)
-            ds_d[role] = source_data[role].load()
+            ds = source_data[role].load()
+            # remove missed_times from the dataset to avoid interference with later torch code
+            ds = ds.drop_dims("missed_time")
+            ds_d[role] = ds
         loading_time = time.time() - s
         print(f"{data_type} loading time: {loading_time:.1f}s")
 
