@@ -933,8 +933,8 @@ def regrid_to_rectilinear (
 
     lon0_norm, lon1_norm = _normalize_lon_bounds(lon0, lon1, lon_grid_min)
 
-    if "sosaline" in src_ds.data_vars:
-        quickplot(src_ds, "sosaline", "/data/cmcc/jd19424/ML/experiments_earthML/", "before_regrid.png")
+    # if "sosaline" in src_ds.data_vars:
+    #     quickplot(src_ds, "sosaline", "/data/cmcc/jd19424/ML/experiments_earthML/", "before_regrid.png")
     # Roll if request crosses longitude cut-line (like dateline or Greenwich)
     # src_ds = _roll_ds(src_ds, (lon0_norm, lon1_norm))
     # if "sosaline" in src_ds.data_vars:
