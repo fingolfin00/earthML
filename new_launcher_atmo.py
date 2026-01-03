@@ -6,11 +6,14 @@ from earthml.utils import half_train_periods_days
 if __name__ == "__main__":
 
     full_leadtimes = (.5,1,2,3)
+    var_key = "msl_juno"
 
     full_train_period = TimeRange(start=datetime(2019, 10, 11), end=datetime(2024, 12, 31), freq="12h")
+    test_period = TimeRange(start=datetime(2025, 1, 1), end=datetime(2025, 10, 31), freq='12h')
     train_periods = half_train_periods_days(full_train_period, min_months=3, anchor="end")
-    # Short train period for debug
-    # full_train_period = TimeRange(start=datetime(2021, 8, 30), end=datetime(2021, 9, 2), freq='12h')
+    # Shorter train/test periods for debug
+    # full_train_period = TimeRange(start=datetime(2020, 2, 10), end=datetime(2020, 2, 20), freq='12h')
+    # test_period = TimeRange(start=datetime(2025, 1, 1), end=datetime(2025, 1, 2), freq='12h')
     # train_periods = [full_train_period]
     for i, p in enumerate(train_periods, 1):
         print(i, p.start.date(), "->", p.end.date(), "days:", (p.end - p.start).days)
@@ -22,12 +25,11 @@ if __name__ == "__main__":
                 name="weather",
                 leadtime_value=leadtime_hours,
                 leadtime_unit="hours",
-                var_fc_key="t2m_juno",
-                var_an_key="t2m_juno",
+                var_fc_key=var_key,
+                var_an_key=var_key,
                 region_key="conus",
                 train_period=train_p,
-                # train_period=TimeRange(start=datetime(2021, 8, 30), end=datetime(2021, 9, 2), freq='12h'),
-                test_period= TimeRange(start=datetime(2025, 1, 1), end=datetime(2025, 10, 31), freq='12h'),
+                test_period=test_period,
                 input_provider= "atmo.juno.ecmwf.forecast.hourly",
                 target_provider="atmo.juno.ecmwf.analysis.6hourly",
                 input_provider_kwargs=dict(),
