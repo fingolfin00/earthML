@@ -38,7 +38,7 @@ def juno_monthly_hindcast_ocean_netcdf (
     )
     return ProviderSpec('juno-local', merge(base, overrides, **kw))
 
-@register_provider("ocean.earthkit.cds.hindcast.monthly")
+@register_provider("ocean.earthkit.cmcc.hindcast.monthly")
 def earthkit_cds_monthly_hindcast_ocean_netcdf (
     var_name: str,
     leadtime_value: int,
@@ -47,7 +47,7 @@ def earthkit_cds_monthly_hindcast_ocean_netcdf (
     system: str = "4",
     regrid_resolution: float = 0.25,
     split_month: int = 1,
-    split_month_jump: list[str] | None = None,
+    split_month_jump: list[str] | None = ['03', '04', '06', '07'],
     earthkit_cache_dir: str  = Path("/tmp/earthkit-cache/"),
     overrides: dict | None = None,
     **kw,
