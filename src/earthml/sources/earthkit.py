@@ -27,7 +27,7 @@ class EarthkitSource (BaseSource):
         split_month: int = 12,
         split_month_jump: list = None,
         select_area_after_request: bool = False,
-        request_type: str = "subseasonal",
+        request_type: str = "hourly", # on of hourly, daily, monthly
         request_extra_args: dict = None,
         to_xarray_args: dict = None,
         xarray_concat_dim: str = None,
@@ -69,7 +69,7 @@ class EarthkitSource (BaseSource):
 
     def _populate_missed (self):
         """Populate missed if some months are skipped for seasonal requests"""
-        if self.request_type == "seasonal":
+        if self.request_type == "monthly":
             start = self.data_selection.period.start
             end = self.data_selection.period.end
             skip_months = set(self.split_month_jump)
@@ -283,7 +283,7 @@ class EarthkitSource (BaseSource):
             for y1, y2 in zip(years[:-1], years[1:]):
                 y2 = y2 - timedelta(days=1)  # inclusive end
                 request_time_args_list = []
-                if self.request_type == "subseasonal":
+                if self.request_type in ("daily", "hourly"):
                     if self.provider == "ecmwf-open-data":
                         time_freq = generate_hours(self.data_selection.period.freq, 'int')
                     else:
@@ -293,7 +293,7 @@ class EarthkitSource (BaseSource):
                         time=time_freq,
                     )
                     request_time_args_list.append(request_time_args)
-                elif self.request_type == "seasonal":
+                elif self.request_type == "monthly":
                     y22 = y2-relativedelta(years=1) if y2.strftime("%Y") != y1.strftime("%Y") else y2
                     for m in months_splitted:
                         request_time_args = dict(
@@ -308,14 +308,11 @@ class EarthkitSource (BaseSource):
                 datasets.extend(ds_chunks)
 
             # Combine all datasets
-            ds_all = xr.concat(
-                datasets,
-                dim=xarray_concat_dim,
-                **self.xarray_concat_extra_args,
-            )
+            ds_all = xr.concat(datasets, dim=xarray_concat_dim, **self.xarray_concat_extra_args)
+
         else:
             request_time_args_list = []
-            if self.request_type == "subseasonal":
+            if self.request_type in ("daily", "hourly"):
                 if self.provider == "ecmwf-open-data":
                     time_freq = generate_hours(self.data_selection.period.freq, 'int')
                 else:
@@ -325,7 +322,7 @@ class EarthkitSource (BaseSource):
                     time=time_freq,
                 )
                 request_time_args_list.append(request_time_args)
-            elif self.request_type == "seasonal":
+            elif self.request_type == "monthly":
                 for m in months_splitted:
                     request_time_args = dict(
                         year=xr.date_range(start=start, end=end, freq="YS").strftime("%Y").tolist(),
@@ -336,12 +333,9 @@ class EarthkitSource (BaseSource):
             else:
                 raise ValueError(f"Unsupported earthkit request type {self.request_type}")
             xarray_concat_dim, datasets = _fetch_chunks(request_time_args_list, start, end, request_args | self.request_extra_args)
+
             # Combine all datasets
-            ds_all = xr.concat(
-                datasets,
-                dim=xarray_concat_dim,
-                **self.xarray_concat_extra_args,
-            )
+            ds_all = xr.concat(datasets, dim=xarray_concat_dim, **self.xarray_concat_extra_args)
 
         # Drop unused variables
         ds_all = ds_all.drop_vars([v for v in ds_all.data_vars if v not in self.var_name_list])

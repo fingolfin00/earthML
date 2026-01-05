@@ -59,7 +59,7 @@ def earthkit_cds_monthly_hindcast_ocean_netcdf (
         split_request=True,
         split_month=split_month,
         split_month_jump=split_month_jump or [],
-        request_type="seasonal",
+        request_type="monthly",
         request_extra_args=dict(
             forecast_type="hindcast",
             originating_centre=originating_centre,
@@ -98,7 +98,7 @@ def earthkit_cds_oras5 (
         split_request=True,
         select_area_after_request=select_area_after_request,
         regrid_resolution=regrid_resolution,
-        request_type="seasonal",
+        request_type="monthly",
         request_extra_args=dict(
             product_type=product_type,
             vertical_resolution="single_level",
