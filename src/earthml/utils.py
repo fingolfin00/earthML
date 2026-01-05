@@ -975,6 +975,8 @@ def regrid_to_rectilinear (
 
     rectilinear_src = (lat_da.ndim == 1 and lon_da.ndim == 1)
 
+    print(f"Regrid: available data vars {list(src_ds.data_vars.keys())}, requested vars {vars_to_regrid}")
+
     # ===== Case 1: rectilinear source (1D lat/lon) =====
     if rectilinear_src:
         print("Regrid: rectilinear (1D) source → rectilinear (1D) target via xarray.interp.")
