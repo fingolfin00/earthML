@@ -39,7 +39,7 @@ def juno_monthly_hindcast_ocean_netcdf (
     return ProviderSpec('juno-local', merge(base, overrides, **kw))
 
 @register_provider("ocean.earthkit.cmcc.hindcast.monthly")
-def earthkit_cds_monthly_hindcast_ocean_netcdf (
+def earthkit_cmcc_monthly_hindcast_ocean_netcdf (
     var_name: str,
     leadtime_value: int,
     leadtime_unit: str,
