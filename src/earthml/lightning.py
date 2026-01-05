@@ -584,8 +584,9 @@ class XarrayDataset (Dataset):
         y_np_filled = np.where(mask_y_np, y_np, 0.0)
         # print(f"Dataset x mean: {np.nanmean(x_np)}, std: {np.nanstd(x_np)}")
         # print(f"Dataset y mean: {np.nanmean(y_np)}, std: {np.nanstd(y_np)}")
+        # print(f"Input shape: {x_np.shape}, target shape: {y_np.shape}")
 
-        # Realizations
+        # Uniform realizations: only works if one of input and target has R>1 and the other R=1
         if len(x_np.shape) == 5: # C,T,R,H,W
             self.x = torch.tensor(x_np_filled, dtype=torch.float32).flatten(start_dim=1, end_dim=2).permute(1, 0, 2, 3) # (T*R),C,H,W
             self.x_mask = torch.tensor(mask_x_np, dtype=torch.bool).flatten(start_dim=1, end_dim=2).permute(1, 0, 2, 3)
@@ -619,7 +620,7 @@ class XarrayDataset (Dataset):
 
         # self.x = torch.tensor(self.input_ds.to_array().values, dtype=torch.float32).permute(1, 0, 2, 3)
         # self.y = torch.tensor(self.target_ds.to_array().values, dtype=torch.float32).permute(1, 0, 2, 3)
-        assert len(self.x) == len(self.y), f"Mismatched dataset length: x={len(self.x)}, y={len(self.y)}"
+        assert self.x.shape == self.y.shape, (f"Mismatched dataset shape: x={self.x.shape}, y={self.y.shape}")
 
     @staticmethod
     def _transpose_dims_ds_to_da (ds: xr.Dataset) -> xr.DataArray:
