@@ -22,7 +22,7 @@ def make_var (
         # Ocean
         mld00_1=Variable(name="mixed_layer_depth_0_01", unit="m"),
 
-        sss_cds_fc=Variable(name="ssh", longname="sea_surface_salinity", leadtime=lt),
+        sss_cds_fc=Variable(longname="sea_surface_salinity", name="sos", leadtime=lt),
         sss_juno_fc=Variable(name="sos", levm=0, leadtime=lt), # leadtime in var only if multimple leadtime in same file
         sss_oras5_an=Variable(longname="sea_surface_salinity", name="sosaline"),
         sss_juno_an=Variable(name="sss_m", levm=0),
@@ -36,8 +36,8 @@ def make_var (
         t20d_juno_fc=Variable(name="t20d", leadtime=lt),
         t20d_oras5_an=Variable(longname="depth_of_20_c_isotherm", name="so20chgt", unit="m"),
 
-        ssh_cds_fc=Variable(name="ssh", longname="sea_surface_height_above_geoid", unit="m", leadtime=lt),
-        ssh_oras5_an=Variable(name="sossheig", longname="sea_surface_height", unit="m"),
+        ssh_cds_fc=Variable(longname="sea_surface_height_above_geoid", name="ssh", unit="m", leadtime=lt),
+        ssh_oras5_an=Variable(longname="sea_surface_height", name="sossheig", unit="m"),
     )
 
 def make_region ():
