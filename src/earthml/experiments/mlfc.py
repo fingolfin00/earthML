@@ -189,9 +189,9 @@ class ExperimentMLFC:
             if isinstance(source.elements.samples, dict):
                 missed |= {p for p in source.elements.missed} # missed is a set
             if source.source_name == "xarray-local" and role != "prediction":
-                ds = source.load()
-                if "missed_time" in ds:
-                    missed |= set(pd.to_datetime(ds["missed_time"].values).to_pydatetime())
+                with source.load() as ds:
+                    if "missed_time" in ds:
+                        missed |= set(pd.to_datetime(ds["missed_time"].values).to_pydatetime())
         print(f"Missed dates ({source_type}): {missed}")
 
         # Reload to remove union of missed elements from all datasets (for dimension consistency)
@@ -199,7 +199,8 @@ class ExperimentMLFC:
             for role, source in sources.items():
                 if source.source_name == "xarray-local" and role != "prediction":
                     source.elements.missed = missed
-                    source.reload()
+                    with source.reload() as ds:
+                        _ = ds.sizes # just to trigger reload
         # source_table_dict = {f"{source.source_name} [{role}]": source.load().sizes for role, source in sources.items() if role != "prediction"}
         # self.rich_console.print(Table({f"Reloaded source shapes": source_table_dict}).table)
 
