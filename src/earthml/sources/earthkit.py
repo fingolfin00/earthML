@@ -340,6 +340,18 @@ class EarthkitSource (BaseSource):
         # Drop unused variables
         ds_all = ds_all.drop_vars([v for v in ds_all.data_vars if v not in self.var_name_list])
 
+        # Ensure concat dim is datetime64[ns]
+        ds_all = xr.decode_cf(ds_all)
+        ds_all = ds_all.assign_coords({xarray_concat_dim: ds_all[xarray_concat_dim].astype("datetime64[ns]")})
+
+        if self.request_type == "monthly":
+            # Snap all timesteps to month-start (00:00 of the 1st)
+            t = pd.to_datetime(ds_all[xarray_concat_dim].values)
+            t_month_start = t.to_period("M").to_timestamp(how="start")  # month begin, midnight
+            ds_all = ds_all.assign_coords({xarray_concat_dim: (xarray_concat_dim, t_month_start.values)})
+            # Optional: if you want them unique after snapping (avoid duplicates)
+            # ds_all = ds_all.groupby(xarray_concat_dim).first()
+
         # Drop missing samples
         xarray_concat_dim = _guess_dim_name(ds_all, "time", ["valid_time", "time_counter"]) if not self.xarray_concat_dim else self.xarray_concat_dim
         if self.elements.missed:
