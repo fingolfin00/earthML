@@ -11,7 +11,7 @@ import earthkit.data as ekd
 from rich import print
 
 from ..dataclasses import DataSource
-from ..utils import retry_fetch_after_hdf_err, generate_hours, get_ds_resolution, subset_ds, regrid_to_rectilinear
+from ..utils import retry_fetch_after_hdf_err, generate_hours, get_ds_resolution, subset_ds, regrid_to_rectilinear, _guess_dim_name
 from .base import BaseSource
 
 class EarthkitSource (BaseSource):
@@ -341,7 +341,7 @@ class EarthkitSource (BaseSource):
         ds_all = ds_all.drop_vars([v for v in ds_all.data_vars if v not in self.var_name_list])
 
         # Drop missing samples
-        xarray_concat_dim = ds_all.cf['time'].name if not self.xarray_concat_dim else self.xarray_concat_dim
+        xarray_concat_dim = _guess_dim_name(ds_all, "time", ["valid_time", "time_counter"]) if not self.xarray_concat_dim else self.xarray_concat_dim
         if self.elements.missed:
             ds_all = ds_all.drop_sel({xarray_concat_dim: list(self.elements.missed)}, errors='ignore')
 
