@@ -1,5 +1,5 @@
 from pathlib import Path
-from datetime import timedelta
+from datetime import timedelta, datetime
 from dateutil.relativedelta import relativedelta
 from dateutil.rrule import rrule, MONTHLY
 import tempfile, os, shutil
@@ -22,6 +22,7 @@ class EarthkitSource (BaseSource):
         self,
         datasource: DataSource,
         provider: str,
+        lead_time: relativedelta,
         dataset: str = None,
         split_request: bool = False,
         split_month: int = 12,
@@ -43,6 +44,7 @@ class EarthkitSource (BaseSource):
 
         self.elements.samples = self.date_range
         self.provider = provider
+        self.lead_time = lead_time
         self.dataset = dataset
         self.split_request = split_request
         self.split_month = split_month
@@ -69,13 +71,14 @@ class EarthkitSource (BaseSource):
 
     def _populate_missed (self):
         """Populate missed if some months are skipped for seasonal requests"""
+        # TODO we only support monthly seasonal datasets
         if self.request_type == "monthly":
-            start = self.data_selection.period.start
-            end = self.data_selection.period.end
+            start = self.data_selection.period.start - self.lead_time
+            end = self.data_selection.period.end - self.lead_time
             skip_months = set(self.split_month_jump)
 
             self.elements.missed = {
-                dt for dt in rrule(MONTHLY, dtstart=start, until=end) # TODO we only support monthly seasonal datasets
+                dt + self.lead_time for dt in rrule(MONTHLY, dtstart=start, until=end)
                 if f"{dt.month:02d}" in skip_months
             }
 
@@ -117,14 +120,140 @@ class EarthkitSource (BaseSource):
             name, td = leadtime_pairs[0]
             self.leadtime_d = {name: td}
 
+    def _earthkit_source_path (src) -> Path | None:
+        """
+        Try to get a real filesystem path from an earthkit source.
+        Works for file-backed sources.
+        """
+        for attr in ("path", "path_or_url", "url"):
+            p = getattr(src, attr, None)
+            if isinstance(p, str) and p.startswith("/"):
+                return Path(p)
+        # some earthkit objects expose a list of files/parts
+        parts = getattr(src, "parts", None)
+        if parts:
+            for part in parts:
+                p = getattr(part, "path", None) or getattr(part, "path_or_url", None)
+                if isinstance(p, str) and p.startswith("/"):
+                    return Path(p)
+        return None
+
+    def _fetch_chunks (self, request_time_args_list, start, end, request_other_args):
+        """Helper to fetch chunked datasets using ekd"""
+
+        ds_chunks = []
+        for req_time_arg in request_time_args_list:
+            months_req = ""
+            if 'month' in req_time_arg:
+                months_req = req_time_arg['month'] if isinstance(req_time_arg['month'], list) else [req_time_arg['month']]
+                n_months_req = len(months_req)
+            print(f" → Fetching chunk: {start:%Y-%m-%d} to {end:%Y-%m-%d} {months_req}")
+            request_d = dict(
+                **request_other_args,
+                **req_time_arg,
+            )
+            # print(request_d)
+
+            if self.dataset:
+                src_ekd_params = {"name": self.provider, "dataset": self.dataset} | request_d
+                # src_ekd = ekd.from_source(self.provider, self.dataset, **request_d)
+            else:
+                src_ekd_params = {"name": self.provider} | request_d
+
+            # print(src_ekd_params)
+            def _fetch_ekd_src ():
+                return ekd.from_source(**src_ekd_params)
+            src_ekd = retry_fetch_after_hdf_err(_fetch_ekd_src, error_re=r"NetCDF:.*HDF error", base_sleep=5, tries=2, delete_bad_file=True, delete_bad_parent=True)
+
+            def _fetch_ekd ():
+                # tmpdir = Path(tempfile.mkdtemp(prefix="ekd_"))
+                # out = tmpdir / "data.nc"
+                # print("Save to tmp file:", out)
+                return src_ekd.to_xarray(**(self.to_xarray_args or {}))
+
+            # print(src_ekd)
+            # print(self.to_xarray_args)
+            ds_chunk = retry_fetch_after_hdf_err(_fetch_ekd, error_re=r"NetCDF:.*HDF error", base_sleep=2, delete_bad_file=False)
+            # print(ds_chunk)
+
+            print(f"   Chunk size: {ds_chunk.sizes}")
+            # print(f"   Chunk coords: {ds_chunk.coords}")
+
+            if self.leadtime_d:
+                td = next(iter(self.leadtime_d.values()))
+                leadtime_name = next(iter(self.leadtime_d.keys()))
+                # TODO we currently support only the case with 'time' coord to infer realizations
+                if "leadtime" in ds_chunk.coords and 'time' in ds_chunk.coords and td is not None:
+                    lt_values = ds_chunk[leadtime_name].values
+                    unique_lt = np.unique(lt_values)
+                    time_values = ds_chunk['time'].values
+                    unique_time = np.unique(time_values)
+                    n_unique_time = len(unique_time)
+                    n_leadtime = n_unique_time - n_months_req + 1
+                    n_realizations = len(lt_values) / n_months_req / n_leadtime
+                    assert n_realizations.is_integer(), f"Number of realizations cannot be computed, check the dataset"
+                    n_realizations = int(n_realizations)
+                    print(f"   Number of detected leadtimes and realizations: {n_leadtime}, {n_realizations}")
+                    # coord_u = np.unique(coord)
+                    # Cast to same dtype as coord (usually timedelta64[ns])
+                    coord_dtype = ds_chunk[leadtime_name].dtype
+                    target = td.to_numpy().astype(coord_dtype)
+                    # print(f"   requested leadtime {target}")
+                    nearest_lt = unique_lt[np.argmin(np.abs(unique_lt - target))]
+                    print(f"   Requested leadtime: {self.leadtime_d}, selected leadtime: {pd.Timedelta(nearest_lt)}")
+                    mask = (lt_values == nearest_lt)
+                    # print(f"   leadtime sel mask: {mask}")
+                    # print(f"   total leadtimes: {lt_values}")
+                    ds_sel = ds_chunk.isel({leadtime_name: mask})
+                    # print(f"   Size after leadtime sel: {ds_sel.sizes}")
+                    n_sel_lt = len(ds_sel['leadtime'].values)
+                    n_sel_re = n_sel_lt / n_months_req
+                    assert n_sel_re.is_integer() and int(n_sel_re) == n_realizations, f"Number of realizations not coherent, try single-month requests"
+                    # print(f"   Coords after leadtime sel: {ds_sel.coords}")
+                    re_values = ds_sel['leadtime'].values
+                    # unique_re = np.unique(re_values)
+                    # print(f"   Total leadtimes: {len(lt_values)}, times: {len(time_values)}, realizations: {re_values}")
+                    # print(f"   Unique leadtimes: {len(unique_lt)}, times: {len(unique_time)}, realizations: {unique_re}")
+                    # print(f"   Uniques leadtimes: {unique_lt}")
+                    # print(f"   Uniques times: {unique_time}")
+                    # print(unique_lt)
+                    # print(unique_re)
+                    if "realization" in ds_sel.coords and "realization" not in ds_sel.dims:
+                    # keep old realization as metadata
+                        ds_sel = ds_sel.assign_attrs(source_realization=str(ds_sel["realization"].values))
+                        ds_sel = ds_sel.drop_vars("realization")
+                    ds_sel = ds_sel.rename({leadtime_name: "realization"})
+                    ds_sel = ds_sel.assign_coords(realization=np.arange(len(re_values)))
+                    ds_sel = ds_sel.assign_coords({leadtime_name: nearest_lt})
+                    if "time" in ds_sel.coords and "realization" in ds_sel["time"].dims:
+                        t = ds_sel["time"].values
+                        # print(f"   ds_chunk time values: {t[0]}")
+                        if np.all(t == t[0]):
+                            ds_sel = ds_sel.assign_coords(time=t[0])
+                        else:
+                            # if not identical, pick one (or decide a rule)
+                            ds_sel = ds_sel.assign_coords(time=t[0])
+                    # make time a 1-length dimension for concat
+                    ds_chunk = ds_sel.expand_dims(time=[ds_sel["time"].item()])
+                    print(f"   Size after all processing: {ds_chunk.sizes}")
+            xarray_concat_dim = _guess_dim_name(ds_chunk, "time", ["valid_time", "time_counter"]) if not self.xarray_concat_dim else self.xarray_concat_dim
+            # print(xarray_concat_dim)
+            ds_chunks.append(ds_chunk)
+        return xarray_concat_dim, ds_chunks
+
     def _get_data (self):
-        # samples = list(self.elements['samples'].values())
+        n_missed = len(self.elements.missed)
         samples = [s for s in self.elements.samples if s not in self.elements.missed] # TODO refactor to BaseSource?
-        print(f"Samples: {len(samples)}, missed: {len(self.elements.missed)}")
+        print(f"Samples: {len(samples)}, missed: {n_missed}")
+
         var_longname_list = [v.longname for v in self.data_selection.variable] if isinstance(self.data_selection.variable, list) else [self.data_selection.variable.longname]
-        start = self.data_selection.period.start
-        end = self.data_selection.period.end
+
+        # print(f"Earthkit period shifted: {self.data_selection.period.shifted}")
+
+        start = self.data_selection.period.start - self.lead_time #+ relativedelta(**self.data_selection.period.shifted) if self.data_selection.period.shifted is not None else self.data_selection.period.start
+        end = self.data_selection.period.end - self.lead_time #+ relativedelta(**self.data_selection.period.shifted) if self.data_selection.period.shifted is not None else self.data_selection.period.end
         dates = f"{start.strftime('%Y-%m-%d')}/{end.strftime('%Y-%m-%d')}"
+
         all_months = ['01', '02' , '03', '04', '05', '06', '07', '08', '09', '10', '11', '12']
         months_splitted = [
             [m for m in all_months[i:i+self.split_month] if m not in self.split_month_jump]
@@ -135,6 +264,7 @@ class EarthkitSource (BaseSource):
         months_splitted = [chunk[0] if len(chunk) == 1 else chunk for chunk in months_splitted]
         months_splitted = [x for x in months_splitted if x]
         # print(f"Months requested cleaned-up: {months_splitted}")
+
         area = [
             self.data_selection.region.lat[0],
             self.data_selection.region.lon[0],
@@ -145,145 +275,32 @@ class EarthkitSource (BaseSource):
             request_args = dict(variable=var_longname_list)
         else:
             request_args = dict(variable=var_longname_list, area=area)
-        years = xr.date_range(start=start, end=end, freq="YS")
+
+        years = xr.date_range(start=start, end=end, freq="YS") # from the first year after the start
+
         print(f"Requesting {var_longname_list} ({dates}, {self.data_selection.period.freq}) in region {area} from {self.provider}:{self.dataset} (ekd_ver={self.ekd_version})")
         print(f"Check request status: https://cds.climate.copernicus.eu/requests?tab=all")
-        # print(years)
-
-        def _earthkit_source_path (src) -> Path | None:
-            """
-            Try to get a real filesystem path from an earthkit source.
-            Works for file-backed sources.
-            """
-            for attr in ("path", "path_or_url", "url"):
-                p = getattr(src, attr, None)
-                if isinstance(p, str) and p.startswith("/"):
-                    return Path(p)
-            # some earthkit objects expose a list of files/parts
-            parts = getattr(src, "parts", None)
-            if parts:
-                for part in parts:
-                    p = getattr(part, "path", None) or getattr(part, "path_or_url", None)
-                    if isinstance(p, str) and p.startswith("/"):
-                        return Path(p)
-            return None
-
-        def _fetch_chunks (request_time_args_list, start, end, request_other_args):
-            """Helper to fetch chunked datasets using ekd"""
-
-            ds_chunks = []
-            for req_time_arg in request_time_args_list:
-                months_req = ""
-                if 'month' in req_time_arg:
-                    months_req = req_time_arg['month'] if isinstance(req_time_arg['month'], list) else [req_time_arg['month']]
-                    n_months_req = len(months_req)
-                print(f" → Fetching chunk: {start:%Y-%m-%d} to {end:%Y-%m-%d} {months_req}")
-                request_d = dict(
-                    **request_other_args,
-                    **req_time_arg,
-                )
-                # print(request_d)
-
-                if self.dataset:
-                    src_ekd_params = {"name": self.provider, "dataset": self.dataset} | request_d
-                    # src_ekd = ekd.from_source(self.provider, self.dataset, **request_d)
-                else:
-                    src_ekd_params = {"name": self.provider} | request_d
-
-                # print(src_ekd_params)
-                def _fetch_ekd_src ():
-                    return ekd.from_source(**src_ekd_params)
-                src_ekd = retry_fetch_after_hdf_err(_fetch_ekd_src, error_re=r"NetCDF:.*HDF error", base_sleep=5, tries=2, delete_bad_file=True, delete_bad_parent=True)
-
-                def _fetch_ekd ():
-                    # tmpdir = Path(tempfile.mkdtemp(prefix="ekd_"))
-                    # out = tmpdir / "data.nc"
-                    # print("Save to tmp file:", out)
-                    return src_ekd.to_xarray(**(self.to_xarray_args or {}))
-
-                # print(src_ekd)
-                # print(self.to_xarray_args)
-                ds_chunk = retry_fetch_after_hdf_err(_fetch_ekd, error_re=r"NetCDF:.*HDF error", base_sleep=2, delete_bad_file=False)
-                # print(ds_chunk)
-
-                print(f"   Chunk size: {ds_chunk.sizes}")
-                # print(f"   Chunk coords: {ds_chunk.coords}")
-
-                if self.leadtime_d:
-                    td = next(iter(self.leadtime_d.values()))
-                    leadtime_name = next(iter(self.leadtime_d.keys()))
-                    # TODO we currently support only the case with 'time' coord to infer realizations
-                    if "leadtime" in ds_chunk.coords and 'time' in ds_chunk.coords and td is not None:
-                        print(f"   Using leadtime {self.leadtime_d}")
-                        lt_values = ds_chunk[leadtime_name].values
-                        unique_lt = np.unique(lt_values)
-                        time_values = ds_chunk['time'].values
-                        unique_time = np.unique(time_values)
-                        n_unique_time = len(unique_time)
-                        n_leadtime = n_unique_time - n_months_req + 1
-                        print(f"   leadtimes detected: {n_leadtime}")
-                        n_realizations = len(lt_values) / n_months_req / n_leadtime
-                        assert n_realizations.is_integer(), f"Number of realizations cannot be computed, check the dataset"
-                        n_realizations = int(n_realizations)
-                        print(f"   realizations detected: {n_realizations}")
-                        # coord_u = np.unique(coord)
-                        # Cast to same dtype as coord (usually timedelta64[ns])
-                        coord_dtype = ds_chunk[leadtime_name].dtype
-                        target = td.to_numpy().astype(coord_dtype)
-                        # print(f"   requested leadtime {target}")
-                        nearest_lt = unique_lt[np.argmin(np.abs(unique_lt - target))]
-                        print(f"   selected leadtime {pd.Timedelta(nearest_lt)}")
-                        mask = (lt_values == nearest_lt)
-                        # print(f"   leadtime sel mask: {mask}")
-                        # print(f"   total leadtimes: {lt_values}")
-                        ds_sel = ds_chunk.isel({leadtime_name: mask})
-                        # print(f"   Size after leadtime sel: {ds_sel.sizes}")
-                        n_sel_lt = len(ds_sel['leadtime'].values)
-                        n_sel_re = n_sel_lt / n_months_req
-                        assert n_sel_re.is_integer() and int(n_sel_re) == n_realizations, f"Number of realizations not coherent, try single-month requests"
-                        # print(f"   Coords after leadtime sel: {ds_sel.coords}")
-                        re_values = ds_sel['leadtime'].values
-                        # unique_re = np.unique(re_values)
-                        # print(f"   Total leadtimes: {len(lt_values)}, times: {len(time_values)}, realizations: {re_values}")
-                        # print(f"   Unique leadtimes: {len(unique_lt)}, times: {len(unique_time)}, realizations: {unique_re}")
-                        # print(f"   Uniques leadtimes: {unique_lt}")
-                        # print(f"   Uniques times: {unique_time}")
-                        # print(unique_lt)
-                        # print(unique_re)
-                        if "realization" in ds_sel.coords and "realization" not in ds_sel.dims:
-                        # keep old realization as metadata
-                            ds_sel = ds_sel.assign_attrs(source_realization=str(ds_sel["realization"].values))
-                            ds_sel = ds_sel.drop_vars("realization")
-                        ds_sel = ds_sel.rename({leadtime_name: "realization"})
-                        ds_sel = ds_sel.assign_coords(realization=np.arange(len(re_values)))
-                        ds_sel = ds_sel.assign_coords({leadtime_name: nearest_lt})
-                        if "time" in ds_sel.coords and "realization" in ds_sel["time"].dims:
-                            t = ds_sel["time"].values
-                            if np.all(t == t[0]):
-                                ds_sel = ds_sel.assign_coords(time=t[0])
-                            else:
-                                # if not identical, pick one (or decide a rule)
-                                ds_sel = ds_sel.assign_coords(time=t[0])
-                        # make time a 1-length dimension for concat
-                        ds_chunk = ds_sel.expand_dims(time=[ds_sel["time"].item()])
-                        print(f"   Size after all processing: {ds_chunk.sizes}")
-                xarray_concat_dim = ds_chunk.cf['time'].name if not self.xarray_concat_dim else self.xarray_concat_dim
-                # print(xarray_concat_dim)
-                ds_chunks.append(ds_chunk)
-            return xarray_concat_dim, ds_chunks
 
         if self.split_request and end - start > pd.to_timedelta('365 days'):
+            # print(f"Years before change: {years}")
             # Split into yearly chunks
-            if years[0] > start:
+            year_first, year_last = years[0], years[-1]
+            if year_first > start:
                 years = xr.date_range(start, start, periods=1).append(years)
-            if years[-1] <= end: # last date needs to be one day ahead to compensate for inclusive end
+            if year_last <= end:
+                # if self.request_type in ("daily", "hourly"):
+                # last date needs to be one day ahead to compensate for inclusive end
                 years = years.append(xr.date_range(end+timedelta(days=1), end+timedelta(days=1), periods=1))
-            # print(years)
+                # elif self.request_type == "monthly":
+                    # years = years.append(xr.date_range(end, end, periods=1))
+            print(f"Requested split-by-year ranges: {years}")
+
             datasets = []
             for y1, y2 in zip(years[:-1], years[1:]):
-                y2 = y2 - timedelta(days=1)  # inclusive end
+                # print(f"y1={y1}, y2={y2}")
                 request_time_args_list = []
                 if self.request_type in ("daily", "hourly"):
+                    y2 = y2 - timedelta(days=1) # inclusive end
                     if self.provider == "ecmwf-open-data":
                         time_freq = generate_hours(self.data_selection.period.freq, 'int')
                     else:
@@ -293,22 +310,39 @@ class EarthkitSource (BaseSource):
                         time=time_freq,
                     )
                     request_time_args_list.append(request_time_args)
+
                 elif self.request_type == "monthly":
-                    y22 = y2-relativedelta(years=1) if y2.strftime("%Y") != y1.strftime("%Y") else y2
+                    y22 = y2 - relativedelta(months=1) # inclusive end
+                    y22 = y22 - relativedelta(years=1) if y22.strftime("%Y") != y1.strftime("%Y") else y22
+                    # print(f"y22={y22}")
+                    split_req_months = [m.strftime("%m") for m in xr.date_range(start=y1, end=y22, freq="MS")]
+                    # print(f"split_req_months: {split_req_months}")
                     for m in months_splitted:
-                        request_time_args = dict(
-                            year=xr.date_range(start=y1, end=y22, freq="YS").strftime("%Y").tolist(),
-                        )
+                        # print(f"   m:{m}")
+                        request_time_args = dict(year=xr.date_range(start=datetime(y1.year, 1, 1), end=datetime(y22.year, 1, 1), freq="YS").strftime("%Y").tolist())
                         if "month" not in self.request_extra_args:
-                            request_time_args['month'] = m
+                            if isinstance(m, list):
+                                month_req = [x for x in m if x in set(split_req_months)]
+                            else:
+                                if m in split_req_months:
+                                    month_req = m
+                                else:
+                                    continue
+                            request_time_args['month'] = month_req
                         request_time_args_list.append(request_time_args)
+
                 else:
                     raise ValueError(f"Unsupported earthkit request type {self.request_type}")
-                xarray_concat_dim, ds_chunks = _fetch_chunks(request_time_args_list, y1, y2, request_args | self.request_extra_args)
-                datasets.extend(ds_chunks)
+
+                # print(f"   request_time_args_list: {request_time_args_list}")
+                if request_time_args_list:
+                    xarray_concat_dim, ds_chunks = self._fetch_chunks(request_time_args_list, y1, y2, request_args | self.request_extra_args)
+                    datasets.extend(ds_chunks)
 
             # Combine all datasets
+            # print(f"Combine split-request datasets of length {len(datasets)}")
             ds_all = xr.concat(datasets, dim=xarray_concat_dim, **self.xarray_concat_extra_args)
+            # print(f"Combined datasets: {len(ds_all[xarray_concat_dim].values)}")
 
         else:
             request_time_args_list = []
@@ -323,16 +357,25 @@ class EarthkitSource (BaseSource):
                 )
                 request_time_args_list.append(request_time_args)
             elif self.request_type == "monthly":
+                split_req_months = [m.strftime("%m") for m in xr.date_range(start=y1-relativedelta(months=1), end=y2, freq="MS")]
                 for m in months_splitted:
                     request_time_args = dict(
                         year=xr.date_range(start=start, end=end, freq="YS").strftime("%Y").tolist(),
                     )
                     if "month" not in self.request_extra_args:
-                        request_time_args['month'] = m
+                        if isinstance(m, list):
+                            month_req = [x for x in m if x in set(split_req_months)]
+                        else:
+                            if m in split_req_months:
+                                month_req = m
+                            else:
+                                continue
+                        request_time_args['month'] = month_req
                     request_time_args_list.append(request_time_args)
             else:
                 raise ValueError(f"Unsupported earthkit request type {self.request_type}")
-            xarray_concat_dim, datasets = _fetch_chunks(request_time_args_list, start, end, request_args | self.request_extra_args)
+            if request_time_args_list:
+                xarray_concat_dim, datasets = self._fetch_chunks(request_time_args_list, start, end, request_args | self.request_extra_args)
 
             # Combine all datasets
             ds_all = xr.concat(datasets, dim=xarray_concat_dim, **self.xarray_concat_extra_args)
@@ -343,19 +386,29 @@ class EarthkitSource (BaseSource):
         # Ensure concat dim is datetime64[ns]
         ds_all = xr.decode_cf(ds_all)
         ds_all = ds_all.assign_coords({xarray_concat_dim: ds_all[xarray_concat_dim].astype("datetime64[ns]")})
+        # print(f"Time values before reassignment: {ds_all[xarray_concat_dim].values}")
 
         if self.request_type == "monthly":
             # Snap all timesteps to month-start (00:00 of the 1st)
             t = pd.to_datetime(ds_all[xarray_concat_dim].values)
             t_month_start = t.to_period("M").to_timestamp(how="start")  # month begin, midnight
             ds_all = ds_all.assign_coords({xarray_concat_dim: (xarray_concat_dim, t_month_start.values)})
-            # Optional: if you want them unique after snapping (avoid duplicates)
+            # Optional: unique after snapping (avoid duplicates)
             # ds_all = ds_all.groupby(xarray_concat_dim).first()
 
+        # print(f"Datasets before dropping missing samples: {len(ds_all[xarray_concat_dim].values)}")
+        # print(f"Time values after reassignment: {ds_all[xarray_concat_dim].values}")
+
+        n_actual_samples = len(ds_all[xarray_concat_dim].values)
+        n_all_samples = len(self.date_range)
+        assert n_missed + n_actual_samples == n_all_samples, f"number of samples obtained + missed is different from number of all samples ({n_actual_samples}+{n_missed} =/= {n_all_samples})"
+        # print(f"Missed: {self.elements.missed}")
         # Drop missing samples
         xarray_concat_dim = _guess_dim_name(ds_all, "time", ["valid_time", "time_counter"]) if not self.xarray_concat_dim else self.xarray_concat_dim
         if self.elements.missed:
             ds_all = ds_all.drop_sel({xarray_concat_dim: list(self.elements.missed)}, errors='ignore')
+
+        # print(f"Datasets after dropping missing samples: {len(ds_all[xarray_concat_dim].values)}")
 
         # Add missed info to dataset
         missed_np = np.array(sorted(self.elements.missed), dtype="datetime64[ns]")
