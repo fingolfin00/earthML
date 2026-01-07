@@ -8,11 +8,12 @@ if __name__ == "__main__":
 
     max_retries = 4
 
-    full_leadtimes = (15, 45, 75, 105, 135, 165)
+    full_leadtimes_days = (15, 45, 75, 105, 135, 165)
+    full_leadtimes_months = (0, 1, 2, 3, 4, 5)
     # start_train_date = datetime(1993, 1, 1)
     # end_train_date = datetime(2020, 12, 31)
     # Short exp for debug
-    start_train_date = datetime(1993, 1, 1)
+    start_train_date = datetime(1993, 7, 1)
     end_train_date = datetime(1994, 12, 31)
 
     full_train_period_target = TimeRange(start=start_train_date, end=end_train_date, freq='MS')
@@ -45,16 +46,19 @@ if __name__ == "__main__":
         )
     )
 
-    for leadtime_days in full_leadtimes:
+    for leadtime_days, leadtime_months in zip(full_leadtimes_days, full_leadtimes_months):
 
-        full_train_period_input = TimeRange(start=start_train_date, end=end_train_date, freq='MS', shifted=dict(days=leadtime_days))
+        full_train_period_input = TimeRange(start=start_train_date, end=end_train_date, freq='MS')
         train_periods_input = half_train_periods_days(full_train_period_input, min_months=12, anchor="end")
 
         for train_p_in, train_p_tar in zip(train_periods_input, train_periods_target):
             ocean_scenario = MLFCScenario(
                 name="ocean",
-                leadtime_value=leadtime_days,
-                leadtime_unit="days",
+                leadtime_var_name="leadtime",
+                leadtime_var_value=leadtime_days,
+                leadtime_var_unit="days",
+                leadtime_value=leadtime_months,
+                leadtime_unit="months",
                 var_fc_key="sss_juno_fc",
                 var_an_key="sss_oras5_an",
                 region_key="pacific",
@@ -63,8 +67,8 @@ if __name__ == "__main__":
                     target=train_p_tar,
                 ),
                 test_period=dict(
-                    input=TimeRange(start=datetime(2021, 1, 1), end=datetime(2024, 12, 31), freq='MS', shifted=dict(days=leadtime_days)),
-                    target=TimeRange(start=datetime(2021, 1, 1), end=datetime(2024, 12, 31), freq='MS'),
+                    input=TimeRange(start=datetime(2021, 1, 1), end=datetime(2022, 12, 31), freq='MS'),
+                    target=TimeRange(start=datetime(2021, 1, 1), end=datetime(2022, 12, 31), freq='MS'),
                 ),
                 input_provider= "ocean.juno.cmcc.hindcast.monthly",
                 target_provider="ocean.earthkit.oras5.reanalysis.monthly",
