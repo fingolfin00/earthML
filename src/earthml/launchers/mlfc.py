@@ -74,9 +74,14 @@ class MLFCScenario:
     """
     name: str
 
-    # catalog knobs
+    # leadtime variable in dataset
+    leadtime_var_name: str
+    leadtime_var_value: int
+    leadtime_var_unit: Literal["hours", "days", "months"]
+
+    # actual leadtime
     leadtime_value: int
-    leadtime_unit: Literal["hours", "days"] # for now only support these two
+    leadtime_unit: Literal["hours", "days", "months"]
 
     # catalog selection knobs
     var_fc_key: str
@@ -100,7 +105,7 @@ class MLFCScenario:
     torch_preprocess_fn: Callable | None = None
 
     def _cat (self) -> SimpleNamespace:
-        return catalog.make_catalog(leadtime=self.leadtime_value, leadtime_unit=self.leadtime_unit)
+        return catalog.make_catalog(leadtime_var=self.leadtime_var_name, leadtime=self.leadtime_var_value, leadtime_unit=self.leadtime_var_unit)
 
     def var_fc (self) -> Variable:
         return getattr(self._cat().var, self.var_fc_key)

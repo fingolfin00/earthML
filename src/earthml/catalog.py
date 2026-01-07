@@ -2,10 +2,11 @@ from types import SimpleNamespace
 from .dataclasses import Variable, Region, Leadtime
 
 def make_var (
+        leadtime_var: str = "leadtime",
         leadtime: int | None = None,
         leadtime_unit: str | None = None
 ):
-    lt = None if leadtime is None and leadtime_unit is None else Leadtime("leadtime", leadtime_unit, leadtime)
+    lt = None if leadtime is None and leadtime_unit is None else Leadtime(leadtime_var, leadtime_unit, leadtime)
 
     return SimpleNamespace(
         # Atmo
@@ -51,10 +52,11 @@ def make_region ():
 
 def make_catalog (
         *,
+        leadtime_var: str = "leadtime",
         leadtime: int | None = None,
         leadtime_unit: str | None = None
 ):
     return SimpleNamespace(
-        var=make_var(leadtime=leadtime, leadtime_unit=leadtime_unit),
+        var=make_var(leadtime_var=leadtime_var, leadtime=leadtime, leadtime_unit=leadtime_unit),
         region=make_region(),
     )
