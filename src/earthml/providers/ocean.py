@@ -54,6 +54,7 @@ def earthkit_cmcc_monthly_hindcast_ocean_netcdf (
 ) -> ProviderSpec:
     base = dict(
         provider="cds",
+        lead_time=relativedelta(**{leadtime_unit: leadtime_value}),
         dataset="seasonal-monthly-ocean",
         regrid_resolution=regrid_resolution,
         split_request=True,
@@ -94,6 +95,7 @@ def earthkit_cds_oras5 (
 ) -> ProviderSpec:
     base = dict(
         provider="cds",
+        lead_time=relativedelta(hours=0),
         dataset="reanalysis-oras5",
         split_request=True,
         select_area_after_request=select_area_after_request,

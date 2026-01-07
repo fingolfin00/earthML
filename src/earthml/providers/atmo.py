@@ -86,6 +86,7 @@ def earthkit_cds_era5_single_levels (
 ) -> ProviderSpec:
     base = dict(
         provider="cds",
+        lead_time=relativedelta(hours=0),
         dataset="reanalysis-era5-single-levels",
         split_request=split_request,
         request_extra_args=dict(product_type=product_type),
