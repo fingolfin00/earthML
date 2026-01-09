@@ -168,8 +168,8 @@ class MLFCScenario:
             datasources: list[DataSource] = []
             params: list[dict[str, Any]] = []
 
-            provider_names = provider_names if isinstance(provider_names, list) else [provider_names]
-            provider_kwargs = provider_kwargs if isinstance(provider_kwargs, list) else [provider_kwargs]
+            provider_names = provider_names if isinstance(provider_names, list) else len(periods)*[provider_names]
+            provider_kwargs = provider_kwargs if isinstance(provider_kwargs, list) else len(periods)*[provider_kwargs]
 
             for period, provider_name, kwargs in zip(periods, provider_names, provider_kwargs):
                 provider = build_provider(provider_name, **merge(kwargs, dict(var_name=var.name, leadtime_value=leadtime_value, leadtime_unit=leadtime_unit)))
