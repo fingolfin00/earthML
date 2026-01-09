@@ -35,6 +35,9 @@ class SumSource (BaseSource):
         right_vars = set(ds_right.data_vars)
 
         common_vars = sorted(left_vars & right_vars)
+        # print(f"Left vars: {left_vars}")
+        # print(f"Right vars: {right_vars}")
+        # print(f"Common vars: {common_vars}")
         if not common_vars:
             raise ValueError(
                 "No common variables to concatenate between sources. "
@@ -50,16 +53,19 @@ class SumSource (BaseSource):
                 f"  only in right: {extra_right}"
             )
 
-        ds_left_sel = ds_left[common_vars]
-        ds_right_sel = ds_right[common_vars]
+        ds_left_sel = ds_left.drop_vars(list(extra_left), errors="ignore")
+        ds_right_sel = ds_right.drop_vars(list(extra_right), errors="ignore")
 
         # Intersect coords (by name)
         left_coords = set(ds_left.coords)
         right_coords = set(ds_right.coords)
 
         common_coords = left_coords & right_coords
+        # print(f"Common coords: {common_coords}")
         only_left_coords = left_coords - right_coords
         only_right_coords = right_coords - left_coords
+        # print(f"  only in left :  {sorted(only_left_coords)}")
+        # print(f"  only in right:  {sorted(only_right_coords)}")
 
         if only_left_coords or only_right_coords:
             print(
@@ -71,8 +77,11 @@ class SumSource (BaseSource):
         # Drop coords that are not shared
         ds_left_sel = ds_left_sel.drop_vars(list(only_left_coords), errors="ignore")
         ds_right_sel = ds_right_sel.drop_vars(list(only_right_coords), errors="ignore")
+        # print(f"ds_left_sel coords: {ds_left_sel.coords}")
+        # print(f"ds_right_sel coords: {ds_right_sel.coords}")
 
         # Concatenate lazily (xarray + dask)
-        ds_combined = xr.concat([ds_left_sel, ds_right_sel], dim=time_dim)
+        ds_combined = xr.merge([ds_left_sel, ds_right_sel])
+        # print(f"ds_combined coords: {ds_combined.coords}")
 
         return ds_combined
