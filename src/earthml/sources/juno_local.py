@@ -16,6 +16,8 @@ from ._preprocess import preprocess_mfdataset
 class JunoLocalSource (MFXarrayLocalSource):
     """
     Collect Juno local data for the given data selection.
+    We do not need "shifted" in TimeRange because we use lead_time to select
+    the correct input relative to the date range.
     """
     def __init__ (
         self,
