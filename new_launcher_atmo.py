@@ -23,6 +23,9 @@ if __name__ == "__main__":
         for train_p in train_periods:
             weather_scenario = MLFCScenario(
                 name="weather",
+                leadtime_var_name="leadtime",
+                leadtime_var_value=leadtime_hours,
+                leadtime_var_unit="hours",
                 leadtime_value=leadtime_hours,
                 leadtime_unit="hours",
                 var_fc_key=var_key,
