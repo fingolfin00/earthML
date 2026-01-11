@@ -77,10 +77,14 @@ class EarthkitSource (BaseSource):
             end = self.data_selection.period.end - self.lead_time
             skip_months = set(self.split_month_jump)
 
-            self.elements.missed = {
+            missed = [
                 dt + self.lead_time for dt in rrule(MONTHLY, dtstart=start, until=end)
                 if f"{dt.month:02d}" in skip_months
-            }
+            ]
+            # Snap all timesteps to month-start (00:00 of the 1st)
+            t = pd.to_datetime(missed)
+            self.elements.missed = set(t.to_period("M").to_timestamp(how="start"))  # month begin, midnight
+
 
     def _create_leadtime_dict (self):
         vars_ = (
@@ -392,6 +396,7 @@ class EarthkitSource (BaseSource):
             # Snap all timesteps to month-start (00:00 of the 1st)
             t = pd.to_datetime(ds_all[xarray_concat_dim].values)
             t_month_start = t.to_period("M").to_timestamp(how="start")  # month begin, midnight
+            # print(t_month_start.values)
             ds_all = ds_all.assign_coords({xarray_concat_dim: (xarray_concat_dim, t_month_start.values)})
             # Optional: unique after snapping (avoid duplicates)
             # ds_all = ds_all.groupby(xarray_concat_dim).first()

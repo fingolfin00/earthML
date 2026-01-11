@@ -25,9 +25,11 @@ class XarrayLocalSource (BaseSource):
 
         # Select only non-missed samples
         if self.elements.missed:
-            time_dim = _guess_dim_name(self.ds, "time", ["valid_time", "time_counter"])
+            time_dim = _guess_dim_name(self.ds, "time", ["valid_time", "time_counter"]) # TODO centralize time dim guessing
             missed = xr.DataArray(list(self.elements.missed), dims="missed_time", name="missed_time")
             keep_mask = ~self.ds[time_dim].isin(missed)
+            # print(missed)
+            # print(self.ds[time_dim])
             self.ds = self.ds.sel({time_dim: keep_mask})
 
             # Update missed_time coord if present

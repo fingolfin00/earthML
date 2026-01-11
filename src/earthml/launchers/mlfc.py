@@ -180,7 +180,7 @@ class MLFCScenario:
             provider = build_provider(provider_names, **merge(provider_kwargs, dict(var_name=var.name, leadtime_value=leadtime_value, leadtime_unit=leadtime_unit)))
             datasources = DataSource(source=provider.source, data_selection=DataSelection(var, region, periods))
             params = provider.params
-        
+
         return datasources, params
 
     def _build_datasets (self, period_type: str, period: TimeRange | dict[str, TimeRange | list[TimeRange]]) -> list[ExperimentDataset]:
