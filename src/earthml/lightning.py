@@ -1,3 +1,4 @@
+from typing import List
 import importlib, joblib
 import numpy as np
 import xarray as xr
@@ -556,7 +557,7 @@ class Normalize:
         return x, y
 
 class XarrayDataset (Dataset):
-    def __init__(self, input_ds: xr.Dataset, target_ds: xr.Dataset, transform=None, transform_args=None):
+    def __init__ (self, input_ds: xr.Dataset, target_ds: xr.Dataset, transform=None, transform_args=None):
         """
         input_ds: xarray.Dataset
         target_ds: xarray.Dataset
@@ -623,8 +624,11 @@ class XarrayDataset (Dataset):
         assert self.x.shape == self.y.shape, (f"Mismatched dataset shape: x={self.x.shape}, y={self.y.shape}")
 
     @staticmethod
-    def _transpose_dims_ds_to_da (ds: xr.Dataset) -> xr.DataArray:
-        da = ds.to_array()
+    def _transpose_dims_ds_to_da (ds: xr.Dataset, excluded_vars: str | List[str] | None = "_has_var") -> xr.DataArray:
+        excluded_vars = excluded_vars or []
+        vars = [v for v in ds.data_vars if v not in excluded_vars]
+        da = ds[vars].to_array()
+
         required_dims = {
             'time': _guess_dim_name(ds, "time", ['valid_time', 'time_counter']),
             'y': _guess_dim_name(ds, "y", ['lat', 'latitude', 'nav_lat']),
