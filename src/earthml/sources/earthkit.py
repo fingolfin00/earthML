@@ -254,6 +254,8 @@ class EarthkitSource (BaseSource):
 
         # print(f"Earthkit period shifted: {self.data_selection.period.shifted}")
 
+        # print(f"Lead time: {self.lead_time}")
+        # print(f"Data sel start: {self.data_selection.period.start}, end: {self.data_selection.period.end}")
         start = self.data_selection.period.start - self.lead_time #+ relativedelta(**self.data_selection.period.shifted) if self.data_selection.period.shifted is not None else self.data_selection.period.start
         end = self.data_selection.period.end - self.lead_time #+ relativedelta(**self.data_selection.period.shifted) if self.data_selection.period.shifted is not None else self.data_selection.period.end
         dates = f"{start.strftime('%Y-%m-%d')}/{end.strftime('%Y-%m-%d')}"
@@ -361,11 +363,11 @@ class EarthkitSource (BaseSource):
                 )
                 request_time_args_list.append(request_time_args)
             elif self.request_type == "monthly":
-                split_req_months = [m.strftime("%m") for m in xr.date_range(start=y1-relativedelta(months=1), end=y2, freq="MS")]
+                # print(f"start: {start}, end: {end}")
+                split_req_months = [m.strftime("%m") for m in xr.date_range(start=start, end=end, freq="MS")]
+                # print(split_req_months)
                 for m in months_splitted:
-                    request_time_args = dict(
-                        year=xr.date_range(start=start, end=end, freq="YS").strftime("%Y").tolist(),
-                    )
+                    request_time_args = dict(year=xr.date_range(start=datetime(start.year, 1, 1), end=datetime(end.year, 1, 1), freq="YS").strftime("%Y").tolist())
                     if "month" not in self.request_extra_args:
                         if isinstance(m, list):
                             month_req = [x for x in m if x in set(split_req_months)]
@@ -375,6 +377,7 @@ class EarthkitSource (BaseSource):
                             else:
                                 continue
                         request_time_args['month'] = month_req
+                    # print(request_time_args)
                     request_time_args_list.append(request_time_args)
             else:
                 raise ValueError(f"Unsupported earthkit request type {self.request_type}")
