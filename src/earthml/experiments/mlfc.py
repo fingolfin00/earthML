@@ -408,31 +408,47 @@ class ExperimentMLFC:
     def save (self, data: torch.Tensor, metadata_source: xr.Dataset):
         """Convert torch.Tensor to xarray.Dataset using metadata_source as ds metadata and save it to Zarr storage"""
         meta_ds = self.source_test_data[metadata_source].load()
+
+        # Canonical dim order
+        base_order = ["realization", "valid_time", "latitude", "longitude"]
+        # Build the actual order based on what exists
+        order = [d for d in base_order if d in meta_ds.dims]
+        # If there are other unexpected dims, tack them on at the end
+        order += [d for d in meta_ds.dims if d not in order]
+
+        # Force dataset-wide dim order (dims missing on some vars are ignored)
+        meta_ds = meta_ds.transpose(*order, missing_dims="ignore")
+
         # Permute data to have channels (variables) as first dim
         data_permuted = data.permute(1, 0, 2, 3)
         meta_ds_ndims = [meta_ds[var.name].ndim for var in self.test_var_list]
         meta_ds_shapes = [meta_ds[var.name].shape for var in self.test_var_list]
         if len(set(meta_ds_ndims)) > 1:
             raise ValueError(f"Unhandled mixed dimensions {meta_ds_ndims} for vars {self.test_var_list}")
-        print(f"Input dataset shape: {len(meta_ds_ndims)},{meta_ds_shapes[0]}, permuted pred tensor shape: {data_permuted.shape}")
         # if len(self.test_dataloader. input_tensor.shape) == 4: # C,T,H,W
         #     T = input_tensor.shape[1]
         #     R = 1
-        if meta_ds_ndims[0] == 4: # T,R,H,W
+
+        if meta_ds_ndims[0] == 4: # R,T,H,W (canonical)
             T = meta_ds[_guess_dim_name(meta_ds, 'time', ['valid_time', 'time_counter'])].size
             R = meta_ds[_guess_dim_name(meta_ds, 'realization')].size
-            data_permuted = data_permuted.unflatten(1, (T,R))
+            data_permuted = data_permuted.unflatten(1, (R,T))
         else:
             raise ValueError(f"Unexpected meta dataset shape: {len(meta_ds_ndims)},{meta_ds_shapes[0]}")
+
+        print(f"Input dataset shape: {len(meta_ds_ndims)},{meta_ds_shapes[0]}, permuted pred tensor shape: {data_permuted.shape}")
+
         ds = xr.Dataset(
             {var.name: (meta_ds[var.name].dims, data_permuted[i].cpu().numpy()) for i, var in enumerate(self.test_var_list)},
             coords={c: meta_ds.coords[c] for c in meta_ds.coords},
             attrs=meta_ds.attrs,
         )
+
         compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
         encoding_zarr = (
             {v.name: {"compressors": compressor} for v in self.test_var_list}
         )
         print(f"Save to {self.preds_store}")
         ds.to_zarr(self.preds_store, encoding=encoding_zarr, mode='w', consolidated=self.consolidated_zarr)
+
         return ds
