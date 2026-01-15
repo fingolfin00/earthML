@@ -1,6 +1,6 @@
 import time, multiprocessing, joblib
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Tuple
 from rich import print
 from rich.console import Console
 import numpy as np
@@ -128,41 +128,88 @@ class ExperimentMLFC:
         except:
             self.ckpt_path = self.ckpt_folder_path.joinpath(f"{self.ckpt_filename}.ckpt")
 
+    def _remove_corrupted_ts (self, ds: xr.Dataset) -> Tuple[xr.Dataset, set]:
+        time_dim = guess_time_dim(ds)
+        if time_dim is None:
+            return ds, set()
+
+        keep = xr.ones_like(ds[time_dim], dtype=bool)
+
+        for var in [v for v in ds.data_vars if v != "_has_var"]:
+            da = ds[var]
+            if time_dim not in da.dims:
+                continue
+
+            reduce_dims = [d for d in da.dims if d != time_dim]
+
+            # Select corrupted timestep, mean over non-time dims is NaN
+            ts_mean = da.mean(dim=reduce_dims, skipna=True) if reduce_dims else da
+            keep = keep & ts_mean.notnull()
+
+        # Compute only the 1D mask (cheaper)
+        keep = keep.compute() if hasattr(keep.data, "compute") else keep
+
+        # Return a python set of python datetimes
+        missed_sel = ds[time_dim].where(~keep, drop=True)
+        missed = set(pd.to_datetime(missed_sel.values).to_pydatetime()) if missed_sel.values.size else set()
+
+        # Drop corrupted timesteps
+        ds = ds.drop_sel({time_dim: missed_sel})
+
+        # Add missed info to dataset
+        if "missed_time" in ds.coords:
+            prev_missed = set(ds["missed_time"].values.tolist())
+        else:
+            prev_missed = set()
+        missed_np = np.array(sorted(missed | prev_missed), dtype="datetime64[ns]")
+        ds = ds.assign_coords(missed_time=("missed_time", missed_np))
+        ds["missed_time"].encoding.update({
+            "units": "nanoseconds since 1970-01-01 00:00:00",
+            "calendar": "proleptic_gregorian",
+        })
+
+        return ds, missed
+
+    def _create_xarray_local_source (self, save_path: str | Path, datasource_list: list[DataSource]):
+        source_params = dict(
+            root_path=save_path,
+            xarray_args={
+                "consolidated": self.consolidated_zarr,
+                "decode_times": True,
+            },
+        )
+
+        datasource_sum = sum(datasource_list)
+        datasource_sum.source = "xarray-local"
+
+        src = build_source(
+            "xarray-local",
+            datasource=datasource_sum,
+            **source_params,
+        )
+        return source_params, src
+
     def _init_source_data (self, exp_ds: ExperimentDataset | List[ExperimentDataset], source_type: str):
         """Returns populated Source instances"""
 
-        def _create_xarray_local_source(save_path: str | Path, datasource_list: list[DataSource]):
-            source_params = dict(
-                root_path=save_path,
-                xarray_args={
-                    "consolidated": self.consolidated_zarr,
-                    "decode_times": True,
-                },
-            )
-
-            datasource_sum = sum(datasource_list)
-            datasource_sum.source = "xarray-local"
-
-            src = build_source(
-                "xarray-local",
-                datasource=datasource_sum,
-                **source_params,
-            )
-            return source_params, src
-
+        # Normalize to list
         if not isinstance(exp_ds, list):
             exp_ds = [exp_ds]
+
         sources = {}
         for e in exp_ds:
             datasource = e.datasource
             source_params = e.source_params
+
             # Normalize to lists
             if not isinstance(datasource, list) and not isinstance(source_params, list):
                 datasource = [datasource]
                 source_params = [source_params]
+
             save_path = self.config.work_path.joinpath(Path(f"{source_type}_{e.role}")).with_suffix(".zarr")
-            if e.save and save_path.exists(): # TODO weak check, make more robust, like check it is really a zarr store
-                xr_loc_source_params, sources[e.role] = _create_xarray_local_source(save_path, datasource)
+
+            if save_path.exists(): # TODO weak check, make more robust, like check it is really a zarr store
+                xr_loc_source_params, sources[e.role] = self._create_xarray_local_source(save_path, datasource)
                 self.rich_console.print(Table({f"Source '{sources[e.role].datasource.source}' {source_type} {e.role} params": xr_loc_source_params}, twocols=True).table)
             else:
                 sources_list: list[BaseSource] = []
@@ -175,12 +222,22 @@ class ExperimentMLFC:
                         )
                     )
                     self.rich_console.print(Table({f"Source '{d.source}' {source_type} {e.role} [{i}] params": sp}, twocols=True).table)
-                sources[e.role] = sum(sources_list)
+                source = sum(sources_list)
+
+                # Remove corrupted timesteps only for input and target
+                if e.role != "prediction":
+                    with source.load() as ds:
+                        ds_sel, corrupted = self._remove_corrupted_ts(ds)
+                        print(f"Corrupted timesteps: {corrupted}")
+                        source.ds = ds_sel # drop corrupted timesteps
+                        source.elements.missed |= corrupted
+
+                sources[e.role] = source
                 # Save datasets if requested
                 if e.save: # and not save_path.exists():
                     sources[e.role].save(save_path)
                     # Regenerate as xarray-local source type
-                    xr_loc_source_params, sources[e.role] = _create_xarray_local_source(save_path, datasource)
+                    xr_loc_source_params, sources[e.role] = self._create_xarray_local_source(save_path, datasource)
                     self.rich_console.print(Table({f"Source '{sources[e.role].datasource.source}' {source_type} {e.role} params": xr_loc_source_params}, twocols=True).table)
 
         # Detect missing samples
@@ -396,6 +453,7 @@ class ExperimentMLFC:
         mean_norm_pred_d = {var.name: self.model.test_preds[:,i,:,:].mean().item() for i, var in enumerate(self.test_var_list)}
         std_norm_pred_d = {var.name: self.model.test_preds[:,i,:,:].std().item() for i, var in enumerate(self.test_var_list)}
         print(f"Normalized prediction shape: {self.model.test_preds.shape}, mean: {mean_norm_pred_d}, std: {std_norm_pred_d}")
+
         # Rescale
         self.preds = self.normalize.inverse_tensor(self.model.test_preds, self.normdata_path) # .squeeze()
         mean_pred_d = {var.name: self.preds[:,i,:,:].mean().item() for i, var in enumerate(self.test_var_list)}
