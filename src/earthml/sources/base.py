@@ -66,8 +66,7 @@ class BaseSource (ABC):
     def reload (self) -> xr.Dataset:
         """Force data reload"""
         self.ds = None
-        self.load()
-        return self.ds
+        return self.load()
 
     def save (self, filepath: str | Path, consolidated: bool = False):
         """Save dataset in Zarr format in filepath"""
