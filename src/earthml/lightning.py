@@ -11,7 +11,8 @@ from torchmetrics import MeanAbsoluteError, MeanSquaredError, Metric
 from torchmetrics.image import SpatialCorrelationCoefficient
 # import matplotlib.pyplot as plt
 import matplotlib.cm as cm
-from .utils import _guess_dim_name
+
+from .utils import guess_time_dim, guess_lon_dim, guess_lat_dim
 
 class EarthMLLightningModule (L.LightningModule):
     def __init__ (self, use_first_input=False):
@@ -630,9 +631,9 @@ class XarrayDataset (Dataset):
         da = ds[vars].to_array()
 
         required_dims = {
-            'time': _guess_dim_name(ds, "time", ['valid_time', 'time_counter']),
-            'y': _guess_dim_name(ds, "y", ['lat', 'latitude', 'nav_lat']),
-            'x': _guess_dim_name(ds, "x", ['lon', 'longitude', 'nav_lon']),
+            'time': guess_time_dim(ds),
+            'y': guess_lat_dim(ds),
+            'x': guess_lon_dim(ds),
         }
         if set(required_dims.values()) - set(da.dims):
             raise ValueError(f"Unexpected dims: {da.dims}")

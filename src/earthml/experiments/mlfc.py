@@ -16,7 +16,7 @@ from lightning.pytorch.loggers import TensorBoardLogger
 from ..sources.registry import build_source
 from ..sources.base import BaseSource
 from ..dataclasses import ExperimentDataset, ExperimentConfig, DataSource
-from ..utils import Table, print_ds_info, _guess_dim_name
+from ..utils import Table, print_ds_info, _guess_dim_name, guess_time_dim
 from ..lightning import XarrayDataset, Normalize, EpochRandomSplitDataModule
 from ..nets.registry import build_net
 
@@ -430,7 +430,7 @@ class ExperimentMLFC:
         #     R = 1
 
         if meta_ds_ndims[0] == 4: # R,T,H,W (canonical)
-            T = meta_ds[_guess_dim_name(meta_ds, 'time', ['valid_time', 'time_counter'])].size
+            T = meta_ds[guess_time_dim(meta_ds)].size
             R = meta_ds[_guess_dim_name(meta_ds, 'realization')].size
             data_permuted = data_permuted.unflatten(1, (R,T))
         else:

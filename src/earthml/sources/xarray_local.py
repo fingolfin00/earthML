@@ -4,7 +4,7 @@ import numpy as np
 import xarray as xr
 from rich import print
 
-from ..utils import _guess_dim_name
+from ..utils import guess_time_dim
 from ..dataclasses import DataSource, Sample
 from .base import BaseSource
 
@@ -25,7 +25,7 @@ class XarrayLocalSource (BaseSource):
 
         # Select only non-missed samples
         if self.elements.missed:
-            time_dim = _guess_dim_name(self.ds, "time", ["valid_time", "time_counter"]) # TODO centralize time dim guessing
+            time_dim = guess_time_dim(self.ds)
             missed = xr.DataArray(list(self.elements.missed), dims="missed_time", name="missed_time")
             keep_mask = ~self.ds[time_dim].isin(missed)
             # print(missed)
