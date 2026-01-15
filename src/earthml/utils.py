@@ -1,4 +1,5 @@
 from pathlib import Path
+import joblib
 from typing import Sequence, Optional, Literal, Callable, List
 from rich import print
 from rich.pretty import pprint
@@ -1670,3 +1671,142 @@ def halved_windows_split_by_cutoff (
         days //= 2
 
     return out
+
+def make_exp_folder_path (
+        exp_root: Path,
+        exp_name: str,
+        v_d: dict, # variable dict
+        lt: str,
+        lt_unit: str,
+        train_period: str,
+        test_period: str,
+        input_provider: str,
+        target_provider: str,
+    ):
+    exp_full_name = (
+        f"exp_{exp_name}_{v_d['exp_var']['fc']}-{v_d['exp_var']['an']}"
+        f"_{lt}{lt_unit}_{v_d['region']}"
+        f"_{train_period}"
+        f"_{test_period}"
+        f"_{input_provider}_{target_provider}"
+        f"_{v_d['exp_suffix']}"
+    )
+    return Path(exp_root) / exp_full_name
+
+def date_diff (ymd_range: str):
+    start_str, end_str = ymd_range.split('-')
+    start = datetime.strptime(start_str, '%Y%m%d')
+    end = datetime.strptime(end_str, '%Y%m%d')
+
+    delta = relativedelta(end, start)
+    days = (end - start).days
+
+    return {
+        "years": delta.years,
+        "months": delta.months,
+        "days": delta.days,
+        "total_days": days,
+        "total_months": delta.years * 12 + delta.months
+    }
+
+def load_exp (exp_root, exp_cfg, type_data: str, only_sizes: bool = False) -> dict:
+    """
+    Return dict keyed by train_period.
+
+    out[tp]["fc"] -> Dataset with dim 'leadtime'
+    out[tp]["an"] -> Dataset with dim 'leadtime'
+    out[tp]["pr"] -> Dataset with dim 'leadtime' (or None if type_data != 'test')
+    """
+    exp_name      = exp_cfg["name"]
+    var_specs     = exp_cfg["vars"]
+    leadtimes     = exp_cfg["leadtimes"]
+    lt_unit       = exp_cfg["leadtime_unit"]
+    train_periods = exp_cfg["train_periods"]
+    test_period   = exp_cfg["test_period"]
+
+    out, n_valid_samples = {}, {}
+
+    for tp in train_periods:
+        fc_per_lt, an_per_lt, pr_per_lt = [], [], []
+        n_valid_samples[tp] = {}
+
+        for lt in leadtimes:
+            pr_list, fc_list, an_list = [], [], []
+            n_valid_samples[tp][lt] = {}
+
+            for v, v_d in var_specs.items():
+                exp_folder_path = make_exp_folder_path(
+                    exp_root, exp_name, v_d, lt, lt_unit, tp, test_period, exp_cfg['input_provider'], exp_cfg['target_provider']
+                )
+                exp_path = exp_folder_path / "experiment.cfg"
+                print(f"Load experiment: {exp_path}")
+
+                experiment = joblib.load(exp_path)
+                source = experiment[f"{type_data}_data"]  # e.g. "test_data"
+
+                n_valid_samples[tp][lt] = {v: {
+                    "input": (len(source["input"].elements.samples)),
+                    "target": (len(source["target"].elements.samples)),
+                    }}
+                if type_data == "test":
+                    n_valid_samples[tp][lt][v]["prediction"] = (len(source["prediction"].elements.samples))
+
+                if only_sizes:
+                    continue
+
+                if type_data == "test":
+                    pr = source["prediction"].reload()
+                    pr_list.append(pr.rename_vars({v_d["exp_var"]["fc"]: v}))
+
+                fc = source["input"].reload() # why reload?
+                an = source["target"].reload()
+                fc_list.append(fc.rename_vars({v_d["exp_var"]["fc"]: v}))
+                an_list.append(an.rename_vars({v_d["exp_var"]["an"]: v}))
+
+            if only_sizes:
+                continue
+
+            fc_lt = xr.merge(fc_list, compat="no_conflicts").assign_coords(leadtime=lt).expand_dims("leadtime")
+            an_lt = xr.merge(an_list, compat="no_conflicts").assign_coords(leadtime=lt).expand_dims("leadtime")
+
+            fc_per_lt.append(fc_lt)
+            an_per_lt.append(an_lt)
+
+            if type_data == "test":
+                pr_lt = xr.merge(pr_list, compat="no_conflicts").assign_coords(leadtime=lt).expand_dims("leadtime")
+                pr_per_lt.append(pr_lt)
+
+        if only_sizes:
+            out[tp] = {}
+            continue
+
+        fc_tp = xr.concat(fc_per_lt, dim="leadtime").assign_attrs(leadtime_unit=lt_unit, train_period=tp)
+        an_tp = xr.concat(an_per_lt, dim="leadtime").assign_attrs(leadtime_unit=lt_unit, train_period=tp)
+        pr_tp = xr.concat(pr_per_lt, dim="leadtime").assign_attrs(leadtime_unit=lt_unit, train_period=tp) if pr_per_lt else None
+
+        out[tp] = {"fc": fc_tp, "an": an_tp, "pr": pr_tp}
+
+    return out, n_valid_samples
+
+def add_ke_to_runs (runs, suffixes=("_mse",), dataset_keys=("fc", "an", "pr"),
+                   u_name="u10", v_name="v10", ke_name="ke"):
+    """
+    Adds kinetic energy variables ke{suf} to each runs[tp][key] dataset (in place).
+    Works with datasets that have leadtime dim (it will be preserved).
+    """
+    for tp, dd in runs.items():
+        for key in dataset_keys:
+            ds = dd.get(key)
+            if ds is None:
+                continue
+
+            for suf in suffixes:
+                uvar = f"{u_name}{suf}"
+                vvar = f"{v_name}{suf}"
+                kvar = f"{ke_name}{suf}"
+
+                if uvar in ds.data_vars and vvar in ds.data_vars:
+                    ke = 0.5 * (ds[uvar] ** 2 + ds[vvar] ** 2)
+                    ds[kvar] = ke.rename(kvar)
+
+    return runs
