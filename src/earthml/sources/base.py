@@ -53,7 +53,7 @@ class BaseSource (ABC):
 
             # Persist here to materialise the dataset on the cluster
             # and shrink the graph that lives on the client.
-            if hasattr(ds, "chunk"):  # i.e. Dask-backed
+            if ds.chunks is not None:  # i.e. Dask-backed
                 ds = ds.chunk()   # ensure it’s dask-backed (no-op if already)
                 ds = ds.persist()
                 wait(ds) # block load() until materialised
