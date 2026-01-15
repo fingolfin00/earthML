@@ -127,7 +127,7 @@ class JunoLocalSource (MFXarrayLocalSource):
                         break
 
             if not found:
-                print(f"Missed sample: {date}")
+                print(f"Missed sample (local filename not found): {date}")
                 s.missed.add(date)
 
         return s
