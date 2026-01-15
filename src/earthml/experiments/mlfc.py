@@ -461,10 +461,14 @@ class ExperimentMLFC:
         print(f"Rescaled prediction shape: {self.preds.shape}, mean: {mean_pred_d}, std: {std_pred_d}")
         rmse_pred_d = {var.name: np.sqrt(((test_dataset.y[:,i,:,:] - self.preds[:,i,:,:])**2).mean().item()) for i, var in enumerate(self.test_var_list)}
         print(f"RMSE target-prediction: {rmse_pred_d}")
+
         self.save(self.preds, 'input')
 
-    def save (self, data: torch.Tensor, metadata_source: xr.Dataset):
-        """Convert torch.Tensor to xarray.Dataset using metadata_source as ds metadata and save it to Zarr storage"""
+    def save (self, data: torch.Tensor, metadata_source: str):
+        """
+        Convert torch.Tensor to xarray.Dataset using metadata_source
+        to select ds metadata and save it to Zarr storage
+        """
         meta_ds = self.source_test_data[metadata_source].load()
 
         # Canonical dim order
