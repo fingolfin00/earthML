@@ -1,4 +1,5 @@
-from typing import List, Set
+from typing import List, Any, Literal, Callable, Optional
+from pathlib import Path
 
 from rich import print
 from rich.pretty import pprint
@@ -14,63 +15,638 @@ import cartopy.crs as ccrs
 import matplotlib.pyplot as plt
 import os
 
+from .utils import guess_time_dim, guess_lon_dim, guess_lat_dim
+
+MetricFn = Callable[[xr.Dataset, xr.Dataset], xr.Dataset]
+FinalFn  = Callable[[xr.Dataset], xr.Dataset]
+
+# Standalone helper methods
+def metrics_to_df (metrics_dict, metric_name, kind="scalar"):
+    """
+    Returns a tidy dataframe with columns:
+    period, model, variable, leadtime, value
+    Works for scalar metrics that return xarray.Dataset with a leadtime coord.
+    """
+    rows = []
+
+    for period, res in metrics_dict.items():
+        models = res["models"]
+        for model_name, model_res in models.items():
+            ds = model_res[kind].get(metric_name, None)
+            if ds is None:
+                continue
+
+            for var in ds.data_vars:
+                da = ds[var]
+
+                # drop/squeeze nuisance dims if present
+                for dim in list(da.dims):
+                    if dim not in ("leadtime",):  # keep leadtime; everything else squeeze if possible
+                        if da.sizes.get(dim, 1) == 1:
+                            da = da.squeeze(dim, drop=True)
+
+                # if still multi-dim beyond leadtime, flatten remaining dims into rows
+                if "leadtime" in da.dims:
+                    # iterate leadtime values
+                    for lt in da["leadtime"].values:
+                        val = da.sel(leadtime=lt).values
+                        # if val still array-like, flatten
+                        val = np.array(val).reshape(-1)
+                        for v in val:
+                            rows.append({
+                                "period": period,
+                                "model": model_name,
+                                "metric": metric_name,
+                                "variable": var,
+                                "leadtime": int(lt),
+                                "value": float(v) if np.isfinite(v) else np.nan,
+                            })
+                else:
+                    # no leadtime: single number
+                    val = float(da.values) if np.isfinite(da.values) else np.nan
+                    rows.append({
+                        "period": period,
+                        "model": model_name,
+                        "metric": metric_name,
+                        "variable": var,
+                        "leadtime": np.nan,
+                        "value": val,
+                    })
+
+    df = pd.DataFrame(rows)
+    return df
+
+def _extent_from_da (da: xr.DataArray, lon_name="lon", lat_name="lat", pad_deg=2.0):
+    lon = da[lon_name].values
+    lat = da[lat_name].values
+
+    # reduce to 1D arrays if needed
+    lon = np.asarray(lon).ravel()
+    lat = np.asarray(lat).ravel()
+
+    lon = lon[np.isfinite(lon)]
+    lat = lat[np.isfinite(lat)]
+
+    # handle 0..360 longitudes -> convert to -180..180 for plotting
+    if lon.size and lon.min() >= 0 and lon.max() > 180:
+        lon = ((lon + 180) % 360) - 180
+
+    lon_min, lon_max = float(lon.min()), float(lon.max())
+    lat_min, lat_max = float(lat.min()), float(lat.max())
+
+    # padding
+    lon_min -= pad_deg
+    lon_max += pad_deg
+    lat_min -= pad_deg
+    lat_max += pad_deg
+
+    return (lon_min, lon_max, lat_min, lat_max)
+
+def plot_map_metric_grid (
+    metrics: dict,
+    *,
+    metric: str = "nrmse_map",
+    kind: str = "map",
+    variable: str = "t2m_mse",
+    periods: list[str] | None = None,
+    leadtimes: list[int] | None = None,
+    # model vs diff
+    model: str | None = "ECMWF fc",
+    diff: bool = False,
+    model_a: str = "ECMWF fc",
+    model_b: str = "MLFC pr",
+    # plotting
+    projection=ccrs.PlateCarree(), # Robinson(),
+    data_crs=ccrs.PlateCarree(),
+    add_coastlines: bool = True,
+    figsize_per_cell=(4.2, 2.8),
+    cmap: str | None = None,
+    robust: bool = True,
+    q: float = 0.02,
+    symmetric_diff: bool = True,
+    auto_extent=True,
+    pad_deg=0,
+    save_path: str | None = None,
+):
+    """
+    rows = periods, cols = leadtimes
+    Each panel is a map for `variable` from metrics[period]['models'][...][kind][metric].
+    If diff=True, plots model_b - model_a.
+    """
+
+    # --- choose periods ---
+    if periods is None:
+        periods = list(metrics.keys())
+    if not periods:
+        raise ValueError("No periods found in metrics.")
+
+    # --- helpers ---
+    def _get_ds(tp: str, mname: str) -> xr.Dataset:
+        ds = metrics[tp]["models"][mname][kind][metric]
+        return ds.squeeze(drop=True)
+
+    def _panel_da(tp: str) -> xr.DataArray:
+        if diff:
+            ds_a = _get_ds(tp, model_a)
+            ds_b = _get_ds(tp, model_b)
+            # FIX: xarray aligns via function, not method
+            ds_a, ds_b = xr.align(ds_a, ds_b, join="inner")
+            da = ds_b[variable] - ds_a[variable]
+        else:
+            ds = _get_ds(tp, model)
+            da = ds[variable]
+
+        # squeeze any remaining singleton dims (common: realization=1, number=1, etc.)
+        return da.squeeze(drop=True)
+
+    # --- find reference for leadtimes ---
+    ref_da = None
+    for tp in periods:
+        try:
+            da = _panel_da(tp)
+            ref_da = da
+            break
+        except Exception:
+            continue
+    if ref_da is None:
+        raise ValueError(f"Could not find data for metric='{metric}', variable='{variable}'.")
+
+    if "leadtime" in ref_da.coords:
+        if leadtimes is None:
+            leadtimes = [int(x) for x in ref_da["leadtime"].values]
+        else:
+            leadtimes = [int(x) for x in leadtimes]
+    else:
+        leadtimes = [None]  # single column
+
+    nrows = len(periods)
+    ncols = len(leadtimes)
+
+    # --- global vmin/vmax across all panels for comparability ---
+    vals = []
+    for tp in periods:
+        try:
+            da = _panel_da(tp)
+            if "leadtime" in da.coords and leadtimes[0] is not None:
+                for lt in leadtimes:
+                    if lt in da["leadtime"].values:
+                        vals.append(da.sel(leadtime=lt))
+            else:
+                vals.append(da)
+        except Exception:
+            continue
+
+    if not vals:
+        raise ValueError("No data available to plot after filtering periods/leadtimes.")
+
+    all_data = np.concatenate([np.ravel(v.values) for v in vals])
+    all_data = all_data[np.isfinite(all_data)]
+    if all_data.size == 0:
+        raise ValueError("All selected data are NaN/inf; nothing to plot.")
+
+    if robust:
+        vmin = float(np.quantile(all_data, q))
+        vmax = float(np.quantile(all_data, 1 - q))
+    else:
+        vmin = float(np.min(all_data))
+        vmax = float(np.max(all_data))
+
+    if diff and symmetric_diff:
+        m = max(abs(vmin), abs(vmax))
+        vmin, vmax = -m, m
+
+    # --- figure & axes ---
+    fig_w = figsize_per_cell[0] * ncols
+    fig_h = figsize_per_cell[1] * nrows
+    fig, axes = plt.subplots(
+        nrows=nrows,
+        ncols=ncols,
+        figsize=(fig_w, fig_h),
+        subplot_kw={"projection": projection},
+        squeeze=False,
+    )
+
+    mappable = None
+
+    for r, tp in enumerate(periods):
+        for c, lt in enumerate(leadtimes):
+            ax = axes[r, c]
+
+            if add_coastlines:
+                ax.coastlines(linewidth=0.6)
+
+            try:
+                da = _panel_da(tp)
+
+                # select leadtime if present
+                if lt is not None and "leadtime" in da.coords:
+                    if lt not in da["leadtime"].values:
+                        ax.set_title(f"{tp}\nLT={lt}h (missing)")
+                        ax.axis("off")
+                        continue
+                    da2 = da.sel(leadtime=lt)
+                    lt_title = f"LT={lt}h"
+                else:
+                    da2 = da
+                    lt_title = ""
+
+                if auto_extent:
+                    lon_name, lat_name = guess_lon_dim(da2), guess_lat_dim(da2)
+                    ext = _extent_from_da(da2, lon_name=lon_name, lat_name=lat_name, pad_deg=pad_deg)
+                    ax.set_extent(ext, crs=data_crs)
+                else:
+                    ax.set_global()
+
+                # plot
+                im = da2.plot(
+                    ax=ax,
+                    transform=data_crs,
+                    add_colorbar=False,
+                    vmin=vmin,
+                    vmax=vmax,
+                    cmap=cmap,
+                )
+                mappable = im
+
+                if diff:
+                    ax.set_title(f"{tp}\n{lt_title}\nΔ({model_b}−{model_a})")
+                else:
+                    ax.set_title(f"{tp}\n{lt_title}\n{model}")
+
+            except Exception as e:
+                ax.set_title(f"{tp}\nerror")
+                ax.text(0.5, 0.5, str(e), ha="center", va="center", transform=ax.transAxes, fontsize=8)
+                ax.axis("off")
+
+    # shared colorbar
+    if mappable is not None:
+        cbar = fig.colorbar(mappable, ax=axes, orientation="vertical", fraction=0.02, pad=0.02)
+        if diff:
+            cbar.set_label(f"Δ {metric} ({model_b} − {model_a})")
+        else:
+            cbar.set_label(metric)
+
+    # title
+    if diff:
+        fig.suptitle(f"Δ {metric} maps ({model_b} − {model_a}) — {variable}", y=1.02)
+    else:
+        fig.suptitle(f"{metric} maps — {variable} — {model}", y=1.02)
+
+    plt.tight_layout()
+
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(save_path)
+    else:
+        plt.show()
+
+    return fig
+
 class Metrics:
     def __init__ (self, truth: xr.Dataset, data: xr.Dataset | List[xr.Dataset], truth_name: str , data_name: str | List[str]):
         self.truth = truth
         self.data = data if isinstance(data, list) else [data]
+
         self.truth_name = truth_name
         self.data_name = data_name if isinstance(data_name, list) else [data_name]
-        self.time_dim, self.spatial_dims = self._get_dim()
 
-    def _get_dim (self):
-        # TODO add check for variable consistency along all datasets (e.g. same number of variables)
-        truth_vars = set(self.truth)
-        time_dim = self.truth.cf['time'].name
-        spatial_dims = [dim for dim in self.truth.dims if dim != time_dim]
-        for i, d in enumerate(self.data):
-            d_vars = list(d.data_vars)
-            if set(d_vars) != set(truth_vars):
-                print(f"Renaming {self.data_name[i]} vars to match {self.truth_name}")
-                rename_map = {old: new for old, new in zip(d_vars, truth_vars)}
-                self.data[i] = d.rename_vars(rename_map)
-        for i, d in enumerate(self.data):
-            time_dim_current = d.cf['time'].name
-            if time_dim_current != time_dim:
-                self.data[i] = d.rename_dims({time_dim_current: time_dim})
-        print(f"Time dimension: {time_dim}, spatial dimensions: {spatial_dims}, vars: {truth_vars}") # TODO add real check on vars
-        return time_dim, spatial_dims
+        self.time_dim, self.lat_dim, self.lon_dim = self._get_and_rename_dim()
 
-    # Metrics (a: truth, b: data)
+        # drop _has_var
+        truth_sel_vars = [v for v in self.truth.data_vars if v != '_has_var']
+        self.truth = self.truth[truth_sel_vars]
+        sel_data = []
+        for d in self.data:
+            data_sel_vars = [v for v in d.data_vars if v != '_has_var']
+            sel_data.append(d[data_sel_vars])
+        self.data = sel_data
+
+    def _get_and_rename_dim (self):
+        # Rename all data vars to match truth vars
+        # truth_vars = set(self.truth)
+        # for i, d in enumerate(self.data):
+        #     d_vars = list(d.data_vars)
+        #     if set(d_vars) != set(truth_vars):
+        #         print(f"Renaming {self.data_name[i]} vars to match {self.truth_name}")
+        #         rename_map = {old: new for old, new in zip(d_vars, truth_vars)}
+        #         self.data[i] = d.rename_vars(rename_map)
+        # Rename time, lat and lon data dims to match truth dims
+        dims = (guess_time_dim(self.truth), guess_lat_dim(self.truth), guess_lon_dim(self.truth))
+        for i, d in enumerate(self.data):
+            data_dims = (guess_time_dim(d), guess_lat_dim(d), guess_lon_dim(d))
+            for dim, data_dim in zip(dims, data_dims):
+                if data_dim != dim:
+                    self.data[i] = d.rename_dims({data_dim: dim})
+        return dims # time, lat, lon
+
+    def _geo_avg (self, data: xr.Dataset | xr.DataArray) -> xr.Dataset | xr.DataArray:
+        """Geographically weighted mean over lat/lon using cos(lat)."""
+        # weights must be an xarray DataArray aligned to the latitude dimension
+        w = xr.DataArray(
+            np.cos(np.deg2rad(data[self.lat_dim])),
+            coords={self.lat_dim: data[self.lat_dim]},
+            dims=(self.lat_dim,),
+        )
+
+        # weighted mean over spatial dims; keep time (and any other non-spatial dims)
+        return data.weighted(w).mean(dim=(self.lat_dim, self.lon_dim), skipna=True)
+
+    # Metrics
+    def _generic_metric (
+        self,
+        parent_metric_fn: MetricFn,
+        final_metric_fn: Optional[FinalFn] = None,
+        order: Literal["3d", "2d", "1d"] = "1d",
+        geo_weighted: bool = True,
+    ) -> list[xr.Dataset]:
+
+        out: list[xr.Dataset] = []
+
+        for d in self.data:
+            metric = parent_metric_fn(self.truth, d)
+
+            if order == "1d":
+                if geo_weighted:
+                    val = self._geo_avg(metric).mean(dim=self.time_dim, skipna=True)
+                else:
+                    val = metric.mean(dim=(self.time_dim, self.lat_dim, self.lon_dim), skipna=True)
+            elif order == "2d":
+                val = metric.mean(dim=self.time_dim, skipna=True)
+            elif order == "3d":
+                val = metric
+            else:
+                raise ValueError(f"Invalid order: {order}")
+
+            if final_metric_fn is not None:
+                val = final_metric_fn(val)
+
+            out.append(val)
+
+        return out
+
+    def mae (self, order: Literal["3d", "2d", "1d"] = "1d", geo_weighted: bool = True) -> List[xr.Dataset]:
+        return self._generic_metric(lambda truth, pred: abs(truth - pred), order=order, geo_weighted=geo_weighted)
+
     @staticmethod
-    def rmse(a, b, time_dim): return ((a - b)**2).mean(dim=time_dim).pipe(np.sqrt)
-    @staticmethod
-    def mae(a, b, time_dim): return abs(a - b).mean(dim=time_dim)
-    @staticmethod
-    def bias(a, b, time_dim): return (a - b).mean(dim=time_dim)
-    @staticmethod
-    def mape(a, b, time_dim, eps): return (abs((a - b) / (a + eps)) * 100).mean(dim=time_dim)
-    @staticmethod
-    def stderr(a, b, time_dim): return (a - b).std(dim=time_dim)
-    @staticmethod
-    def r2(a, b, time_dim, eps):
-        sst = ((a - a.mean(dim=time_dim))**2).sum(dim=time_dim)
-        sse = ((a - b)**2).sum(dim=time_dim)
-        return 1 - sse / (sst + eps)
-    @staticmethod
-    def fss(a, b, time_dim, threshold, eps):
-        """Fraction Skill Score"""
-        A, B = (a > threshold).astype(float), (b > threshold).astype(float)
-        return 1 - ((A - B)**2).mean(dim=time_dim) / ((A**2 + B**2).mean(dim=time_dim) + eps)
-    @staticmethod
-    def sal(a, b, time_dim, eps): #TODO better understand this metric
-        """Std ratio, Avg (mean) ratio, weighted mean difference (L)"""
-        return {
-            "S": (b.std(dim=time_dim) - a.std(dim=time_dim)) / (a.std(dim=time_dim) + eps),
-            "A": (b.mean(dim=time_dim) - a.mean(dim=time_dim)) / (a.mean(dim=time_dim) + eps),
-            "L": (b.weighted(abs(b)).mean(dim=time_dim) - a.weighted(abs(a)).mean(dim=time_dim)) # TODO probably wrong, check weights
+    def _err_field (truth: xr.Dataset, pred: xr.Dataset) -> xr.Dataset:
+        return truth - pred
+
+    def err (self, order: Literal["3d", "2d", "1d"] = "1d", geo_weighted: bool = True) -> List[xr.Dataset]:
+        # 2d and 1d cases are bias
+        return self._generic_metric(self._err_field, order=order, geo_weighted=geo_weighted)
+
+    def std_of_errs (self, order: Literal["3d", "2d", "1d"] = "1d", geo_weighted: bool = True) -> list[xr.Dataset]:
+        """
+        Standard deviation of errors
+        """
+        return self._generic_metric(
+            parent_metric_fn=self._err_field,
+            final_metric_fn=lambda x: x.std(skipna=True),
+            order=order,
+            geo_weighted=geo_weighted,
+        )
+    
+    def stderr (self,order: Literal["3d", "2d", "1d"] = "1d", geo_weighted: bool = True) -> list[xr.Dataset]:
+        """
+        Standard error of the mean
+        """
+        def final_fn(x: xr.Dataset) -> xr.Dataset:
+            n = x.count()
+            return x.std(skipna=True) / np.sqrt(n)
+
+        return self._generic_metric(
+            parent_metric_fn=self._err_field,
+            final_metric_fn=final_fn,
+            order=order,
+            geo_weighted=geo_weighted,
+        )
+
+    def rmse (self, order: Literal["2d", "1d"] = "1d", geo_weighted: bool = True) -> List[xr.Dataset]:
+        return self._generic_metric(lambda truth, pred: (truth - pred)**2, final_metric_fn=np.sqrt, order=order, geo_weighted=geo_weighted)
+    
+    def nrmse_map (self, order: Literal["2d", "1d"] = "2d", geo_weighted: bool = True, eps: float = 0.0) -> list[xr.Dataset]:
+        """
+        NRMSE normalized by truth std over time (map-wise).
+
+        - order="2d": returns a 2D NRMSE map: RMSE_map / std_map
+        - order="1d": returns a scalar per dataset by spatially averaging the 2D NRMSE map
+                    (geo-weighted if geo_weighted=True)
+
+        Notes:
+        - std_map = std(truth over time_dim)
+        - cells where std_map <= eps are set to NaN (ignored by skipna reductions)
+        """
+
+        # RMSE map per dataset (time-reduced)
+        rmse_maps = self.rmse(order="2d", geo_weighted=geo_weighted) # geo_weighted irrelevant for 2d
+
+        # Truth std map over time (same for all predictions)
+        std_map = self.truth.std(dim=self.time_dim, skipna=True)
+        denom = xr.where(std_map > eps, std_map, np.nan)
+
+        out: list[xr.Dataset] = []
+        for rmse_map in rmse_maps:
+            nrmse_map = rmse_map / denom
+
+            if order == "2d":
+                out.append(nrmse_map)
+            elif order == "1d":
+                if geo_weighted:
+                    out.append(self._geo_avg(nrmse_map)) # already a scalar Dataset (since nrmse_map has no time dim)
+                else:
+                    out.append(nrmse_map.mean(dim=(self.lat_dim, self.lon_dim), skipna=True))
+            else:
+                raise ValueError(f"Invalid order: {order}")
+
+        return out
+
+    def nrmse_global (self, geo_weighted: bool = True, eps: float = 0.0) -> list[xr.Dataset]:
+        """
+        Global NRMSE normalized by global truth standard deviation.
+
+        Returns one scalar per dataset.
+
+        Definition:
+        NRMSE = RMSE_global / std_global(truth)
+
+        If geo_weighted=True:
+        - spatial means are cosine(lat) weighted
+        - time is unweighted
+        """
+
+        # Denominator: global std of truth
+        if geo_weighted:
+            # spatially averaged time series, then std over time
+            truth_bar = self._geo_avg(self.truth)        # dims: time
+            denom = truth_bar.std(dim=self.time_dim, skipna=True)
+        else:
+            denom = self.truth.std(
+                dim=(self.time_dim, self.lat_dim, self.lon_dim),
+                skipna=True,
+            )
+
+        denom = xr.where(denom > eps, denom, np.nan)
+
+        out: list[xr.Dataset] = []
+
+        for d in self.data:
+            # Numerator: global RMSE
+            if geo_weighted:
+                err2_bar = self._geo_avg((self.truth - d) ** 2)   # dims: time
+                mse = err2_bar.mean(dim=self.time_dim, skipna=True)
+            else:
+                mse = ((self.truth - d) ** 2).mean(
+                    dim=(self.time_dim, self.lat_dim, self.lon_dim),
+                    skipna=True,
+                )
+
+            rmse = mse ** 0.5
+            out.append(rmse / denom)
+
+        return out
+
+    def r2_map (self) -> list[xr.Dataset]:
+        # SST: sum over time of squared anomalies (2D field per var)
+        anom = self.truth - self.truth.mean(dim=self.time_dim, skipna=True)
+        sst = (anom ** 2).sum(dim=self.time_dim, skipna=True)
+
+        out: list[xr.Dataset] = []
+        for d in self.data:
+            sse = ((self.truth - d) ** 2).sum(dim=self.time_dim, skipna=True)
+            r2 = 1.0 - sse / xr.where(sst > 0, sst, np.nan)
+            out.append(r2)
+
+        return out
+
+    def r2_global (self, geo_weighted: bool = True) -> list[xr.Dataset]:
+        # anomalies over time
+        anom = self.truth - self.truth.mean(dim=self.time_dim, skipna=True)
+        sst_t = (anom ** 2).sum(dim=self.time_dim, skipna=True)  # 2D field
+
+        out: list[xr.Dataset] = []
+        for d in self.data:
+            sse_t = ((self.truth - d) ** 2).sum(dim=self.time_dim, skipna=True)  # 2D field
+
+            if geo_weighted:
+                sse = self._geo_avg(sse_t)   # scalar or 1D depending on _geo_avg
+                sst = self._geo_avg(sst_t)
+            else:
+                sse = sse_t.mean(dim=(self.lat_dim, self.lon_dim), skipna=True)
+                sst = sst_t.mean(dim=(self.lat_dim, self.lon_dim), skipna=True)
+
+            r2 = 1 - sse / xr.where(sst > 0, sst, np.nan)
+            out.append(r2)
+
+        return out
+
+    def mape (self, order: Literal["3d", "2d", "1d"] = "1d", geo_weighted: bool = True, eps: float = 0.0) -> list[xr.Dataset]:
+        """
+        Mean Absolute Percentage Error.
+
+        Returns:
+        - order="3d": pointwise APE (|err|/|truth| * 100)
+        - order="2d": time-mean of APE (2D field)
+        - order="1d": time-mean then spatial mean (scalar), geo-weighted if requested
+        """
+        def _mape_field (truth: xr.Dataset, pred: xr.Dataset) -> xr.Dataset:
+            denom = xr.where(np.abs(truth) > eps, np.abs(truth), np.nan)
+            return (np.abs(truth - pred) / denom) * 100.0
+
+        return self._generic_metric(_mape_field, order=order, geo_weighted=geo_weighted)
+
+    def smape (self, order: Literal["3d", "2d", "1d"] = "1d", geo_weighted: bool = True) -> list[xr.Dataset]:
+        """
+        Symmetric Mean Absolute Percentage Error
+        """
+        def _smape_field (truth: xr.Dataset, pred: xr.Dataset) -> xr.Dataset:
+            denom = np.abs(truth) + np.abs(pred)
+            denom = xr.where(denom > 0, denom, np.nan)
+            return 100.0 * (2 * np.abs(truth - pred) / denom)
+
+        return self._generic_metric(_smape_field, order=order, geo_weighted=geo_weighted)
+
+    def compute_all_metrics(self, *, geo_weighted: bool = True, eps: float = 0.0) -> dict[str, Any]:
+        """
+        Compute a standard suite of metrics and return:
+          res["models"][model]["scalar"][metric] -> xr.Dataset (0D per var)
+          res["models"][model]["map"][metric]    -> xr.Dataset (2D per var: lat/lon)
+
+        Notes
+        -----
+        - Scalar metrics use geo-weighting if geo_weighted=True (where applicable).
+        - 3D fields are intentionally not returned.
+        """
+        def by_model(lst: list[xr.Dataset]) -> dict[str, xr.Dataset]:
+            return {name: lst[i] for i, name in enumerate(self.data_name)}
+
+        # metric name -> callables producing list[xr.Dataset] aligned with self.data
+        scalar_fns = {
+            "mae":           lambda: self.mae(order="1d", geo_weighted=geo_weighted),
+            "bias":          lambda: self.err(order="1d", geo_weighted=geo_weighted),
+            "rmse":          lambda: self.rmse(order="1d", geo_weighted=geo_weighted),
+            "stderr":        lambda: self.stderr(order="1d", geo_weighted=geo_weighted),
+            "std_of_errs":   lambda: self.std_of_errs(order="1d", geo_weighted=geo_weighted),
+            "mape":          lambda: self.mape(order="1d", geo_weighted=geo_weighted, eps=eps),
+            "smape":         lambda: self.smape(order="1d", geo_weighted=geo_weighted),
+            "nrmse_global":  lambda: self.nrmse_global(geo_weighted=geo_weighted, eps=eps),
+            "nrmse_map_mean":lambda: self.nrmse_map(order="1d", geo_weighted=geo_weighted, eps=eps),
+            "r2_global":     lambda: self.r2_global(geo_weighted=geo_weighted),
         }
+
+        map_fns = {
+            "mae":          lambda: self.mae(order="2d", geo_weighted=geo_weighted),
+            "bias":         lambda: self.err(order="2d", geo_weighted=geo_weighted),
+            "rmse":         lambda: self.rmse(order="2d", geo_weighted=geo_weighted),
+            "stderr":       lambda: self.stderr(order="2d", geo_weighted=geo_weighted),
+            "std_of_errs":  lambda: self.std_of_errs(order="2d", geo_weighted=geo_weighted),
+            "mape":         lambda: self.mape(order="2d", geo_weighted=geo_weighted, eps=eps),
+            "smape":        lambda: self.smape(order="2d", geo_weighted=geo_weighted),
+            "nrmse_map":    lambda: self.nrmse_map(order="2d", geo_weighted=geo_weighted, eps=eps),
+            "r2_map":       lambda: self.r2_map(),
+        }
+
+        # init models
+        models: dict[str, dict[str, dict[str, xr.Dataset]]] = {
+            name: {"scalar": {}, "map": {}} for name in self.data_name
+        }
+
+        # fill scalars
+        for metric, fn in scalar_fns.items():
+            for model, ds in by_model(fn()).items():
+                models[model]["scalar"][metric] = ds
+
+        # fill maps
+        for metric, fn in map_fns.items():
+            for model, ds in by_model(fn()).items():
+                models[model]["map"][metric] = ds
+
+        return {
+            "meta": {
+                "truth_name": self.truth_name,
+                "data_names": list(self.data_name),
+                "dims": {"time": self.time_dim, "lat": self.lat_dim, "lon": self.lon_dim},
+                "geo_weighted": geo_weighted,
+                "eps": eps,
+            },
+            "models": models,
+        }
+
+    # @staticmethod
+    # def fss (a, b, dims: Tuple, threshold, eps):
+    #     """Fraction Skill Score"""
+    #     A, B = (a > threshold).astype(float), (b > threshold).astype(float)
+    #     return 1 - ((A - B)**2).mean(dim=time_dim) / ((A**2 + B**2).mean(dim=time_dim) + eps)
+
+    # @staticmethod
+    # def sal (a, b, dims: Tuple, eps): #TODO better understand this metric
+    #     """Std ratio, Avg (mean) ratio, weighted mean difference (L)"""
+    #     return {
+    #         "S": (b.std(dim=time_dim) - a.std(dim=time_dim)) / (a.std(dim=time_dim) + eps),
+    #         "A": (b.mean(dim=time_dim) - a.mean(dim=time_dim)) / (a.mean(dim=time_dim) + eps),
+    #         "L": (b.weighted(abs(b)).mean(dim=time_dim) - a.weighted(abs(a)).mean(dim=time_dim)) # TODO probably wrong, check weights
+    #     }
     @staticmethod
-    def spectral_metrics(a, b, time_dim, spatial_dims, eps):
+    def spectral_metrics (a, b, time_dim, spatial_dims, eps):
         import numpy as np
 
         # Helper: FFT power with consistent axis order
@@ -107,101 +683,6 @@ class Metrics:
             "ratio": ratio,
             "coherence": coh
         }
-
-    def compute_spatial_metrics(self, fss_threshold=0.5, eps=1e-6):
-        def _geo_avg (data): #TODO maybe promote to upper level class method
-            """Compute geographically weighted mean"""
-            # Weights for latitude-averaged mean
-            lat = data.cf['latitude']
-            geo_weights = np.cos(np.deg2rad(lat))
-            return data.weighted(geo_weights).mean(dim=self.spatial_dims).compute().values
-
-        def _aggregate(da):
-            """Spatial aggregation wrapper"""
-            ts = _geo_avg(da)
-            return {
-                "global_mean": ts.mean(),
-                "time_series": ts,
-                "mean_lat": da.mean(self.spatial_dims[1]).values if len(self.spatial_dims) == 2 else None,
-                "mean_lon": da.mean(self.spatial_dims[0]).values if len(self.spatial_dims) == 2 else None,
-            }
-        def compute_set(a, b):
-            """Compute metrics per variable"""
-            out = {}
-            for v in a.data_vars:
-                av, bv = a[v], b[v]
-                out[v] = {
-                    "rmse": self.rmse(av, bv, self.time_dim),
-                    "mae": self.mae(av, bv, self.time_dim),
-                    "bias": self.bias(av, bv, self.time_dim),
-                    "mape": self.mape(av, bv, self.time_dim, eps),
-                    "stderr": self.stderr(av, bv, self.time_dim),
-                    "r2": self.r2(av, bv, self.time_dim, eps),
-                    "fss": self.fss(av, bv, self.time_dim, fss_threshold, eps),
-                    # dictionaries
-                    "sal": self.sal(av, bv, self.time_dim, eps),
-                    "spectral": self.spectral_metrics(av, bv, self.time_dim, self.spatial_dims, eps),
-                }
-                # add aggregated means
-                out[v]["agg"] = {
-                    k: _aggregate(out[v][k]) 
-                    for k in ["rmse", "mae", "bias", "mape", "stderr", "r2", "fss"]
-                }
-
-            return out
-
-        return {name: compute_set(self.truth, d) for d, name in zip(self.data, self.data_name)}
-
-    def print_aggregated_metrics(self, metrics):
-        """
-        Print a tabular comparison of average metrics between FC and PR models.
-        
-        Parameters:
-        -----------
-        metrics : dict
-            Output from compute_spatial_metrics function
-        """
-        # Support only TWO data comparable with truth for now
-        assert len(self.data) <= 2
-        data_name1 = self.data_name[0] # usually forecast
-        data_name2 = self.data_name[1] if len(self.data_name) > 1 else None
-        # Extract all variables
-        chosen_data_name = list(metrics.keys())[0]
-        chosen_var = list(metrics[chosen_data_name].keys())[0]
-        variables = list(metrics[chosen_data_name].keys())
-        
-        # Metric names to compare (only aggregated)
-        metric_names = list(metrics[chosen_data_name][chosen_var]['agg'].keys())
-        print(f"Aggregated metrics: {metric_names}")
-        
-        # Build comparison table for each variable
-        for var in variables:
-            print(f"\n{'='*70}")
-            print(f"Variable: {var}")
-            print(f"{'='*70}")
-            
-            # Create rows for the table
-            rows = []
-            for metric in metric_names:
-                val1 = metrics[data_name1][var]['agg'][metric]['global_mean'] # forecast
-                val2 = metrics[data_name2][var]['agg'][metric]['global_mean'] if data_name2 else None
-
-                diff = val2 - val1 if data_name2 else None
-                abs_diff = abs(val2) - abs(val1) if data_name2 else None
-                pct_abs_diff = ((abs(val2) - abs(val1)) / (abs(val1) + 1e-10)) * 100 if data_name2 else None
-                
-                rows.append({
-                    'Metric': metric.replace(' avg', '').upper(),
-                    data_name1 : f"{val1:.4f}",
-                    data_name2: f"{val2:.4f}" if data_name2 else "",
-                    f'Diff ({data_name2}-{data_name1})': f"{diff:+.4f}" if data_name2 else "",
-                    f'Abs diff': f"{abs_diff:+.4f}" if data_name2 else "",
-                    'Abs diff [%]': f"{pct_abs_diff:+.2f}%" if data_name2 else "",
-                })
-            
-            # Create and print DataFrame
-            df = pd.DataFrame(rows)
-            print(df.to_string(index=False))
 
 class PowerSpectrum:
     def __init__(
