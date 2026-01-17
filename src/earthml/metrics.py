@@ -240,16 +240,17 @@ def plot_map_metric_grid (
     periods: list[str] | None = None,
     leadtimes: list[int] | None = None,
     # model vs diff
-    model: str | None = "ECMWF fc",
+    model: str | None = "fc",
     diff: bool = False,
-    model_a: str = "ECMWF fc",
-    model_b: str = "MLFC pr",
+    model_a: str = "fc",
+    model_b: str = "pr",
     # plotting
     projection=ccrs.PlateCarree(), # Robinson(),
     data_crs=ccrs.PlateCarree(),
     add_coastlines: bool = True,
     figsize_per_cell=(4.2, 2.8),
     cmap: str | None = None,
+    cbar_orientation: str = "horizontal",
     robust: bool = True,
     q: float = 0.02,
     symmetric_diff: bool = True,
@@ -269,30 +270,11 @@ def plot_map_metric_grid (
     if not periods:
         raise ValueError("No periods found in metrics.")
 
-    # --- helpers ---
-    def _get_ds(tp: str, mname: str) -> xr.Dataset:
-        ds = metrics[tp]["models"][mname][kind][metric]
-        return ds.squeeze(drop=True)
-
-    def _panel_da(tp: str) -> xr.DataArray:
-        if diff:
-            ds_a = _get_ds(tp, model_a)
-            ds_b = _get_ds(tp, model_b)
-            # FIX: xarray aligns via function, not method
-            ds_a, ds_b = xr.align(ds_a, ds_b, join="inner")
-            da = ds_b[variable] - ds_a[variable]
-        else:
-            ds = _get_ds(tp, model)
-            da = ds[variable]
-
-        # squeeze any remaining singleton dims (common: realization=1, number=1, etc.)
-        return da.squeeze(drop=True)
-
     # --- find reference for leadtimes ---
     ref_da = None
     for tp in periods:
         try:
-            da = _panel_da(tp)
+            da = _get_da(metrics, tp, model, kind, metric, model_a, model_b, variable, diff)
             ref_da = da
             break
         except Exception:
@@ -315,7 +297,7 @@ def plot_map_metric_grid (
     vals = []
     for tp in periods:
         try:
-            da = _panel_da(tp)
+            da = _get_da(metrics, tp, model, kind, metric, model_a, model_b, variable, diff)
             if "leadtime" in da.coords and leadtimes[0] is not None:
                 for lt in leadtimes:
                     if lt in da["leadtime"].values:
@@ -365,7 +347,7 @@ def plot_map_metric_grid (
                 ax.coastlines(linewidth=0.6)
 
             try:
-                da = _panel_da(tp)
+                da = _get_da(tp)
 
                 # select leadtime if present
                 if lt is not None and "leadtime" in da.coords:
@@ -409,7 +391,7 @@ def plot_map_metric_grid (
 
     # shared colorbar
     if mappable is not None:
-        cbar = fig.colorbar(mappable, ax=axes, orientation="vertical", fraction=0.02, pad=0.02)
+        cbar = fig.colorbar(mappable, ax=axes, orientation=cbar_orientation, fraction=0.02, pad=0.02)
         if diff:
             cbar.set_label(f"Δ {metric} ({model_b} − {model_a})")
         else:
@@ -417,9 +399,9 @@ def plot_map_metric_grid (
 
     # title
     if diff:
-        fig.suptitle(f"Δ {metric} maps ({model_b} − {model_a}) — {variable}", y=1.02)
+        fig.suptitle(f"Δ {metric} maps ({model_b} − {model_a}) - {variable}", y=1.02)
     else:
-        fig.suptitle(f"{metric} maps — {variable} — {model}", y=1.02)
+        fig.suptitle(f"{metric} maps - {variable} - {model}", y=1.02)
 
     plt.tight_layout()
 
