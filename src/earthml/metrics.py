@@ -616,6 +616,123 @@ class Metrics:
 
         return out
 
+    def nmae_map (
+        self,
+        order: Literal["2d", "1d"] = "2d",
+        geo_weighted: bool = True,
+        eps: float = 0.0,
+    ) -> list[xr.Dataset]:
+        """
+        Normalized MAE by truth std over time (map-wise).
+
+        - order="2d": returns 2D map: MAE_map / std_map
+        - order="1d": spatial average of that 2D map (geo-weighted if requested)
+        """
+        # MAE map per dataset (time mean of abs error)
+        mae_maps = self.mae(order="2d", geo_weighted=geo_weighted)  # geo_weighted irrelevant for 2d
+
+        # Truth std map over time
+        std_map = self.truth.std(dim=self.time_dim, skipna=True)
+        denom = xr.where(std_map > eps, std_map, np.nan)
+
+        out: list[xr.Dataset] = []
+        for mae_map in mae_maps:
+            nmae_map = mae_map / denom
+
+            if order == "2d":
+                out.append(nmae_map)
+            elif order == "1d":
+                if geo_weighted:
+                    out.append(self._geo_avg(nmae_map))
+                else:
+                    out.append(nmae_map.mean(dim=(self.lat_dim, self.lon_dim), skipna=True))
+            else:
+                raise ValueError(f"Invalid order: {order}")
+
+        return out
+
+    def nbias_map (
+        self,
+        order: Literal["2d", "1d"] = "2d",
+        geo_weighted: bool = True,
+        eps: float = 0.0,
+    ) -> list[xr.Dataset]:
+        """
+        Normalized bias by truth std over time (map-wise).
+
+        - bias map is mean(err) over time: (truth - pred).mean(time)
+        - normalized bias: bias_map / std_map
+        """
+        bias_maps = self.err(order="2d", geo_weighted=geo_weighted)  # time-mean error (bias), 2D
+
+        std_map = self.truth.std(dim=self.time_dim, skipna=True)
+        denom = xr.where(std_map > eps, std_map, np.nan)
+
+        out: list[xr.Dataset] = []
+        for bias_map in bias_maps:
+            nbias_map = bias_map / denom
+
+            if order == "2d":
+                out.append(nbias_map)
+            elif order == "1d":
+                if geo_weighted:
+                    out.append(self._geo_avg(nbias_map))
+                else:
+                    out.append(nbias_map.mean(dim=(self.lat_dim, self.lon_dim), skipna=True))
+            else:
+                raise ValueError(f"Invalid order: {order}")
+
+        return out
+
+    def nmae_global (self, geo_weighted: bool = True, eps: float = 0.0) -> list[xr.Dataset]:
+        """
+        Global NMAE = MAE_global / std_global(truth)
+        """
+        if geo_weighted:
+            truth_bar = self._geo_avg(self.truth)  # time series
+            denom = truth_bar.std(dim=self.time_dim, skipna=True)
+        else:
+            denom = self.truth.std(dim=(self.time_dim, self.lat_dim, self.lon_dim), skipna=True)
+
+        denom = xr.where(denom > eps, denom, np.nan)
+
+        out: list[xr.Dataset] = []
+        for d in self.data:
+            if geo_weighted:
+                abs_err_bar = self._geo_avg(np.abs(self.truth - d))      # time series
+                mae = abs_err_bar.mean(dim=self.time_dim, skipna=True)   # scalar
+            else:
+                mae = np.abs(self.truth - d).mean(dim=(self.time_dim, self.lat_dim, self.lon_dim), skipna=True)
+
+            out.append(mae / denom)
+
+        return out
+
+    def nbias_global (self, geo_weighted: bool = True, eps: float = 0.0) -> list[xr.Dataset]:
+        """
+        Global normalized bias = bias_global / std_global(truth)
+        where bias_global = mean(truth - pred)
+        """
+        if geo_weighted:
+            truth_bar = self._geo_avg(self.truth)
+            denom = truth_bar.std(dim=self.time_dim, skipna=True)
+        else:
+            denom = self.truth.std(dim=(self.time_dim, self.lat_dim, self.lon_dim), skipna=True)
+
+        denom = xr.where(denom > eps, denom, np.nan)
+
+        out: list[xr.Dataset] = []
+        for d in self.data:
+            if geo_weighted:
+                err_bar = self._geo_avg(self.truth - d)                 # time series
+                bias = err_bar.mean(dim=self.time_dim, skipna=True)     # scalar
+            else:
+                bias = (self.truth - d).mean(dim=(self.time_dim, self.lat_dim, self.lon_dim), skipna=True)
+
+            out.append(bias / denom)
+
+        return out
+
     def r2_map (self) -> list[xr.Dataset]:
         # SST: sum over time of squared anomalies (2D field per var)
         anom = self.truth - self.truth.mean(dim=self.time_dim, skipna=True)
@@ -701,6 +818,10 @@ class Metrics:
             "smape":         lambda: self.smape(order="1d", geo_weighted=geo_weighted),
             "nrmse_global":  lambda: self.nrmse_global(geo_weighted=geo_weighted, eps=eps),
             "nrmse_map_mean":lambda: self.nrmse_map(order="1d", geo_weighted=geo_weighted, eps=eps),
+            "nmae_global":   lambda: self.nmae_global(geo_weighted=geo_weighted, eps=eps),
+            "nbias_global":  lambda: self.nbias_global(geo_weighted=geo_weighted, eps=eps),
+            "nmae_map_mean": lambda: self.nmae_map(order="1d", geo_weighted=geo_weighted, eps=eps),
+            "nbias_map_mean":lambda: self.nbias_map(order="1d", geo_weighted=geo_weighted, eps=eps),
             "r2_global":     lambda: self.r2_global(geo_weighted=geo_weighted),
         }
 
@@ -713,6 +834,8 @@ class Metrics:
             "mape":         lambda: self.mape(order="2d", geo_weighted=geo_weighted, eps=eps),
             "smape":        lambda: self.smape(order="2d", geo_weighted=geo_weighted),
             "nrmse_map":    lambda: self.nrmse_map(order="2d", geo_weighted=geo_weighted, eps=eps),
+            "nmae_map":     lambda: self.nmae_map(order="2d", geo_weighted=geo_weighted, eps=eps),
+            "nbias_map":    lambda: self.nbias_map(order="2d", geo_weighted=geo_weighted, eps=eps),
             "r2_map":       lambda: self.r2_map(),
         }
 
