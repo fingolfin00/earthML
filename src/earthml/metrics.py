@@ -1,4 +1,4 @@
-from typing import List, Any, Literal, Callable, Optional
+from typing import List, Any, Literal, Callable, Optional, Sequence
 from pathlib import Path
 
 from rich import print
@@ -21,60 +21,189 @@ MetricFn = Callable[[xr.Dataset, xr.Dataset], xr.Dataset]
 FinalFn  = Callable[[xr.Dataset], xr.Dataset]
 
 # Standalone helper methods
-def metrics_to_df (metrics_dict, metric_name, kind="scalar"):
-    """
-    Returns a tidy dataframe with columns:
-    period, model, variable, leadtime, value
-    Works for scalar metrics that return xarray.Dataset with a leadtime coord.
-    """
-    rows = []
 
-    for period, res in metrics_dict.items():
-        models = res["models"]
-        for model_name, model_res in models.items():
-            ds = model_res[kind].get(metric_name, None)
+def _get_ds (
+    metrics: dict,
+    tp: str, model: str,
+    kind: str,
+    metric_name: str
+) -> xr.Dataset:
+    ds = metrics[tp]["models"][model][kind].get(metric_name, None)
+    return ds.squeeze(drop=True) if ds is not None else None
+
+def _get_da (
+    metrics: dict,
+    tp: str,
+    model: str,
+    kind: str,
+    metric_name: str,
+    model_a: str | None,
+    model_b: str | None,
+    variable: str,
+    diff: bool,
+) -> xr.DataArray | None:
+    if diff:
+        ds_a = _get_ds(metrics, tp, model_a, kind, metric_name)
+        ds_b = _get_ds(metrics, tp, model_b, kind, metric_name)
+        if ds_a is None or ds_b is None or variable not in ds_a or variable not in ds_b:
+            return None
+        ds_a, ds_b = xr.align(ds_a, ds_b, join="inner")
+        da = ds_b[variable] - ds_a[variable]
+    else:
+        ds = _get_ds(metrics, tp, model, kind, metric_name)
+        if ds is None or variable not in ds:
+            return None
+        da = ds[variable]
+
+    # keep leadtime
+    for dim in list(da.dims):
+        if dim != "leadtime" and da.sizes.get(dim, 1) == 1:
+            da = da.squeeze(dim, drop=True)
+
+    return da
+
+
+def infer_metric_names (metrics_dict: dict, kind: str) -> list[str]:
+    # grab first tp/model/kind and return keys there
+    for _, res in metrics_dict.items():
+        for _, md in res["models"].items():
+            if kind in md:
+                return list(md[kind].keys())
+    return []
+
+def infer_variables (metrics_dict: dict, kind: str, metric_name: str | None = None) -> list[str]:
+    for tp, res in metrics_dict.items():
+        for model, md in res.get("models", {}).items():
+            kind_dict = md.get(kind, {})
+            if not isinstance(kind_dict, dict) or not kind_dict:
+                continue
+
+            # Infer from first metric dataset if metric_name is not provided
+            m = metric_name or next(iter(kind_dict.keys()))
+            ds = kind_dict.get(m)
             if ds is None:
                 continue
 
-            for var in ds.data_vars:
-                da = ds[var]
+            return list(ds.data_vars)
+    return []
 
-                # drop/squeeze nuisance dims if present
-                for dim in list(da.dims):
-                    if dim not in ("leadtime",):  # keep leadtime; everything else squeeze if possible
-                        if da.sizes.get(dim, 1) == 1:
-                            da = da.squeeze(dim, drop=True)
+def metrics_to_df (
+    metrics_dict: dict,
+    variables: list[str] | str | None = None,
+    metric_names: list[str] | str | None = None,
+    kind: str = "scalar",
+    diff: bool = False,
+    models: Sequence[str] | None = None, # list/tuple
+):
+    if metric_names is None:
+        metric_names = infer_metric_names(metrics_dict, kind)
+    elif isinstance(metric_names, str):
+        metric_names = [metric_names]
+    else:
+        metric_names = list(metric_names)
 
-                # if still multi-dim beyond leadtime, flatten remaining dims into rows
-                if "leadtime" in da.dims:
-                    # iterate leadtime values
-                    for lt in da["leadtime"].values:
-                        val = da.sel(leadtime=lt).values
-                        # if val still array-like, flatten
-                        val = np.array(val).reshape(-1)
-                        for v in val:
-                            rows.append({
-                                "period": period,
-                                "model": model_name,
-                                "metric": metric_name,
-                                "variable": var,
-                                "leadtime": int(lt),
-                                "value": float(v) if np.isfinite(v) else np.nan,
-                            })
-                else:
-                    # no leadtime: single number
-                    val = float(da.values) if np.isfinite(da.values) else np.nan
-                    rows.append({
-                        "period": period,
-                        "model": model_name,
-                        "metric": metric_name,
-                        "variable": var,
-                        "leadtime": np.nan,
-                        "value": val,
-                    })
+    if variables is None:
+        variables = infer_variables(metrics_dict, kind, metric_names[0] if metric_names else None)
+    elif isinstance(variables, str):
+        variables = [variables]
+    else:
+        variables = list(variables)
 
-    df = pd.DataFrame(rows)
-    return df
+    if not metric_names:
+        raise ValueError(f"No metric_names found under kind='{kind}'. Check metrics_dict structure.")
+    if not variables:
+        raise ValueError("No variables inferred. Check metrics_dict structure.")
+
+    rows = []
+    for tp, res in metrics_dict.items():
+        models_tp = list(res["models"].keys()) if models is None else list(models)
+
+        if diff:
+            if len(models_tp) != 2:
+                raise ValueError("When diff=True, models must contain exactly two model names")
+            model_a, model_b = models_tp
+            model_iter = [f"{model_b}-{model_a}"]
+        else:
+            model_iter = models_tp
+            model_a = model_b = None  # not used
+
+        for model_name in model_iter:
+            for m in metric_names:
+                for var in variables:
+                    da = _get_da(metrics_dict, tp, model_name, kind, m, model_a, model_b, var, diff)
+                    if da is None:
+                        continue
+
+                    if hasattr(da.data, "persist"):
+                        da = da.persist() # make it work id Dask-based
+
+                    if da.ndim == 0:
+                        rows.append({
+                            "train_period": tp,
+                            "model": model_name,
+                            "metric": m,
+                            "variable": var,
+                            "leadtime": np.nan,
+                            "value": float(da.values) if np.isfinite(da.values) else np.nan,
+                        })
+                    else:
+                        df_da = da.to_dataframe(name="value").reset_index()
+
+                        if "leadtime" not in df_da.columns:
+                            df_da["leadtime"] = np.nan
+
+                        df_da["train_period"] = tp
+                        df_da["model"] = model_name
+                        df_da["metric"] = m
+                        df_da["variable"] = var
+
+                        rows.extend(
+                            df_da[["train_period", "model", "metric", "variable", "leadtime", "value"]]
+                            .to_dict("records")
+                        )
+
+    return pd.DataFrame(rows)
+
+def build_parquet_path (base_folder: str, vars_list, metric_names, diff: bool) -> str:
+    vars_tag = "_".join(sorted(map(str, vars_list))) if vars_list else "allvars"
+    metrics_tag = "_".join(sorted(map(str, metric_names))) if metric_names else "allmetrics"
+    diff_tag = "diff" if diff else "nodiff"
+    return str(Path(base_folder) / f"metrics_{diff_tag}_{vars_tag}_{metrics_tag}_parquet")
+
+
+def save_metrics_parquets (
+    metrics: dict,
+    base_folder: str,
+    vars_list,
+    metric_names,
+    models_diff=("fc", "pr"),                 # used only for diff
+    partition_cols=("train_period", "model", "metric", "variable"),  # avoid leadtime
+):
+    out = {}
+
+    for diff in (False, True):
+        df = metrics_to_df(
+            metrics,
+            variables=vars_list,
+            metric_names=metric_names,
+            diff=diff,
+            models=models_diff if diff else None,
+        )
+
+        parquet_path = build_parquet_path(base_folder, vars_list, metric_names, diff)
+
+        # Ensure output directory exists
+        Path(parquet_path).mkdir(parents=True, exist_ok=True)
+
+        df.to_parquet(
+            parquet_path,
+            partition_cols=list(partition_cols),
+            engine="pyarrow",
+        )
+
+        out["diff" if diff else "nodiff"] = (df, parquet_path)
+
+    return out
 
 def _extent_from_da (da: xr.DataArray, lon_name="lon", lat_name="lat", pad_deg=2.0):
     lon = da[lon_name].values
