@@ -54,6 +54,10 @@ if __name__ == "__main__":
         train_periods_input = half_train_periods_days(full_train_period_input, min_months=12, anchor="end")
 
         for train_p_in, train_p_tar in zip(train_periods_input, train_periods_target):
+
+            if len(train_p_tar) != 2:
+                earthkit_target = earthkit_consolidated if train_p_tar[0].end < cutoff_consolidated else earthkit_operational
+
             ocean_scenario = MLFCScenario(
                 name="ocean",
                 leadtime_var_name="leadtime",
@@ -61,7 +65,7 @@ if __name__ == "__main__":
                 leadtime_var_unit="days",
                 leadtime_value=leadtime_months,
                 leadtime_unit="months",
-                var_fc_key="sss_juno_fc",
+                var_fc_key="sss_cds_fc",
                 var_an_key="sss_oras5_an",
                 region_key="pacific",
                 train_period=dict(
@@ -72,11 +76,11 @@ if __name__ == "__main__":
                     input=TimeRange(start=datetime(2021, 1, 1), end=datetime(2022, 12, 31), freq='MS'),
                     target=TimeRange(start=datetime(2021, 1, 1), end=datetime(2022, 12, 31), freq='MS'),
                 ),
-                input_provider= "ocean.juno.cmcc.hindcast.monthly",
+                input_provider="ocean.earthkit.cmcc.hindcast.monthly",
                 target_provider="ocean.earthkit.oras5.reanalysis.monthly",
                 input_provider_kwargs=dict(),
                 target_provider_kwargs=dict(
-                    train=[earthkit_consolidated, earthkit_operational] if len(train_p_tar) == 2 else earthkit_consolidated,
+                    train=[earthkit_consolidated, earthkit_operational] if len(train_p_tar) == 2 else earthkit_target,
                     test=earthkit_operational,
                 ),
                 save_train=True,
