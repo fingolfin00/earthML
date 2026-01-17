@@ -1744,10 +1744,10 @@ def load_exp (exp_root, exp_cfg, type_data: str, only_sizes: bool = False) -> di
                 experiment = joblib.load(exp_path)
                 source = experiment[f"{type_data}_data"]  # e.g. "test_data"
 
-                n_valid_samples[tp][lt] = {v: {
+                n_valid_samples[tp][lt][v] = {
                     "input": (len(source["input"].elements.samples)),
                     "target": (len(source["target"].elements.samples)),
-                    }}
+                    }
                 if type_data == "test":
                     n_valid_samples[tp][lt][v]["prediction"] = (len(source["prediction"].elements.samples))
 
