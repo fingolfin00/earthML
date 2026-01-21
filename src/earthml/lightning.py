@@ -204,14 +204,23 @@ class EarthMLLightningModule (L.LightningModule):
         pred = pred.contiguous()
         y = y.contiguous()
 
-        if self.use_first_input:
-            loss = self.loss(pred, y, x[0])
+        # If pred has 2C channels, first half is mean
+        if pred.shape[1] == 2 * y.shape[1]:
+            mu = pred[:, : y.shape[1], ...]
         else:
-            loss = self.loss(pred, y)
+            mu = pred
 
-        self.train_mae.update(pred, y)
-        self.train_rmse.update(pred, y)
-        self.train_scc.update(pred, y)
+        if self.use_first_input:
+            loss = self.loss(mu, y, x[0])
+        else:
+            loss = self.loss(mu, y)
+
+        mu = mu.contiguous()
+        y  = y.contiguous()
+
+        self.train_mae.update(mu, y)
+        self.train_rmse.update(mu, y)
+        self.train_scc.update(mu, y)
         # self.train_acc.update(pred, y)
 
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
@@ -239,15 +248,24 @@ class EarthMLLightningModule (L.LightningModule):
         pred = pred.contiguous()
         y = y.contiguous()
 
-        if self.use_first_input:
-            loss = self.loss(pred, y, x[0])
+        # If pred has 2C channels, first half is mean
+        if pred.shape[1] == 2 * y.shape[1]:
+            mu = pred[:, : y.shape[1], ...]
         else:
-            loss = self.loss(pred, y)
+            mu = pred
 
-        self.val_mae.update(pred, y)
-        self.val_rmse.update(pred, y)
-        self.val_scc.update(pred, y)
-        # self.val_acc.update(pred, y)
+        if self.use_first_input:
+            loss = self.loss(mu, y, x[0])
+        else:
+            loss = self.loss(mu, y)
+
+        mu = mu.contiguous()
+        y  = y.contiguous()
+
+        self.val_mae.update(mu, y)
+        self.val_rmse.update(mu, y)
+        self.val_scc.update(mu, y)
+        # self.val_acc.update(mu, y)
 
         self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         try:
@@ -274,12 +292,25 @@ class EarthMLLightningModule (L.LightningModule):
         # ensure contiguous
         pred = pred.contiguous()
         y = y.contiguous()
-        loss = self.loss(pred, y) # Corrected: use `loss`
 
-        self.test_mae.update(pred, y)
-        self.test_rmse.update(pred, y)
-        self.test_scc.update(pred, y)
-        # self.test_acc.update(pred, y)
+        # If pred has 2C channels, first half is mean
+        if pred.shape[1] == 2 * y.shape[1]:
+            mu = pred[:, : y.shape[1], ...]
+        else:
+            mu = pred
+
+        if self.use_first_input:
+            loss = self.loss(mu, y, x[0])
+        else:
+            loss = self.loss(mu, y)
+
+        mu = mu.contiguous()
+        y  = y.contiguous()
+
+        self.test_mae.update(mu, y)
+        self.test_rmse.update(mu, y)
+        self.test_scc.update(mu, y)
+        # self.test_acc.update(mu, y)
 
         # Log per-batch loss. Metrics will be logged at epoch end using their aggregated state.
         self.log("test_loss", loss, on_step=True, on_epoch=True, logger=True) # Corrected: use `loss`
