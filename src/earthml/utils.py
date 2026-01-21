@@ -30,11 +30,12 @@ from .dataclasses import DataSelection, TimeRange
 #---------------
 
 class Dask:
-    def __init__(self, base_port=8787, n_workers=None, processes=True, nanny=True):
+    def __init__(self, base_port=8787, n_workers=None, processes=True, nanny=True, memory_limit="auto"):
         self.base_port = base_port
         self.n_workers = n_workers
         self.processes = processes
         self.nanny = nanny
+        self.memory_limit = memory_limit
 
         self.cluster = None
         self.client = None
@@ -65,19 +66,27 @@ class Dask:
             processes=self.processes,
             timeout="600s",
             heartbeat_interval="10s",
-            memory_limit="auto",
+            memory_limit=self.memory_limit,
             local_directory=local_dir,
             dashboard_address=f":{self.base_port}",
             nanny=self.nanny,
         )
         self.client = Client(self.cluster)
 
+        info = self.client.scheduler_info()
+        n_active_workers = len(info["workers"])
+        workers_mem_limit_gb = []
+        for w in info["workers"].values():
+            workers_mem_limit_gb.append(w["memory_limit"] / 1024**3)
+        workers_mem_limit_gb = np.array(workers_mem_limit_gb)
+
         # Register cf_xarray
         self.client.run(lambda: __import__("cf_xarray"))
 
         import socket
         print(f"Dask dashboard running on {socket.gethostname()}:{self.cluster.scheduler.services['dashboard'].port}")
-        print(f"Cores: {n_cores}, Mem: {total_mem_gb} GB -> Dask workers: {n_workers}")
+        print(f"Cores: {n_cores}, Mem: {total_mem_gb} GB -> Dask active workers: {n_active_workers} (requested: {n_workers})")
+        print(f"Dask memory per worker (avg): {workers_mem_limit_gb.mean():.2f} GB")
         print(f"Write Dask local files in {local_dir}")
 
         return self
