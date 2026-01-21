@@ -1720,7 +1720,7 @@ def date_diff (ymd_range: str):
 
 def load_exp (exp_root, exp_cfg, type_data: str, only_sizes: bool = False) -> dict:
     """
-    Return dict keyed by train_period.
+    Return dict keyed by train_period and number of valid samples.
 
     out[tp]["fc"] -> Dataset with dim 'leadtime'
     out[tp]["an"] -> Dataset with dim 'leadtime'
@@ -1764,10 +1764,10 @@ def load_exp (exp_root, exp_cfg, type_data: str, only_sizes: bool = False) -> di
                     continue
 
                 if type_data == "test":
-                    pr = source["prediction"].reload()
+                    pr = source["prediction"].reload() # reload? YES!
                     pr_list.append(pr.rename_vars({v_d["exp_var"]["fc"]: v}))
 
-                fc = source["input"].reload() # why reload?
+                fc = source["input"].reload()
                 an = source["target"].reload()
                 fc_list.append(fc.rename_vars({v_d["exp_var"]["fc"]: v}))
                 an_list.append(an.rename_vars({v_d["exp_var"]["an"]: v}))
