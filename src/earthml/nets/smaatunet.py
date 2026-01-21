@@ -10,9 +10,20 @@ import torch.nn.functional as F
 import lightning as L
 from ..lightning import EarthMLLightningModule
 
+# DEBUG
+# import traceback
+# _old_view = torch.Tensor.view
+
+# def _debug_view(self, *shape):
+#     print(">>> Tensor.view called with shape:", shape)
+#     traceback.print_stack(limit=15)
+#     return _old_view(self, *shape)
+
+# torch.Tensor.view = _debug_view
+
 class Flatten(nn.Module):
     def forward(self, x):
-        return x.view(x.size(0), -1)
+        return x.contiguous().flatten(1)
 
 class ChannelAttention(nn.Module):
     def __init__(self, input_channels, reduction_ratio=16):
@@ -31,12 +42,11 @@ class ChannelAttention(nn.Module):
 
     def forward(self, x):
         # Take the input and apply average and max pooling
-        avg_values = self.avg_pool(x)
-        max_values = self.max_pool(x)
+        avg_values = self.avg_pool(x).contiguous()
+        max_values = self.max_pool(x).contiguous()
         out = self.MLP(avg_values) + self.MLP(max_values)
         scale = x * torch.sigmoid(out).unsqueeze(2).unsqueeze(3).expand_as(x)
         return scale
-
 
 class SpatialAttention(nn.Module):
     def __init__(self, kernel_size=7):
