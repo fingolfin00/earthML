@@ -424,6 +424,30 @@ class EpochRandomSplitDataModule (L.LightningDataModule):
             # re-split at every epoch
             self._resplit()
 
+class GaussianNLLFromLogits(nn.Module):
+    """
+    Expects pred to be either:
+      - tuple/list: (mu, var)  where var is variance (positive)
+      - tensor:     [B, 2*C, H, W] where channels are (mu, raw_var)
+    Converts raw_var -> var via softplus, then applies GaussianNLLLoss.
+    """
+    def __init__(
+        self,
+        reduction: str = "mean",
+        eps: float = 1e-6,
+    ):
+        super().__init__()
+        self.nll = nn.GaussianNLLLoss(eps=eps, reduction=reduction)
+
+    def forward(self, pred, target):
+        if isinstance(pred, (tuple, list)):
+            mu, var = pred
+        else:
+            mu, raw_var = torch.chunk(pred, 2, dim=1)
+            var = F.softplus(raw_var) + 1e-6
+
+        return self.nll(mu, target, var)
+
 class HeteroBiasCorrectionLoss(nn.Module):
     """
     Loss for bias correction with:
