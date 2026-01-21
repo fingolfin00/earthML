@@ -5,8 +5,9 @@ from earthml.launchers.mlfc import MLFCScenario, MLFCRunner
 from earthml.utils import halved_windows_split_by_cutoff, half_train_periods_days
 
 if __name__ == "__main__":
-
     max_retries = 4
+
+    var_keys = [("sss_juno_fc", "sss_oras5_an")]
 
     full_leadtimes_days = (45, 75, 105, 135, 165)
     full_leadtimes_months = (1, 2, 3, 4, 5)
@@ -48,69 +49,71 @@ if __name__ == "__main__":
         )
     )
 
-    for leadtime_days, leadtime_months in zip(full_leadtimes_days, full_leadtimes_months):
+    for var_fc_key, var_an_key in var_keys:
+        for leadtime_days, leadtime_months in zip(full_leadtimes_days, full_leadtimes_months):
 
-        full_train_period_input = TimeRange(start=start_train_date, end=end_train_date, freq='MS')
-        train_periods_input = half_train_periods_days(full_train_period_input, min_months=12, anchor="end")
+            full_train_period_input = TimeRange(start=start_train_date, end=end_train_date, freq='MS')
+            train_periods_input = half_train_periods_days(full_train_period_input, min_months=12, anchor="end")
 
-        for train_p_in, train_p_tar in zip(train_periods_input, train_periods_target):
+            for train_p_in, train_p_tar in zip(train_periods_input, train_periods_target):
 
-            if len(train_p_tar) != 2:
-                earthkit_target = earthkit_consolidated if train_p_tar[0].end < cutoff_consolidated else earthkit_operational
+                if len(train_p_tar) != 2:
+                    earthkit_target = earthkit_consolidated if train_p_tar[0].end < cutoff_consolidated else earthkit_operational
 
-            ocean_scenario = MLFCScenario(
-                name="ocean",
-                leadtime_var_name="leadtime",
-                leadtime_var_value=leadtime_days,
-                leadtime_var_unit="days",
-                leadtime_value=leadtime_months,
-                leadtime_unit="months",
-                var_fc_key="sss_cds_fc",
-                var_an_key="sss_oras5_an",
-                region_key="pacific",
-                train_period=dict(
-                    input=train_p_in,
-                    target=train_p_tar,
-                ),
-                test_period=dict(
-                    input=TimeRange(start=datetime(2021, 1, 1), end=datetime(2022, 12, 31), freq='MS'),
-                    target=TimeRange(start=datetime(2021, 1, 1), end=datetime(2022, 12, 31), freq='MS'),
-                ),
-                input_provider="ocean.earthkit.cmcc.hindcast.monthly",
-                target_provider="ocean.earthkit.oras5.reanalysis.monthly",
-                input_provider_kwargs=dict(),
-                target_provider_kwargs=dict(
-                    train=[earthkit_consolidated, earthkit_operational] if len(train_p_tar) == 2 else earthkit_target,
-                    test=earthkit_operational,
-                ),
-                save_train=True,
-                save_test=True,
-                torch_preprocess_fn=None,
-            )
+                ocean_scenario = MLFCScenario(
+                    name="ocean",
+                    leadtime_var_name="leadtime",
+                    leadtime_var_value=leadtime_days,
+                    leadtime_var_unit="days",
+                    leadtime_value=leadtime_months,
+                    leadtime_unit="months",
+                    var_fc_key=var_fc_key,
+                    var_an_key=var_an_key,
+                    region_key="pacific",
+                    train_period=dict(
+                        input=train_p_in,
+                        target=train_p_tar,
+                    ),
+                    test_period=dict(
+                        input=TimeRange(start=datetime(2021, 1, 1), end=datetime(2022, 12, 31), freq='MS'),
+                        target=TimeRange(start=datetime(2021, 1, 1), end=datetime(2022, 12, 31), freq='MS'),
+                    ),
+                    input_provider="ocean.juno.cmcc.hindcast.monthly",
+                    # input_provider="ocean.earthkit.cmcc.hindcast.monthly",
+                    target_provider="ocean.earthkit.oras5.reanalysis.monthly",
+                    input_provider_kwargs=dict(),
+                    target_provider_kwargs=dict(
+                        train=[earthkit_consolidated, earthkit_operational] if len(train_p_tar) == 2 else earthkit_target,
+                        test=earthkit_operational,
+                    ),
+                    save_train=True,
+                    save_test=True,
+                    torch_preprocess_fn=None,
+                )
 
-            runner = MLFCRunner(
-                scenario=ocean_scenario,
-                exp_root_folder="/work/cmcc/jd19424/test-ML/experiments_earthML_ocean/",
-                exp_suffix="_32bs_50epoch_mse",
-                # ML options
-                learning_rate=1e-3,
-                batch_size=32,
-                epochs=50,
-                loss="MSELoss",
-                accumulate_grad_batches=2,
-                earlystopping_patience=30,
-            )
+                runner = MLFCRunner(
+                    scenario=ocean_scenario,
+                    exp_root_folder="/work/cmcc/jd19424/test-ML/experiments_earthML_ocean/",
+                    exp_suffix="_32bs_50epoch_mse",
+                    # ML options
+                    learning_rate=1e-3,
+                    batch_size=32,
+                    epochs=50,
+                    loss="MSELoss",
+                    accumulate_grad_batches=2,
+                    earlystopping_patience=30,
+                )
 
-            success = False
+                success = False
 
-            for _ in range(max_retries):
-                try:
-                    runner.run(mode="dryrun")
-                    success = True
-                    break
-                except (RuntimeError, OSError) as e:
-                    print(e)
-                    pass
+                for _ in range(max_retries):
+                    try:
+                        runner.run(mode="dryrun")
+                        success = True
+                        break
+                    except (RuntimeError, OSError) as e:
+                        print(e)
+                        pass
 
-            if not success:
-                continue
+                if not success:
+                    continue
