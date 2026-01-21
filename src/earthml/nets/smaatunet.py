@@ -223,12 +223,16 @@ class SmaAt_UNet (EarthMLLightningModule):
         super(SmaAt_UNet, self).__init__(**loss_params['net'])
         
         # self.extra_logger = extra_logger
+        self.loss_name = loss
         self.loss = self.resolve_loss(loss, loss_params['loss'])
         self.learning_rate = learning_rate
         self.supervised = supervised
+
+        needs_var = ("GaussianNLL" in loss) or ("GaussianNLLFromLogits" in loss)
         
         self.n_channels = n_channels
         self.n_classes = n_classes
+        out_channels = (2 * self.n_classes) if needs_var else self.n_classes
         kernels_per_layer = kernels_per_layer
         self.bilinear = bilinear
         reduction_ratio = reduction_ratio
@@ -249,7 +253,7 @@ class SmaAt_UNet (EarthMLLightningModule):
         self.up3 = UpDS(256, 128 // factor, self.bilinear, kernels_per_layer=kernels_per_layer)
         self.up4 = UpDS(128, 64, self.bilinear, kernels_per_layer=kernels_per_layer)
 
-        self.outc = OutConv(64, self.n_classes)
+        self.outc = OutConv(64, out_channels)
 
     def forward(self, x):
         # Inside your smaatunet.py, e.g., in the forward method of DoubleConv or Unet
