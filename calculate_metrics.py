@@ -39,27 +39,23 @@ if __name__ == "__main__":
     # vars = ['msl', 't2m', 'tcc']
     vars = {}
     vars_weather = {
-        'msl_mse': {'exp_var': {'fc': 'msl', 'an': 'msl'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
-        'u10_mse': {'exp_var': {'fc': 'u10', 'an': 'u10'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
-        'v10_mse': {'exp_var': {'fc': 'v10', 'an': 'v10'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
-        'd2m_mse': {'exp_var': {'fc': 'd2m', 'an': 'd2m'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
-        'tcc_mse': {'exp_var': {'fc': 'tcc', 'an': 'tcc'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
-        't2m_mse': {'exp_var': {'fc': 't2m', 'an': 't2m'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
-        # 't2m_mse_smoothed_R25.0_s0.8':  {'exp_var': {'fc': 't2m_smoothed_R25.0_s0.8', 'an': 't2m_smoothed_R25.0_s0.8'},  'region': 'ConUS', 'exp_suffix': '_32bs_smoothed', 'train_period': train_period, 'test_period': test_period},
-        # 't2m_mse_smoothed_R50.0_s1.5':  {'exp_var': {'fc': 't2m_smoothed_R50.0_s1.5', 'an': 't2m_smoothed_R50.0_s1.5'},  'region': 'ConUS', 'exp_suffix': '_32bs_smoothed', 'train_period': train_period, 'test_period': test_period},
-        # 't2m_mse_smoothed_R100.0_s3.0': {'exp_var': {'fc': 't2m_smoothed_R100.0_s3.0', 'an': 't2m_smoothed_R100.0_s3.0'}, 'region': 'ConUS', 'exp_suffix': '_32bs_smoothed', 'train_period': train_period, 'test_period': test_period},
-        # 't2m_mse_smoothed_R200.0_s6.0': {'exp_var': {'fc': 't2m_smoothed_R200.0_s6.0', 'an': 't2m_smoothed_R200.0_s6.0'}, 'region': 'ConUS', 'exp_suffix': '_32bs_smoothed', 'train_period': train_period, 'test_period': test_period},
-        # 'msl_het': {'exp_var': {'fc': 'msl', 'an': 'msl'}, 'region': 'ConUS', 'exp_suffix': '_32bs_juno_heteroloss', 'train_period': train_period, 'test_period': test_period},
-        # 'u10_het': {'exp_var': 'u10', 'region': 'ConUS', 'exp_suffix': '_32bs_juno_heteroloss', 'train_period': train_period, 'test_period': test_period},
-        # 'v10_het': {'exp_var': 'v10', 'region': 'ConUS', 'exp_suffix': '_32bs_juno_heteroloss', 'train_period': train_period, 'test_period': test_period},
-        # 'd2m_het': {'exp_var': 'd2m', 'region': 'ConUS', 'exp_suffix': '_32bs_juno_heteroloss', 'train_period': train_period, 'test_period': test_period},
-        # 'tcc_het': {'exp_var': 'tcc', 'region': 'ConUS', 'exp_suffix': '_32bs_juno_heteroloss', 'train_period': train_period, 'test_period': test_period},
-        # 't2m_het': {'exp_var': {'fc': 't2m', 'an': 't2m'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_het'},
+        # 'msl_mse': {'exp_var': {'fc': 'msl', 'an': 'msl'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
+        # 'u10_mse': {'exp_var': {'fc': 'u10', 'an': 'u10'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
+        # 'v10_mse': {'exp_var': {'fc': 'v10', 'an': 'v10'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
+        # 'd2m_mse': {'exp_var': {'fc': 'd2m', 'an': 'd2m'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
+        # 'tcc_mse': {'exp_var': {'fc': 'tcc', 'an': 'tcc'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
+        # 't2m_mse': {'exp_var': {'fc': 't2m', 'an': 't2m'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
+        # 't2m_mse_smoothed_R25.0_s0.8':  {'exp_var': {'fc': 't2m_smoothed_R25.0_s0.8', 'an': 't2m_smoothed_R25.0_s0.8'},  'region': 'ConUS', 'exp_suffix': '_32bs_smoothed'},
+        # 't2m_mse_smoothed_R50.0_s1.5':  {'exp_var': {'fc': 't2m_smoothed_R50.0_s1.5', 'an': 't2m_smoothed_R50.0_s1.5'},  'region': 'ConUS', 'exp_suffix': '_32bs_smoothed'},
+        # 't2m_mse_smoothed_R100.0_s3.0': {'exp_var': {'fc': 't2m_smoothed_R100.0_s3.0', 'an': 't2m_smoothed_R100.0_s3.0'}, 'region': 'ConUS', 'exp_suffix': '_32bs_smoothed'},
+        # 't2m_mse_smoothed_R200.0_s6.0': {'exp_var': {'fc': 't2m_smoothed_R200.0_s6.0', 'an': 't2m_smoothed_R200.0_s6.0'}, 'region': 'ConUS', 'exp_suffix': '_32bs_smoothed'},
+        'msl_het': {'exp_var': {'fc': 'msl', 'an': 'msl'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_het'},
+        # 'u10_het': {'exp_var': {'fc': 'u10', 'an': 'u10'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_het'},
+        # 'v10_het': {'exp_var': {'fc': 'v10', 'an': 'v10'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_het'},
+        # 'd2m_het': {'exp_var': {'fc': 'd2m', 'an': 'd2m'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_het'},
+        # 'tcc_het': {'exp_var': {'fc': 'tcc', 'an': 'tcc'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_het'},
+        't2m_het': {'exp_var': {'fc': 't2m', 'an': 't2m'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_het'},
     }
-
-    # vars = {
-    #     't2m': {'exp_var': {'fc': 't2m', 'an': 't2m'}, 'region': "ConUS", 'exp_suffix': '_32bs_weather_juno', 'train_period': train_period, 'test_period': test_period},
-    # }
 
     vars_ocean = {
         'sss_month': {'exp_var': {'fc': 'sos', 'an': 'sosaline'}, 'region': "CentralPacific", 'exp_suffix': '_32bs_mse_allrel_ocean_cmcc_oras5'},
