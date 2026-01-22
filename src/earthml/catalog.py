@@ -3,10 +3,12 @@ from .dataclasses import Variable, Region, Leadtime
 
 def make_var (
         leadtime_var: str = "leadtime",
-        leadtime: int | None = None,
+        leadtime_fc: int | None = None,
+        leadtime_an: int | None = None,
         leadtime_unit: str | None = None
 ):
-    lt = None if leadtime is None and leadtime_unit is None else Leadtime(leadtime_var, leadtime_unit, leadtime)
+    lt_fc = None if leadtime_fc is None and leadtime_unit is None else Leadtime(leadtime_var, leadtime_unit, leadtime_fc)
+    lt_an = None if leadtime_an is None and leadtime_unit is None else Leadtime(leadtime_var, leadtime_unit, leadtime_an)
 
     return SimpleNamespace(
         # Atmo
@@ -23,21 +25,22 @@ def make_var (
         # Ocean
         mld00_1=Variable(name="mixed_layer_depth_0_01", unit="m"),
 
-        sss_cds_fc=Variable(longname="sea_surface_salinity", name="sos", leadtime=lt),
-        sss_juno_fc=Variable(name="sos", levm=0, leadtime=lt), # leadtime in var only if multimple leadtime in same file
+        sss_cds_fc=Variable(longname="sea_surface_salinity", name="sos", leadtime=lt_fc),
+        sss_juno_fc=Variable(name="sos", levm=0, leadtime=lt_fc), # leadtime in var only if multimple leadtime in same file
         sss_oras5_an=Variable(longname="sea_surface_salinity", name="sosaline"),
-        sss_juno_an=Variable(name="sss_m", levm=0),
+        sss_juno_an=Variable(name="sos", levm=0, leadtime=lt_an), # analysis leadtime in dataset is 15 days ??
+        # sss_juno_an=Variable(name="sss_m", levm=0),
 
-        t14d_juno_fc=Variable(name="t14d", leadtime=lt),
+        t14d_juno_fc=Variable(name="t14d", leadtime=lt_fc),
         t14d_oras5_an=Variable(longname="depth_of_14_c_isotherm", name="so14chgt", unit="m"),
 
-        t17d_juno_fc=Variable(name="t17d", leadtime=lt),
+        t17d_juno_fc=Variable(name="t17d", leadtime=lt_fc),
         t17d_oras5_an=Variable(longname="depth_of_17_c_isotherm", name="so17chgt", unit="m"),
 
-        t20d_juno_fc=Variable(name="t20d", leadtime=lt),
+        t20d_juno_fc=Variable(name="t20d", leadtime=lt_fc),
         t20d_oras5_an=Variable(longname="depth_of_20_c_isotherm", name="so20chgt", unit="m"),
 
-        ssh_cds_fc=Variable(longname="sea_surface_height_above_geoid", name="ssh", unit="m", leadtime=lt),
+        ssh_cds_fc=Variable(longname="sea_surface_height_above_geoid", name="ssh", unit="m", leadtime=lt_fc),
         ssh_oras5_an=Variable(longname="sea_surface_height", name="sossheig", unit="m"),
     )
 
@@ -53,10 +56,11 @@ def make_region ():
 def make_catalog (
         *,
         leadtime_var: str = "leadtime",
-        leadtime: int | None = None,
+        leadtime_fc: int | None = None,
+        leadtime_an: int | None = None,
         leadtime_unit: str | None = None
 ):
     return SimpleNamespace(
-        var=make_var(leadtime_var=leadtime_var, leadtime=leadtime, leadtime_unit=leadtime_unit),
+        var=make_var(leadtime_var=leadtime_var, leadtime_fc=leadtime_fc, leadtime_an=leadtime_an, leadtime_unit=leadtime_unit),
         region=make_region(),
     )

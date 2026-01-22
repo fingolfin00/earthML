@@ -76,7 +76,8 @@ class MLFCScenario:
 
     # leadtime variable in dataset
     leadtime_var_name: str
-    leadtime_var_value: int
+    leadtime_var_fc_value: int
+    leadtime_var_an_value: int
     leadtime_var_unit: Literal["hours", "days", "months"]
 
     # actual leadtime
@@ -105,19 +106,25 @@ class MLFCScenario:
     torch_preprocess_fn: Callable | None = None
 
     def _cat (self) -> SimpleNamespace:
-        return catalog.make_catalog(leadtime_var=self.leadtime_var_name, leadtime=self.leadtime_var_value, leadtime_unit=self.leadtime_var_unit)
+        return catalog.make_catalog(
+            leadtime_var=self.leadtime_var_name,
+            leadtime_fc=self.leadtime_var_fc_value,
+            leadtime_an=self.leadtime_var_an_value,
+            leadtime_unit=self.leadtime_var_unit,
+        )
 
     def var_fc (self) -> Variable:
         return getattr(self._cat().var, self.var_fc_key)
 
     def var_an (self) -> Variable:
+        # if analysis in same dataset as forecast, analysis leadtime (e.g 15 days for monthly forecasts) is specified in catalog
         return getattr(self._cat().var, self.var_an_key)
 
     def region (self) -> Region:
         return getattr(self._cat().region, self.region_key)
 
     def needs_ca_bundle (self) -> bool:
-        # Tune this rule if you prefer a more explicit flag
+        # Heuristic to decide if setting SSL certificate env variable. See runtime.py.
         return ("earthkit" in self.input_provider) or ("earthkit" in self.target_provider)
 
     def net_channels (self) -> tuple[int, int]:
