@@ -1532,7 +1532,22 @@ def get_runs_and_metrics (
     metrics = {}
     for name, run in runs.items():
         print(f"Calculate metrics for run {name}")
-        m = Metrics(truth=run[truth_model], data=[run[data_model_a], run[data_model_b]], truth_name=truth_model, data_name=[data_model_a, data_model_b])
+
+        # Align masks
+        an, fc, pr = run[truth_model], run[data_model_a], run[data_model_b]
+        # fc_a, pr_a, an_a = xr.align(fc, pr, an, join="inner")  # intersection of coords
+        fc_a, pr_a, an_a = xr.align(fc, pr, an, join="outer")  # union of coords
+        valid_mask = np.isfinite(fc_a) & np.isfinite(pr_a) & np.isfinite(an_a)
+        fc_m = fc_a.where(valid_mask)
+        pr_m = pr_a.where(valid_mask)
+        an_m = an_a.where(valid_mask)
+
+        print("Valid fraction an:", np.isfinite(an).mean().values)
+        print("Valid fraction fc:", np.isfinite(fc).mean().values)
+        print("Valid fraction pr:", np.isfinite(pr).mean().values)
+        print("Valid fraction intersection:", valid_mask.mean().values)
+
+        m = Metrics(truth=an_m, data=[fc_m, pr_m], truth_name=truth_model, data_name=[data_model_a, data_model_b])
         metrics[name] = m.compute_all_metrics(geo_weighted=True) #, eps=1e-12)
 
     return runs, metrics
