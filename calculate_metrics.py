@@ -1,6 +1,8 @@
 from pathlib import Path
 from datetime import datetime, timedelta
 from rich import print
+
+import numpy as np
 import xarray as xr
 
 import warnings
@@ -19,100 +21,122 @@ from earthml.utils import Dask, load_exp, add_ke_to_runs, make_exp_folder_path
 from earthml.metrics import Metrics, save_metrics_parquets #, PowerSpectrum
 
 if __name__ == "__main__":
+
+    exp_type = "ocean"
+    # exp_type = "weather"
+
     dask_earthml = Dask(n_workers=32)
     dask_earthml.start()
     client, cluster = dask_earthml.client, dask_earthml.cluster
     base_url = "http://localhost:"
     print("Dask dashboard:", client.dashboard_link.replace("127.0.0.1:", base_url))
 
-    exp_root_folder_weather = "/work/cmcc/jd19424/test-ML/experiments_earthML_weather/"
-    analysis_folder_weather = "/work/cmcc/jd19424/test-ML/analysis_earthML_weather/"
+    if exp_type == "weather":
+        exp_root_folder = "/work/cmcc/jd19424/test-ML/experiments_earthML_weather/"
+        analysis_folder = "/work/cmcc/jd19424/test-ML/analysis_earthML_weather/"
 
-    region = "ConUS"
-    # region = "Europe"
-    # train_period = "20140101-20151231"
-    train_period_ocean = "19950101-20201231"
-    test_period_ocean = "20210101-20241231"
-    suffixes = ['']
-    # suffixes = ['_mse', '_het']
+        vars_dict = {
+            # 'msl_mse': {'exp_var': {'fc': 'msl', 'an': 'msl'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
+            # 'u10_mse': {'exp_var': {'fc': 'u10', 'an': 'u10'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
+            # 'v10_mse': {'exp_var': {'fc': 'v10', 'an': 'v10'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
+            # 'd2m_mse': {'exp_var': {'fc': 'd2m', 'an': 'd2m'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
+            # 'tcc_mse': {'exp_var': {'fc': 'tcc', 'an': 'tcc'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
+            # 't2m_mse': {'exp_var': {'fc': 't2m', 'an': 't2m'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
+            # 't2m_mse_smoothed_R25.0_s0.8':  {'exp_var': {'fc': 't2m_smoothed_R25.0_s0.8', 'an': 't2m_smoothed_R25.0_s0.8'},  'region': 'ConUS', 'exp_suffix': '_32bs_smoothed'},
+            # 't2m_mse_smoothed_R50.0_s1.5':  {'exp_var': {'fc': 't2m_smoothed_R50.0_s1.5', 'an': 't2m_smoothed_R50.0_s1.5'},  'region': 'ConUS', 'exp_suffix': '_32bs_smoothed'},
+            # 't2m_mse_smoothed_R100.0_s3.0': {'exp_var': {'fc': 't2m_smoothed_R100.0_s3.0', 'an': 't2m_smoothed_R100.0_s3.0'}, 'region': 'ConUS', 'exp_suffix': '_32bs_smoothed'},
+            # 't2m_mse_smoothed_R200.0_s6.0': {'exp_var': {'fc': 't2m_smoothed_R200.0_s6.0', 'an': 't2m_smoothed_R200.0_s6.0'}, 'region': 'ConUS', 'exp_suffix': '_32bs_smoothed'},
+            'msl_het': {'exp_var': {'fc': 'msl', 'an': 'msl'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_het'},
+            # 'u10_het': {'exp_var': {'fc': 'u10', 'an': 'u10'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_het'},
+            # 'v10_het': {'exp_var': {'fc': 'v10', 'an': 'v10'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_het'},
+            # 'd2m_het': {'exp_var': {'fc': 'd2m', 'an': 'd2m'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_het'},
+            # 'tcc_het': {'exp_var': {'fc': 'tcc', 'an': 'tcc'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_het'},
+            't2m_het': {'exp_var': {'fc': 't2m', 'an': 't2m'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_het'},
+        }
 
-    # vars = ['msl', 't2m', 'tcc']
-    vars = {}
-    vars_weather = {
-        # 'msl_mse': {'exp_var': {'fc': 'msl', 'an': 'msl'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
-        # 'u10_mse': {'exp_var': {'fc': 'u10', 'an': 'u10'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
-        # 'v10_mse': {'exp_var': {'fc': 'v10', 'an': 'v10'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
-        # 'd2m_mse': {'exp_var': {'fc': 'd2m', 'an': 'd2m'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
-        # 'tcc_mse': {'exp_var': {'fc': 'tcc', 'an': 'tcc'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
-        # 't2m_mse': {'exp_var': {'fc': 't2m', 'an': 't2m'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
-        # 't2m_mse_smoothed_R25.0_s0.8':  {'exp_var': {'fc': 't2m_smoothed_R25.0_s0.8', 'an': 't2m_smoothed_R25.0_s0.8'},  'region': 'ConUS', 'exp_suffix': '_32bs_smoothed'},
-        # 't2m_mse_smoothed_R50.0_s1.5':  {'exp_var': {'fc': 't2m_smoothed_R50.0_s1.5', 'an': 't2m_smoothed_R50.0_s1.5'},  'region': 'ConUS', 'exp_suffix': '_32bs_smoothed'},
-        # 't2m_mse_smoothed_R100.0_s3.0': {'exp_var': {'fc': 't2m_smoothed_R100.0_s3.0', 'an': 't2m_smoothed_R100.0_s3.0'}, 'region': 'ConUS', 'exp_suffix': '_32bs_smoothed'},
-        # 't2m_mse_smoothed_R200.0_s6.0': {'exp_var': {'fc': 't2m_smoothed_R200.0_s6.0', 'an': 't2m_smoothed_R200.0_s6.0'}, 'region': 'ConUS', 'exp_suffix': '_32bs_smoothed'},
-        'msl_het': {'exp_var': {'fc': 'msl', 'an': 'msl'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_het'},
-        # 'u10_het': {'exp_var': {'fc': 'u10', 'an': 'u10'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_het'},
-        # 'v10_het': {'exp_var': {'fc': 'v10', 'an': 'v10'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_het'},
-        # 'd2m_het': {'exp_var': {'fc': 'd2m', 'an': 'd2m'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_het'},
-        # 'tcc_het': {'exp_var': {'fc': 'tcc', 'an': 'tcc'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_het'},
-        't2m_het': {'exp_var': {'fc': 't2m', 'an': 't2m'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_het'},
-    }
+        experiments = {
+            "name": "weather",
+            "input_provider": "atmo.juno.ecmwf.forecast.hourly",
+            "target_provider": "atmo.juno.ecmwf.analysis.6hourly",
+            "vars": vars_dict,
+            "leadtimes": (12, 24, 48, 72),
+            "leadtime_unit": "hours",
+            "train_periods": ("20191011-20241231", "20220522-20241231", "20230911-20241231", "20240507-20241231", "20240903-20241231"),
+            "test_period": "20250101-20251031",
+            "root": exp_root_folder,
+        }
 
-    vars_ocean = {
-        'sss_month': {'exp_var': {'fc': 'sos', 'an': 'sosaline'}, 'region': "CentralPacific", 'exp_suffix': '_32bs_mse_allrel_ocean_cmcc_oras5'},
-        't14d_month': {'exp_var': {'fc': 't14d', 'an': 'so14chgt'}, 'region': "CentralPacific", 'exp_suffix': '_32bs_mse_allrel_ocean_cmcc_oras5'},
-        't17d_month': {'exp_var': {'fc': 't14d', 'an': 'so14chgt'}, 'region': "CentralPacific", 'exp_suffix': '_32bs_mse_allrel_ocean_cmcc_oras5'},
-    }
+        runs, _ = load_exp(
+            exp_root=exp_root_folder,
+            exp_cfg=experiments,
+            type_data="test",
+            # type_data="train",
+        )
 
-    experiments_weather = {
-        "name": "weather",
-        "input_provider": "atmo.juno.ecmwf.forecast.hourly",
-        "target_provider": "atmo.juno.ecmwf.analysis.6hourly",
-        "vars": vars_weather,
-        "leadtimes": (12, 24, 48, 72),
-        "leadtime_unit": "hours",
-        "train_periods": ("20191011-20241231", "20220522-20241231", "20230911-20241231", "20240507-20241231", "20240903-20241231"),
-        "test_period": "20250101-20251031",
-        "root": exp_root_folder_weather,
-    }
+    elif exp_type == "ocean":
+        exp_root_folder = "/work/cmcc/jd19424/test-ML/experiments_earthML_ocean/"
+        analysis_folder = "/work/cmcc/jd19424/test-ML/analysis_earthML_ocean/"
 
-    # experiments_ocean = {
-    #     "name": "ocean",
-    #     "input_provider": "...",
-    #     "target_provider": "...",
-    #     "vars": vars_ocean,
-    #     "leadtimes": (12, 24, 48, 72),
-    #     "leadtime_unit": "hours",
-    #     "train_period": "...",
-    #     "test_period": "...",
-    #     "root": exp_root_folder_ocean,
-    # }
+        vars_dict = {
+            'sss_mse': {'exp_var': {'fc': 'sos', 'an': 'sos'}, 'region': "CentralPacific", 'exp_suffix': '32bs_50epoch_mse'},
+            # 't14d_mse': {'exp_var': {'fc': 't14d', 'an': 'so14chgt'}, 'region': "CentralPacific", 'exp_suffix': '32bs_50epoch_mse'},
+            # 't17d_mse': {'exp_var': {'fc': 't14d', 'an': 'so14chgt'}, 'region': "CentralPacific", 'exp_suffix': '32bs_50epoch_mse'},
+        }
 
-    runs_weather, _ = load_exp(
-        exp_root=exp_root_folder_weather,
-        exp_cfg=experiments_weather,
+        experiments = {
+            "name": "ocean",
+            "input_provider": "ocean.juno.cmcc.hindcast",
+            "target_provider": "ocean.juno.cmcc.hindcast",
+            "vars": vars_dict,
+            "leadtimes": (1, 2, 3, 4, 5),
+            "leadtime_unit": "months",
+            "train_periods": ("19930601-20201231", "20070401-20201231", "20140201-20201231", "20170801-20201231", "20190401-20201231"),
+            "test_period": "20210101-20221231",
+            "root": exp_root_folder,
+        }
+
+    runs, _ = load_exp(
+        exp_root=exp_root_folder,
+        exp_cfg=experiments,
         type_data="test",
         # type_data="train",
     )
 
     # Calculate train period sizes
     _, tp_sizes = load_exp(
-        exp_root=exp_root_folder_weather,
-        exp_cfg=experiments_weather,
+        exp_root=exp_root_folder,
+        exp_cfg=experiments,
         type_data="train",
         only_sizes=True,
     )
 
-    runs_weather = add_ke_to_runs(runs_weather, suffixes=("_mse", "_het"))
+    runs = add_ke_to_runs(runs, suffixes=("_mse", "_het"))
 
+    # TODO: refactor, check metrics.py get_runs_and_metrics
     metrics = {}
-    for name, run in runs_weather.items():
+    for name, run in runs.items():
         print(f"Run {name}")
-        m = Metrics(truth=run['an'], data=[run['fc'], run['pr']], truth_name="an", data_name=["fc", "pr"])
+
+        # Align masks
+        an, fc, pr = run['an'], run['fc'], run['pr']
+        # fc_a, pr_a, an_a = xr.align(fc, pr, an, join="inner")  # intersection of coords
+        fc_a, pr_a, an_a = xr.align(fc, pr, an, join="outer")  # union of coords
+        valid_mask = np.isfinite(fc_a) & np.isfinite(pr_a) & np.isfinite(an_a)
+        fc_m = fc_a.where(valid_mask)
+        pr_m = pr_a.where(valid_mask)
+        an_m = an_a.where(valid_mask)
+
+        print("Valid fraction an:", np.isfinite(an).mean().compute().values)
+        print("Valid fraction fc:", np.isfinite(fc).mean().compute().values)
+        print("Valid fraction pr:", np.isfinite(pr).mean().compute().values)
+        print("Valid fraction intersection:", valid_mask.mean().compute().values)
+
+        m = Metrics(truth=an_m, data=[fc_m, pr_m], truth_name="an", data_name=["fc", "pr"])
         metrics[name] = m.compute_all_metrics(geo_weighted=True) #, eps=1e-12)
 
-    vars_weather_from_fc = [v for v in runs_weather[next(iter(runs_weather))]['fc'].data_vars if v != '_has_var']
+    vars_from_fc = [v for v in runs[next(iter(runs))]['fc'].data_vars if v != '_has_var']
 
-    print(f"Processed vars: {vars_weather_from_fc}")
+    print(f"Processed vars: {vars_from_fc}")
 
     # Plot maps in grid
     # m = "nrmse_map"
@@ -140,8 +164,8 @@ if __name__ == "__main__":
 
     metrics_df = save_metrics_parquets(
         metrics=metrics,
-        base_folder=analysis_folder_weather,
-        vars_list=vars_weather_from_fc,
+        base_folder=analysis_folder,
+        vars_list=vars_from_fc,
         metric_names=metric_names,
         models_diff=("fc", "pr"),
         partition_cols=("train_period", "model"), # no leadtime
