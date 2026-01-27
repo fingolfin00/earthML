@@ -5,7 +5,7 @@ from ..dataclasses import ProviderSpec
 from .base import merge
 from .registry import register_provider
 
-@register_provider("ocean.juno.cmcc.hindcast.monthly")
+@register_provider("ocean.juno.cmcc.hindcast") # monthly, 6-hourly
 def juno_monthly_hindcast_ocean_netcdf (
     var_name: str,
     leadtime_value: int,
@@ -17,6 +17,7 @@ def juno_monthly_hindcast_ocean_netcdf (
     concat_dim: str = "time",
     file_path_date_format: str = "%Y%m",
     file_header: str = "cmcc_CMCC-CM3-v20231101_hindcast_S",
+    file_path_var_prefix: str = "00_ocean_mon_ocean2d_", # _ocean_6hr_surface_
     file_date_format: str = "%Y%m%d",
     both_data_and_previous_date_in_file: bool = False,
     overrides: dict | None = None,
@@ -28,7 +29,7 @@ def juno_monthly_hindcast_ocean_netcdf (
         engine=engine,
         file_path_date_format=file_path_date_format,
         file_header=file_header,
-        file_suffix=f"*ocean_mon_ocean2d_{var_name}_r{members}i00p00.nc",
+        file_suffix=f"{file_path_var_prefix}{var_name}_r{members}i00p00.nc", # *: mon/6hr, *: ocean2d/surface
         file_date_format=file_date_format,
         both_data_and_previous_date_in_file=both_data_and_previous_date_in_file,
         realizations=realizations,
