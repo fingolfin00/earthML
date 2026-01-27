@@ -1572,10 +1572,27 @@ def print_ds_info (
 def _floor_to_midnight (dt: datetime) -> datetime:
     return datetime.combine(dt.date(), datetime_time.min, tzinfo=dt.tzinfo)
 
-def half_train_periods_days (
+def _month_start(dt):
+    # assumes dt already midnight-aligned
+    return dt.replace(day=1)
+
+def _round_to_nearest_month_start(dt):
+    """
+    Round dt to the nearest month start (00:00 on the 1st).
+    Ties go to the earlier month start.
+    """
+    dt = _floor_to_midnight(dt)
+    lo = _month_start(dt)
+    hi = _month_start(dt + relativedelta(months=1))
+    if (dt - lo) <= (hi - dt):
+        return lo
+    return hi
+
+def half_train_periods_days(
     base: TimeRange,
     min_months: int = 3,
     anchor: str = "end",  # "end" or "start"
+    month_start: bool = False,
 ) -> List[TimeRange]:
     if base.end <= base.start:
         raise ValueError("base.end must be after base.start")
@@ -1604,11 +1621,26 @@ def half_train_periods_days (
         if anchor == "end":
             tr_start = end0 - timedelta(days=days)
             tr_end = end0
+
+            if month_start:
+                tr_start = _round_to_nearest_month_start(tr_start)
+                # keep within base bounds
+                if tr_start < start0:
+                    tr_start = start0
         else:
             tr_start = start0
             tr_end = start0 + timedelta(days=days)
 
-        out.append(TimeRange(start=tr_start, end=tr_end, freq=base.freq, shifted=base.shifted))
+            if month_start:
+                tr_end = _round_to_nearest_month_start(tr_end)
+                # keep within base bounds
+                if tr_end > end0:
+                    tr_end = end0
+
+        # Drop degenerate / inverted ranges that snapping could create
+        if tr_end > tr_start:
+            out.append(TimeRange(start=tr_start, end=tr_end, freq=base.freq, shifted=base.shifted))
+
         days //= 2  # day-granular
 
     return out
@@ -1619,6 +1651,7 @@ def halved_windows_split_by_cutoff (
     min_months: int = 3,
     anchor: str = "end",           # "end" (default) or "start" for the halved window
     post_starts_next_day: bool = True,
+    month_start: bool = False,
 ) -> List[List["TimeRange"]]:
     """
     Builds progressively halved windows (day-granular). For each window:
@@ -1657,9 +1690,21 @@ def halved_windows_split_by_cutoff (
         if anchor == "end":
             win_start = base_end - timedelta(days=days)
             win_end = base_end
+
+            if month_start:
+                win_start = _round_to_nearest_month_start(win_start)
+                # keep within base bounds
+                if win_start < base_start:
+                    win_start = base_start
         else:
             win_start = base_start
             win_end = base_start + timedelta(days=days)
+
+            if month_start:
+                tr_end = _round_to_nearest_month_start(tr_end)
+                # keep within base bounds
+                if tr_end > base_end:
+                    tr_end = base_end
 
         window = TimeRange(start=win_start, end=win_end, freq=base.freq, shifted=base.shifted)
 
