@@ -18,7 +18,7 @@ class BaseSource (ABC):
         self.data_selection = datasource.data_selection
         self.source_name = datasource.source
         self.date_range = generate_date_range(self.data_selection.period)
-        self.data_selection.period.start = self.date_range[0]
+        self.data_selection.period.start = self.date_range[0] # this may change the periods generated in the launcher script!
         # self.data_selection.period.end = self.date_range[-1]
         print(f"Date range: length {len(self.date_range)}, {self.date_range[0]} to {self.date_range[-1]}")
         # print(self.date_range)
