@@ -862,7 +862,7 @@ def _create_plot_grid (
                     ax.set_extent(plt_reg_extent, crs=data_projection)
 
             gl = ax.gridlines(
-                crs=plt_projection,
+                crs=data_projection,
                 draw_labels=False,
                 linewidth=0.35,
                 linestyle="--",
@@ -873,7 +873,7 @@ def _create_plot_grid (
 
             if (c == 0) or (r == nrows - 1):
                 gl2 = ax.gridlines(
-                    crs=plt_projection,
+                    crs=data_projection,
                     draw_labels=True,
                     linewidth=0,
                 )
@@ -1176,10 +1176,11 @@ def create_panel_from_data (
             data = panels[p_idx]
             # print(data)
             try:
-                im = data.plot(
+                im = data.plot.pcolormesh(
                     ax=ax,
                     add_colorbar=False,
                     cmap=cmap,
+                    transform=ccrs.PlateCarree(),
                     norm=norm,
                 )
             except Exception as e:
