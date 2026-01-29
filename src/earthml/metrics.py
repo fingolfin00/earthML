@@ -396,7 +396,7 @@ class Metrics:
     ) -> list[xr.Dataset]:
         if len(self.data) == 2:
             data_a, data_b = self.data[0], self.data[1] # fc, pr
-            metric = parent_metric_fn(self.truth - data_a, self.truth - data_b)
+            metric = parent_metric_fn(data_a - self.truth, data_b - self.truth)
 
             if order == "1d":
                 if geo_weighted:
@@ -419,21 +419,21 @@ class Metrics:
             raise ValueError(f"Data len must be 2, not {len(self.data)}, to calcualte diff metrics")
 
     def mae (self, order: Literal["3d", "2d", "1d"] = "1d", geo_weighted: bool = True) -> List[xr.Dataset]:
-        return self._generic_metric(lambda truth, pred: abs(truth - pred), order=order, geo_weighted=geo_weighted)
+        return self._generic_metric(lambda truth, pred: abs(pred - truth), order=order, geo_weighted=geo_weighted)
 
     @staticmethod
     def _err_field (truth: xr.Dataset, pred: xr.Dataset) -> xr.Dataset:
-        return truth - pred
+        return pred - truth # negative if pred is underestimating truth
 
     def err (self, order: Literal["3d", "2d", "1d"] = "1d", geo_weighted: bool = True) -> List[xr.Dataset]:
         # 2d and 1d cases are bias
         return self._generic_metric(self._err_field, order=order, geo_weighted=geo_weighted)
 
     def abs_bias (self, order: Literal["2d", "1d"] = "1d", geo_weighted: bool = True) -> list[xr.Dataset]:
-        # abs of the bias, not bias of abs-values
-        return [abs(x) for x in self.err(order=order, geo_weighted=geo_weighted)]
-        # TODO: should be equivalent, test
-        # return self._generic_metric(self._err_field, order=order, geo_weighted=geo_weighted, final_metric_fn=np.abs)
+        # compute err first, then abs using xarray .abs()
+        err_list = self.err(order=order, geo_weighted=geo_weighted)
+        return self._generic_metric(self._err_field, order=order, geo_weighted=geo_weighted, final_metric_fn=np.abs)
+        # return [abs(x) for x in self.err(order=order, geo_weighted=geo_weighted)]
 
     def diff_err (self, order: Literal["3d", "2d", "1d"] = "1d", geo_weighted: bool = True) -> List[xr.Dataset]:
         # 2d and 1d cases are bias
@@ -445,11 +445,11 @@ class Metrics:
         geo_weighted: bool = True,
     ) -> list[xr.Dataset]:
         """
-        Standard deviation of errors (truth - pred).
+        Standard deviation of errors (pred - truth).
 
         Definitions
         -----------
-        err = truth - pred
+        err = pred - truth
 
         - order="2d" or "3d":
             std_map = std_t( err )   # std over the time dimension
@@ -471,7 +471,7 @@ class Metrics:
 
         for d in self.data:
             # error field: same shape as truth
-            err = self.truth - d
+            err = self._err_field(self.truth, d)
 
             # std over time dimension
             std_map = err.std(dim=self.time_dim, skipna=True)
@@ -498,7 +498,7 @@ class Metrics:
         """
         Standard error of the time-mean error (bias).
 
-        err = truth - pred
+        err = pred - truth
 
         Per-grid, the standard error is:
             SE(lat, lon, ...) = std_t(err) / sqrt(N_t(lat, lon, ...))
@@ -520,7 +520,7 @@ class Metrics:
         out: list[xr.Dataset] = []
 
         for d in self.data:
-            err = self.truth - d
+            err = self._err_field(self.truth, d)
 
             # number of valid time samples per grid cell
             n = err.count(dim=self.time_dim)
@@ -546,7 +546,12 @@ class Metrics:
         return out
 
     def rmse (self, order: Literal["2d", "1d"] = "1d", geo_weighted: bool = True) -> List[xr.Dataset]:
-        return self._generic_metric(lambda truth, pred: (truth - pred)**2, final_metric_fn=np.sqrt, order=order, geo_weighted=geo_weighted)
+        return self._generic_metric(
+            lambda truth, pred: (pred - truth)**2,
+            final_metric_fn=np.sqrt,
+            order=order,
+            geo_weighted=geo_weighted
+        )
     
     def nrmse_map (self, order: Literal["2d", "1d"] = "2d", geo_weighted: bool = True, eps: float = 0.0) -> list[xr.Dataset]:
         """
@@ -619,7 +624,7 @@ class Metrics:
                 err2_bar = self._geo_avg((self.truth - d) ** 2)   # dims: time
                 mse = err2_bar.mean(dim=self.time_dim, skipna=True)
             else:
-                mse = ((self.truth - d) ** 2).mean(
+                mse = ((d - self.truth) ** 2).mean(
                     dim=(self.time_dim, self.lat_dim, self.lon_dim),
                     skipna=True,
                 )
@@ -673,7 +678,7 @@ class Metrics:
         """
         Normalized bias by truth std over time (map-wise).
 
-        - bias map is mean(err) over time: (truth - pred).mean(time)
+        - bias map is mean(err) over time: (pred - truth).mean(time)
         - normalized bias: bias_map / std_map
         """
         bias_maps = self.err(order="2d", geo_weighted=geo_weighted)  # time-mean error (bias), 2D
@@ -706,7 +711,7 @@ class Metrics:
         """
         Normalized absolute bias magnitude by truth std over time (map-wise).
 
-        - bias_map = mean_time(truth - pred)
+        - bias_map = mean_time(pred - truth)
         - abs bias magnitude map = abs(bias_map)
         - normalized abs bias = abs(bias_map) / std_map(truth)
         """
@@ -746,10 +751,10 @@ class Metrics:
         out: list[xr.Dataset] = []
         for d in self.data:
             if geo_weighted:
-                abs_err_bar = self._geo_avg(np.abs(self.truth - d))      # time series
+                abs_err_bar = self._geo_avg(np.abs(d - self.truth))      # time series
                 mae = abs_err_bar.mean(dim=self.time_dim, skipna=True)   # scalar
             else:
-                mae = np.abs(self.truth - d).mean(dim=(self.time_dim, self.lat_dim, self.lon_dim), skipna=True)
+                mae = np.abs(d - self.truth).mean(dim=(self.time_dim, self.lat_dim, self.lon_dim), skipna=True)
 
             out.append(mae / denom)
 
@@ -758,7 +763,7 @@ class Metrics:
     def nbias_global (self, geo_weighted: bool = True, eps: float = 0.0) -> list[xr.Dataset]:
         """
         Global normalized bias = bias_global / std_global(truth)
-        where bias_global = mean(truth - pred)
+        where bias_global = mean(pred - truth)
         """
         if geo_weighted:
             truth_bar = self._geo_avg(self.truth)
@@ -771,10 +776,10 @@ class Metrics:
         out: list[xr.Dataset] = []
         for d in self.data:
             if geo_weighted:
-                err_bar = self._geo_avg(self.truth - d)                 # time series
+                err_bar = self._geo_avg(d - self.truth)                 # time series
                 bias = err_bar.mean(dim=self.time_dim, skipna=True)     # scalar
             else:
-                bias = (self.truth - d).mean(dim=(self.time_dim, self.lat_dim, self.lon_dim), skipna=True)
+                bias = (d - self.truth).mean(dim=(self.time_dim, self.lat_dim, self.lon_dim), skipna=True)
 
             out.append(bias / denom)
 
@@ -783,27 +788,10 @@ class Metrics:
     def nabsbias_global (self, geo_weighted: bool = True, eps: float = 0.0) -> list[xr.Dataset]:
         """
         Global normalized abs bias = abs_bias_global / std_global(truth)
-        where bias_global = mean(abs(truth) - abs(pred))
+        where abs_bias_global = abs(mean(pred - truth))
         """
-        if geo_weighted:
-            truth_bar = self._geo_avg(self.truth)
-            denom = truth_bar.std(dim=self.time_dim, skipna=True)
-        else:
-            denom = self.truth.std(dim=(self.time_dim, self.lat_dim, self.lon_dim), skipna=True)
-
-        denom = xr.where(denom > eps, denom, np.nan)
-
-        out: list[xr.Dataset] = []
-        for d in self.data:
-            if geo_weighted:
-                err_bar = self._geo_avg(abs(self.truth) - abs(d))                 # time series
-                bias = err_bar.mean(dim=self.time_dim, skipna=True)     # scalar
-            else:
-                bias = (abs(self.truth) - abs(d)).mean(dim=(self.time_dim, self.lat_dim, self.lon_dim), skipna=True)
-
-            out.append(bias / denom)
-
-        return out
+        nbias = self.nbias_global(geo_weighted=geo_weighted, eps=eps)
+        return [abs(x) for x in nbias]
     
     def nbias_diff_global(self, geo_weighted: bool = True, eps: float = 0.0) -> list[xr.Dataset]:
         """
@@ -892,7 +880,7 @@ class Metrics:
 
         out: list[xr.Dataset] = []
         for d in self.data:
-            sse = ((self.truth - d) ** 2).sum(dim=self.time_dim, skipna=True)
+            sse = ((d - self.truth) ** 2).sum(dim=self.time_dim, skipna=True)
             r2 = 1.0 - sse / xr.where(sst > 0, sst, np.nan)
             out.append(r2)
 
@@ -905,7 +893,7 @@ class Metrics:
 
         out: list[xr.Dataset] = []
         for d in self.data:
-            sse_t = ((self.truth - d) ** 2).sum(dim=self.time_dim, skipna=True)  # 2D field
+            sse_t = ((d - self.truth) ** 2).sum(dim=self.time_dim, skipna=True)  # 2D field
 
             if geo_weighted:
                 sse = self._geo_avg(sse_t)   # scalar or 1D depending on _geo_avg
@@ -1022,7 +1010,7 @@ class Metrics:
         """
         def _mape_field (truth: xr.Dataset, pred: xr.Dataset) -> xr.Dataset:
             denom = xr.where(np.abs(truth) > eps, np.abs(truth), np.nan)
-            return (np.abs(truth - pred) / denom) * 100.0
+            return (np.abs(pred - truth) / denom) * 100.0
 
         return self._generic_metric(_mape_field, order=order, geo_weighted=geo_weighted)
 
@@ -1033,7 +1021,7 @@ class Metrics:
         def _smape_field (truth: xr.Dataset, pred: xr.Dataset) -> xr.Dataset:
             denom = np.abs(truth) + np.abs(pred)
             denom = xr.where(denom > 0, denom, np.nan)
-            return 100.0 * (2 * np.abs(truth - pred) / denom)
+            return 100.0 * (2 * np.abs(pred - truth) / denom)
 
         return self._generic_metric(_smape_field, order=order, geo_weighted=geo_weighted)
 
