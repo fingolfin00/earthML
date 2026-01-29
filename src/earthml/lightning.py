@@ -613,7 +613,14 @@ class Normalize:
         return x, y
 
 class XarrayDataset (Dataset):
-    def __init__ (self, input_ds: xr.Dataset, target_ds: xr.Dataset, transform=None, transform_args=None):
+    def __init__ (
+            self,
+            input_ds: xr.Dataset,
+            target_ds: xr.Dataset,
+            target_realization_avg=True,
+            transform=None,
+            transform_args=None
+        ):
         """
         input_ds: xarray.Dataset
         target_ds: xarray.Dataset
@@ -639,6 +646,9 @@ class XarrayDataset (Dataset):
         #     y_np = y_np.squeeze(1)
         mask_y_np = np.isfinite(y_np)
         y_np_filled = np.where(mask_y_np, y_np, 0.0)
+        if target_realization_avg and len(y_np.shape) == 5:
+            y_np_filled = np.nanmean(y_np_filled, axis=2)          # average over R
+            mask_y_np = np.any(mask_y_np, axis=2)                  # valid if any realization is valid
         # print(f"Dataset x mean: {np.nanmean(x_np)}, std: {np.nanstd(x_np)}")
         # print(f"Dataset y mean: {np.nanmean(y_np)}, std: {np.nanstd(y_np)}")
         # print(f"Input shape: {x_np.shape}, target shape: {y_np.shape}")

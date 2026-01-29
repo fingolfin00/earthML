@@ -104,6 +104,7 @@ class MLFCScenario:
     save_test: bool = True
 
     torch_preprocess_fn: Callable | None = None
+    target_realization_avg: bool = False  # whether to average over target realizations when loading target data to torch
 
     def _cat (self) -> SimpleNamespace:
         return catalog.make_catalog(
@@ -278,6 +279,7 @@ class MLFCRunner:
             test=self.scenario.build_test_datasets(),
 
             torch_preprocess_fn=self.scenario.torch_preprocess_fun,
+            target_realization_avg=self.scenario.target_realization_avg,
         )
         return cfg
 
