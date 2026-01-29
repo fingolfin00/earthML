@@ -270,12 +270,7 @@ class Metrics:
         self.truth = truth
         self.data = data if isinstance(data, list) else [data]
 
-        self.truth_name = truth_name
-        self.data_name = data_name if isinstance(data_name, list) else [data_name]
-
-        self.time_dim, self.lat_dim, self.lon_dim = self._get_and_rename_dim()
-
-        # drop _has_var
+        # Drop _has_var
         truth_sel_vars = [v for v in self.truth.data_vars if v != '_has_var']
         self.truth = self.truth[truth_sel_vars]
         sel_data = []
@@ -283,6 +278,26 @@ class Metrics:
             data_sel_vars = [v for v in d.data_vars if v != '_has_var']
             sel_data.append(d[data_sel_vars])
         self.data = sel_data
+
+        # Align and mask
+        datasets = [self.truth] + self.data
+        # ds_aligned = xr.align(*datasets, join="outer")
+        ds_aligned = xr.align(*datasets, join="inner")
+
+        masks = [np.isfinite(ds.to_array()).all("variable") for ds in ds_aligned]
+
+        valid = masks[0]
+        for m in masks[1:]:
+            valid = valid & m
+
+        ds_masked = [ds.where(valid) for ds in ds_aligned]
+        self.truth = ds_masked[0]
+        self.data = ds_masked[1:]
+
+        self.truth_name = truth_name
+        self.data_name = data_name if isinstance(data_name, list) else [data_name]
+
+        self.time_dim, self.lat_dim, self.lon_dim = self._get_and_rename_dim()
 
     def _get_and_rename_dim (self):
         # Rename all data vars to match truth vars
@@ -383,6 +398,7 @@ class Metrics:
             if final_metric_fn is not None:
                 val = final_metric_fn(val)
 
+            # print("_generic_metric value:", parent_metric_fn, final_metric_fn, order, val)
             out.append(val)
 
         return out
