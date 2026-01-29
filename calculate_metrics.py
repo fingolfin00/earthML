@@ -78,8 +78,8 @@ if __name__ == "__main__":
         analysis_folder = "/work/cmcc/jd19424/test-ML/analysis_earthML_ocean/"
 
         vars_dict = {
+            't14d_mse': {'exp_var': {'fc': 't14d', 'an': 't14d'}, 'region': "CentralPacific", 'exp_suffix': '32bs_50epoch_mse'},
             'sss_mse': {'exp_var': {'fc': 'sos', 'an': 'sos'}, 'region': "CentralPacific", 'exp_suffix': '32bs_50epoch_mse'},
-            # 't14d_mse': {'exp_var': {'fc': 't14d', 'an': 'so14chgt'}, 'region': "CentralPacific", 'exp_suffix': '32bs_50epoch_mse'},
             # 't17d_mse': {'exp_var': {'fc': 't14d', 'an': 'so14chgt'}, 'region': "CentralPacific", 'exp_suffix': '32bs_50epoch_mse'},
         }
 
@@ -126,10 +126,10 @@ if __name__ == "__main__":
         pr_m = pr_a.where(valid_mask)
         an_m = an_a.where(valid_mask)
 
-        print("Valid fraction an:", np.isfinite(an).mean().compute().values)
-        print("Valid fraction fc:", np.isfinite(fc).mean().compute().values)
-        print("Valid fraction pr:", np.isfinite(pr).mean().compute().values)
-        print("Valid fraction intersection:", valid_mask.mean().compute().values)
+        # print("Valid fraction an:", np.isfinite(an).mean().compute().values)
+        # print("Valid fraction fc:", np.isfinite(fc).mean().compute().values)
+        # print("Valid fraction pr:", np.isfinite(pr).mean().compute().values)
+        # print("Valid fraction intersection:", valid_mask.mean().compute().values)
 
         m = Metrics(truth=an_m, data=[fc_m, pr_m], truth_name="an", data_name=["fc", "pr"])
         metrics[name] = m.compute_all_metrics(geo_weighted=True) #, eps=1e-12)
