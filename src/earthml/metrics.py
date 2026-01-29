@@ -252,142 +252,20 @@ def get_runs_and_metrics (
         pr_m = pr_a.where(valid_mask)
         an_m = an_a.where(valid_mask)
 
-        print("Valid fraction an:", np.isfinite(an).mean().values)
-        print("Valid fraction fc:", np.isfinite(fc).mean().values)
-        print("Valid fraction pr:", np.isfinite(pr).mean().values)
-        print("Valid fraction intersection:", valid_mask.mean().values)
+        # print("Valid fraction an:", np.isfinite(an).mean().values)
+        # print("Valid fraction fc:", np.isfinite(fc).mean().values)
+        # print("Valid fraction pr:", np.isfinite(pr).mean().values)
+        # print("Valid fraction intersection:", valid_mask.mean().values)
 
         m = Metrics(truth=an_m, data=[fc_m, pr_m], truth_name=truth_model, data_name=[data_model_a, data_model_b])
         metrics[name] = m.compute_all_metrics(geo_weighted=True) #, eps=1e-12)
 
-    return runs, metrics
-
-# def plot_metric_map_panel (
-#     var_names: str | Sequence[str],
-#     var_suffix: str | Sequence[str],
-#     vmin: int = None, vmax: int = None, # -0.15, 0.15
-#     plt_fontsize: int = 12,
-# ):
-#     keys = []
-#     var_names = [var_names] if isinstance(var_names, str) else var_names
-#     var_suffix = [var_suffix] if isinstance(var_suffix, str) else var_suffix
-#     for v in var_names:
-#         for suf in var_suffix:
-#             keys.append(f"{v}{suf}")
-
-#     nrows = len(keys)
-#     ncols = figs[keys[0]]["axes"].shape[1]
-
-#     # compact cell size
-#     cell_w, cell_h = 10, 4
-#     fig_w = cell_w * ncols
-#     fig_h = cell_h * nrows + 0.6  # a bit for suptitle
-
-#     fig, axs = plt.subplots(
-#         nrows, ncols,
-#         figsize=(fig_w, fig_h),
-#         subplot_kw={"projection": ccrs.PlateCarree()},
-#         squeeze=False,
-#     )
-
-#     # fig.suptitle(metric_name["pretty_name"], y=0.98)
-
-#     # tighter spacing
-#     fig.subplots_adjust(
-#         left=0.03,
-#         right=0.90,
-#         top=0.90,
-#         bottom=0.06,
-#         wspace=0.02,
-#         hspace=0.05,
-#     )
-
-#     for r, key in enumerate(keys):
-#         da = figs[key]["data"]
-#         old_axes = figs[key]["axes"]
-
-#         # infer ncols from da if possible
-#         if "leadtime" in da.dims:
-#             ncols = da.sizes["leadtime"]
-#         else:
-#             ncols = axs.shape[1]  # fallback
-
-#         row_mappable = None  # will store the last image in the row for colorbar
-
-#         for c in range(ncols):
-#             ax = axs[r, c]
-#             ax.coastlines(linewidth=0.6)
-
-#             gl = ax.gridlines(
-#                 crs=ccrs.PlateCarree(),
-#                 draw_labels=False,
-#                 linewidth=0.35,
-#                 linestyle="--",
-#                 alpha=0.4,
-#             )
-#             gl.xformatter = LONGITUDE_FORMATTER
-#             gl.yformatter = LATITUDE_FORMATTER
-
-#             if (c == 0) or (r == nrows - 1):
-#                 gl2 = ax.gridlines(
-#                     crs=ccrs.PlateCarree(),
-#                     draw_labels=True,
-#                     linewidth=0,
-#                 )
-#                 gl2.xformatter = LONGITUDE_FORMATTER
-#                 gl2.yformatter = LATITUDE_FORMATTER
-#                 gl2.top_labels = False
-#                 gl2.right_labels = False
-#                 gl2.left_labels = (c == 0)
-#                 gl2.bottom_labels = (r == nrows - 1)
-#                 gl2.xlabel_style = {"size": plt_fontsize}
-#                 gl2.ylabel_style = {"size": plt_fontsize}
-
-#             # --- select leadtime for this column ---
-#             if "leadtime" in da.dims:
-#                 if c >= da.sizes["leadtime"]:
-#                     ax.axis("off")
-#                     continue
-#                 da_c = da.isel(leadtime=c)
-#             else:
-#                 da_c = da
-
-#             # --- plot ---
-#             im = da_c.plot(
-#                 ax=ax,
-#                 transform=ccrs.PlateCarree(),
-#                 add_colorbar=False,
-#                 cmap="RdBu_r",
-#                 vmin=vmin,
-#                 vmax=vmax,
-#             )
-#             row_mappable = im  # keep last for row colorbar
-
-#             ax.set_title(f"{old_axes[0, c].get_title()} - {key}", fontsize=plt_fontsize)
-
-#         # --- one colorbar per row (use the last axis in the row) ---
-#         if row_mappable is not None:
-#             last_ax = axs[r, ncols - 1]
-#             divider = make_axes_locatable(last_ax)
-#             cax = divider.append_axes(
-#                 "right",
-#                 size="2.5%",
-#                 pad=0.04,
-#                 axes_class=plt.Axes,
-#             )
-#             cbar = fig.colorbar(row_mappable, cax=cax, orientation="vertical")
-#             cbar.ax.tick_params(labelsize=plt_fontsize)
-#             cbar.set_label(metric_name["pretty_name"], fontsize=plt_fontsize)
-
-#     # plt.show()
-#     suffix_tags = "".join(sorted(map(str, var_suffix)))
-#     save_path = f"/work/cmcc/jd19424/test-ML/plots_earthML_weather/{metric_name["name"]}{suffix_tags}.png"
-#     fig.savefig(save_path, bbox_inches="tight", dpi=150)
-#     plt.close(fig)
+    return runs, metrics # runs not aligned
 
 # Classes
 
 class Metrics:
+
     def __init__ (self, truth: xr.Dataset, data: xr.Dataset | List[xr.Dataset], truth_name: str , data_name: str | List[str]):
         self.truth = truth
         self.data = data if isinstance(data, list) else [data]
