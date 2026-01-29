@@ -18,7 +18,7 @@ logging.getLogger("distributed.nanny").setLevel(logging.ERROR)
 # from earthml.manager import Launcher
 # from earthml.logging import Logger
 from earthml.utils import Dask, load_exp, add_ke_to_runs, make_exp_folder_path
-from earthml.metrics import Metrics, save_metrics_parquets #, PowerSpectrum
+from earthml.metrics import Metrics #, PowerSpectrum
 
 if __name__ == "__main__":
 
@@ -162,7 +162,7 @@ if __name__ == "__main__":
     # metric_names = ["mae", "bias", "rmse", "mape", "smape", "nrmse_global", "nmae_global", "nbias_global", "abs_nbias_global", "r2_global", "corr_global", "corr_flat"]
     metric_names = None # all available metrics
 
-    metrics_df = save_metrics_parquets(
+    metrics_df = m.save(
         metrics=metrics,
         base_folder=analysis_folder,
         vars_list=vars_from_fc,
