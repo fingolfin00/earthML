@@ -634,12 +634,14 @@ class XarrayDataset (Dataset):
         self.transform = transform
         self.transform_args = transform_args or {}
 
+        # NumPy arrays with NaNs for missing data
         x_np = self._transpose_dims_ds_to_da(self.input_ds).to_numpy()
         assert len(x_np.shape) > 3 and len(x_np.shape) < 6, f"Input has shape {x_np.shape}"
         # if x_np.ndim == 5 and x_np.shape[1] == 1:
         #     x_np = x_np.squeeze(1)          # C,T,H,W squeeze R dimension if present
         mask_x_np = np.isfinite(x_np)       # True where valid, False where masked
         x_np_filled = np.where(mask_x_np, x_np, 0.0)
+
         y_np = self._transpose_dims_ds_to_da(self.target_ds).to_numpy()
         assert len(y_np.shape) > 3 and len(y_np.shape) < 6, f"Target has shape {y_np.shape}"
         # if y_np.ndim == 5 and y_np.shape[1] == 1:
@@ -654,12 +656,12 @@ class XarrayDataset (Dataset):
         # print(f"Input shape: {x_np.shape}, target shape: {y_np.shape}")
 
         # Uniform realizations: only works if one of input and target has R>1 and the other R=1
-        if len(x_np.shape) == 5: # C,T,R,H,W
+        if len(x_np_filled.shape) == 5: # C,T,R,H,W
             self.x = torch.tensor(x_np_filled, dtype=torch.float32).flatten(start_dim=1, end_dim=2).permute(1, 0, 2, 3) # (T*R),C,H,W
             self.x_mask = torch.tensor(mask_x_np, dtype=torch.bool).flatten(start_dim=1, end_dim=2).permute(1, 0, 2, 3)
         else: # C,T,H,W
-            if len(y_np.shape) == 5: # C,T,R,H,W
-                R = y_np.shape[2]
+            if len(y_np_filled.shape) == 5: # C,T,R,H,W
+                R = y_np_filled.shape[2]
                 x = torch.tensor(x_np_filled, dtype=torch.float32)      # C,T,H,W
                 x = x.unsqueeze(2).repeat(1, 1, R, 1, 1)                # C,T,R,H,W
                 self.x = x.flatten(1, 2).permute(1, 0, 2, 3)            # (T*R),C,H,W
@@ -669,12 +671,12 @@ class XarrayDataset (Dataset):
             else:
                 self.x = torch.tensor(x_np_filled, dtype=torch.float32).permute(1, 0, 2, 3) # T,C,H,W
                 self.x_mask = torch.tensor(mask_x_np, dtype=torch.bool).permute(1, 0, 2, 3)
-        if len(y_np.shape) == 5:
+        if len(y_np_filled.shape) == 5:
             self.y = torch.tensor(y_np_filled, dtype=torch.float32).flatten(start_dim=1, end_dim=2).permute(1, 0, 2, 3)
             self.y_mask = torch.tensor(mask_y_np, dtype=torch.bool).flatten(start_dim=1, end_dim=2).permute(1, 0, 2, 3)
         else:
-            if len(x_np.shape) == 5: # C,R,T,H,W
-                R = x_np.shape[2]
+            if len(x_np_filled.shape) == 5: # C,R,T,H,W
+                R = x_np_filled.shape[2]
                 y = torch.tensor(y_np_filled, dtype=torch.float32)      # C,T,H,W
                 y = y.unsqueeze(2).repeat(1, 1, R, 1, 1)                # C,T,R,H,W
                 self.y = y.flatten(1, 2).permute(1, 0, 2, 3)            # (T*R),C,H,W
