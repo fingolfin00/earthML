@@ -1013,3 +1013,106 @@ def create_panel_from_data (
     plt.close(fig)
 
     return {"fig": fig, "axes": axes, "cbar_axes": cbar_axes, "mappable": mappables, "data": panels}
+
+def plot_ensemble_leadtime (
+    members,
+    ens_mean,
+    extra=None, # extra line
+    *,
+    lead_dim="leadtime",
+    ens_dim="realization",
+    ax=None,
+    label="",
+    color=None,
+    spread="std",          # "std" or "minmax"
+    nsigma=1.0,
+    plot_members=True,
+    members_alpha=0.15,
+    members_lw=0.8,
+    members_ls="--",
+    spread_alpha=0.25,
+    mean_lw=2.5,
+    extra_label="",
+    extra_lw=2.0,
+    extra_ls=":",
+):
+    """
+    Plot ensemble members, ensemble mean, and spread vs lead time.
+
+    Parameters
+    ----------
+    members : xarray.DataArray
+        Ensemble realizations with dims (lead_dim, ens_dim)
+    ens_mean : xarray.DataArray
+        Ensemble mean with dim (lead_dim,)
+    extra : xarray.DataArray, optional
+        Extra line with dim (lead_dim,)
+    """
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 4))
+
+    # Enforce dimension order
+    members = members.transpose(lead_dim, ens_dim)
+    ens_mean = ens_mean.transpose(lead_dim)
+
+    x = members[lead_dim].values
+
+    # Plot individual members
+    if plot_members:
+        y_members = members.values  # (nlead, nens)
+        for i in range(y_members.shape[1]):
+            ax.plot(
+                x,
+                y_members[:, i],
+                linestyle=members_ls,
+                linewidth=members_lw,
+                alpha=members_alpha,
+                color=color,
+            )
+
+    # Compute spread
+    if spread == "std":
+        sd = members.std(ens_dim)
+        lower = (ens_mean - nsigma * sd).values
+        upper = (ens_mean + nsigma * sd).values
+    elif spread == "minmax":
+        lower = members.min(ens_dim).values
+        upper = members.max(ens_dim).values
+    else:
+        raise ValueError("spread must be 'std' or 'minmax'")
+
+    # Plot spread + mean
+    ax.fill_between(
+        x,
+        lower,
+        upper,
+        alpha=spread_alpha,
+        color=color,
+        label=f"{label} spread" if label else "spread",
+    )
+
+    ax.plot(
+        x,
+        ens_mean.values,
+        linewidth=mean_lw,
+        color=color,
+        label=f"{label} ens mean" if label else "ens mean",
+    )
+
+    # Optional extra line
+    if extra is not None:
+        extra = extra.transpose(lead_dim)
+        ax.plot(
+            x,
+            extra.values,
+            linewidth=extra_lw,
+            linestyle=extra_ls,
+            color=color,
+            label=f"{extra_label}" if extra_label else "extra",
+        )
+
+    ax.set_xlabel("Lead time")
+    ax.grid(True, alpha=0.3)
+
+    return ax
