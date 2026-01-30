@@ -7,7 +7,8 @@ from earthml.utils import halved_windows_split_by_cutoff, half_train_periods_day
 if __name__ == "__main__":
     max_retries = 4
 
-    var_exp = "t14d" # sst, sss, t14d
+    var_exp = "sss" # sst (6-hourly), sss, t14d, t17d
+    target_realization_avg = True # average over realizations for target variable
 
     full_leadtimes_days = (45, 75, 105, 135, 165)
     full_leadtimes_months = (1, 2, 3, 4, 5)
@@ -175,12 +176,13 @@ if __name__ == "__main__":
                     save_train=True,
                     save_test=True,
                     torch_preprocess_fn=None,
+                    target_realization_avg=target_realization_avg,
                 )
 
                 runner = MLFCRunner(
                     scenario=ocean_scenario,
                     exp_root_folder="/work/cmcc/jd19424/test-ML/experiments_earthML_ocean/",
-                    exp_suffix="_32bs_50epoch_mse",
+                    exp_suffix="_32bs_50epoch_mse"+("_taravg" if target_realization_avg else ""),
                     # ML options
                     learning_rate=1e-3,
                     batch_size=32,
