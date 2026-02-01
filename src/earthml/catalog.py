@@ -34,14 +34,17 @@ def make_var (
         sst_juno_fc=Variable(name="tso", leadtime=lt_fc), # SST, surface variable
         sst_juno_an=Variable(name="tso", leadtime=lt_an),
 
+        t14d_cds_fc=Variable(longname="depth_of_14_c_isotherm", name="t14d", leadtime=lt_fc),
         t14d_juno_fc=Variable(name="t14d", levm=0, leadtime=lt_fc),
         t14d_oras5_an=Variable(longname="depth_of_14_c_isotherm", name="so14chgt", unit="m"),
         t14d_juno_an=Variable(name="t14d", levm=0, leadtime=lt_an),
 
+        t17d_cds_fc=Variable(longname="depth_of_17_c_isotherm", name="t17d", leadtime=lt_fc),
         t17d_juno_fc=Variable(name="t17d", levm=0, leadtime=lt_fc),
         t17d_oras5_an=Variable(longname="depth_of_17_c_isotherm", name="so17chgt", unit="m"),
         t17d_juno_an=Variable(name="t17d", levm=0, leadtime=lt_an),
 
+        t20d_cds_fc=Variable(longname="depth_of_20_c_isotherm", name="t20d", leadtime=lt_fc),
         t20d_juno_fc=Variable(name="t20d", levm=0, leadtime=lt_fc),
         t20d_oras5_an=Variable(longname="depth_of_20_c_isotherm", name="so20chgt", unit="m"),
         t20d_juno_an=Variable(name="t20d", levm=0, leadtime=lt_an),
