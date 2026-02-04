@@ -29,11 +29,13 @@ if __name__ == "__main__":
     dask_earthml.start()
     client, cluster = dask_earthml.client, dask_earthml.cluster
     base_url = "http://localhost:"
-    print("Dask dashboard:", client.dashboard_link.replace("127.0.0.1:", base_url))
+    print("Dask dashboard:", client.dashboard_link.replace("http://127.0.0.1:", base_url))
+
+    exp_root_path = "/work/cmcc/jd19424/test-ML/"
 
     if exp_type == "weather":
-        exp_root_folder = "/work/cmcc/jd19424/test-ML/experiments_earthML_weather/"
-        analysis_folder = "/work/cmcc/jd19424/test-ML/analysis_earthML_weather/"
+        exp_root_folder = exp_root_path+"experiments_earthML_weather/"
+        analysis_folder = exp_root_path+"analysis_earthML_weather/"
 
         vars_dict = {
             # 'msl_mse': {'exp_var': {'fc': 'msl', 'an': 'msl'}, 'region': 'ConUS', 'exp_suffix': '32bs_50epoch_mse'},
@@ -74,8 +76,8 @@ if __name__ == "__main__":
         )
 
     elif exp_type == "ocean":
-        exp_root_folder = "/work/cmcc/jd19424/test-ML/experiments_earthML_ocean/"
-        analysis_folder = "/work/cmcc/jd19424/test-ML/analysis_earthML_ocean/"
+        exp_root_folder = exp_root_path+"experiments_earthML_ocean/"
+        analysis_folder = exp_root_path+"analysis_earthML_ocean/"
 
         vars_dict = {
             't14d_mse': {'exp_var': {'fc': 't14d', 'an': 't14d'}, 'region': "CentralPacific", 'exp_suffix': '32bs_50epoch_mse'},
