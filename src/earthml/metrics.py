@@ -189,7 +189,7 @@ def metrics_to_df (
 
 # TODO: allow calculating only some metrics
 def get_runs_and_metrics (
-    var_names: str | Sequence[str], var_suffix: str | Sequence[str],
+    var_names: str | Sequence[str] | dict | Sequence[dict], var_suffix: str | Sequence[str],
     region: str,
     exp_suffix_root: str | Sequence[str], exp_name: str, exp_root: str | Path,
     input_provider: str, target_provider: str,
@@ -198,7 +198,7 @@ def get_runs_and_metrics (
     type_data: str = "test", models: Sequence[str] = ("an", "fc", "pr"),
 ) -> Sequence[dict]:
 
-    var_names = [var_names] if isinstance(var_names, str) else var_names
+    var_names = [var_names] if isinstance(var_names, str) or isinstance(var_names, dict) else var_names
     var_suffix = [var_suffix] if isinstance(var_suffix, str) else var_suffix
     exp_suffix_root = [exp_suffix_root] if isinstance(exp_suffix_root, str) else exp_suffix_root
 
@@ -208,14 +208,18 @@ def get_runs_and_metrics (
             exp_suffix.append(f"{suf_root}{suf}")
     # print(f"Exp suffix: {exp_suffix}")
 
-    vars_dict = {
-        f"{var}{var_suf}": {
-            "exp_var": {"fc": var, "an": var},
-            "region": region,
-            "exp_suffix": exp_suf,
-        }
-        for var, (var_suf, exp_suf) in product(var_names, zip(var_suffix, exp_suffix))
-    }
+    vars_dict = {}
+    for var, (var_suf, exp_suf) in product(var_names, zip(var_suffix, exp_suffix)):
+        if isinstance(var, str):
+            var_fc, var_an = var, var
+        elif isinstance(var, dict):
+            var_fc, var_an = var['fc'], var['an']
+
+        vars_dict[f"{var_fc}{var_suf}"] = {
+                "exp_var": {"fc": var_fc, "an": var_an},
+                "region": region,
+                "exp_suffix": exp_suf,
+            }
 
     experiments = {
         "name": exp_name,
