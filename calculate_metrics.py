@@ -25,7 +25,7 @@ if __name__ == "__main__":
     exp_type = "ocean"
     # exp_type = "weather"
 
-    dask_earthml = Dask(n_workers=32)
+    dask_earthml = Dask(n_workers=5, memory_limit="30GiB") # memory_limit: "25GiB" or float (fraction of tot mem per worker) or int (byte per worker)
     dask_earthml.start()
     client, cluster = dask_earthml.client, dask_earthml.cluster
     base_url = "http://localhost:"
