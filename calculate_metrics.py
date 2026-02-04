@@ -17,7 +17,7 @@ logging.getLogger("distributed.nanny").setLevel(logging.ERROR)
 
 # from earthml.manager import Launcher
 # from earthml.logging import Logger
-from earthml.utils import Dask, load_exp, add_ke_to_runs, make_exp_folder_path
+from earthml.utils import Dask, load_exp, add_ke_to_runs, make_exp_folder_path, guess_time_dim, guess_lon_dim, guess_lat_dim
 from earthml.metrics import Metrics #, PowerSpectrum
 
 if __name__ == "__main__":
@@ -117,10 +117,13 @@ if __name__ == "__main__":
     for name, run in runs.items():
         print(f"Run {name}")
 
-        # Align masks
         an, fc, pr = run['an'], run['fc'], run['pr']
-        # fc_a, pr_a, an_a = xr.align(fc, pr, an, join="inner")  # intersection of coords
-        fc_a, pr_a, an_a = xr.align(fc, pr, an, join="outer")  # union of coords
+
+        # Align
+        fc_a, pr_a, an_a = xr.align(fc, pr, an, join="inner")  # intersection of coords
+        # fc_a, pr_a, an_a = xr.align(fc, pr, an, join="outer")  # union of coords
+
+        # Masked with validity
         valid_mask = np.isfinite(fc_a) & np.isfinite(pr_a) & np.isfinite(an_a)
         fc_m = fc_a.where(valid_mask)
         pr_m = pr_a.where(valid_mask)
@@ -130,6 +133,15 @@ if __name__ == "__main__":
         # print("Valid fraction fc:", np.isfinite(fc).mean().compute().values)
         # print("Valid fraction pr:", np.isfinite(pr).mean().compute().values)
         # print("Valid fraction intersection:", valid_mask.mean().compute().values)
+
+        # Rechunk
+        print("Rechunking...")
+        lat_rc, lon_rc = 30, 40
+        for ds in (fc_m, pr_m, an_m):
+            if "realization" in ds.dims:
+                ds = ds.chunk({guess_time_dim(ds): 1, guess_lat_dim(ds): lat_rc, guess_lon_dim(ds): lon_rc, "realization": 1})
+            else:
+                ds = ds.chunk({guess_time_dim(ds): 1, guess_lat_dim(ds): lat_rc, guess_lon_dim(ds): lon_rc})
 
         m = Metrics(truth=an_m, data=[fc_m, pr_m], truth_name="an", data_name=["fc", "pr"])
         metrics[name] = m.compute_all_metrics(geo_weighted=True) #, eps=1e-12)
