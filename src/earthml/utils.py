@@ -1809,10 +1809,13 @@ def load_exp (exp_root, exp_cfg, type_data: str, only_sizes: bool = False, merge
                     continue
 
                 if type_data == "test":
+                    source["prediction"].__init__(source["prediction"].datasource, exp_folder_path / "test_preds.zarr")
                     pr = source["prediction"].reload() # reload? YES!
                     pr_list.append(pr.rename_vars({v_d["exp_var"]["fc"]: v}))
 
+                source["input"].__init__(source["input"].datasource, exp_folder_path / f"{type_data}_input.zarr")
                 fc = source["input"].reload()
+                source["target"].__init__(source["target"].datasource, exp_folder_path / f"{type_data}_target.zarr")
                 an = source["target"].reload()
                 fc_list.append(fc.rename_vars({v_d["exp_var"]["fc"]: v}))
                 an_list.append(an.rename_vars({v_d["exp_var"]["an"]: v}))
