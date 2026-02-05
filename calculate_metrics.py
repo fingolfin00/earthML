@@ -116,17 +116,35 @@ if __name__ == "__main__":
 
     # TODO: refactor, check metrics.py get_runs_and_metrics
     metrics = {}
-    for name, run in runs.items():
-        print(f"Run {name}")
+    for tp, run in runs.items():
+        print(f"Run {tp}")
 
-        an, fc, pr = run['an'], run['fc'], run['pr']
+        an, fc, pr = run["an"], run["fc"], run["pr"]
+
+        def standardize_dims(da):
+            return da.rename({
+                guess_time_dim(da): "time",
+                guess_lat_dim(da): "lat",
+                guess_lon_dim(da): "lon",
+            })
+
+        an = standardize_dims(an)
+        fc = standardize_dims(fc)
+        pr = standardize_dims(pr)
 
         # Align
         fc_a, pr_a, an_a = xr.align(fc, pr, an, join="inner")  # intersection of coords
         # fc_a, pr_a, an_a = xr.align(fc, pr, an, join="outer")  # union of coords
 
+        def dimsizes(da):
+            return {d: da.sizes[d] for d in da.dims}
+
+        print("fc:", fc_a.dims, dimsizes(fc_a))
+        print("pr:", pr_a.dims, dimsizes(pr_a))
+        print("an:", an_a.dims, dimsizes(an_a))
+
         # Masked with validity
-        valid_mask = np.isfinite(fc_a) & np.isfinite(pr_a) & np.isfinite(an_a)
+        valid_mask = xr.ufuncs.isfinite(fc_a) & xr.ufuncs.isfinite(pr_a) & xr.ufuncs.isfinite(an_a)
         fc_m = fc_a.where(valid_mask)
         pr_m = pr_a.where(valid_mask)
         an_m = an_a.where(valid_mask)
@@ -136,17 +154,21 @@ if __name__ == "__main__":
         # print("Valid fraction pr:", np.isfinite(pr).mean().compute().values)
         # print("Valid fraction intersection:", valid_mask.mean().compute().values)
 
-        # Rechunk
+        lat_rc, lon_rc = 120, 160
         print("Rechunking...")
-        lat_rc, lon_rc = 30, 40
-        for ds in (fc_m, pr_m, an_m):
-            if "realization" in ds.dims:
-                ds = ds.chunk({guess_time_dim(ds): 1, guess_lat_dim(ds): lat_rc, guess_lon_dim(ds): lon_rc, "realization": 1})
-            else:
-                ds = ds.chunk({guess_time_dim(ds): 1, guess_lat_dim(ds): lat_rc, guess_lon_dim(ds): lon_rc})
+
+        def rechunk(da):
+            chunks = {"time": 1, "lat": lat_rc, "lon": lon_rc}
+            if "realization" in da.dims:
+                chunks["realization"] = 1
+            return da.chunk(chunks)
+
+        fc_m = rechunk(fc_m)
+        pr_m = rechunk(pr_m)
+        an_m = rechunk(an_m)
 
         m = Metrics(truth=an_m, data=[fc_m, pr_m], truth_name="an", data_name=["fc", "pr"])
-        metrics[name] = m.compute_all_metrics(geo_weighted=True) #, eps=1e-12)
+        metrics[tp] = m.compute_all_metrics(geo_weighted=True) #, eps=1e-12)
 
     vars_from_fc = [v for v in runs[next(iter(runs))]['fc'].data_vars if v != '_has_var']
 
