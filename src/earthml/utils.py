@@ -1763,7 +1763,7 @@ def date_diff (ymd_range: str):
         "total_months": delta.years * 12 + delta.months
     }
 
-def load_exp (exp_root, exp_cfg, type_data: str, only_sizes: bool = False) -> dict:
+def load_exp (exp_root, exp_cfg, type_data: str, only_sizes: bool = False, merge_compat: str = "override") -> dict:
     """
     Return dict keyed by train_period and number of valid samples.
 
@@ -1820,14 +1820,14 @@ def load_exp (exp_root, exp_cfg, type_data: str, only_sizes: bool = False) -> di
             if only_sizes:
                 continue
 
-            fc_lt = xr.merge(fc_list, compat="no_conflicts").assign_coords(leadtime=lt).expand_dims("leadtime")
-            an_lt = xr.merge(an_list, compat="no_conflicts").assign_coords(leadtime=lt).expand_dims("leadtime")
+            fc_lt = xr.merge(fc_list, compat=merge_compat).assign_coords(leadtime=lt).expand_dims("leadtime")
+            an_lt = xr.merge(an_list, compat=merge_compat).assign_coords(leadtime=lt).expand_dims("leadtime")
 
             fc_per_lt.append(fc_lt)
             an_per_lt.append(an_lt)
 
             if type_data == "test":
-                pr_lt = xr.merge(pr_list, compat="no_conflicts").assign_coords(leadtime=lt).expand_dims("leadtime")
+                pr_lt = xr.merge(pr_list, compat=merge_compat).assign_coords(leadtime=lt).expand_dims("leadtime")
                 pr_per_lt.append(pr_lt)
 
         if only_sizes:
