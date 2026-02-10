@@ -324,6 +324,11 @@ class Metrics:
         self.time_dim, self.lat_dim, self.lon_dim = self._get_and_rename_dim()
         self.realization_dim = "realization" if "realization" in self.truth.dims and any("realization" in d.dims for d in self.data) else None
 
+        print("Metrics initialized with truth and data shapes:")
+        print(truth_name, self.truth.dims)
+        for d, n in zip(self.data, self.data_name):
+            print(n, d.dims)
+
     def _get_and_rename_dim (self):
         # Rename all data vars to match truth vars
         # truth_vars = set(self.truth)
