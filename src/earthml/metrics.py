@@ -196,6 +196,7 @@ def get_runs_and_metrics (
     leadtimes: tuple, leadtime_unit: str,
     train_periods: Sequence[str], test_period: str,
     type_data: str = "test", models: Sequence[str] = ("an", "fc", "pr"),
+    align_join_strategy = "inner",
 ) -> Sequence[dict]:
 
     var_names = [var_names] if isinstance(var_names, str) or isinstance(var_names, dict) else var_names
@@ -239,29 +240,48 @@ def get_runs_and_metrics (
         type_data=type_data,
     )
 
-    runs = add_ke_to_runs(runs, suffixes=var_suffix)
-
     truth_model = models[0] # an
     data_model_a, data_model_b = models[1], models[2] # fc, pr
+
+    runs = add_ke_to_runs(runs, suffixes=var_suffix)
+
     metrics = {}
     for name, run in runs.items():
         print(f"Calculate metrics for run {name}")
 
-        # Align masks
         an, fc, pr = run[truth_model], run[data_model_a], run[data_model_b]
-        # fc_a, pr_a, an_a = xr.align(fc, pr, an, join="inner")  # intersection of coords
-        fc_a, pr_a, an_a = xr.align(fc, pr, an, join="outer")  # union of coords
-        valid_mask = np.isfinite(fc_a) & np.isfinite(pr_a) & np.isfinite(an_a)
-        fc_m = fc_a.where(valid_mask)
-        pr_m = pr_a.where(valid_mask)
-        an_m = an_a.where(valid_mask)
 
-        # print("Valid fraction an:", np.isfinite(an).mean().values)
-        # print("Valid fraction fc:", np.isfinite(fc).mean().values)
-        # print("Valid fraction pr:", np.isfinite(pr).mean().values)
-        # print("Valid fraction intersection:", valid_mask.mean().values)
+        # Pick one coords set name (e.g. "time", "lon", "lat") and rename dims for all datasets
+        time_dim, lat_dim, lon_dim = guess_time_dim(fc), guess_lat_dim(fc), guess_lon_dim(fc)
+        print(f"Renaming to coordinate set: {time_dim}, {lat_dim}, {lon_dim}")
+        an = an.rename({guess_time_dim(an): time_dim, guess_lat_dim(an): lat_dim, guess_lon_dim(an): lon_dim})
+        if pr is not None:
+            pr = pr.rename({guess_time_dim(pr): time_dim, guess_lat_dim(pr): lat_dim, guess_lon_dim(pr): lon_dim})
 
-        m = Metrics(truth=an_m, data=[fc_m, pr_m], truth_name=truth_model, data_name=[data_model_a, data_model_b])
+        # Align masks
+        if pr is None:
+            fc_a, an_a = xr.align(fc, an, join=align_join_strategy) # inner: intersection of coords, outer: union of coords
+            valid_mask = np.isfinite(fc_a) & np.isfinite(an_a)
+            fc_m = fc_a.where(valid_mask)
+            an_m = an_a.where(valid_mask)
+            data_models = [fc_m]
+            data_model_names = [data_model_a]
+        else:
+            fc_a, pr_a, an_a = xr.align(fc, pr, an, join=align_join_strategy)
+            valid_mask = np.isfinite(fc_a) & np.isfinite(pr_a) & np.isfinite(an_a)
+            fc_m = fc_a.where(valid_mask)
+            pr_m = pr_a.where(valid_mask)
+            an_m = an_a.where(valid_mask)
+            # print("Valid fraction an:", np.isfinite(an).mean().values)
+            # print("Valid fraction fc:", np.isfinite(fc).mean().values)
+            # print("Valid fraction pr:", np.isfinite(pr).mean().values)
+            # print("Valid fraction intersection:", valid_mask.mean().values)
+            data_models = [fc_m, pr_m]
+            data_model_names = [data_model_a, data_model_b]
+
+        runs[name][truth_model], runs[name][data_model_a], runs[name][data_model_b] = an_m, fc_m, pr_m if pr is not None else (an_m, fc_m, None)
+
+        m = Metrics(truth=an_m, data=data_models, truth_name=truth_model, data_name=data_model_names)
         metrics[name] = m.compute_all_metrics(geo_weighted=True) #, eps=1e-12)
 
     return runs, metrics # runs not aligned
