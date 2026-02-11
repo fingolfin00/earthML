@@ -25,7 +25,7 @@ if __name__ == "__main__":
     exp_type = "ocean"
     # exp_type = "weather"
 
-    dask_earthml = Dask(n_workers=5, memory_limit="30GiB") # memory_limit: "25GiB" or float (fraction of tot mem per worker) or int (byte per worker)
+    dask_earthml = Dask(n_workers=5, memory_limit="100GiB") # memory_limit: "25GiB" or float (fraction of tot mem per worker) or int (byte per worker)
     dask_earthml.start()
     client, cluster = dask_earthml.client, dask_earthml.cluster
     base_url = "http://localhost:"
@@ -79,63 +79,53 @@ if __name__ == "__main__":
         exp_root_folder = exp_root_path+"experiments_earthML_ocean/"
         analysis_folder = exp_root_path+"analysis_earthML_ocean/"
 
-        vars_dict_cmcc = {
-            't14d_cmcc_mse': {'exp_var': {'fc': 't14d', 'an': 't14d'}, 'region': "CentralPacific", 'exp_suffix': '32bs_50epoch_mse'},
-            'sss_cmcc_mse': {'exp_var': {'fc': 'sos', 'an': 'sos'}, 'region': "CentralPacific", 'exp_suffix': '32bs_50epoch_mse'},
-            't17d_cmcc_mse': {'exp_var': {'fc': 't17d', 'an': 't17d'}, 'region': "CentralPacific", 'exp_suffix': '32bs_50epoch_mse'},
-        }
-        vars_dict_oras5 = {
-            't14d_oras5_mse': {'exp_var': {'fc': 't14d', 'an': 'so14chgt'}, 'region': "CentralPacific", 'exp_suffix': '32bs_50epoch_mse'},
-            'sss_oras5_mse': {'exp_var': {'fc': 'sos', 'an': 'sosaline'}, 'region': "CentralPacific", 'exp_suffix': '32bs_50epoch_mse'},
-            # 't17d_cmcc_mse': {'exp_var': {'fc': 't14d', 'an': 'so14chgt'}, 'region': "CentralPacific", 'exp_suffix': '32bs_50epoch_mse'},
-        }
+        vars_dict_cmcc = [{'fc': 't14d', 'an': 't14d'},  {'fc': 'sos', 'an': 'sos'}, {'fc': 't17d', 'an': 't17d'}]
+        vars_dict_oras5 = [{'fc': 't14d', 'an': 'so14chgt'}, {'fc': 'sos', 'an': 'sosaline'}]
 
-        experiments_cmcc = {
-            "name": "ocean",
-            "input_provider": "ocean.juno.cmcc.hindcast",
-            "target_provider": "ocean.juno.cmcc.hindcast",
-            "vars": vars_dict_cmcc,
-            "leadtimes": (1, 2, 3, 4, 5),
-            "leadtime_unit": "months",
-            "train_periods": ("19930601-20201231", "20070401-20201231", "20140201-20201231", "20170801-20201231", "20190401-20201231"),
-            "test_period": "20210101-20221231",
-            "root": exp_root_folder,
-        }
-        experiments_oras5 = {
-            "name": "ocean",
-            "input_provider": "ocean.earthkit.cmcc.hindcast.monthly",
-            "target_provider": "ocean.earthkit.oras5.reanalysis.monthly",
-            "vars": vars_dict_oras5,
-            "leadtimes": (1, 2, 3, 4, 5),
-            "leadtime_unit": "months",
-            "train_periods": ("19930601-20201231", "20070401-20201231", "20140201-20201231", "20170801-20201231", "20190401-20201231"),
-            "test_period": "20210101-20221231",
-            "root": exp_root_folder,
-        }
-
-    runs_cmcc, _ = load_exp(
-        exp_root=exp_root_folder,
-        exp_cfg=experiments_cmcc,
-        type_data="test",
-        # type_data="train",
-    )
-    runs_oras5, _ = load_exp(
-        exp_root=exp_root_folder,
-        exp_cfg=experiments_oras5,
-        type_data="test",
-        # type_data="train",
-    )
+        runs, metrics = get_runs_and_metrics(
+            var_names=vars_dict_oras5,
+            var_suffix="_mse",
+            # var_suffix=("_mse_taravg", "_mse"),
+            # var_suffix=("_mse", "_het"),
+            # var_suffix=("_mse", "_gnll", "_het"),
+            region="CentralPacific",
+            exp_suffix_root="32bs_50epoch",
+            exp_name=exp_type,
+            exp_root=exp_root_folder,
+            input_provider="ocean.juno.cmcc.hindcast",
+            # input_provider="ocean.earthkit.cmcc.hindcast.monthly",
+            # target_provider="ocean.juno.cmcc.hindcast",
+            target_provider="ocean.earthkit.oras5.reanalysis.monthly",
+            leadtimes=(1, 2, 3, 4, 5, 6),
+            leadtime_unit="months",
+            train_periods=("19930601-20201231", "20070401-20201231", "20140201-20201231", "20170801-20201231", "20190401-20201231"),
+            # type_data="train",
+            type_data="test",
+            models=("an", "fc", "pr"),
+        )
+    # runs_cmcc, _ = load_exp(
+    #     exp_root=exp_root_folder,
+    #     exp_cfg=experiments_juno_cmcc,
+    #     type_data="test",
+    #     # type_data="train",
+    # )
+    # runs_oras5, _ = load_exp(
+    #     exp_root=exp_root_folder,
+    #     exp_cfg=experiments_cds_cmcc_oras5,
+    #     type_data="test",
+    #     # type_data="train",
+    # )
 
     # Calculate train period sizes
     # _, tp_sizes_cmcc = load_exp(
     #     exp_root=exp_root_folder,
-    #     exp_cfg=experiments_cmcc,
+    #     exp_cfg=experiments_juno_cmcc,
     #     type_data="train",
     #     only_sizes=True,
     # )
     # _, tp_sizes_oras5 = load_exp(
     #     exp_root=exp_root_folder,
-    #     exp_cfg=experiments_oras5,
+    #     exp_cfg=experiments_cds_cmcc_oras5,
     #     type_data="train",
     #     only_sizes=True,
     # )
@@ -151,64 +141,7 @@ if __name__ == "__main__":
 
     #         runs[tp][ds_name] = xr.merge([ds_cmcc, ds_oras5])
 
-    runs = runs_oras5
-    runs = add_ke_to_runs(runs, suffixes=("_mse", "_het"))
-
-    # TODO: refactor, check metrics.py get_runs_and_metrics
-    metrics = {}
-    for tp, run in runs.items():
-        print(f"Run {tp}")
-
-        an, fc, pr = run["an"], run["fc"], run["pr"]
-
-        def standardize_dims(da):
-            return da.rename({
-                guess_time_dim(da): "time",
-                guess_lat_dim(da): "lat",
-                guess_lon_dim(da): "lon",
-            })
-
-        an = standardize_dims(an)
-        fc = standardize_dims(fc)
-        pr = standardize_dims(pr)
-
-        # Align
-        fc_a, pr_a, an_a = xr.align(fc, pr, an, join="inner")  # intersection of coords
-        # fc_a, pr_a, an_a = xr.align(fc, pr, an, join="outer")  # union of coords
-
-        def dimsizes(da):
-            return {d: da.sizes[d] for d in da.dims}
-
-        print("fc:", fc_a.dims, dimsizes(fc_a))
-        print("pr:", pr_a.dims, dimsizes(pr_a))
-        print("an:", an_a.dims, dimsizes(an_a))
-
-        # Masked with validity
-        valid_mask = xr.ufuncs.isfinite(fc_a) & xr.ufuncs.isfinite(pr_a) & xr.ufuncs.isfinite(an_a)
-        fc_m = fc_a.where(valid_mask)
-        pr_m = pr_a.where(valid_mask)
-        an_m = an_a.where(valid_mask)
-
-        # print("Valid fraction an:", np.isfinite(an).mean().compute().values)
-        # print("Valid fraction fc:", np.isfinite(fc).mean().compute().values)
-        # print("Valid fraction pr:", np.isfinite(pr).mean().compute().values)
-        # print("Valid fraction intersection:", valid_mask.mean().compute().values)
-
-        lat_rc, lon_rc = 120, 160
-        print("Rechunking...")
-
-        def rechunk(da):
-            chunks = {"time": 1, "lat": lat_rc, "lon": lon_rc}
-            if "realization" in da.dims:
-                chunks["realization"] = 1
-            return da.chunk(chunks)
-
-        fc_m = rechunk(fc_m)
-        pr_m = rechunk(pr_m)
-        an_m = rechunk(an_m)
-
-        m = Metrics(truth=an_m, data=[fc_m, pr_m], truth_name="an", data_name=["fc", "pr"])
-        metrics[tp] = m.compute_all_metrics(geo_weighted=True) #, eps=1e-12)
+    # runs = runs_oras5
 
     vars_from_fc = [v for v in runs[next(iter(runs))]['fc'].data_vars if v != '_has_var']
 
@@ -234,6 +167,8 @@ if __name__ == "__main__":
     print("Saved nodiff to:", path_nodiff)
     print("Saved diff delta to:", path_delta)
     print("Saved diff ratio to:", path_ratio)
+
+
     # df.to_parquet(f"{analysis_folder_weather}/metrics_{str(metric_names)}_{str(vars_weather_from_fc)}.parquet", engine="pyarrow", compression="snappy")
     # pd.read_parquet(parquet_filename, filters=[("model", "==", "fc")])
 
