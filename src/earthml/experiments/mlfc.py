@@ -29,8 +29,14 @@ class ExperimentMLFC:
         self.config = config
         self.rich_console = Console()
 
-        # Get test variable list, TODO I have doubts on this implementation
-        test_config_datasel = self.config.test[0].datasource.data_selection if isinstance(self.config.test, list) else self.config.test.datasource.data_selection
+        # Get test variable list,
+        # TODO I have doubts on this implementation cause we are picking the first test datasource and it may not be representative of the others,
+        # but for now we assume all test datasources have the same variable and region selection
+        if isinstance(self.config.test, list):
+            test_config_datasource = self.config.test[0].datasource[0] if isinstance(self.config.test[0].datasource, list) else self.config.test[0].datasource
+            test_config_datasel = test_config_datasource.data_selection
+        else:
+            test_config_datasel = self.config.test.datasource.data_selection
         self.test_var_list = test_config_datasel.variable if isinstance(test_config_datasel.variable, list) else [test_config_datasel.variable]
 
         # Setup paths and make dirs if necessary
@@ -72,7 +78,7 @@ class ExperimentMLFC:
             role='prediction',
             datasource=DataSource(
                 "xarray-local",
-                self.config.test[0].datasource.data_selection,
+                self.config.test[0].datasource[0].data_selection if isinstance(self.config.test[0].datasource, list) else self.config.test[0].datasource.data_selection,
             ),
             source_params={
                 'root_path': self.preds_store,
