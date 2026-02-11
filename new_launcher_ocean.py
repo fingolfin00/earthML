@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from earthml.dataclasses import TimeRange
@@ -8,10 +9,10 @@ if __name__ == "__main__":
     max_retries = 4
 
     var_exp = "sss" # sst (6-hourly), sss, t14d, t17d
-    target_realization_avg = True # average over realizations for target variable
+    target_realization_avg = False # average over realizations for target variable
 
-    full_leadtimes_days = (45, 75, 105, 135, 165)
-    full_leadtimes_months = (1, 2, 3, 4, 5)
+    full_leadtimes_days = (15, 45, 75, 105, 135, 165)
+    full_leadtimes_months = (1, 2, 3, 4, 5, 6)
     full_leadtime_hours_sst = (12, 24, 48, 72, 96, 120, 144, 168)
 
     start_train_date = datetime(1993, 6, 1)
@@ -22,8 +23,8 @@ if __name__ == "__main__":
     # start_train_date = datetime(1993, 6, 1)
     # end_train_date = datetime(1994, 12, 31)
 
-    experiment_type = "juno-cmcc_juno-cmcc" # analysis in forecast dataset (lt=15d)
-    # experiment_type = "juno-cmcc_oras5"
+    # experiment_type = "juno-cmcc_juno-cmcc" # analysis in forecast dataset (lt=15d) WRONG!
+    experiment_type = "juno-cmcc_oras5"
     # experiment_type = "cds-cmcc_oras5"
 
 
@@ -46,7 +47,7 @@ if __name__ == "__main__":
         target_provider = "ocean.earthkit.oras5.reanalysis.monthly"
 
         train_periods_target = halved_windows_split_by_cutoff(train_period, cutoff_oras5_consolidated, min_months=12, anchor="end", month_start=month_start_flag)
-        regrid_resolution = 0.25
+        regrid_resolution = 1 # WRONG but tolerable (analysis res should be used)
 
     elif experiment_type == "juno-cmcc_juno-cmcc":
         var_keys = [(f"{var_exp}_juno_fc", f"{var_exp}_juno_an")] # _an has fixed leadtime selection, see in Scenario options
@@ -133,6 +134,9 @@ if __name__ == "__main__":
     for var_fc_key, var_an_key in var_keys:
         for leadtime_var_fc_value, leadtime_mult in zip(full_leadtimes, full_leadtime_multiple):
             for train_p_in, train_p_tar in zip(train_periods_input, train_periods_target):
+                # print(train_p_in, train_p_tar)
+                # train_p_in_copy = deepcopy(train_p_in)
+                # train_p_tar_copy = deepcopy(train_p_tar)
 
                 if experiment_type in ("juno-cmcc_oras5", "cds-cmcc_oras5"):
                     if len(train_p_tar) != 2:
@@ -196,7 +200,7 @@ if __name__ == "__main__":
 
                 for _ in range(max_retries):
                     try:
-                        runner.run(mode="dryrun")
+                        runner.run(mode="dryrun") # train_test
                         success = True
                         break
                     except (RuntimeError, OSError) as e:
