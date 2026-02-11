@@ -187,6 +187,12 @@ def metrics_to_df (
 
     return df
 
+def rechunk (da, lat_rc, lon_rc, time_rc=1, realization_rc=1):
+    chunks = {"time": time_rc, "lat": lat_rc, "lon": lon_rc}
+    if "realization" in da.dims:
+        chunks["realization"] = realization_rc
+    return da.chunk(chunks)
+
 # TODO: allow calculating only some metrics
 def get_runs_and_metrics (
     var_names: str | Sequence[str] | dict | Sequence[dict], var_suffix: str | Sequence[str],
@@ -196,7 +202,8 @@ def get_runs_and_metrics (
     leadtimes: tuple, leadtime_unit: str,
     train_periods: Sequence[str], test_period: str,
     type_data: str = "test", models: Sequence[str] = ("an", "fc", "pr"),
-    align_join_strategy = "inner",
+    align_join_strategy: str = "inner",
+    rechunk_factor: int = 1, # default no lat/lon rechunking, set to e.g. 4 to reduce memory usage by rechunking to 1/4 of original lat/lon chunk size
 ) -> Sequence[dict]:
 
     var_names = [var_names] if isinstance(var_names, str) or isinstance(var_names, dict) else var_names
@@ -278,6 +285,10 @@ def get_runs_and_metrics (
             # print("Valid fraction intersection:", valid_mask.mean().values)
             data_models = [fc_m, pr_m]
             data_model_names = [data_model_a, data_model_b]
+
+        lat_rc, lon_rc = an_m.sizes[lat_dim] // rechunk_factor, an_m.sizes[lon_dim] // rechunk_factor
+        print("Rechunking...")
+        an_m, fc_m, pr_m = rechunk(an_m, lat_rc, lon_rc), rechunk(fc_m, lat_rc, lon_rc), rechunk(pr_m, lat_rc, lon_rc) if pr is not None else (rechunk(an_m, lat_rc, lon_rc), rechunk(fc_m, lat_rc, lon_rc), None)
 
         runs[name][truth_model], runs[name][data_model_a], runs[name][data_model_b] = an_m, fc_m, pr_m if pr is not None else (an_m, fc_m, None)
 
