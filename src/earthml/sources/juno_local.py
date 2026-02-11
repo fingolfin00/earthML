@@ -135,6 +135,7 @@ class JunoLocalSource (MFXarrayLocalSource):
     def _get_data (self) -> xr.Dataset:
         # years = [str(date.year) for date in xr.date_range(start=data.period.start, end=data.period.end, freq='YS', inclusive='left')]
         # print(f"{self.source_name} missed dates: {self.elements.missed}")
+        # print(self.elements.samples)
         samples = [s for date, s in self.elements.samples.items() if date not in self.elements.missed] # list of lists
         assert len(samples) > 0, "No samples obtained."
         dates = [date for date in self.elements.samples.keys() if date not in self.elements.missed]
