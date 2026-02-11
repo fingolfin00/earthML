@@ -180,6 +180,7 @@ class MLFCScenario:
             provider_kwargs = provider_kwargs if isinstance(provider_kwargs, list) else len(periods)*[provider_kwargs]
 
             for period, provider_name, kwargs in zip(periods, provider_names, provider_kwargs):
+                # print(f"Building datasource for period {period.start} -> {period.end} with provider {provider_name} and kwargs {kwargs}")
                 provider = build_provider(provider_name, **merge(kwargs, dict(var_name=var.name, leadtime_value=leadtime_value, leadtime_unit=leadtime_unit)))
                 datasources.append(DataSource(source=provider.source, data_selection=DataSelection(var, region, period)))
                 params.append(provider.params)
@@ -189,6 +190,7 @@ class MLFCScenario:
             datasources = DataSource(source=provider.source, data_selection=DataSelection(var, region, periods))
             params = provider.params
 
+        # print(f"Built datasources: {datasources} with params: {params}")
         return datasources, params
 
     def _build_datasets (self, period_type: str, period: TimeRange | dict[str, TimeRange | list[TimeRange]]) -> list[ExperimentDataset]:
