@@ -97,3 +97,57 @@ def earthkit_cds_era5_single_levels (
         ),
     )
     return ProviderSpec('earthkit', merge(base, overrides, **kw))
+
+@register_provider("atmo.earthkit.cmcc.hindcast.monthly")
+def earthkit_cmcc_monthly_hindcast_atmo (
+    var_name: str,
+    leadtime_value: int,
+    leadtime_unit: str,
+    originating_centre: str = "cmcc",
+    system: str = "4",
+    regrid_resolution: float = 0.25,
+    leadtime_month: list[str] = ["1", "2", "3", "4", "5", "6"],
+    split_month: int = 1,
+    split_month_jump: list[str] | None = None,
+    data_format: str = "grib", # netcdf (experimental)
+    earthkit_cache_dir: str  = Path("/tmp/earthkit-cache/"),
+    overrides: dict | None = None,
+    **kw,
+) -> ProviderSpec:
+    if data_format == "netcdf":
+        to_xarray_args = dict(
+            engine="h5netcdf",
+            decode_timedelta=True,
+            data_vars="all",
+            coords="minimal",
+            compat="override",
+            concat_dim="leadtime",
+            combine="nested",
+        )
+    else:
+        to_xarray_args = dict(
+            engine="cfgrib",
+            decode_timedelta=True,
+        )
+    base = dict(
+        provider="cds",
+        lead_time=relativedelta(**{leadtime_unit: leadtime_value}),
+        dataset="seasonal-monthly-single-levels",
+        regrid_resolution=regrid_resolution,
+        split_request=True,
+        split_month=split_month,
+        split_month_jump=split_month_jump or [],
+        request_type="monthly",
+        request_extra_args=dict(
+            product_type=["monthly_mean"],
+            originating_centre=originating_centre,
+            system=system,
+            leadtime_month=leadtime_month,
+            data_format=data_format,
+        ),
+        to_xarray_args=to_xarray_args,
+        xarray_concat_dim="time",
+        xarray_concat_extra_args=dict(coords="minimal", compat="override"),
+        earthkit_cache_dir=earthkit_cache_dir,
+    )
+    return ProviderSpec('earthkit', merge(base, overrides, **kw))
