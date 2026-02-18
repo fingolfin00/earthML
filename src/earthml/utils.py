@@ -365,6 +365,9 @@ def _guess_data_var_name (
 def guess_realization_dim (ds: xr.Dataset):
     return _guess_dim_name(ds, "realization", ["realization", "number", "ens"])
 
+def guess_leadtime_dim (ds: xr.Dataset):
+    return _guess_dim_name(ds, "leadtime", ["lead_time", "leadtime", "step"])
+
 def guess_time_dim (ds: xr.Dataset):
     return _guess_dim_name(ds, "time", ["valid_time", "time_counter", "source_time", "t"])
 
