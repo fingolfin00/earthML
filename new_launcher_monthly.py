@@ -8,8 +8,11 @@ from earthml.utils import halved_windows_split_by_cutoff, half_train_periods_day
 if __name__ == "__main__":
     max_retries = 4
 
-    var_exp = "sss" # sst (6-hourly), sss, t14d, t17d
+    var_exp = "sst" # sst (atmo), sss, t14d, t17d
     target_realization_avg = False # average over realizations for target variable
+    only_longest_train_period = True # only train on the largest train period (if False, train on all periods, which can be much slower but allows to see variability across train periods)
+
+    vars_atmo = ("sst",)
 
     full_leadtimes_days = (15, 45, 75, 105, 135, 165)
     full_leadtimes_months = (1, 2, 3, 4, 5, 6)
@@ -24,21 +27,19 @@ if __name__ == "__main__":
     # end_train_date = datetime(1994, 12, 31)
 
     # experiment_type = "juno-cmcc_juno-cmcc" # analysis in forecast dataset (lt=15d) WRONG!
-    experiment_type = "juno-cmcc_oras5"
+    experiment_type = "cds-cmcc_oras5" if var_exp in vars_atmo else "juno-cmcc_oras5"
     # experiment_type = "cds-cmcc_oras5"
-
 
     train_period = TimeRange(start=start_train_date, end=end_train_date, freq='MS')
     test_period = TimeRange(start=datetime(2021, 1, 1), end=datetime(2022, 12, 31), freq='MS')
 
-    if var_exp == "sst":
-        month_start_flag = False # SST is 6-hourly
-    else:
-        month_start_flag = True # monthly data
+    month_start_flag = False if var_exp=="sst" and experiment_type=="juno-cmcc_oras5" else True # SST is 6-hourly in Juno
 
     # input has no cutoff date (only ORAS5 for consolidate vs operational datasets)
-    train_periods_input = half_train_periods_days(train_period, min_months=12, anchor="end", month_start=month_start_flag)
+    train_periods_input = [train_period] if only_longest_train_period else half_train_periods_days(train_period, min_months=12, anchor="end", month_start=month_start_flag)
 
+    delta_train = relativedelta(end_train_date, start_train_date)
+    months_train = delta_train.years * 12 + delta_train.months
     cutoff_oras5_consolidated = datetime(2014, 12, 31) # cutoff date between consolidated and operational ORAS5 datasets
     if experiment_type == "juno-cmcc_oras5":
         var_keys = [(f"{var_exp}_juno_fc", f"{var_exp}_oras5_an")]
@@ -46,7 +47,11 @@ if __name__ == "__main__":
         input_provider = "ocean.juno.cmcc.hindcast"
         target_provider = "ocean.earthkit.oras5.reanalysis.monthly"
 
-        train_periods_target = halved_windows_split_by_cutoff(train_period, cutoff_oras5_consolidated, min_months=12, anchor="end", month_start=month_start_flag)
+        if only_longest_train_period:
+            train_periods_target = halved_windows_split_by_cutoff(train_period, cutoff_oras5_consolidated, min_months=months_train, anchor="end", month_start=month_start_flag)
+        else:
+            train_periods_target = halved_windows_split_by_cutoff(train_period, cutoff_oras5_consolidated, min_months=12, anchor="end", month_start=month_start_flag)
+
         regrid_resolution = 1 # WRONG but tolerable (analysis res should be used)
 
     elif experiment_type == "juno-cmcc_juno-cmcc":
@@ -61,11 +66,15 @@ if __name__ == "__main__":
     elif experiment_type == "cds-cmcc_oras5":
         var_keys = [(f"{var_exp}_cds_fc", f"{var_exp}_oras5_an")]
 
-        input_provider = "ocean.earthkit.cmcc.hindcast.monthly"
+        input_provider = "atmo.earthkit.cmcc.hindcast.monthly" if var_exp in vars_atmo else "ocean.earthkit.cmcc.hindcast.monthly"
         target_provider = "ocean.earthkit.oras5.reanalysis.monthly"
 
-        train_periods_target = halved_windows_split_by_cutoff(train_period, cutoff_oras5_consolidated, min_months=12, anchor="end", month_start=month_start_flag)
-        regrid_resolution = 0.25
+        if only_longest_train_period:
+            train_periods_target = halved_windows_split_by_cutoff(train_period, cutoff_oras5_consolidated, min_months=months_train, anchor="end", month_start=month_start_flag)
+        else:
+            train_periods_target = halved_windows_split_by_cutoff(train_period, cutoff_oras5_consolidated, min_months=12, anchor="end", month_start=month_start_flag)
+
+        regrid_resolution = 1 # WRONG but tolerable (analysis res should be used)
 
     else:
         raise ValueError(f"Experiment type {experiment_type} not supported.")
@@ -82,8 +91,8 @@ if __name__ == "__main__":
         months = rd.years * 12 + rd.months
         print(i, p_start.date(), "->", p_end.date(), "months:", months)
 
-    if experiment_type == "juno-cmcc_juno-cmcc":
-        # SST is not monthly
+    if experiment_type == "juno-cmcc_oras5" or experiment_type == "juno-cmcc_juno-cmcc":
+        # SST is not monthly in Juno
         if var_exp == "sst":
             target_provider_kwargs_common = dict(
                 file_path_var_prefix="00_ocean_6hr_surface_",
@@ -104,7 +113,7 @@ if __name__ == "__main__":
             leadtime_var_an_value = 15 # 15 days forecast is analysis
             leadtime_var_unit = "days"
             leadtime_unit = "months"
-    else: # SST not supported
+    else:
         target_provider_kwargs_common = dict(
                 regrid_resolution=regrid_resolution,
             )
