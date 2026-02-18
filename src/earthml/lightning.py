@@ -12,7 +12,7 @@ from torchmetrics.image import SpatialCorrelationCoefficient
 # import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
-from .utils import guess_time_dim, guess_lon_dim, guess_lat_dim
+from .utils import guess_realization_dim, guess_time_dim, guess_lon_dim, guess_lat_dim
 
 class EarthMLLightningModule (L.LightningModule):
     def __init__ (self, use_first_input=False):
@@ -702,18 +702,19 @@ class XarrayDataset (Dataset):
             'y': guess_lat_dim(ds),
             'x': guess_lon_dim(ds),
         }
+        realization_dim = guess_realization_dim(da)
         if set(required_dims.values()) - set(da.dims):
             raise ValueError(f"Unexpected dims: {da.dims}")
 
-        if 'realization' in da.dims and da.ndim == 5:
+        if realization_dim in da.dims and da.ndim == 5:
             return da.transpose(
                 "variable",
                 required_dims['time'],
-                "realization",
+                realization_dim,
                 required_dims['y'],
                 required_dims['x'],
             )
-        elif 'realization' not in da.dims and da.ndim == 4:
+        elif realization_dim not in da.dims and da.ndim == 4:
             return da.transpose(
                 "variable",
                 required_dims['time'],
