@@ -11,7 +11,7 @@ import earthkit.data as ekd
 from rich import print
 
 from ..dataclasses import DataSource
-from ..utils import retry_fetch_after_hdf_err, generate_hours, get_ds_resolution, subset_ds, regrid_to_rectilinear, _guess_dim_name
+from ..utils import retry_fetch_after_hdf_err, generate_hours, get_ds_resolution, subset_ds, regrid_to_rectilinear, guess_time_dim, guess_realization_dim
 from .base import BaseSource
 
 class EarthkitSource (BaseSource):
@@ -180,6 +180,9 @@ class EarthkitSource (BaseSource):
             ds_chunk = retry_fetch_after_hdf_err(_fetch_ekd, error_re=r"NetCDF:.*HDF error", base_sleep=2, delete_bad_file=False)
             # print(ds_chunk)
 
+            realization_dim = guess_realization_dim(ds_chunk)
+            realization_dim = "realization" if realization_dim is None else realization_dim
+
             print(f"   Chunk size: {ds_chunk.sizes}")
             # print(f"   Chunk coords: {ds_chunk.coords}")
 
@@ -222,10 +225,10 @@ class EarthkitSource (BaseSource):
                     # print(f"   Uniques times: {unique_time}")
                     # print(unique_lt)
                     # print(unique_re)
-                    if "realization" in ds_sel.coords and "realization" not in ds_sel.dims:
+                    if realization_dim in ds_sel.coords and realization_dim not in ds_sel.dims:
                     # keep old realization as metadata
-                        ds_sel = ds_sel.assign_attrs(source_realization=str(ds_sel["realization"].values))
-                        ds_sel = ds_sel.drop_vars("realization")
+                        ds_sel = ds_sel.assign_attrs(source_realization=str(ds_sel[realization_dim].values))
+                        ds_sel = ds_sel.drop_vars(realization_dim)
                     ds_sel = ds_sel.rename({leadtime_name: "realization"})
                     ds_sel = ds_sel.assign_coords(realization=np.arange(len(re_values)))
                     ds_sel = ds_sel.assign_coords({leadtime_name: nearest_lt})
@@ -240,7 +243,7 @@ class EarthkitSource (BaseSource):
                     # make time a 1-length dimension for concat
                     ds_chunk = ds_sel.expand_dims(time=[ds_sel["time"].item()])
                     print(f"   Size after all processing: {ds_chunk.sizes}")
-            xarray_concat_dim = _guess_dim_name(ds_chunk, "time", ["valid_time", "time_counter"]) if not self.xarray_concat_dim else self.xarray_concat_dim
+            xarray_concat_dim = guess_time_dim(ds_chunk) if not self.xarray_concat_dim else self.xarray_concat_dim
             # print(xarray_concat_dim)
             ds_chunks.append(ds_chunk)
         return xarray_concat_dim, ds_chunks
@@ -412,7 +415,7 @@ class EarthkitSource (BaseSource):
         assert n_missed + n_actual_samples == n_all_samples, f"number of samples obtained + missed is different from number of all samples ({n_actual_samples}+{n_missed} =/= {n_all_samples})"
         # print(f"Missed: {self.elements.missed}")
         # Drop missing samples
-        xarray_concat_dim = _guess_dim_name(ds_all, "time", ["valid_time", "time_counter"]) if not self.xarray_concat_dim else self.xarray_concat_dim
+        xarray_concat_dim = guess_time_dim(ds_all) if not self.xarray_concat_dim else self.xarray_concat_dim
         if self.elements.missed:
             ds_all = ds_all.drop_sel({xarray_concat_dim: list(self.elements.missed)}, errors='ignore')
 
