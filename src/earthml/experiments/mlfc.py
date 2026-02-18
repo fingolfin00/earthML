@@ -16,7 +16,7 @@ from lightning.pytorch.loggers import TensorBoardLogger
 from ..sources.registry import build_source
 from ..sources.base import BaseSource
 from ..dataclasses import ExperimentDataset, ExperimentConfig, DataSource
-from ..utils import Table, print_ds_info, _guess_dim_name, guess_time_dim
+from ..utils import Table, print_ds_info, guess_time_dim, guess_lon_dim, guess_lat_dim, guess_realization_dim
 from ..lightning import XarrayDataset, Normalize, EpochRandomSplitDataModule
 from ..nets.registry import build_net
 
@@ -478,7 +478,7 @@ class ExperimentMLFC:
         meta_ds = self.source_test_data[metadata_source].load()
 
         # Canonical dim order
-        base_order = ["realization", "valid_time", "latitude", "longitude"]
+        base_order = [guess_realization_dim(meta_ds), guess_time_dim(meta_ds), guess_lat_dim(meta_ds), guess_lon_dim(meta_ds)]
         # Build the actual order based on what exists
         order = [d for d in base_order if d in meta_ds.dims]
         # If there are other unexpected dims, tack them on at the end
@@ -499,7 +499,7 @@ class ExperimentMLFC:
 
         if meta_ds_ndims[0] == 4: # R,T,H,W (canonical)
             T = meta_ds[guess_time_dim(meta_ds)].size
-            R = meta_ds[_guess_dim_name(meta_ds, 'realization')].size
+            R = meta_ds[guess_realization_dim(meta_ds)].size
             data_permuted = data_permuted.unflatten(1, (R,T))
         else:
             raise ValueError(f"Unexpected meta dataset shape: {len(meta_ds_ndims)},{meta_ds_shapes[0]}")
