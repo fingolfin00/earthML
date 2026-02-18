@@ -211,10 +211,10 @@ class JunoLocalSource (MFXarrayLocalSource):
         # Count valid realizations
         samples_len, missing_samples = [], []
         for date, ds in samples_d.items():
-            time_dim = guess_time_dim(ds)
+            time_dim, realization_dim = guess_time_dim(ds), guess_realization_dim(ds)
             # print("any", ds["_has_var"].any(dim=("realization", time_dim)).values)
-            if ds["_has_var"].any(dim=("realization", time_dim)): # time_dim should always be 1D
-                samples_len.append(ds.sizes.get("realization", 1))
+            if ds["_has_var"].any(dim=(realization_dim, time_dim)): # time_dim should always be 1D
+                samples_len.append(ds.sizes.get(realization_dim, 1))
             else:
                 # Store dates with no valid realizations
                 missing_samples.append(date)
