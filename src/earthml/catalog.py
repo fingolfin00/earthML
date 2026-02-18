@@ -31,7 +31,9 @@ def make_var (
         sss_juno_an=Variable(name="sos", levm=0, leadtime=lt_an), # analysis leadtime in dataset is 15 days ??
         # sss_juno_an=Variable(name="sss_m", levm=0),
 
+        sst_cds_fc=Variable(longname="sea_surface_temperature", name="sst", leadtime=lt_fc),
         sst_juno_fc=Variable(name="tso", leadtime=lt_fc), # SST, surface variable
+        sst_oras5_an=Variable(longname="sea_surface_temperature", name="sosstsst", unit="K"),
         sst_juno_an=Variable(name="tso", leadtime=lt_an),
 
         t14d_cds_fc=Variable(longname="depth_of_14_c_isotherm", name="t14d", leadtime=lt_fc),
