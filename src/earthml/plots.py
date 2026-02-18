@@ -18,7 +18,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 import cartopy.crs as ccrs
 from cartopy.mpl.gridliner import LONGITUDE_FORMATTER, LATITUDE_FORMATTER
 
-from .utils import guess_time_dim, guess_lon_dim, guess_lat_dim
+from .utils import guess_lon_dim, guess_lat_dim
 
 # Standalone plotting functions
 
@@ -1050,7 +1050,7 @@ def plot_ensemble_leadtime (
     """
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=(8, 4))
+        _, ax = plt.subplots(figsize=(8, 4))
 
     # Enforce dimension order
     members = members.transpose(lead_dim, ens_dim)
