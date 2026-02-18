@@ -188,7 +188,7 @@ def metrics_to_df (
     return df
 
 def rechunk (da, lat_rc, lon_rc, time_rc=1, realization_rc=1):
-    chunks = {"time": time_rc, "lat": lat_rc, "lon": lon_rc}
+    chunks = {guess_time_dim(da): time_rc, guess_lat_dim(da): lat_rc, guess_lon_dim(da): lon_rc}
     if "realization" in da.dims:
         chunks["realization"] = realization_rc
     return da.chunk(chunks)
