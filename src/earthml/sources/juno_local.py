@@ -9,7 +9,7 @@ from dask.utils import SerializableLock
 from rich import print
 
 from ..dataclasses import DataSource, Sample
-from ..utils import retry_fetch_after_hdf_err, get_ds_resolution, subset_ds, regrid_to_rectilinear, _guess_coord_name, _guess_dim_name
+from ..utils import retry_fetch_after_hdf_err, get_ds_resolution, subset_ds, regrid_to_rectilinear, guess_time_dim, guess_realization_dim
 from .xarray_local import MFXarrayLocalSource
 from ._preprocess import preprocess_mfdataset
 
@@ -145,7 +145,7 @@ class JunoLocalSource (MFXarrayLocalSource):
 
         common_args = {
             "combine": "nested" if self.concat_dim else "by_coords",
-            "concat_dim": "realization",
+            "concat_dim": guess_realization_dim(xr.open_dataset(samples[0][0], engine=self.engine)) if self.concat_dim is None else self.concat_dim, # try to guess concat_dim from first file if not specified
             "coords": "minimal" if (self.elements.extra['minus_samples'] or self.elements.extra['plus_samples']) else "different", # ["time"],
             # if minus/plus_samples time coordinate stepping might be irregular so override
             "compat": "override" if (self.elements.extra['minus_samples'] or self.elements.extra['plus_samples']) else "no_conflicts",
@@ -161,11 +161,12 @@ class JunoLocalSource (MFXarrayLocalSource):
             "lock": lock,
         }
 
+        concat_dim = common_args["concat_dim"]
+
         for sample, date in zip(samples, dates):
             assert isinstance(sample, list), f"Sample should be a list but it is {type(sample)}"
             # print(sample)
             common_args['paths'] = sample
-            common_args["concat_dim"] = "realization"
             if isinstance(self.data_selection.variable, list):
                 var_ds_list = []
                 for var in self.data_selection.variable:
@@ -181,8 +182,8 @@ class JunoLocalSource (MFXarrayLocalSource):
                 ds_sample = xr.merge(var_ds_list, compat="no_conflicts", combine_attrs="no_conflicts")
 
                 # Load time coord
-                if self.concat_dim in ds_sample.coords:
-                    ds_sample = ds_sample.assign_coords({self.concat_dim: ds_sample[self.concat_dim].load()})
+                if concat_dim in ds_sample.coords:
+                    ds_sample = ds_sample.assign_coords({concat_dim: ds_sample[concat_dim].load()})
             else:
                 if self.engine == "cfgrib":
                     common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": self.data_selection.variable.name}}
@@ -197,8 +198,8 @@ class JunoLocalSource (MFXarrayLocalSource):
                 ds_sample = retry_fetch_after_hdf_err(_open_mfdataset, error_re=r"Unspecified error in H5DSget_num_scales.*")
 
                 # Load time coord
-                if self.concat_dim in ds_sample.coords:
-                    ds_sample = ds_sample.assign_coords({self.concat_dim: ds_sample[self.concat_dim].load()})
+                if concat_dim in ds_sample.coords:
+                    ds_sample = ds_sample.assign_coords({concat_dim: ds_sample[concat_dim].load()})
                 # Promote realization to coord
                 if "realization" in ds_sample.dims:
                     ds_sample = ds_sample.assign_coords({"realization": ds_sample["realization"]})
@@ -210,7 +211,7 @@ class JunoLocalSource (MFXarrayLocalSource):
         # Count valid realizations
         samples_len, missing_samples = [], []
         for date, ds in samples_d.items():
-            time_dim = _guess_dim_name(ds, "time", ["valid_time", "time_counter", "source_time"])
+            time_dim = guess_time_dim(ds)
             # print("any", ds["_has_var"].any(dim=("realization", time_dim)).values)
             if ds["_has_var"].any(dim=("realization", time_dim)): # time_dim should always be 1D
                 samples_len.append(ds.sizes.get("realization", 1))
@@ -239,7 +240,7 @@ class JunoLocalSource (MFXarrayLocalSource):
         # print(objs)
         ds = xr.concat(
             objs=objs,
-            dim=xr.IndexVariable(self.concat_dim, times) if self.concat_dim in ('time', 'valid_time', 'time_counter') else self.concat_dim,
+            dim=xr.IndexVariable(concat_dim, times) if concat_dim in ('time', 'valid_time', 'time_counter') else concat_dim,
             coords='minimal',
             # compat="broadcast_equals",
             compat="override",
