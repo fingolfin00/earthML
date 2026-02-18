@@ -1,7 +1,7 @@
 import xarray as xr
 from rich import print
 
-from ..utils import _guess_dim_name
+from ..utils import guess_time_dim
 from .base import BaseSource
 
 class SumSource (BaseSource):
@@ -24,9 +24,7 @@ class SumSource (BaseSource):
         ds_right = self._right.load()
 
         # Decide concat dimension
-        time_dim = _guess_dim_name(
-            ds_left, "time", ["valid_time", "time_counter"]
-        )
+        time_dim = guess_time_dim(ds_left)
         if time_dim is None:
             raise ValueError("Could not infer time dimension for concatenation")
 
