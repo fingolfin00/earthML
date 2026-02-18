@@ -362,6 +362,9 @@ def _guess_data_var_name (
 ):
     return _guess_dim_or_coord_or_datavar_name(ds, cf_name, 'data_var', fallback_names)
 
+def guess_realization_dim (ds: xr.Dataset):
+    return _guess_dim_name(ds, "realization", ["realization", "number", "ens"])
+
 def guess_time_dim (ds: xr.Dataset):
     return _guess_dim_name(ds, "time", ["valid_time", "time_counter", "source_time", "t"])
 
