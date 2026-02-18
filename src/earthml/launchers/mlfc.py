@@ -75,7 +75,8 @@ class MLFCScenario:
     name: str
 
     # leadtime variable in dataset
-    leadtime_var_name: str
+    leadtime_var_fc_name: str
+    leadtime_var_an_name: str
     leadtime_var_fc_value: int
     leadtime_var_an_value: int
     leadtime_var_unit: Literal["hours", "days", "months"]
@@ -108,7 +109,8 @@ class MLFCScenario:
 
     def _cat (self) -> SimpleNamespace:
         return catalog.make_catalog(
-            leadtime_var=self.leadtime_var_name,
+            leadtime_fc_var=self.leadtime_var_fc_name,
+            leadtime_an_var=self.leadtime_var_an_name,
             leadtime_fc=self.leadtime_var_fc_value,
             leadtime_an=self.leadtime_var_an_value,
             leadtime_unit=self.leadtime_var_unit,

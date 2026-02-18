@@ -2,13 +2,14 @@ from types import SimpleNamespace
 from .dataclasses import Variable, Region, Leadtime
 
 def make_var (
-        leadtime_var: str = "leadtime",
+        leadtime_fc_var: str = "leadtime",
+        leadtime_an_var: str = "leadtime",
         leadtime_fc: int | None = None,
         leadtime_an: int | None = None,
         leadtime_unit: str | None = None
 ):
-    lt_fc = None if leadtime_fc is None and leadtime_unit is None else Leadtime(leadtime_var, leadtime_unit, leadtime_fc)
-    lt_an = None if leadtime_an is None and leadtime_unit is None else Leadtime(leadtime_var, leadtime_unit, leadtime_an)
+    lt_fc = None if leadtime_fc is None and leadtime_unit is None else Leadtime(leadtime_fc_var, leadtime_unit, leadtime_fc)
+    lt_an = None if leadtime_an is None and leadtime_unit is None else Leadtime(leadtime_an_var, leadtime_unit, leadtime_an)
 
     return SimpleNamespace(
         # Atmo
@@ -66,12 +67,13 @@ def make_region ():
 
 def make_catalog (
         *,
-        leadtime_var: str = "leadtime",
+        leadtime_fc_var: str = "leadtime",
+        leadtime_an_var: str = "leadtime",
         leadtime_fc: int | None = None,
         leadtime_an: int | None = None,
         leadtime_unit: str | None = None
 ):
     return SimpleNamespace(
-        var=make_var(leadtime_var=leadtime_var, leadtime_fc=leadtime_fc, leadtime_an=leadtime_an, leadtime_unit=leadtime_unit),
+        var=make_var(leadtime_fc_var=leadtime_fc_var, leadtime_an_var=leadtime_an_var, leadtime_fc=leadtime_fc, leadtime_an=leadtime_an, leadtime_unit=leadtime_unit),
         region=make_region(),
     )

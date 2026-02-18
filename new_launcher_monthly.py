@@ -15,6 +15,7 @@ if __name__ == "__main__":
     vars_atmo = ("sst",)
 
     full_leadtimes_days = (15, 45, 75, 105, 135, 165)
+    full_leadtimes_atmo_days = (30, 60, 90, 120, 150, 180) # atmo seasonal forecast has end of month leadtimes
     full_leadtimes_months = (1, 2, 3, 4, 5, 6)
     full_leadtime_hours_sst = (12, 24, 48, 72, 96, 120, 144, 168)
 
@@ -109,7 +110,7 @@ if __name__ == "__main__":
                 regrid_resolution=regrid_resolution,
             )
 
-            full_leadtimes, full_leadtime_multiple = full_leadtimes_days, full_leadtimes_months
+            full_leadtimes, full_leadtime_multiple = full_leadtimes_atmo_days, full_leadtimes_months if var_exp in vars_atmo else full_leadtimes_days, full_leadtimes_months
             leadtime_var_an_value = 15 # 15 days forecast is analysis
             leadtime_var_unit = "days"
             leadtime_unit = "months"
@@ -118,7 +119,7 @@ if __name__ == "__main__":
                 regrid_resolution=regrid_resolution,
             )
 
-        full_leadtimes, full_leadtime_multiple = full_leadtimes_days, full_leadtimes_months
+        full_leadtimes, full_leadtime_multiple = full_leadtimes_atmo_days if var_exp in vars_atmo else full_leadtimes_days, full_leadtimes_months
         leadtime_var_an_value = 15 # 15 days forecast is analysis
         leadtime_var_unit = "days"
         leadtime_unit = "months"
@@ -165,7 +166,8 @@ if __name__ == "__main__":
 
                 ocean_scenario = MLFCScenario(
                     name="ocean",
-                    leadtime_var_name="leadtime",
+                    leadtime_var_fc_name="leadtime" if experiment_type!="cds-cmcc_oras5" else "step", # ORAS5 leadtime variable is "step" instead of "leadtime"
+                    leadtime_var_an_name="leadtime",
                     leadtime_var_fc_value=leadtime_var_fc_value,
                     leadtime_var_an_value=leadtime_var_an_value, # fixed leadtime for analysis, ignored if no leadtime in analysis dataset
                     leadtime_var_unit=leadtime_var_unit, # SST -> hours, other vars -> days
