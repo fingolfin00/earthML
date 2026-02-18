@@ -189,8 +189,8 @@ def metrics_to_df (
 
 def rechunk (da, lat_rc, lon_rc, time_rc=1, realization_rc=1):
     chunks = {guess_time_dim(da): time_rc, guess_lat_dim(da): lat_rc, guess_lon_dim(da): lon_rc}
-    if "realization" in da.dims:
-        chunks["realization"] = realization_rc
+    if guess_realization_dim(da) in da.dims:
+        chunks[guess_realization_dim(da)] = realization_rc
     return da.chunk(chunks)
 
 # TODO: allow calculating only some metrics
@@ -332,8 +332,7 @@ class Metrics:
         self.truth_name = truth_name
         self.data_name = data_name if isinstance(data_name, list) else [data_name]
 
-        self.time_dim, self.lat_dim, self.lon_dim = self._get_and_rename_dim()
-        self.realization_dim = "realization" if "realization" in self.truth.dims and any("realization" in d.dims for d in self.data) else None
+        self.time_dim, self.lat_dim, self.lon_dim, self.realization_dim = self._get_and_rename_dim()
 
         print("Metrics initialized with truth and data shapes:")
         print(truth_name, self.truth.dims)
@@ -350,13 +349,13 @@ class Metrics:
         #         rename_map = {old: new for old, new in zip(d_vars, truth_vars)}
         #         self.data[i] = d.rename_vars(rename_map)
         # Rename time, lat and lon data dims to match truth dims
-        dims = (guess_time_dim(self.truth), guess_lat_dim(self.truth), guess_lon_dim(self.truth))
+        dims = (guess_time_dim(self.truth), guess_lat_dim(self.truth), guess_lon_dim(self.truth), guess_realization_dim(self.truth))
         for i, d in enumerate(self.data):
-            data_dims = (guess_time_dim(d), guess_lat_dim(d), guess_lon_dim(d))
+            data_dims = (guess_time_dim(d), guess_lat_dim(d), guess_lon_dim(d), guess_realization_dim(d))
             for dim, data_dim in zip(dims, data_dims):
                 if data_dim != dim:
                     self.data[i] = d.rename_dims({data_dim: dim})
-        return dims # time, lat, lon
+        return dims # time, lat, lon, realization
 
     @staticmethod
     def save (
