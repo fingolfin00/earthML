@@ -54,7 +54,7 @@ if __name__ == "__main__":
                     ),
                     target_provider_kwargs=dict(
                         train=dict(root_path=root_path_analysis),
-                        test=[dict(root_path=root_path_analysis), dict(root_path=root_path_analysis_new, file_header="CMS")],
+                        test=[dict(root_path=root_path_analysis), dict(root_path=root_path_analysis_new, file_header="CMD")],
                     ),
                     save_train=True,
                     save_test=True,
