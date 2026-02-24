@@ -1860,11 +1860,9 @@ def load_exp (exp_root, exp_cfg, type_data: str, only_sizes: bool = False, merge
     test_period   = exp_cfg["test_period"]
 
     out, n_valid_samples = {}, {}
-
     for tp in train_periods:
-        fc_per_lt, an_per_lt, pr_per_lt = [], [], []
         n_valid_samples[tp] = {}
-
+        fc_lt, an_lt, pr_lt = [], [], []
         for lt in leadtimes:
             pr_list, fc_list, an_list = [], [], []
             n_valid_samples[tp][lt] = {}
@@ -1882,7 +1880,7 @@ def load_exp (exp_root, exp_cfg, type_data: str, only_sizes: bool = False, merge
                 n_valid_samples[tp][lt][v] = {
                     "input": (len(source["input"].elements.samples)),
                     "target": (len(source["target"].elements.samples)),
-                    }
+                }
                 if type_data == "test":
                     n_valid_samples[tp][lt][v]["prediction"] = (len(source["prediction"].elements.samples))
 
@@ -1904,23 +1902,41 @@ def load_exp (exp_root, exp_cfg, type_data: str, only_sizes: bool = False, merge
             if only_sizes:
                 continue
 
-            fc_lt = xr.merge(fc_list, compat=merge_compat).assign_coords(leadtime=lt).expand_dims("leadtime")
-            an_lt = xr.merge(an_list, compat=merge_compat).assign_coords(leadtime=lt).expand_dims("leadtime")
+            ds_lt = []
+            for ds_list in [fc_list, an_list, pr_list]:
+                if ds_list:
+                    ds = xr.merge(ds_list, compat=merge_compat) # Merge variable datasets for this leadtime
+                else:
+                    ds = None
+                ds_lt.append(ds)
 
-            fc_per_lt.append(fc_lt)
-            an_per_lt.append(an_lt)
+            fc_single_lt, an_single_lt, pr_single_lt = ds_lt
+            # print(f"load_exp, fc_lt.dims: {fc_lt.dims if fc_lt is not None else 'None'}, an_lt.dims: {an_lt.dims if an_lt is not None else 'None'}, pr_lt.dims: {pr_lt.dims if pr_lt is not None else 'None'}")
 
+            fc_lt.append(fc_single_lt)
+            an_lt.append(an_single_lt)
             if type_data == "test":
-                pr_lt = xr.merge(pr_list, compat=merge_compat).assign_coords(leadtime=lt).expand_dims("leadtime")
-                pr_per_lt.append(pr_lt)
+                pr_lt.append(pr_single_lt)
 
         if only_sizes:
             out[tp] = {}
             continue
 
-        fc_tp = xr.concat(fc_per_lt, dim="leadtime").assign_attrs(leadtime_unit=lt_unit, train_period=tp)
-        an_tp = xr.concat(an_per_lt, dim="leadtime").assign_attrs(leadtime_unit=lt_unit, train_period=tp)
-        pr_tp = xr.concat(pr_per_lt, dim="leadtime").assign_attrs(leadtime_unit=lt_unit, train_period=tp) if pr_per_lt else None
+        ds_tp = []
+        leadtime_fc_dim, leadtime_an_dim, leadtime_pr_dim = guess_leadtime_dim(fc_lt[0]), guess_leadtime_dim(an_lt[0]), guess_leadtime_dim(pr_lt[0]) if pr_lt else None
+        for leadtime_dim, ds_list in zip(
+            [leadtime_fc_dim, leadtime_an_dim, leadtime_pr_dim],
+            [fc_lt, an_lt, pr_lt]
+        ):
+            if ds_list:
+                if leadtime_dim is None:
+                    leadtime_dim = "leadtime"
+                ds = xr.concat(ds_list, dim=leadtime_dim).assign_coords({leadtime_dim: np.array(leadtimes)}).assign_attrs(leadtime_unit=lt_unit, train_period=tp)
+            else:
+                ds = None
+            # print(ds)
+            ds_tp.append(ds)
+        fc_tp, an_tp, pr_tp = ds_tp
 
         out[tp] = {"fc": fc_tp, "an": an_tp, "pr": pr_tp}
 
