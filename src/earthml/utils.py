@@ -94,34 +94,33 @@ class Dask:
 
         return self
 
-    def close(self):
+    def close (self):
         """
-        Close in correct order: client first, then cluster.
-        Cancel outstanding futures to avoid worker noise.
+        Gracefully close Dask client and cluster, with retries to handle transient issues.
         """
         if self.client is not None:
             try:
-                # prevents workers from continuing to run tasks during shutdown
-                self.client.cancel(list(self.client.futures.values()), force=True)
+                # Ask workers to gracefully retire and close
+                self.client.retire_workers(close_workers=True)
             except Exception:
                 pass
             try:
-                self.client.close(timeout=10)
+                self.client.close()
             except Exception:
                 pass
             self.client = None
 
         if self.cluster is not None:
             try:
-                self.cluster.close(timeout=10)
+                self.cluster.close()
             except Exception:
                 pass
             self.cluster = None
 
-    def __enter__(self):
+    def __enter__ (self):
         return self.start()
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__ (self, exc_type, exc, tb):
         self.close()
         return False  # don't suppress exceptions
 
