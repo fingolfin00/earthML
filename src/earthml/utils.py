@@ -189,17 +189,21 @@ def _extract_nc_path_from_oserror (e: Exception) -> Path | None:
     return Path(m.group(1)) if m else None
 
 
-def retry_fetch_after_hdf_err_eks_source(
+def retry_fetch_after_hdf_err_eks_source (
     fetch_fn: Callable,
     *,
     tries: int = 5,
     base_sleep: float = 1.5,
 ):
+    last_e: Exception | None = None
     for attempt in range(1, tries + 1):
-        src = fetch_fn()
-        return src
-
-    raise ValueError("Couldn't fetch requested Earthkit source")
+        try:
+            return fetch_fn()
+        except Exception as e:
+            last_e = e
+            print(f"   Attempt {attempt}/{tries} failed: {e}")
+            time.sleep(base_sleep * (2 ** (attempt - 1)))
+    raise RuntimeError(f"Couldn't fetch requested Earthkit source after {tries} attempts") from last_e
 
 def _set_ekd_cache_dir (cache_dir: str = Path("/tmp/earthkit-cache/")):
     import earthkit.data as ekd
@@ -222,7 +226,6 @@ def retry_fetch_after_hdf_err (
     delete_bad_file: bool = False,
     delete_bad_parent: bool = False,
 ):
-    """fetch_fn(): should return an xr.Dataset"""
     pat = re.compile(error_re, re.I) if error_re else None
     last_e: Exception | None = None
     orig_ekd_cache_dir = _get_ekd_cache_dir()
@@ -230,24 +233,30 @@ def retry_fetch_after_hdf_err (
     for attempt in range(1, tries + 1):
         try:
             data = fetch_fn()
+
             if isinstance(data, EmptySource):
                 print(f"   EmptySource returned, setting tmp cache dir ({attempt}/{tries})")
-                _set_ekd_cache_dir()
-                # time.sleep(base_sleep * (2 ** (attempt - 1)))
-                continue
+                _set_ekd_cache_dir()  # default tmp cache
+                # continue retry loop
             else:
                 _set_ekd_cache_dir(orig_ekd_cache_dir)
                 return data
-        # except (OSError, RuntimeError, KeyError) as e:
+
         except Exception as e:
-            print("   Attempt", attempt)
             last_e = e
-            p = _extract_nc_path_from_oserror(e) # if e in (OSError, KeyError) else None
+            msg = str(e)
+            p = _extract_nc_path_from_oserror(e)
+
+            # Decide if this exception is retryable
+            retryable = True if pat is None else bool(pat.search(msg))
+
+            if not retryable:
+                _set_ekd_cache_dir(orig_ekd_cache_dir)
+                raise  # non-matching error -> fail fast
+
+            print(f"   Attempt {attempt}/{tries}")
             if p:
-                msg = str(e)
-                if not pat.search(msg):
-                    raise
-                print(f"   HDF error opening {p}, wait {base_sleep}s (attempt {attempt}/{tries})")
+                print(f"   Matched retryable error opening {p}, wait {base_sleep}s")
 
                 if delete_bad_file and p.exists():
                     try:
@@ -255,21 +264,23 @@ def retry_fetch_after_hdf_err (
                         print(f"   → deleted corrupt cache file: {p}")
                     except Exception as del_e:
                         print(f"   → failed to delete {p}: {del_e}")
-                cache_subdir = p.parent
 
-                if delete_bad_parent and cache_subdir.exists():
-                    try:
-                        rmdir(cache_subdir)
-                        print(f"   → deleted corrupt cache parent subdir: {cache_subdir}")
-                    except Exception as del_e:
-                        print(f"   → failed to delete {cache_subdir}: {del_e}")
+                if delete_bad_parent:
+                    cache_subdir = p.parent
+                    if cache_subdir.exists():
+                        try:
+                            rmdir(cache_subdir)
+                            print(f"   → deleted corrupt cache parent subdir: {cache_subdir}")
+                        except Exception as del_e:
+                            print(f"   → failed to delete {cache_subdir}: {del_e}")
             else:
-                print(e)
-                # print(f"HDF error (attempt {attempt}/{tries}) but could not locate file path")
+                # Retryable but no path extracted: log message
+                print(f"   Matched retryable error (no .nc path found): {msg}")
 
         time.sleep(base_sleep * (2 ** (attempt - 1)))
 
-    raise RuntimeError
+    _set_ekd_cache_dir(orig_ekd_cache_dir)
+    raise RuntimeError(f"Failed after {tries} attempts; last error: {last_e!r}") from last_e
 
 def generate_date_range (period: TimeRange):
     freq = period.freq
