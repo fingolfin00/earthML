@@ -185,7 +185,7 @@ class Table ():
 
 def _extract_nc_path_from_oserror (e: Exception) -> Path | None:
     # netCDF4 often formats it like: "...: '/path/file.nc'"
-    m = re.search(r"['\"](/[^'\"]+\.nc)['\"]", str(e))
+    m = re.search(r"(/[^'\"]+\.(?:nc|nc4))", str(e))
     return Path(m.group(1)) if m else None
 
 
