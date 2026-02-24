@@ -1,9 +1,12 @@
+import os, time, random
+os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
+from contextlib import contextmanager
+import hashlib, json
+import numpy as np
 from pathlib import Path
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime, timezone
 from dateutil.relativedelta import relativedelta
 from dateutil.rrule import rrule, MONTHLY
-import tempfile, os, shutil
-os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -40,8 +43,16 @@ class EarthkitSource (BaseSource):
     ):
         super().__init__ (datasource)
 
+        # Shared, persistent cache directory (reused across restarts)
+        base_cache = Path(earthkit_cache_dir)
+        base_cache.mkdir(parents=True, exist_ok=True)
+
         ekd.config.set("cache-policy", "user")
-        ekd.config.set("user-cache-directory", earthkit_cache_dir)
+        ekd.config.set("user-cache-directory", str(base_cache))
+
+        # Locks must be shared across jobs/runs if cache is shared
+        self._lock_dir = base_cache / ".locks"
+        self._lock_dir.mkdir(parents=True, exist_ok=True)
 
         self.elements.samples = self.date_range
         self.provider = provider
@@ -70,6 +81,39 @@ class EarthkitSource (BaseSource):
         # print("[cyan]SSL_CERT_FILE[/cyan] =", os.environ.get("SSL_CERT_FILE"))
         # print("[cyan]REQUESTS_CA_BUNDLE[/cyan] =", os.environ.get("REQUESTS_CA_BUNDLE"))
         # print("[cyan]certifi.where()[/cyan] =", certifi.where())
+
+    @contextmanager
+    def _file_lock(self, lock_path: Path, timeout_s: int = 600, poll_s: float = 0.2, stale_s: int = 6 * 3600):
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        start = time.time()
+
+        while True:
+            try:
+                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                with os.fdopen(fd, "w") as f:
+                    f.write(f"pid={os.getpid()}\ncreated={time.time()}\n")
+                break
+            except FileExistsError:
+                # stale lock cleanup
+                try:
+                    age = time.time() - lock_path.stat().st_mtime
+                    if age > stale_s:
+                        lock_path.unlink()
+                        continue
+                except FileNotFoundError:
+                    continue
+
+                if time.time() - start > timeout_s:
+                    raise TimeoutError(f"Timeout waiting for lock: {lock_path}")
+                time.sleep(poll_s + random.random() * 0.1)
+
+        try:
+            yield
+        finally:
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
 
     def _populate_missed (self):
         """Populate missed if some months are skipped for seasonal requests"""
@@ -126,7 +170,7 @@ class EarthkitSource (BaseSource):
             name, td = leadtime_pairs[0]
             self.leadtime_d = {name: td}
 
-    def _earthkit_source_path (src) -> Path | None:
+    def _earthkit_source_path (self, src) -> Path | None:
         """
         Try to get a real filesystem path from an earthkit source.
         Works for file-backed sources.
@@ -166,20 +210,92 @@ class EarthkitSource (BaseSource):
             else:
                 src_ekd_params = {"name": self.provider} | request_d
 
-            # print(src_ekd_params)
-            def _fetch_ekd_src ():
-                return ekd.from_source(**src_ekd_params)
-            src_ekd = retry_fetch_after_hdf_err(_fetch_ekd_src, error_re=r"NetCDF:.*HDF error", base_sleep=5, tries=2, delete_bad_file=True, delete_bad_parent=True)
+            def _freeze(obj):
+                """Convert obj into a JSON-serializable, order-stable structure."""
+                if isinstance(obj, dict):
+                    return {str(k): _freeze(v) for k, v in sorted(obj.items(), key=lambda kv: str(kv[0]))}
+                if isinstance(obj, (list, tuple, set)):
+                    return [_freeze(v) for v in obj]
+                if isinstance(obj, np.ndarray):
+                    return [_freeze(v) for v in obj.tolist()]
+                if hasattr(obj, "tolist"):  # xarray/pandas scalars
+                    try:
+                        return _freeze(obj.tolist())
+                    except Exception:
+                        pass
+                # common scalar types
+                if isinstance(obj, (str, int, float, bool)) or obj is None:
+                    return obj
+                # datetime-like / timedelta-like
+                try:
+                    import pandas as pd
+                    if isinstance(obj, (pd.Timestamp, pd.Timedelta)):
+                        return str(obj)
+                except Exception:
+                    pass
+                # fallback: string repr (last resort, but stable enough for lock key)
+                return repr(obj)
 
-            def _fetch_ekd ():
-                # tmpdir = Path(tempfile.mkdtemp(prefix="ekd_"))
-                # out = tmpdir / "data.nc"
-                # print("Save to tmp file:", out)
-                return src_ekd.to_xarray(**(self.to_xarray_args or {}))
+            def _lock_key_from_params(params: dict) -> str:
+                frozen = _freeze(params)
+                payload = json.dumps(frozen, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+                return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+            lock_key = _lock_key_from_params(src_ekd_params)
+            lock_path = self._lock_dir / f"{lock_key}.lock"
+
+            def _fetch_ekd_src():
+                with self._file_lock(lock_path):
+                    return ekd.from_source(**src_ekd_params)
+
+            src_ekd = retry_fetch_after_hdf_err(
+                _fetch_ekd_src,
+                error_re=r"NetCDF:.*HDF error",
+                base_sleep=5,
+                tries=5,
+                delete_bad_file=False,
+                delete_bad_parent=False,
+            )
+
+            def _fetch_ekd():
+                with self._file_lock(lock_path):
+                    # Open and load dataset
+                    ds_chunk = src_ekd.to_xarray(**(self.to_xarray_args or {}))
+                    ds_chunk = ds_chunk.load()
+
+                    # Validate quickly: expected variables present
+                    missing = [v for v in self.var_name_list if v not in ds_chunk.data_vars]
+                    if missing:
+                        raise ValueError(f"Missing variables in chunk: {missing}. Got: {list(ds_chunk.data_vars)}")
+
+                    # Touch a tiny slice to force a real read
+                    probe_var = self.var_name_list[0]
+                    _ = ds_chunk[probe_var].isel(
+                        {d: 0 for d in ds_chunk[probe_var].dims if ds_chunk.sizes.get(d, 1) > 0}
+                    ).load()
+
+                    return ds_chunk
 
             # print(src_ekd)
             # print(self.to_xarray_args)
-            ds_chunk = retry_fetch_after_hdf_err(_fetch_ekd, error_re=r"NetCDF:.*HDF error", base_sleep=2, delete_bad_file=False)
+            ds_chunk = retry_fetch_after_hdf_err(
+                _fetch_ekd,
+                error_re=r"NetCDF:.*HDF error",
+                base_sleep=2,
+                tries=5,
+                delete_bad_file=True,
+                delete_bad_parent=True,
+            )
+
+            # Validate quickly: expected variables present
+            missing = [v for v in self.var_name_list if v not in ds_chunk.data_vars]
+            if missing:
+                raise ValueError(f"Missing variables in chunk: {missing}. Got: {list(ds_chunk.data_vars)}")
+
+            # Touch a tiny slice to force a real read
+            probe_var = self.var_name_list[0]
+            _ = ds_chunk[probe_var].isel({d: 0 for d in ds_chunk[probe_var].dims if ds_chunk.sizes.get(d, 1) > 0}).load()
+
             # print(ds_chunk)
 
             realization_dim = guess_realization_dim(ds_chunk)
@@ -189,62 +305,112 @@ class EarthkitSource (BaseSource):
             # print(f"   Chunk coords: {ds_chunk.coords}")
 
             if self.leadtime_d:
-                td = next(iter(self.leadtime_d.values()))
+                # Get requested leadtime and coord name
+                target_lt_d = next(iter(self.leadtime_d.values()))
                 leadtime_name = next(iter(self.leadtime_d.keys()))
-                # TODO we currently support only the case with 'time' coord to infer realizations
-                if "leadtime" in ds_chunk.coords and 'time' in ds_chunk.coords and td is not None:
+
+                if target_lt_d is not None and leadtime_name in ds_chunk.coords:
+                    # Normalize requested target to the coordinate dtype
+                    if not isinstance(target_lt_d, pd.Timedelta):
+                        target_lt_pd = pd.to_timedelta(target_lt_d)
+                    else:
+                        target_lt_pd = target_lt_d
+
+                    coord_dtype = ds_chunk[leadtime_name].dtype
+
+                    # For timedelta64 coords: convert via to_timedelta64 then cast to coord dtype
+                    # For numeric coords this still works if target_lt_pd is numeric-like
+                    try:
+                        target_np = np.array(target_lt_pd.to_timedelta64(), dtype=coord_dtype)
+                    except Exception:
+                        # fallback generic cast (useful if coords are ints/floats)
+                        target_np = np.asarray(target_lt_pd, dtype=coord_dtype)
+
+                    # Find nearest available leadtime in this chunk
                     lt_values = ds_chunk[leadtime_name].values
                     unique_lt = np.unique(lt_values)
-                    time_values = ds_chunk['time'].values
-                    unique_time = np.unique(time_values)
-                    n_unique_time = len(unique_time)
-                    n_leadtime = n_unique_time - n_months_req + 1
-                    n_realizations = len(lt_values) / n_months_req / n_leadtime
-                    assert n_realizations.is_integer(), f"Number of realizations cannot be computed, check the dataset"
-                    n_realizations = int(n_realizations)
-                    print(f"   Number of detected leadtimes and realizations: {n_leadtime}, {n_realizations}")
-                    # coord_u = np.unique(coord)
-                    # Cast to same dtype as coord (usually timedelta64[ns])
-                    coord_dtype = ds_chunk[leadtime_name].dtype
-                    target = td.to_numpy().astype(coord_dtype)
-                    # print(f"   requested leadtime {target}")
-                    nearest_lt = unique_lt[np.argmin(np.abs(unique_lt - target))]
-                    print(f"   Requested leadtime: {self.leadtime_d}, selected leadtime: {pd.Timedelta(nearest_lt)}")
-                    mask = (lt_values == nearest_lt)
-                    # print(f"   leadtime sel mask: {mask}")
-                    # print(f"   total leadtimes: {lt_values}")
-                    ds_sel = ds_chunk.isel({leadtime_name: mask})
-                    # print(f"   Size after leadtime sel: {ds_sel.sizes}")
-                    n_sel_lt = len(ds_sel['leadtime'].values)
-                    n_sel_re = n_sel_lt / n_months_req
-                    assert n_sel_re.is_integer() and int(n_sel_re) == n_realizations, f"Number of realizations not coherent, try single-month requests"
-                    # print(f"   Coords after leadtime sel: {ds_sel.coords}")
-                    re_values = ds_sel['leadtime'].values
-                    # unique_re = np.unique(re_values)
-                    # print(f"   Total leadtimes: {len(lt_values)}, times: {len(time_values)}, realizations: {re_values}")
-                    # print(f"   Unique leadtimes: {len(unique_lt)}, times: {len(unique_time)}, realizations: {unique_re}")
-                    # print(f"   Uniques leadtimes: {unique_lt}")
-                    # print(f"   Uniques times: {unique_time}")
-                    # print(unique_lt)
-                    # print(unique_re)
-                    if realization_dim in ds_sel.coords and realization_dim not in ds_sel.dims:
-                    # keep old realization as metadata
-                        ds_sel = ds_sel.assign_attrs(source_realization=str(ds_sel[realization_dim].values))
-                        ds_sel = ds_sel.drop_vars(realization_dim)
-                    ds_sel = ds_sel.rename({leadtime_name: "realization"})
-                    ds_sel = ds_sel.assign_coords(realization=np.arange(len(re_values)))
-                    ds_sel = ds_sel.assign_coords({leadtime_name: nearest_lt})
-                    if "time" in ds_sel.coords and "realization" in ds_sel["time"].dims:
-                        t = ds_sel["time"].values
-                        # print(f"   ds_chunk time values: {t[0]}")
-                        if np.all(t == t[0]):
-                            ds_sel = ds_sel.assign_coords(time=t[0])
-                        else:
-                            # if not identical, pick one (or decide a rule)
-                            ds_sel = ds_sel.assign_coords(time=t[0])
-                    # make time a 1-length dimension for concat
-                    ds_chunk = ds_sel.expand_dims(time=[ds_sel["time"].item()])
+
+                    # Compute index of nearest available value (tie-break: first occurrence)
+                    idx = np.argmin(np.abs(unique_lt - target_np))
+                    nearest_lt = unique_lt[idx]
+
+                    # debug/logging: convert nearest to readable if possible
+                    try:
+                        nearest_readable = pd.to_timedelta(nearest_lt)
+                    except Exception:
+                        nearest_readable = nearest_lt
+
+                    print(f"   Requested leadtime: {self.leadtime_d}, nearest available: {nearest_readable}")
+
+                    # Select data for the nearest index
+                    mask_lt = (lt_values == nearest_lt)
+                    if not mask_lt.any():
+                        raise ValueError(f"No matching leadtime values found in chunk for nearest={nearest_lt}")
+
+                    ds_chunk = ds_chunk.isel({leadtime_name: np.where(mask_lt)[0]})
+
+                    # Drop variable only if it exists as a data variable (avoid dropping the coord unintentionally)
+                    if leadtime_name in ds_chunk.data_vars:
+                        ds_chunk = ds_chunk.drop_vars(leadtime_name)
+
+                    # Reassign the coordinate to the requested target (ensures uniform coord across chunks)
+                    ds_chunk = ds_chunk.assign_coords({leadtime_name: (leadtime_name, np.array([target_np], dtype=coord_dtype))})
+
                     print(f"   Size after all processing: {ds_chunk.sizes}")
+                # TODO we currently support only the case with 'time' coord to infer realizations
+                # if leadtime_name in ds_chunk.coords and 'time' in ds_chunk.coords and td is not None:
+                #     lt_values = ds_chunk[leadtime_name].values
+                #     unique_lt = np.unique(lt_values)
+                #     time_values = ds_chunk['time'].values
+                #     unique_time = np.unique(time_values)
+                #     n_unique_time = len(unique_time)
+                #     n_leadtime = n_unique_time - n_months_req + 1
+                #     n_realizations = len(lt_values) / n_months_req / n_leadtime
+                #     assert n_realizations.is_integer(), f"Number of realizations cannot be computed, check the dataset"
+                #     n_realizations = int(n_realizations)
+                #     print(f"   Number of detected leadtimes and realizations: {n_leadtime}, {n_realizations}")
+                #     # coord_u = np.unique(coord)
+                #     # Cast to same dtype as coord (usually timedelta64[ns])
+                #     coord_dtype = ds_chunk[leadtime_name].dtype
+                #     target = td.to_numpy().astype(coord_dtype)
+                #     # print(f"   requested leadtime {target}")
+                #     nearest_lt = unique_lt[np.argmin(np.abs(unique_lt - target))]
+                #     print(f"   Requested leadtime: {self.leadtime_d}, selected leadtime: {pd.Timedelta(nearest_lt)}")
+                #     mask = (lt_values == nearest_lt)
+                #     # print(f"   leadtime sel mask: {mask}")
+                #     # print(f"   total leadtimes: {lt_values}")
+                #     ds_sel = ds_chunk.isel({leadtime_name: mask})
+                #     # print(f"   Size after leadtime sel: {ds_sel.sizes}")
+                #     n_sel_lt = len(ds_sel['leadtime'].values)
+                #     n_sel_re = n_sel_lt / n_months_req
+                #     assert n_sel_re.is_integer() and int(n_sel_re) == n_realizations, f"Number of realizations not coherent, try single-month requests"
+                #     # print(f"   Coords after leadtime sel: {ds_sel.coords}")
+                #     re_values = ds_sel['leadtime'].values
+                #     # unique_re = np.unique(re_values)
+                #     # print(f"   Total leadtimes: {len(lt_values)}, times: {len(time_values)}, realizations: {re_values}")
+                #     # print(f"   Unique leadtimes: {len(unique_lt)}, times: {len(unique_time)}, realizations: {unique_re}")
+                #     # print(f"   Uniques leadtimes: {unique_lt}")
+                #     # print(f"   Uniques times: {unique_time}")
+                #     # print(unique_lt)
+                #     # print(unique_re)
+                #     if realization_dim in ds_sel.coords and realization_dim not in ds_sel.dims:
+                #     # keep old realization as metadata
+                #         ds_sel = ds_sel.assign_attrs(source_realization=str(ds_sel[realization_dim].values))
+                #         ds_sel = ds_sel.drop_vars(realization_dim)
+                #     ds_sel = ds_sel.rename({leadtime_name: "realization"})
+                #     ds_sel = ds_sel.assign_coords(realization=np.arange(len(re_values)))
+                #     ds_sel = ds_sel.assign_coords({leadtime_name: nearest_lt})
+                #     if "time" in ds_sel.coords and "realization" in ds_sel["time"].dims:
+                #         t = ds_sel["time"].values
+                #         # print(f"   ds_chunk time values: {t[0]}")
+                #         if np.all(t == t[0]):
+                #             ds_sel = ds_sel.assign_coords(time=t[0])
+                #         else:
+                #             # if not identical, pick one (or decide a rule)
+                #             ds_sel = ds_sel.assign_coords(time=t[0])
+                #     # make time a 1-length dimension for concat
+                #     ds_chunk = ds_sel.expand_dims(time=[ds_sel["time"].item()])
+                #     print(f"   Size after all processing: {ds_chunk.sizes}")
             xarray_concat_dim = guess_time_dim(ds_chunk) if not self.xarray_concat_dim else self.xarray_concat_dim
             # print(xarray_concat_dim)
             ds_chunks.append(ds_chunk)
