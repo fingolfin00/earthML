@@ -14,7 +14,6 @@ def juno_monthly_hindcast_ocean_netcdf (
     realizations: str | int = "all",
     engine: str = "h5netcdf",
     regrid_resolution: float = 0.25,
-    concat_dim: str = "time",
     file_path_date_format: str = "%Y%m",
     file_header: str = "cmcc_CMCC-CM3-v20231101_hindcast_S",
     file_path_var_prefix: str = "00_ocean_mon_ocean2d_", # _ocean_6hr_surface_
@@ -35,7 +34,6 @@ def juno_monthly_hindcast_ocean_netcdf (
         realizations=realizations,
         lead_time=relativedelta(**{leadtime_unit: leadtime_value}),
         regrid_resolution=regrid_resolution,
-        concat_dim=concat_dim,
     )
     return ProviderSpec('juno-local', merge(base, overrides, **kw))
 
