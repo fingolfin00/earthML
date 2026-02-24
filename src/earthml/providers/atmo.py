@@ -11,7 +11,6 @@ def juno_forecast_hourly (
     leadtime_value: int,
     leadtime_unit: str,
     root_path: str | Path = "/data/inputs/METOCEAN/rolling/model/atmos/ECMWF/IFS_010/1.0forecast/1h/grib/",
-    concat_dim: str = "valid_time",
     engine: str = "cfgrib",
     file_path_date_format: str = "%Y%m%d",
     file_header: str = "JLS",
@@ -34,7 +33,6 @@ def juno_forecast_hourly (
         lead_time=relativedelta(**{leadtime_unit: leadtime_value}),
         minus_timedelta=relativedelta(hours=minus_hours),
         plus_timedelta=relativedelta(hours=plus_hours),
-        concat_dim=concat_dim,
     )
     return ProviderSpec('juno-local', merge(base, overrides, **kw))
 
@@ -44,7 +42,6 @@ def juno_analysis_6hourly (
     leadtime_value: int,
     leadtime_unit: str,
     root_path: str | Path = "/data/inputs/METOCEAN/historical/model/atmos/ECMWF/IFS_010/analysis/6h/grib/",
-    concat_dim: str = "valid_time",
     engine: str = "cfgrib",
     file_path_date_format: str = "%Y/%m",
     file_header: str = "JLD",
@@ -67,7 +64,6 @@ def juno_analysis_6hourly (
         lead_time=relativedelta(hours=0),
         minus_timedelta=relativedelta(hours=minus_hours),
         plus_timedelta=relativedelta(hours=plus_hours),
-        concat_dim=concat_dim,
     )
     return ProviderSpec('juno-local', merge(base, overrides, **kw))
 
