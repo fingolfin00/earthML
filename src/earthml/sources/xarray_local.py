@@ -43,11 +43,9 @@ class MFXarrayLocalSource (BaseSource):
         self,
         datasource: DataSource,
         root_path: str,
-        concat_dim: str = None,
     ):
         super().__init__ (datasource)
         self.path = Path(root_path)
-        self.concat_dim = concat_dim
 
     @abstractmethod
     def _get_data_filenames (self) -> Sample:
