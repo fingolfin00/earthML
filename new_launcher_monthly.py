@@ -19,13 +19,14 @@ if __name__ == "__main__":
     full_leadtimes_months = (1, 2, 3, 4, 5, 6)
     full_leadtime_hours_sst = (12, 24, 48, 72, 96, 120, 144, 168)
 
-    start_train_date = datetime(1993, 6, 1)
+    start_train_date = datetime(1993, 7, 1)
     end_train_date = datetime(2020, 12, 31)
     # Short exp for debug
-    # full_leadtimes_days = (45,)
-    # full_leadtimes_months = (1,)
-    # start_train_date = datetime(1993, 6, 1)
-    # end_train_date = datetime(1994, 12, 31)
+    # full_leadtimes_days = (165,)
+    # full_leadtimes_atmo_days = (180,)
+    # full_leadtimes_months = (6,)
+    # start_train_date = datetime(1993, 7, 1)
+    # end_train_date = datetime(1993, 12, 31)
 
     # experiment_type = "juno-cmcc_juno-cmcc" # analysis in forecast dataset (lt=15d) WRONG!
     experiment_type = "cds-cmcc_oras5" if var_exp in vars_atmo else "juno-cmcc_oras5"
