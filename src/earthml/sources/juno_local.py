@@ -33,11 +33,10 @@ class JunoLocalSource (MFXarrayLocalSource):
         realizations: int | str = 1,
         minus_timedelta: timedelta = None,
         plus_timedelta: timedelta = None,
-        concat_dim: str = None,
         regrid_resolution=None,  # float or (lat_res, lon_res) in degrees
         regrid_vars=None,
     ):
-        super().__init__ (datasource, root_path, concat_dim)
+        super().__init__ (datasource, root_path)
         self.engine = engine
         self.elements = self._get_data_filenames(
             file_path_date_format,
@@ -71,6 +70,7 @@ class JunoLocalSource (MFXarrayLocalSource):
         assert realizations == 'all' or realizations > 0
         for date in self.date_range:
             previous_date = date - lead_time
+            # print("juno-local prev date:", previous_date)
             data_path = self.path.joinpath(previous_date.strftime(file_path_date_format))
             if both_data_and_previous_date_in_file:
                 data_glob = f"{file_header}{previous_date.strftime(file_date_format)}{date.strftime(file_date_format)}{file_suffix}"
@@ -141,11 +141,11 @@ class JunoLocalSource (MFXarrayLocalSource):
         dates = [date for date in self.elements.samples.keys() if date not in self.elements.missed]
         print(f"File samples: {len(samples)}, minus: {len(self.elements.extra['minus_samples'])}, plus: {len(self.elements.extra['plus_samples'])}, missed: {len(self.elements.missed)}")
         samples_d = {}
+
         lock = SerializableLock()
 
         common_args = {
-            "combine": "nested" if self.concat_dim else "by_coords",
-            "concat_dim": guess_realization_dim(xr.open_dataset(samples[0][0], engine=self.engine)) if self.concat_dim is None else self.concat_dim, # try to guess concat_dim from first file if not specified
+            "combine": "nested",  # if self.concat_dim else "by_coords",
             "coords": "minimal" if (self.elements.extra['minus_samples'] or self.elements.extra['plus_samples']) else "different", # ["time"],
             # if minus/plus_samples time coordinate stepping might be irregular so override
             "compat": "override" if (self.elements.extra['minus_samples'] or self.elements.extra['plus_samples']) else "no_conflicts",
@@ -161,18 +161,51 @@ class JunoLocalSource (MFXarrayLocalSource):
             "lock": lock,
         }
 
-        concat_dim = common_args["concat_dim"]
+        # Prepare probe backend kwargs consistent with common_args
+        first_var = (
+            self.data_selection.variable[0].name
+            if isinstance(self.data_selection.variable, list)
+            else self.data_selection.variable.name
+        )
+
+        probe_backend_kwargs = dict(common_args.get("backend_kwargs", {}))
+
+        if self.engine == "cfgrib":
+            probe_backend_kwargs.update({
+                "indexpath": "",
+                "filter_by_keys": {"cfVarName": first_var},
+            })
+
+        # Safely guess concat_dim from first file
+        with xr.open_dataset(
+            samples[0][0],
+            engine=self.engine,
+            backend_kwargs=probe_backend_kwargs,
+            lock=lock,
+        ) as ds0:
+            common_args["concat_dim"] = guess_realization_dim(ds0) or "realization"
+
+        realization_concat_dim = common_args["concat_dim"]
 
         for sample, date in zip(samples, dates):
             assert isinstance(sample, list), f"Sample should be a list but it is {type(sample)}"
+
+            # Try sorting by realization "...rxx..."
+            if len(sample) > 1:
+                sample = sorted(sample, key=lambda p: int(re.search(r"_r(\d+)", p.name).group(1)))
             # print(sample)
             common_args['paths'] = sample
+
             if isinstance(self.data_selection.variable, list):
                 var_ds_list = []
                 for var in self.data_selection.variable:
                     if self.engine == "cfgrib":
-                        common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": var.name}} # not currently possible to filter with a list of keys (see https://github.com/ecmwf/cfgrib/issues/138)
-                        common_args["indexpath"] = ""
+                        common_args["backend_kwargs"] = {
+                            "indexpath": "",                 # disable .idx writing
+                            "filter_by_keys": {"cfVarName": var.name},
+                        }
+                        # common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": var.name}} # not currently possible to filter with a list of keys (see https://github.com/ecmwf/cfgrib/issues/138)
+                        # common_args["indexpath"] = ""
                     common_args["preprocess"] = partial(preprocess_mfdataset, data=self.data_selection, var_name=var.name, date=date)
 
                     def _open_mfdataset ():
@@ -181,13 +214,17 @@ class JunoLocalSource (MFXarrayLocalSource):
 
                 ds_sample = xr.merge(var_ds_list, compat="no_conflicts", combine_attrs="no_conflicts")
 
-                # Load time coord
-                if concat_dim in ds_sample.coords:
-                    ds_sample = ds_sample.assign_coords({concat_dim: ds_sample[concat_dim].load()})
+                # Load realization coord
+                if realization_concat_dim in ds_sample.coords:
+                    ds_sample = ds_sample.assign_coords({realization_concat_dim: ds_sample[realization_concat_dim].load()})
             else:
                 if self.engine == "cfgrib":
-                    common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": self.data_selection.variable.name}}
-                    common_args["indexpath"] = ""
+                    common_args["backend_kwargs"] = {
+                        "indexpath": "",                 # disable .idx writing
+                        "filter_by_keys": {"cfVarName": self.data_selection.variable.name},
+                    }
+                    # common_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": self.data_selection.variable.name}}
+                    # common_args["indexpath"] = ""
 
                 common_args["preprocess"] = partial(preprocess_mfdataset, data=self.data_selection, var_name=self.data_selection.variable.name, date=date)
 
@@ -197,12 +234,12 @@ class JunoLocalSource (MFXarrayLocalSource):
 
                 ds_sample = retry_fetch_after_hdf_err(_open_mfdataset, error_re=r"Unspecified error in H5DSget_num_scales.*")
 
-                # Load time coord
-                if concat_dim in ds_sample.coords:
-                    ds_sample = ds_sample.assign_coords({concat_dim: ds_sample[concat_dim].load()})
+                # Load realization coord
+                if realization_concat_dim in ds_sample.coords:
+                    ds_sample = ds_sample.assign_coords({realization_concat_dim: ds_sample[realization_concat_dim].load()})
                 # Promote realization to coord
-                if "realization" in ds_sample.dims:
-                    ds_sample = ds_sample.assign_coords({"realization": ds_sample["realization"]})
+                if realization_concat_dim in ds_sample.dims:
+                    ds_sample = ds_sample.assign_coords({realization_concat_dim: ds_sample[realization_concat_dim]})
 
             # print(ds_sample)
             # ds_sample is alway Rx1xYxX
@@ -211,10 +248,9 @@ class JunoLocalSource (MFXarrayLocalSource):
         # Count valid realizations
         samples_len, missing_samples = [], []
         for date, ds in samples_d.items():
-            time_dim, realization_dim = guess_time_dim(ds), guess_realization_dim(ds)
-            # print("any", ds["_has_var"].any(dim=("realization", time_dim)).values)
-            if ds["_has_var"].any(dim=(realization_dim, time_dim)): # time_dim should always be 1D
-                samples_len.append(ds.sizes.get(realization_dim, 1))
+            time_dim = guess_time_dim(ds)
+            if ds["_has_var"].any(dim=(realization_concat_dim, time_dim)): # time_dim should always be 1D
+                samples_len.append(ds.sizes.get(realization_concat_dim, 1))
             else:
                 # Store dates with no valid realizations
                 missing_samples.append(date)
@@ -223,10 +259,10 @@ class JunoLocalSource (MFXarrayLocalSource):
         min_R = min(samples_len)
         # Use only min_R realizations per sample
         for date, ds in samples_d.items():
-            if "realization" in ds.dims:
+            if realization_concat_dim in ds.dims:
                 dsR = ds.isel(realization=slice(0, min_R))
                 # Realizations are simple integers
-                R = dsR.sizes["realization"]
+                R = dsR.sizes[realization_concat_dim]
                 samples_d[date] = dsR.assign_coords(realization=np.arange(R))
         # print(f"Smallest number of realizations for valid samples: {min_R}")
         # print(f"Missed samples after file-processing: {missing_samples}")
@@ -240,7 +276,7 @@ class JunoLocalSource (MFXarrayLocalSource):
         # print(objs)
         ds = xr.concat(
             objs=objs,
-            dim=xr.IndexVariable(concat_dim, times) if concat_dim in ('time', 'valid_time', 'time_counter') else concat_dim,
+            dim=xr.IndexVariable(time_dim, times) if time_dim in ('time', 'valid_time', 'time_counter') else time_dim,
             coords='minimal',
             # compat="broadcast_equals",
             compat="override",
