@@ -589,6 +589,13 @@ class EarthkitSource (BaseSource):
 
         # print(f"Datasets after dropping missing samples: {len(ds_all[xarray_concat_dim].values)}")
 
+        # Shift time index by lead time to get appropriate time corresponding for both forecast and analysis
+        time_index = pd.DatetimeIndex(ds_all[xarray_concat_dim].values)
+        shifted = time_index.map(lambda t: t + self.lead_time)
+        ds_all = ds_all.assign_coords({xarray_concat_dim: shifted})
+
+        print(f"First and last time values in obtained dataset: {pd.to_datetime(ds_all[xarray_concat_dim].values[0])}, {pd.to_datetime(ds_all[xarray_concat_dim].values[-1])}")
+
         # Add missed info to dataset
         missed_np = np.array(sorted(self.elements.missed), dtype="datetime64[ns]")
         # print(missed_np)
