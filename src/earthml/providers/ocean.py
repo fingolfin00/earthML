@@ -12,7 +12,7 @@ def juno_monthly_hindcast_ocean_netcdf (
     leadtime_unit: str,
     root_path: str = "/work/cmcc/cp1/CMCC-CM/archive/C3S/",
     realizations: str | int = "all",
-    engine: str = "h5netcdf",
+    engine: str = "h5netcdf", # h5netcdf, netcdf4
     regrid_resolution: float = 0.25,
     file_path_date_format: str = "%Y%m",
     file_header: str = "cmcc_CMCC-CM3-v20231101_hindcast_S",
@@ -66,13 +66,15 @@ def earthkit_cmcc_monthly_hindcast_ocean_netcdf (
             system=system,
         ),
         to_xarray_args=dict(
-            engine="h5netcdf",
+            engine="h5netcdf", # h5netcdf, netcdf4
             decode_timedelta=True,
             data_vars="all",
             coords="minimal",
             compat="override",
             concat_dim="leadtime",
             combine="nested",
+            parallel=False,
+            chunks=None, # disable dask
         ),
         xarray_concat_dim="time",
         xarray_concat_extra_args=dict(coords="minimal", compat="override"),
@@ -104,14 +106,15 @@ def earthkit_cds_oras5 (
             product_type=product_type,
             vertical_resolution="single_level",
         ),
-        to_xarray_args=dict(
-            engine="h5netcdf",
+         to_xarray_args=dict(
+            engine="h5netcdf", # h5netcdf, netcdf4
             decode_timedelta=True,
             data_vars="all",
             combine="by_coords",
             coords="minimal",
             compat="override",
-            parallel=True,
+            parallel=False,
+            chunks=None, # disable dask
         ),
         xarray_concat_dim=None,
         xarray_concat_extra_args=dict(coords="minimal", compat="override"),
