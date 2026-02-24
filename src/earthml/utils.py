@@ -371,6 +371,9 @@ def guess_leadtime_dim (ds: xr.Dataset):
 def guess_time_dim (ds: xr.Dataset):
     return _guess_dim_name(ds, "time", ["valid_time", "time_counter", "source_time", "t"])
 
+def guess_time_coord (ds: xr.Dataset):
+    return _guess_coord_name(ds, "time", ["valid_time", "time_counter", "source_time", "t"])
+
 def guess_lon_dim (ds: xr.Dataset):
     return _guess_dim_name(ds, 'longitude', ['lon', 'x', 'nav_lon'])
 

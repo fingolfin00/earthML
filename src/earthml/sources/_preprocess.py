@@ -4,7 +4,7 @@ import pandas as pd
 from rich import print
 
 from ..dataclasses import DataSelection
-from ..utils import _guess_coord_name, get_lonlat_coords
+from ..utils import guess_time_coord, get_lonlat_coords
 
 def _status_da (ds: xr.Dataset, time_coord: str | None, ok: bool, name: str = "_has_var"):
     import xarray as xr
@@ -96,7 +96,7 @@ def preprocess_mfdataset (ds: xr.Dataset, data: DataSelection, var_name: str | N
     var0 = data.variable[0] if isinstance(data.variable, list) else data.variable
     leadtime = var0.leadtime
 
-    time_coord = _guess_coord_name(ds, "time", ["valid_time", "time_counter"])
+    time_coord = guess_time_coord(ds)
     # Ensure time_coord is a dimension
     ds, time_coord = ensure_time_dim(ds, time_coord)
 
@@ -148,5 +148,5 @@ def preprocess_mfdataset (ds: xr.Dataset, data: DataSelection, var_name: str | N
         # print("Reset extra time coordinate")
         out = out.reset_coords("time", drop=True)
 
-    # print(out)
+    # print("preprocess", out.dims)
     return out
