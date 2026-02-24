@@ -46,7 +46,7 @@ def earthkit_cmcc_monthly_hindcast_ocean_netcdf (
     system: str = "4",
     regrid_resolution: float = 0.25,
     split_month: int = 1,
-    split_month_jump: list[str] | None = ['03', '04', '06', '07'],
+    split_month_jump: list[str] | None = None, # ['03', '04', '06', '07'],
     earthkit_cache_dir: str  = Path("/tmp/earthkit-cache/"),
     overrides: dict | None = None,
     **kw,
