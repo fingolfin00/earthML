@@ -11,7 +11,7 @@ import earthkit.data as ekd
 from rich import print
 
 from ..dataclasses import DataSource
-from ..utils import retry_fetch_after_hdf_err, generate_hours, get_ds_resolution, subset_ds, regrid_to_rectilinear, guess_time_dim, guess_realization_dim
+from ..utils import retry_fetch_after_hdf_err, generate_hours, get_ds_resolution, subset_ds, regrid_to_rectilinear, guess_time_dim, guess_realization_dim, convert_unit
 from .base import BaseSource
 
 class EarthkitSource (BaseSource):
@@ -35,6 +35,7 @@ class EarthkitSource (BaseSource):
         xarray_concat_extra_args: dict = None,
         regrid_resolution: float | tuple[float, float] = None,  # float or (lat_res, lon_res) in degrees
         regrid_vars: list[str] = None,
+        convert_unit: dict = None, # dict of var_name: (func, target_unit) to convert variable unit (e.g. {"temperature": (lambda x: x - 273.15, "C")})
         earthkit_cache_dir: str = Path("/tmp/earthkit-cache/"),
     ):
         super().__init__ (datasource)
@@ -58,6 +59,7 @@ class EarthkitSource (BaseSource):
         self.regrid_resolution = regrid_resolution
         self.var_name_list = [v.name for v in self.data_selection.variable] if isinstance(self.data_selection.variable, list) else [self.data_selection.variable.name]
         self.regrid_vars = regrid_vars if regrid_vars is not None else self.var_name_list
+        self.convert_unit = convert_unit
         self.ekd_version = ekd.__version__
 
         self._create_leadtime_dict()
@@ -448,4 +450,9 @@ class EarthkitSource (BaseSource):
             )
             lat_res_regrid, lon_res_regrid = get_ds_resolution(ds_all)
             print(f"Target rectilinear resolutions: lat {lat_res_regrid:.2f}, lon {lon_res_regrid:.2f}")
+
+       # Convert unit of variables if necessary (e.g. from K to C)
+        if self.convert_unit:
+            ds_all = convert_unit(ds_all, self.convert_unit)
+
         return ds_all

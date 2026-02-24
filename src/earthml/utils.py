@@ -678,6 +678,45 @@ def generate_hours (freq_str, output_type='string'):
             break
     return times
 
+def convert_unit (ds, convert_unit_d):
+    for var_name, (func, target_unit) in convert_unit_d.items():
+        if var_name not in ds.data_vars:
+            print(f"Warning: variable {var_name} not found in dataset for unit conversion")
+            continue
+
+        da = ds[var_name]
+        src_unit = da.attrs.get("units", None)
+
+        # Skip if already in target unit
+        if src_unit == target_unit:
+            continue
+
+        print(f"Converting unit of variable {var_name}"
+            f"{'' if src_unit is None else f' from {src_unit}'} to {target_unit}")
+
+        # Preserve metadata
+        old_attrs = dict(da.attrs)
+        old_encoding = getattr(da, "encoding", {}).copy()
+
+        out = func(da)
+        if not hasattr(out, "dims"):
+            raise TypeError(
+                f"Unit conversion for {var_name} must return an xarray.DataArray "
+                f"(got {type(out)!r})."
+            )
+
+        # Restore attrs, overwrite units
+        out.attrs = old_attrs
+        out.attrs["units"] = target_unit
+
+        # Optional: preserve encoding (useful for NetCDF writing)
+        if hasattr(out, "encoding"):
+            out.encoding = old_encoding
+
+        ds[var_name] = out
+
+    return ds
+
 #--------
 # Regrid
 #--------
