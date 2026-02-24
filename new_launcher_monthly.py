@@ -6,13 +6,15 @@ from earthml.launchers.mlfc import MLFCScenario, MLFCRunner
 from earthml.utils import halved_windows_split_by_cutoff, half_train_periods_days
 
 if __name__ == "__main__":
-    max_retries = 4
+    max_retries = 10
 
-    var_exp = "sst" # sst (atmo), sss, t14d, t17d
+    var_exp = "sss" # sst (atmo), sss, t14d, t17d, ssh
     target_realization_avg = False # average over realizations for target variable
     only_longest_train_period = True # only train on the largest train period (if False, train on all periods, which can be much slower but allows to see variability across train periods)
 
-    vars_atmo = ("sst",)
+    vars_cloud_oras5 = ("sst", "ssh")
+    vars_cloud_cds_atmo = ("sst",)
+    vars_cloud_cds_ocean = ("ssh",)
 
     full_leadtimes_days = (15, 45, 75, 105, 135, 165)
     full_leadtimes_atmo_days = (30, 60, 90, 120, 150, 180) # atmo seasonal forecast has end of month leadtimes
@@ -29,7 +31,7 @@ if __name__ == "__main__":
     # end_train_date = datetime(1993, 12, 31)
 
     # experiment_type = "juno-cmcc_juno-cmcc" # analysis in forecast dataset (lt=15d) WRONG!
-    experiment_type = "cds-cmcc_oras5" if var_exp in vars_atmo else "juno-cmcc_oras5"
+    experiment_type = "cds-cmcc_oras5" if var_exp in vars_cloud_oras5 else "juno-cmcc_oras5"
     # experiment_type = "cds-cmcc_oras5"
 
     train_period = TimeRange(start=start_train_date, end=end_train_date, freq='MS')
@@ -68,7 +70,7 @@ if __name__ == "__main__":
     elif experiment_type == "cds-cmcc_oras5":
         var_keys = [(f"{var_exp}_cds_fc", f"{var_exp}_oras5_an")]
 
-        input_provider = "atmo.earthkit.cmcc.hindcast.monthly" if var_exp in vars_atmo else "ocean.earthkit.cmcc.hindcast.monthly"
+        input_provider = "atmo.earthkit.cmcc.hindcast.monthly" if var_exp in vars_cloud_cds_atmo else "ocean.earthkit.cmcc.hindcast.monthly"
         target_provider = "ocean.earthkit.oras5.reanalysis.monthly"
 
         if only_longest_train_period:
@@ -81,6 +83,7 @@ if __name__ == "__main__":
     else:
         raise ValueError(f"Experiment type {experiment_type} not supported.")
 
+    provider_kwargs_common = dict(regrid_resolution=regrid_resolution)
     # Print train periods
     for i, p in enumerate(train_periods_target, 1):
         if isinstance(p, list):
@@ -93,34 +96,20 @@ if __name__ == "__main__":
         months = rd.years * 12 + rd.months
         print(i, p_start.date(), "->", p_end.date(), "months:", months)
 
-    if experiment_type == "juno-cmcc_oras5" or experiment_type == "juno-cmcc_juno-cmcc":
-        # SST is not monthly in Juno
-        if var_exp == "sst":
-            target_provider_kwargs_common = dict(
-                file_path_var_prefix="00_ocean_6hr_surface_",
-                regrid_resolution=regrid_resolution,
-            )
+    if experiment_type == "juno-cmcc_juno-cmcc":
+        target_provider_kwargs_common =  provider_kwargs_common | dict(
+            file_path_var_prefix="00_ocean_6hr_surface_", # WRONG
+        )
 
-            full_leadtimes, full_leadtime_multiple = full_leadtime_hours_sst, full_leadtime_hours_sst
-            leadtime_var_an_value = 0 # 0 hour forecast is analysis
-            leadtime_var_unit = "hours"
-            leadtime_unit = "hours"
-        else:
-            target_provider_kwargs_common = dict(
-                # file_path_var_prefix="00_ocean_mon_ocean2d_", # default
-                regrid_resolution=regrid_resolution,
-            )
-
-            full_leadtimes, full_leadtime_multiple = full_leadtimes_atmo_days, full_leadtimes_months if var_exp in vars_atmo else full_leadtimes_days, full_leadtimes_months
-            leadtime_var_an_value = 15 # 15 days forecast is analysis
-            leadtime_var_unit = "days"
-            leadtime_unit = "months"
+        full_leadtimes, full_leadtime_multiple = full_leadtime_hours_sst, full_leadtime_hours_sst
+        leadtime_var_an_value = 0 # 0 hour forecast is analysis
+        leadtime_var_unit = "hours"
+        leadtime_unit = "hours"
     else:
-        target_provider_kwargs_common = dict(
-                regrid_resolution=regrid_resolution,
-            )
+        target_provider_kwargs_common = provider_kwargs_common
 
-        full_leadtimes, full_leadtime_multiple = full_leadtimes_atmo_days if var_exp in vars_atmo else full_leadtimes_days, full_leadtimes_months
+        full_leadtimes = full_leadtimes_atmo_days if var_exp in vars_cloud_cds_atmo else full_leadtimes_days
+        full_leadtime_multiple = full_leadtimes_months
         leadtime_var_an_value = 15 # 15 days forecast is analysis
         leadtime_var_unit = "days"
         leadtime_unit = "months"
@@ -140,7 +129,7 @@ if __name__ == "__main__":
         )
     )
 
-    input_provider_kwargs=target_provider_kwargs_common
+    input_provider_kwargs = provider_kwargs_common | dict(earthkit_cache_dir="/work/cmcc/jd19424/.earthkit-cache") if experiment_type == "cds-cmcc_oras5" else provider_kwargs_common
 
     for var_fc_key, var_an_key in var_keys:
         for leadtime_var_fc_value, leadtime_mult in zip(full_leadtimes, full_leadtime_multiple):
