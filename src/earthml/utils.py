@@ -12,7 +12,7 @@ import cf_xarray
 import xarray as xr
 import pandas as pd
 from earthkit.data.sources.empty import EmptySource
-import os, psutil, multiprocessing, tempfile, logging, re, time
+import os, psutil, multiprocessing, tempfile, logging, re, time, shutil
 import dask
 from dask.distributed import Client, LocalCluster
 import numpy as np
@@ -209,13 +209,7 @@ def _get_ekd_cache_dir ():
     return ekd.config.get("user-cache-directory")
 
 def rmdir (directory):
-    directory = Path(directory)
-    for item in directory.iterdir():
-        if item.is_dir():
-            rmdir(item)
-        else:
-            item.unlink()
-    directory.rmdir()
+    shutil.rmtree(Path(directory), ignore_errors=False)
 
 def retry_fetch_after_hdf_err (
     fetch_fn: Callable[[], xr.Dataset | EmptySource],
