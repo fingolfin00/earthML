@@ -54,6 +54,9 @@ class Dask:
         local_dir = next((p for p in candidates if p and os.path.exists(p)), tempfile.gettempdir())
         os.makedirs(local_dir, exist_ok=True)
 
+        # Force a spawn start method to avoid issues with forking and HDF5 in some environments
+        multiprocessing.set_start_method("spawn", force=True)
+
         n_cores = multiprocessing.cpu_count()
         total_mem_gb = psutil.virtual_memory().total / 1e9
         n_workers = self.n_workers
