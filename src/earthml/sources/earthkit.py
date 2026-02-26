@@ -612,7 +612,8 @@ class EarthkitSource (BaseSource):
         # Grid resolution # TODO maybe refactor to BaseSource
         lat_res, lon_res = get_ds_resolution(ds_all)
         print(f"Native resolutions: lat {lat_res:.2f}, lon {lon_res:.2f}")
-        # Regrid if required
+
+        # Regrid if required # TODO save weights for efficiency
         if self.regrid_resolution is not None:
             print(f"Regridding {self.regrid_vars} to rectilinear grid with resolution {self.regrid_resolution}")
             ds_all = regrid_to_rectilinear(
@@ -624,7 +625,7 @@ class EarthkitSource (BaseSource):
             lat_res_regrid, lon_res_regrid = get_ds_resolution(ds_all)
             print(f"Target rectilinear resolutions: lat {lat_res_regrid:.2f}, lon {lon_res_regrid:.2f}")
 
-       # Convert unit of variables if necessary (e.g. from K to C)
+       # Convert unit of variables if necessary (e.g. from C to K for SST)
         if self.convert_unit is not None:
             print(f"Converting variable units according to: {self.convert_unit}")
             ds_all = convert_unit(ds_all, self.convert_unit)
