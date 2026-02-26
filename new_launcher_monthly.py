@@ -4,6 +4,7 @@ from dateutil.relativedelta import relativedelta
 from earthml.dataclasses import TimeRange
 from earthml.launchers.mlfc import MLFCScenario, MLFCRunner
 from earthml.utils import halved_windows_split_by_cutoff, half_train_periods_days
+from earthml.conversion import celsius_to_kelvin
 
 if __name__ == "__main__":
     max_retries = 10
@@ -113,9 +114,6 @@ if __name__ == "__main__":
         leadtime_var_an_value = 15 # 15 days forecast is analysis
         leadtime_var_unit = "days"
         leadtime_unit = "months"
-
-    def celsius_to_kelvin(x):
-        return x + 273.15
 
     target_provider_kwargs_earthkit_oras5_consolidated = target_provider_kwargs_common | dict(
         earthkit_cache_dir="/work/cmcc/jd19424/.earthkit-cache",
