@@ -119,14 +119,16 @@ if __name__ == "__main__":
         request_extra_args=dict(
             product_type="consolidated",
             vertical_resolution="single_level"
-        )
+        ),
+        convert_unit={"sst": (lambda x: x + 273.15, "K")} if var_exp=="sst" else None, # ORAS5 has SST in °C, while seasonal models has SST in K (only earthkit source supports on the fly conersion)
     )
     target_provider_kwargs_earthkit_oras5_operational = target_provider_kwargs_common | dict(
         earthkit_cache_dir="/work/cmcc/jd19424/.earthkit-cache",
         request_extra_args=dict(
             product_type="operational",
             vertical_resolution="single_level"
-        )
+        ),
+        convert_unit={"sst": (lambda x: x + 273.15, "K")} if var_exp=="sst" else None,
     )
 
     input_provider_kwargs = provider_kwargs_common | dict(earthkit_cache_dir="/work/cmcc/jd19424/.earthkit-cache") if experiment_type == "cds-cmcc_oras5" else provider_kwargs_common
