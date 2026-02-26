@@ -114,13 +114,16 @@ if __name__ == "__main__":
         leadtime_var_unit = "days"
         leadtime_unit = "months"
 
+    def celsius_to_kelvin(x):
+        return x + 273.15
+
     target_provider_kwargs_earthkit_oras5_consolidated = target_provider_kwargs_common | dict(
         earthkit_cache_dir="/work/cmcc/jd19424/.earthkit-cache",
         request_extra_args=dict(
             product_type="consolidated",
             vertical_resolution="single_level"
         ),
-        convert_unit={"sst": (lambda x: x + 273.15, "K")} if var_exp=="sst" else None, # ORAS5 has SST in °C, while seasonal models has SST in K (only earthkit source supports on the fly conersion)
+        convert_unit={"sst": (celsius_to_kelvin, "K")} if var_exp=="sst" else None, # ORAS5 has SST in °C, while seasonal models has SST in K (only earthkit source supports on the fly conersion)
     )
     target_provider_kwargs_earthkit_oras5_operational = target_provider_kwargs_common | dict(
         earthkit_cache_dir="/work/cmcc/jd19424/.earthkit-cache",
@@ -128,7 +131,7 @@ if __name__ == "__main__":
             product_type="operational",
             vertical_resolution="single_level"
         ),
-        convert_unit={"sst": (lambda x: x + 273.15, "K")} if var_exp=="sst" else None,
+        convert_unit={"sst": (celsius_to_kelvin, "K")} if var_exp=="sst" else None,
     )
 
     input_provider_kwargs = provider_kwargs_common | dict(earthkit_cache_dir="/work/cmcc/jd19424/.earthkit-cache") if experiment_type == "cds-cmcc_oras5" else provider_kwargs_common
