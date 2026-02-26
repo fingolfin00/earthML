@@ -92,7 +92,7 @@ def earthkit_cds_oras5 (
     select_area_after_request: bool = True,
     earthkit_cache_dir: str  = Path("/tmp/earthkit-cache/"),
     overrides: dict | None = None,
-    convert_unit: dict = None, # dict of var_name: (func, target_unit) to convert variable unit (e.g. {"temperature": (lambda x: x - 273.15, "C")})
+    convert_unit: dict | None = None, # dict of var_name: (func, target_unit) to convert variable unit (e.g. {"temperature": (lambda x: x - 273.15, "C")})
     **kw,
 ) -> ProviderSpec:
     base = dict(
@@ -119,6 +119,7 @@ def earthkit_cds_oras5 (
         ),
         xarray_concat_dim=None,
         xarray_concat_extra_args=dict(coords="minimal", compat="override"),
+        convert_unit=convert_unit,
         earthkit_cache_dir=earthkit_cache_dir,
     )
     return ProviderSpec('earthkit', merge(base, overrides, **kw))
