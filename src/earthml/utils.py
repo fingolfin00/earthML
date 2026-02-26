@@ -679,6 +679,7 @@ def generate_hours (freq_str, output_type='string'):
     return times
 
 def convert_unit (ds, convert_unit_d):
+    found_candidate = False
     for var_name, (func, target_unit) in convert_unit_d.items():
         if var_name not in ds.data_vars:
             print(f"Exact match variable {var_name} not found in dataset for unit conversion. Try matching within available variables {list(ds.data_vars.keys())}")
@@ -686,15 +687,18 @@ def convert_unit (ds, convert_unit_d):
                 if var_name.lower() in var_candidate.lower() or var_candidate.lower() in var_name.lower():
                     print(f"   Found candidate variable {var_candidate} for conversion of {var_name}")
                     var_name = var_candidate
+                    found_candidate = True
                     break
-            print(f"No variable found for conversion of {var_name}, skipping...")
-            continue
+            if not found_candidate:
+                print(f"No variable found for conversion of {var_name}, skipping...")
+                continue
 
         da = ds[var_name]
         src_unit = da.attrs.get("units", None)
 
         # Skip if already in target unit
         if src_unit == target_unit:
+            print(f"Variable {var_name} already in target unit {target_unit}, skipping conversion.")
             continue
 
         print(f"Converting unit of variable {var_name}"
