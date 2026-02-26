@@ -625,7 +625,8 @@ class EarthkitSource (BaseSource):
             print(f"Target rectilinear resolutions: lat {lat_res_regrid:.2f}, lon {lon_res_regrid:.2f}")
 
        # Convert unit of variables if necessary (e.g. from K to C)
-        if self.convert_unit:
+        if self.convert_unit is not None:
+            print(f"Converting variable units according to: {self.convert_unit}")
             ds_all = convert_unit(ds_all, self.convert_unit)
 
         return ds_all
