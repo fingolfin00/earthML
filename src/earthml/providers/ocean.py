@@ -73,8 +73,8 @@ def earthkit_cmcc_monthly_hindcast_ocean_netcdf (
             compat="override",
             concat_dim="leadtime",
             combine="nested",
-            parallel=False,
-            chunks=None, # disable dask
+            parallel=True,
+            # chunks=None, # disable dask
         ),
         xarray_concat_dim="time",
         xarray_concat_extra_args=dict(coords="minimal", compat="override"),
@@ -113,8 +113,8 @@ def earthkit_cds_oras5 (
             combine="by_coords",
             coords="minimal",
             compat="override",
-            parallel=False,
-            chunks=None, # disable dask
+            parallel=True,
+            # chunks=None, # disable dask
         ),
         xarray_concat_dim=None,
         xarray_concat_extra_args=dict(coords="minimal", compat="override"),
