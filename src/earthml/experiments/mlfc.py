@@ -16,7 +16,7 @@ from lightning.pytorch.loggers import TensorBoardLogger
 from ..sources.registry import build_source
 from ..sources.base import BaseSource
 from ..dataclasses import ExperimentDataset, ExperimentConfig, DataSource
-from ..utils import Table, print_ds_info, guess_time_dim, guess_lon_dim, guess_lat_dim, guess_realization_dim
+from ..utils import Table, print_ds_info, guess_time_dim, guess_lon_dim, guess_lat_dim, guess_realization_dim, guess_leadtime_dim, remove_unwanted_dims_and_coords
 from ..lightning import XarrayDataset, Normalize, EpochRandomSplitDataModule
 from ..nets.registry import build_net
 
@@ -340,9 +340,22 @@ class ExperimentMLFC:
         for role in exp_roles:
             # print(role)
             ds = source_data[role].load()
-            # remove missed_times from the dataset to avoid interference with later torch code
+
+            # Keep only allowed dims and coords
+            allowed_dims = {
+                guess_time_dim(ds),
+                guess_lat_dim(ds),
+                guess_lon_dim(ds),
+                guess_realization_dim(ds),
+                # guess_leadtime_dim(ds), # leadtime dim must be removed (should be 1D at most)
+                "missed_time",
+            }
+            ds = remove_unwanted_dims_and_coords(ds, allowed_dims)
+
+            # Remove missed_times from the dataset to avoid interference with later torch code
             ds = ds.drop_dims("missed_time")
             ds_d[role] = ds
+
         loading_time = time.time() - s
         print(f"{data_type} loading time: {loading_time:.1f}s")
 
@@ -476,6 +489,17 @@ class ExperimentMLFC:
         to select ds metadata and save it to Zarr storage
         """
         meta_ds = self.source_test_data[metadata_source].load()
+
+        # Keep only allowed dims and coords
+        allowed_dims = {
+            guess_time_dim(meta_ds),
+            guess_lat_dim(meta_ds),
+            guess_lon_dim(meta_ds),
+            guess_realization_dim(meta_ds),
+            # guess_leadtime_dim(meta_ds), # leadtime dim must be removed (should be 1D at most)
+            "missed_time",
+        }
+        meta_ds = remove_unwanted_dims_and_coords(meta_ds, allowed_dims)
 
         # Canonical dim order
         base_order = [guess_realization_dim(meta_ds), guess_time_dim(meta_ds), guess_lat_dim(meta_ds), guess_lon_dim(meta_ds)]
