@@ -51,12 +51,18 @@ class ExperimentMLFC:
         # Tensorboard
         self.tl_logger = TensorBoardLogger(self.config.work_path, name="tensorboard_logs") # version=self.run_number
 
+        # Calculate latitudes if necessary for loss function
+        if self.config.loss in ["earthml.losses.WeightedMSELoss"] or (isinstance(self.config.loss, str) and self.config.loss.endswith("WeightedMSELoss")):
+            self.latitudes = self._get_latitudes(self.source_test_data[0].load())
+        else:
+            self.latitudes = None
+
         # Initialize model
         self.model = build_net(
             self.config.net,
             learning_rate=self.config.learning_rate,
             loss=self.config.loss,
-            loss_params=self.config.loss_params,
+            loss_params=self.config.loss_params | (dict(loss=dict(latitudes=self.latitudes)) if self.latitudes is not None else {}),
             norm=self.config.norm_strategy,
             supervised=self.config.supervised,
             **self.config.extra_net_args,
@@ -100,7 +106,7 @@ class ExperimentMLFC:
                 'tl_logger': self.tl_logger,
                 # 'model': self.model,
                 'test_data': self.source_test_data,
-                'train_data': self.source_train_data
+                'train_data': self.source_train_data,
             }, f)
 
     def _configure_torch_env (self):
@@ -133,6 +139,10 @@ class ExperimentMLFC:
             self.ckpt_path = max(ckpt_files, key=lambda item: item.stat().st_ctime) # get most recent
         except:
             self.ckpt_path = self.ckpt_folder_path.joinpath(f"{self.ckpt_filename}.ckpt")
+
+    def _get_latitudes (ds: xr.Dataset) -> np.ndarray:
+        print("Getting latitudes from dataset for loss function...")
+        return ds[guess_lat_dim(ds)].values
 
     def _remove_corrupted_ts (self, ds: xr.Dataset) -> Tuple[xr.Dataset, set]:
         time_dim = guess_time_dim(ds)
