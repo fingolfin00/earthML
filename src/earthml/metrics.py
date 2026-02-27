@@ -14,7 +14,7 @@ import xarray as xr
 # import xskillscore as xs
 # from scipy.stats import t as student_t
 
-from .utils import guess_time_dim, guess_lon_dim, guess_lat_dim, guess_realization_dim, guess_leadtime_dim, date_diff, load_exp, add_ke_to_runs, remove_unwanted_dims_and_coords
+from .utils import guess_time_dim, guess_lon_dim, guess_lat_dim, guess_realization_dim, guess_leadtime_dim, date_diff, load_exp, add_ke_to_runs, remove_unwanted_dims_and_coords, geo_weights, geo_avg
 
 MetricFn = Callable[[xr.Dataset, xr.Dataset], xr.Dataset]
 FinalFn  = Callable[[xr.Dataset], xr.Dataset]
@@ -524,21 +524,6 @@ class Metrics:
 
         return out
 
-    def _geo_weights(self, obj: xr.Dataset | xr.DataArray) -> xr.DataArray:
-        """Cos(lat) weights aligned to obj's latitude coordinate."""
-        return xr.DataArray(
-            np.cos(np.deg2rad(obj[self.lat_dim])),
-            coords={self.lat_dim: obj[self.lat_dim]},
-            dims=(self.lat_dim,),
-        )
-
-    def _geo_avg(self, data: xr.Dataset | xr.DataArray) -> xr.Dataset | xr.DataArray:
-        """Geographically weighted mean over lat/lon using cos(lat)."""
-        # weights must be an xarray DataArray aligned to the latitude dimension
-        w = self._geo_weights(data)
-        # weighted mean over spatial dims; keep time (and any other non-spatial dims)
-        return data.weighted(w).mean(dim=(self.lat_dim, self.lon_dim), skipna=True)
-
     # Metrics
     def _generic_metric (
         self,
@@ -557,7 +542,7 @@ class Metrics:
 
             if order == "1d":
                 if geo_weighted:
-                    val = self._geo_avg(metric).mean(dim=self.time_dim, skipna=True)
+                    val = geo_avg(metric, self.lat_dim, self.lon_dim).mean(dim=self.time_dim, skipna=True)
                 else:
                     val = metric.mean(dim=(self.time_dim, self.lat_dim, self.lon_dim), skipna=True)
             elif order == "2d":
@@ -635,7 +620,7 @@ class Metrics:
             elif order == "1d":
                 # global scalar (mean of std_map over space)
                 if geo_weighted:
-                    out.append(self._geo_avg(std_map))
+                    out.append(geo_avg(std_map, self.lat_dim, self.lon_dim))
                 else:
                     out.append(std_map.mean(dim=(self.lat_dim, self.lon_dim), skipna=True))
             else:
@@ -690,7 +675,7 @@ class Metrics:
                 out.append(stderr_map)
             elif order == "1d":
                 if geo_weighted:
-                    out.append(self._geo_avg(stderr_map))
+                    out.append(geo_avg(stderr_map, self.lat_dim, self.lon_dim))
                 else:
                     out.append(stderr_map.mean(dim=(self.lat_dim, self.lon_dim), skipna=True))
             else:
@@ -765,7 +750,7 @@ class Metrics:
                 out.append(nrmse_map)
             elif order == "1d":
                 if geo_weighted:
-                    out.append(self._geo_avg(nrmse_map)) # already a scalar Dataset (since nrmse_map has no time dim)
+                    out.append(geo_avg(nrmse_map, self.lat_dim, self.lon_dim)) # already a scalar Dataset (since nrmse_map has no time dim)
                 else:
                     out.append(nrmse_map.mean(dim=(self.lat_dim, self.lon_dim), skipna=True))
             else:
@@ -798,7 +783,7 @@ class Metrics:
                 out.append(nmae_map)
             elif order == "1d":
                 if geo_weighted:
-                    out.append(self._geo_avg(nmae_map))
+                    out.append(geo_avg(nmae_map, self.lat_dim, self.lon_dim))
                 else:
                     out.append(nmae_map.mean(dim=(self.lat_dim, self.lon_dim), skipna=True))
             else:
@@ -830,7 +815,7 @@ class Metrics:
                 out.append(nbias_map)
             elif order == "1d":
                 if geo_weighted:
-                    out.append(self._geo_avg(nbias_map))
+                    out.append(geo_avg(nbias_map, self.lat_dim, self.lon_dim))
                 else:
                     out.append(nbias_map.mean(dim=(self.lat_dim, self.lon_dim), skipna=True))
             else:
@@ -863,7 +848,7 @@ class Metrics:
                 out.append(abs_nbias_map)
             elif order == "1d":
                 if geo_weighted:
-                    out.append(self._geo_avg(abs_nbias_map))
+                    out.append(geo_avg(abs_nbias_map, self.lat_dim, self.lon_dim))
                 else:
                     out.append(abs_nbias_map.mean(dim=(self.lat_dim, self.lon_dim), skipna=True))
             else:
@@ -876,7 +861,7 @@ class Metrics:
         # Denominator: global std of truth
         if geo_weighted:
             # spatially averaged time series, then std over time
-            truth_bar = self._geo_avg(data)        # dims: time
+            truth_bar = geo_avg(data, self.lat_dim, self.lon_dim)        # dims: time
             denom = truth_bar.std(dim=self.time_dim, skipna=True)
         else:
             denom = data.std(
@@ -947,7 +932,7 @@ class Metrics:
 
             if order == "1d":
                 if geo_weighted:
-                    val = self._geo_avg(metric).mean(dim=self.time_dim, skipna=True)
+                    val = geo_avg(metric, self.lat_dim, self.lon_dim).mean(dim=self.time_dim, skipna=True)
                 else:
                     val = metric.mean(dim=(self.time_dim, self.lat_dim, self.lon_dim), skipna=True)
             elif order == "2d":
@@ -997,7 +982,7 @@ class Metrics:
 
         # denominator: global std of truth (same convention as nbias_global)
         if geo_weighted:
-            truth_bar = self._geo_avg(truth)                      # time series
+            truth_bar = geo_avg(truth, self.lat_dim, self.lon_dim)                      # time series
             denom = truth_bar.std(dim=self.time_dim, skipna=True)
         else:
             denom = truth.std(dim=(self.time_dim, self.lat_dim, self.lon_dim), skipna=True)
@@ -1009,7 +994,7 @@ class Metrics:
 
         # reduce to scalar
         if geo_weighted:
-            diff_ts = self._geo_avg(diff_field)                     # time series
+            diff_ts = geo_avg(diff_field, self.lat_dim, self.lon_dim)                     # time series
             nbias_diff = diff_ts.mean(dim=self.time_dim, skipna=True)
         else:
             nbias_diff = diff_field.mean(
@@ -1073,8 +1058,8 @@ class Metrics:
             sse_t = ((d - self.truth) ** 2).sum(dim=self.time_dim, skipna=True)  # 2D field
 
             if geo_weighted:
-                sse = self._geo_avg(sse_t)   # scalar or 1D depending on _geo_avg
-                sst = self._geo_avg(sst_t)
+                sse = geo_avg(sse_t, self.lat_dim, self.lon_dim)   # scalar or 1D depending on _geo_avg
+                sst = geo_avg(sst_t, self.lat_dim, self.lon_dim)
             else:
                 sse = sse_t.mean(dim=(self.lat_dim, self.lon_dim), skipna=True)
                 sst = sst_t.mean(dim=(self.lat_dim, self.lon_dim), skipna=True)
@@ -1127,14 +1112,14 @@ class Metrics:
         Correlation of global-mean time series (truth vs pred), per variable.
         """
         if geo_weighted:
-            t = self._geo_avg(self.truth)  # Dataset with dim: time
+            t = geo_avg(self.truth, self.lat_dim, self.lon_dim)  # Dataset with dim: time
         else:
             t = self.truth.mean(dim=(self.lat_dim, self.lon_dim), skipna=True)
 
         out: list[xr.Dataset] = []
         for d in self.data:
             if geo_weighted:
-                p = self._geo_avg(d)
+                p = geo_avg(d, self.lat_dim, self.lon_dim)
             else:
                 p = d.mean(dim=(self.lat_dim, self.lon_dim), skipna=True)
 
@@ -1156,7 +1141,7 @@ class Metrics:
         w_stacked = None
         if geo_weighted:
             # 1D lat weights from the same logic as _geo_avg
-            w_lat = self._geo_weights(self.truth)  # dims: (lat,)
+            w_lat = geo_weights(self.truth, self.lat_dim)  # dims: (lat,)
 
             # Broadcast to match a representative variable (time, lat, lon), then stack
             template = next(iter(self.truth.data_vars.values()))
