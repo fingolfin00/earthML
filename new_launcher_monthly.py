@@ -159,7 +159,7 @@ if __name__ == "__main__":
 
                 ocean_scenario = MLFCScenario(
                     name="ocean",
-                    leadtime_var_fc_name="leadtime" if experiment_type!="cds-cmcc_oras5" else "step", # ORAS5 leadtime variable is "step" instead of "leadtime"
+                    leadtime_var_fc_name="step" if (experiment_type=="cds-cmcc_oras5" and var_exp in vars_cloud_cds_atmo) else "leadtime", # CDS monthly season forecast leadtime variable is "step" instead of "leadtime"
                     leadtime_var_an_name="leadtime",
                     leadtime_var_fc_value=leadtime_var_fc_value,
                     leadtime_var_an_value=leadtime_var_an_value, # fixed leadtime for analysis, ignored if no leadtime in analysis dataset
