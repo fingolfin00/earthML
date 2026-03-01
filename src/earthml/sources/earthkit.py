@@ -299,10 +299,11 @@ class EarthkitSource (BaseSource):
             # print(ds_chunk)
 
             realization_dim = guess_realization_dim(ds_chunk)
-            realization_dim = "realization" if realization_dim is None else realization_dim
+            # realization_dim = "realization" if realization_dim is None else realization_dim
 
             print(f"   Chunk size: {ds_chunk.sizes}")
             # print(f"   Chunk coords: {ds_chunk.coords}")
+            # print(f"   Leadtime: {self.leadtime_d}")
 
             if self.leadtime_d:
                 # Get requested leadtime and coord name
@@ -323,94 +324,86 @@ class EarthkitSource (BaseSource):
                     try:
                         target_np = np.array(target_lt_pd.to_timedelta64(), dtype=coord_dtype)
                     except Exception:
-                        # fallback generic cast (useful if coords are ints/floats)
+                        # Fallback generic cast (useful if coords are ints/floats)
                         target_np = np.asarray(target_lt_pd, dtype=coord_dtype)
 
                     # Find nearest available leadtime in this chunk
                     lt_values = ds_chunk[leadtime_name].values
+
+                    # print(f"    Leadtime values: {lt_values}")
                     unique_lt = np.unique(lt_values)
 
-                    # Compute index of nearest available value (tie-break: first occurrence)
-                    idx = np.argmin(np.abs(unique_lt - target_np))
-                    nearest_lt = unique_lt[idx]
+                    # Target_np should be same dtype as unique_lt (timedelta or numeric)
+                    idx0 = np.argmin(np.abs(unique_lt - target_np))
+                    center_lt = unique_lt[idx0]
 
-                    # debug/logging: convert nearest to readable if possible
-                    try:
-                        nearest_readable = pd.to_timedelta(nearest_lt)
-                    except Exception:
-                        nearest_readable = nearest_lt
+                    # Window around nearest center
+                    half_window = np.timedelta64(3, "D") # 3-day window is a good guess
+                    low, high = center_lt - half_window, center_lt + half_window
 
-                    print(f"   Requested leadtime: {self.leadtime_d}, nearest available: {nearest_readable}")
+                    mask_lt = (lt_values >= low) & (lt_values <= high)
+                    idxs = np.where(mask_lt)[0]
 
-                    # Select data for the nearest index
-                    mask_lt = (lt_values == nearest_lt)
-                    if not mask_lt.any():
-                        raise ValueError(f"No matching leadtime values found in chunk for nearest={nearest_lt}")
+                    # Pick only one leadtime if we don't need to infer it
+                    if (leadtime_name not in ds_chunk.dims or realization_dim is not None) and len(idxs) > 1:
+                        idxs = idxs[:1]
+                    print(f"    leadtime idxs: {idxs}")
 
-                    ds_chunk = ds_chunk.isel({leadtime_name: np.where(mask_lt)[0]})
+                    print(f"   Nearest leadtime center: {pd.to_timedelta(center_lt) if np.issubdtype(unique_lt.dtype, np.timedelta64) else center_lt}, "
+                        f"window: [{pd.to_timedelta(low) if np.issubdtype(unique_lt.dtype, np.timedelta64) else low}, "
+                        f"{pd.to_timedelta(high) if np.issubdtype(unique_lt.dtype, np.timedelta64) else high}], "
+                        f"inferred realizations {idxs.size}")
 
-                    # Drop variable only if it exists as a data variable (avoid dropping the coord unintentionally)
-                    if leadtime_name in ds_chunk.data_vars:
-                        ds_chunk = ds_chunk.drop_vars(leadtime_name)
+                    if idxs.size == 0:
+                        raise ValueError("No leadtimes found in the computed window")
 
-                    # Reassign the coordinate to the requested target (ensures uniform coord across chunks)
-                    ds_chunk = ds_chunk.assign_coords({leadtime_name: (leadtime_name, np.array([target_np], dtype=coord_dtype))})
+                    ds_chunk = ds_chunk.isel({leadtime_name: idxs})
+                    print(f"   Chunk size after selection: {ds_chunk.sizes}")
+
+                    if leadtime_name in ds_chunk.dims and realization_dim is None:
+                        # Use valid time as the dimension
+                        ds_chunk = (
+                            ds_chunk
+                            .swap_dims({leadtime_name: "time"})
+                            .drop_vars(leadtime_name)
+                            .sortby("time")
+                        )
+                        # print(f"   Chunk coords after swap: {ds_chunk.coords}")
+
+                        # Infer member index from repeats within each time
+                        # This assumes that for each valid time we have the same number of stacked members.
+                        t = ds_chunk["time"].values
+                        unique_t, counts = np.unique(t, return_counts=True)
+
+                        if counts.min() != counts.max():
+                            raise ValueError(f"Unequal members per time: min={counts.min()} max={counts.max()} counts={dict(zip(unique_t, counts))}")
+
+                        n_realizations = int(counts[0])
+                        realization_index = np.concatenate([np.arange(n_realizations, dtype=np.int32) for _ in range(len(unique_t))])
+                        # print(f"    Inferred realization number: {n_realizations}, index: {realization_index}")
+
+                        # Add member coordinate and unstack to get dimensions (time, realization)
+                        ds_chunk = ds_chunk.assign_coords(realization=("time", realization_index))
+                        # print(f"   Realization coord: {ds_chunk["realization"].values}")
+
+                        # Avoid name collision
+                        ds_chunk = ds_chunk.rename_vars({"time": "valid_time"})
+
+                        # MultiIndex
+                        ds_chunk = ds_chunk.set_index(time=["valid_time", "realization"]).unstack("time")
+
+                        # Rename time dim
+                        ds_chunk = ds_chunk.rename({"valid_time": "time"})
+
+                        # Drop variable only if it exists as a data variable (avoid dropping the coord unintentionally)
+                        if leadtime_name in ds_chunk.data_vars:
+                            ds_chunk = ds_chunk.drop_vars(leadtime_name)
+
+                        # Reassign the coordinate to the requested target (ensures uniform coord across chunks)
+                        ds_chunk = ds_chunk.assign_coords({leadtime_name: (leadtime_name, np.array([target_np], dtype=coord_dtype))})
 
                     print(f"   Size after all processing: {ds_chunk.sizes}")
-                # TODO we currently support only the case with 'time' coord to infer realizations
-                # if leadtime_name in ds_chunk.coords and 'time' in ds_chunk.coords and td is not None:
-                #     lt_values = ds_chunk[leadtime_name].values
-                #     unique_lt = np.unique(lt_values)
-                #     time_values = ds_chunk['time'].values
-                #     unique_time = np.unique(time_values)
-                #     n_unique_time = len(unique_time)
-                #     n_leadtime = n_unique_time - n_months_req + 1
-                #     n_realizations = len(lt_values) / n_months_req / n_leadtime
-                #     assert n_realizations.is_integer(), f"Number of realizations cannot be computed, check the dataset"
-                #     n_realizations = int(n_realizations)
-                #     print(f"   Number of detected leadtimes and realizations: {n_leadtime}, {n_realizations}")
-                #     # coord_u = np.unique(coord)
-                #     # Cast to same dtype as coord (usually timedelta64[ns])
-                #     coord_dtype = ds_chunk[leadtime_name].dtype
-                #     target = td.to_numpy().astype(coord_dtype)
-                #     # print(f"   requested leadtime {target}")
-                #     nearest_lt = unique_lt[np.argmin(np.abs(unique_lt - target))]
-                #     print(f"   Requested leadtime: {self.leadtime_d}, selected leadtime: {pd.Timedelta(nearest_lt)}")
-                #     mask = (lt_values == nearest_lt)
-                #     # print(f"   leadtime sel mask: {mask}")
-                #     # print(f"   total leadtimes: {lt_values}")
-                #     ds_sel = ds_chunk.isel({leadtime_name: mask})
-                #     # print(f"   Size after leadtime sel: {ds_sel.sizes}")
-                #     n_sel_lt = len(ds_sel['leadtime'].values)
-                #     n_sel_re = n_sel_lt / n_months_req
-                #     assert n_sel_re.is_integer() and int(n_sel_re) == n_realizations, f"Number of realizations not coherent, try single-month requests"
-                #     # print(f"   Coords after leadtime sel: {ds_sel.coords}")
-                #     re_values = ds_sel['leadtime'].values
-                #     # unique_re = np.unique(re_values)
-                #     # print(f"   Total leadtimes: {len(lt_values)}, times: {len(time_values)}, realizations: {re_values}")
-                #     # print(f"   Unique leadtimes: {len(unique_lt)}, times: {len(unique_time)}, realizations: {unique_re}")
-                #     # print(f"   Uniques leadtimes: {unique_lt}")
-                #     # print(f"   Uniques times: {unique_time}")
-                #     # print(unique_lt)
-                #     # print(unique_re)
-                #     if realization_dim in ds_sel.coords and realization_dim not in ds_sel.dims:
-                #     # keep old realization as metadata
-                #         ds_sel = ds_sel.assign_attrs(source_realization=str(ds_sel[realization_dim].values))
-                #         ds_sel = ds_sel.drop_vars(realization_dim)
-                #     ds_sel = ds_sel.rename({leadtime_name: "realization"})
-                #     ds_sel = ds_sel.assign_coords(realization=np.arange(len(re_values)))
-                #     ds_sel = ds_sel.assign_coords({leadtime_name: nearest_lt})
-                #     if "time" in ds_sel.coords and "realization" in ds_sel["time"].dims:
-                #         t = ds_sel["time"].values
-                #         # print(f"   ds_chunk time values: {t[0]}")
-                #         if np.all(t == t[0]):
-                #             ds_sel = ds_sel.assign_coords(time=t[0])
-                #         else:
-                #             # if not identical, pick one (or decide a rule)
-                #             ds_sel = ds_sel.assign_coords(time=t[0])
-                #     # make time a 1-length dimension for concat
-                #     ds_chunk = ds_sel.expand_dims(time=[ds_sel["time"].item()])
-                #     print(f"   Size after all processing: {ds_chunk.sizes}")
+
             xarray_concat_dim = guess_time_dim(ds_chunk) if not self.xarray_concat_dim else self.xarray_concat_dim
             # print(xarray_concat_dim)
             ds_chunks.append(ds_chunk)
