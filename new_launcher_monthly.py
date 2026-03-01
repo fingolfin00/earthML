@@ -132,7 +132,7 @@ if __name__ == "__main__":
         convert_unit={"sst": (celsius_to_kelvin, "K")} if var_exp=="sst" else None,
     )
 
-    input_provider_kwargs = provider_kwargs_common | dict(earthkit_cache_dir="/work/cmcc/jd19424/.earthkit-cache") if experiment_type == "cds-cmcc_oras5" else provider_kwargs_common
+    input_provider_kwargs = provider_kwargs_common | dict(earthkit_cache_dir="/Users/jacopodallaglio/ML/.earthkit-cache", split_month=12) if experiment_type == "cds-cmcc_oras5" else provider_kwargs_common
 
     for var_fc_key, var_an_key in var_keys:
         for leadtime_var_fc_value, leadtime_mult in zip(full_leadtimes, full_leadtime_multiple):
