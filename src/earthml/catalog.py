@@ -52,7 +52,7 @@ def make_var (
         t20d_oras5_an=Variable(longname="depth_of_20_c_isotherm", name="so20chgt", unit="m"),
         t20d_juno_an=Variable(name="t20d", levm=0, leadtime=lt_an),
 
-        ssh_cds_fc=Variable(longname="sea_surface_height_above_geoid", name="ssh", unit="m", leadtime=lt_fc),
+        ssh_cds_fc=Variable(longname="sea_surface_height_above_geoid", name="zos", unit="m", leadtime=lt_fc),
         ssh_oras5_an=Variable(longname="sea_surface_height", name="sossheig", unit="m"),
     )
 
