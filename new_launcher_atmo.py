@@ -73,8 +73,8 @@ if __name__ == "__main__":
                     batch_size=32,
                     epochs=50,
                     loss="MSELoss",
-                    # loss="earthml.lightning.GaussianNLLFromLogits",
-                    # loss="earthml.lightning.HeteroBiasCorrectionLoss",
+                    # loss="earthml.losses.GaussianNLLFromLogits",
+                    # loss="earthml.losses.HeteroBiasCorrectionLoss",
                     # loss_params=dict(
                     #     # net=dict(use_first_input=False), # gnll
                     #     net=dict(use_first_input=True),
