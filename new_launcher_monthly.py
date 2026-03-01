@@ -196,6 +196,18 @@ if __name__ == "__main__":
                     batch_size=32,
                     epochs=50,
                     loss="MSELoss",
+                    # loss="earthml.losses.GaussianNLLFromLogits",
+                    # loss="earthml.losses.HeteroBiasCorrectionLoss",
+                    # loss_params=dict(
+                    #     # net=dict(use_first_input=False), # gnll
+                    #     net=dict(use_first_input=True),
+                    #     loss=dict(
+                    #         # reduction="mean", # gnll
+                    #         lambda_identity=0.1,
+                    #         bias_scale=0.5,
+                    #         eps=1e-6)
+                    # ),
+                    # loss="earthml.losses.GeoWeightedMSELoss", # latitudes are extracted from input testa dataset in experiment (mlfc.py) initialization and passed as loss_params
                     accumulate_grad_batches=2,
                     earlystopping_patience=30,
                 )
