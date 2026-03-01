@@ -18,11 +18,14 @@ dependencies = [
     "matplotlib>=3.10.7",
     "rich>=14.2.0",
     "scipy>=1.16.2",
+
+    # Index selection happens in [tool.uv.sources]
     "torch==2.6.0",
     "torch-geometric>=2.7.0",
     "torchaudio==2.6.0",
     "torchmetrics>=1.3.1",
     "torchvision>=0.21.0",
+
     "netCDF4>=1.7.4",
     "h5netcdf>=1.8.1",
     "h5py>=3.15.1",
@@ -30,12 +33,12 @@ dependencies = [
     "esmpy",
     "xesmf>=0.8.10",
 ]
+
 [project.optional-dependencies]
 cuda = [
+    # Won't install on macOS (including Apple Silicon)
     "nvidia-cuda-runtime-cu11>=11.8.89; sys_platform != 'darwin'",
 ]
-# metal = [
-# ]
 
 [build-system]
 requires = ["hatchling"]
@@ -45,35 +48,37 @@ build-backend = "hatchling.build"
 index-url = "https://pypi.org/simple"
 index-strategy = "unsafe-best-match"
 
+# CUDA wheels index (Linux/Windows typically)
 [[tool.uv.index]]
 name = "pytorch-cu118"
 url = "https://download.pytorch.org/whl/cu118"
 explicit = true
 
+# CPU / macOS wheels index (used on Darwin to not pull CUDA builds)
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 [tool.uv.sources]
-# git source remains for esmpy
+# Git source for esmpy
 esmpy = { git = "https://github.com/esmf-org/esmf.git", tag = "v8.5.0", subdirectory = "src/addon/esmpy" }
 
-# Direct only torch-family packages to the PyTorch CUDA index
-torch = { index = "pytorch-cu118" }
-torchvision = { index = "pytorch-cu118" }
-torchaudio = { index = "pytorch-cu118" }
-
-# [tool.uv]
-# # cache-dir = "/work/cmcc/jd19424/.cache/uv/"
-# index-strategy = "unsafe-best-match"
-#     [[tool.uv.index]]
-#     # name = "torch"
-#     url = "https://download.pytorch.org/whl/cu118"
-#     # explicit = true
-#     # [[tool.uv.index]]
-#     # name = "torchaudio"
-#     # url = "https://download.pytorch.org/whl/cu118"
-#     # explicit = true
-#     # [[tool.uv.index]]
-#     # name = "torchvision"
-#     # url = "https://download.pytorch.org/whl/cu118"
-#     # explicit = true
+# Per-platform torch-family routing:
+# - macOS (Apple Silicon + Intel): CPU/macOS wheels, no CUDA deps
+# - non-macOS: CUDA wheels from cu118 index
+torch = [
+  { index = "pytorch-cpu",  marker = "sys_platform == 'darwin'" },
+  { index = "pytorch-cu118", marker = "sys_platform != 'darwin'" },
+]
+torchvision = [
+  { index = "pytorch-cpu",  marker = "sys_platform == 'darwin'" },
+  { index = "pytorch-cu118", marker = "sys_platform != 'darwin'" },
+]
+torchaudio = [
+  { index = "pytorch-cpu",  marker = "sys_platform == 'darwin'" },
+  { index = "pytorch-cu118", marker = "sys_platform != 'darwin'" },
+]
 
 [dependency-groups]
 dev = [
@@ -97,4 +102,3 @@ dev = [
     "tensorboard>=2.20.0",
     "xskillscore>=0.0.27",
 ]
-
