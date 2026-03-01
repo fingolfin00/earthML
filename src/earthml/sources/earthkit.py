@@ -344,11 +344,6 @@ class EarthkitSource (BaseSource):
                     mask_lt = (lt_values >= low) & (lt_values <= high)
                     idxs = np.where(mask_lt)[0]
 
-                    # Pick only one leadtime if we don't need to infer it
-                    if (leadtime_name not in ds_chunk.dims or realization_dim is not None) and len(idxs) > 1:
-                        idxs = idxs[:1]
-                    print(f"    leadtime idxs: {idxs}")
-
                     print(f"   Nearest leadtime center: {pd.to_timedelta(center_lt) if np.issubdtype(unique_lt.dtype, np.timedelta64) else center_lt}, "
                         f"window: [{pd.to_timedelta(low) if np.issubdtype(unique_lt.dtype, np.timedelta64) else low}, "
                         f"{pd.to_timedelta(high) if np.issubdtype(unique_lt.dtype, np.timedelta64) else high}], "
@@ -358,10 +353,10 @@ class EarthkitSource (BaseSource):
                         raise ValueError("No leadtimes found in the computed window")
 
                     ds_chunk = ds_chunk.isel({leadtime_name: idxs})
-                    print(f"   Chunk size after selection: {ds_chunk.sizes}")
+                    # print(f"   Chunk size after selection: {ds_chunk.sizes}")
 
                     if leadtime_name in ds_chunk.dims and realization_dim is None:
-                        # Use valid time as the dimension
+                        # In this case leadtime is the time dimension, swap and sort
                         ds_chunk = (
                             ds_chunk
                             .swap_dims({leadtime_name: "time"})
@@ -401,6 +396,17 @@ class EarthkitSource (BaseSource):
 
                         # Reassign the coordinate to the requested target (ensures uniform coord across chunks)
                         ds_chunk = ds_chunk.assign_coords({leadtime_name: (leadtime_name, np.array([target_np], dtype=coord_dtype))})
+
+                    else:
+                        if ds_chunk.sizes.get(leadtime_name, 0) > 1:
+                            # Move step first to make bfill deterministic across the step axis
+                            ds_chunk = ds_chunk.transpose(leadtime_name, ...)
+
+                            # Since at most one is non-NaN, bfill then take step=0 gives the only valid value
+                            ds_chunk = ds_chunk.bfill(leadtime_name).isel({leadtime_name: 0})
+
+                            # Restore a length-1 step dimension with the requested conceptual value
+                            ds_chunk = ds_chunk.expand_dims({leadtime_name: [target_np]})
 
                     print(f"   Size after all processing: {ds_chunk.sizes}")
 
