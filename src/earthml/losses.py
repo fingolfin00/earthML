@@ -1,267 +1,407 @@
-from typing import Literal, Optional
+from typing import Literal, Optional, Tuple
+import math
 
 import torch
 from torch import nn
 import torch.nn.functional as F
 
-class GeoWeightedMSELoss (nn.Module):
+
+# -------------------------
+# helpers (module-level)
+# -------------------------
+def _expand_mask_to(x: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
+    """Return boolean mask broadcasted to x.shape. True = valid."""
+    if mask is None:
+        return torch.ones_like(x, dtype=torch.bool)
+    if mask.dtype != torch.bool:
+        mask = mask != 0
+    # add leading dims until mask.ndim == x.ndim then expand
+    while mask.ndim < x.ndim:
+        mask = mask.unsqueeze(0)
+    return mask.expand_as(x)
+
+
+def _masked_stats(x: torch.Tensor, mask: torch.Tensor, reduce_dims: Tuple[int, ...], keepdim: bool = True):
     """
-    Spatially weighted MSE loss.
+    Compute masked sum, sumsq, and count over reduce_dims.
+    mask must be the same shape as x.
+    Returns (sum, sumsq, count) with keepdim behavior.
     """
-    def __init__(self, latitudes: torch.Tensor):
+    m = mask.to(dtype=x.dtype, device=x.device)
+    s = (x * m).sum(dim=reduce_dims, keepdim=keepdim)
+    ssq = ((x * m) ** 2).sum(dim=reduce_dims, keepdim=keepdim)
+    count = m.sum(dim=reduce_dims, keepdim=keepdim)
+    return s, ssq, count
+
+
+def _masked_mean_var(
+        x: torch.Tensor,
+        mask: torch.Tensor,
+        reduce_dims: Tuple[int, ...],
+        unbiased: bool = False,
+        keepdim: bool = True,
+        eps: float = 1e-12,
+    ):
+    """
+    Return (mean, var, count) computed with mask applied.
+    Population variance by default (unbiased=False). var >= 0.
+    """
+    s, ssq, count = _masked_stats(x, mask, reduce_dims, keepdim=keepdim)
+    safe_count = count.clamp_min(eps)
+    mean = s / safe_count
+    var = (ssq / safe_count) - mean * mean
+    var = var.clamp_min(0.0)
+    if unbiased:
+        # Bessel correction only when count > 1
+        corr = torch.where(safe_count > 1.0, safe_count / (safe_count - 1.0), torch.ones_like(safe_count))
+        var = var * corr
+    return mean, var, count
+
+# -------------------------
+# MaskedMSELoss
+# -------------------------
+class MaskedMSELoss(nn.Module):
+    """
+    MSE loss that respects a boolean mask. Returns sum(sq_err) / (number_of_valid_elements).
+    """
+    def __init__(self, eps: float = 1e-12):
+        super().__init__()
+        self.eps = float(eps)
+
+    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor, mask: Optional[torch.Tensor] = None):
+        if y_pred.shape != y_true.shape:
+            raise ValueError("y_pred and y_true must have the same shape")
+
+        # Broadcast mask to y_true shape; ensure boolean on same device
+        mask_b = _expand_mask_to(y_true, mask).to(device=y_true.device, dtype=torch.bool)
+
+        sq_err = (y_pred - y_true) ** 2
+        sq_err = sq_err * mask_b.to(dtype=sq_err.dtype, device=sq_err.device)  # zero invalid
+
+        # valid_count as float on same device/dtype as sq_err to avoid dtype/device surprises
+        valid_count = mask_b.to(dtype=sq_err.dtype, device=sq_err.device).sum()
+        if valid_count == 0:
+            raise ValueError("No valid pixels in mask")
+        valid_count = valid_count.clamp_min(self.eps)
+        return sq_err.sum() / valid_count
+
+# -------------------------
+# GeoWeightedMSELoss
+# -------------------------
+class GeoWeightedMSELoss(nn.Module):
+    """
+    Spatially weighted MSE loss that respects a boolean mask.
+    latitudes: 1D tensor length H (degrees)
+    """
+    def __init__(self, latitudes: torch.Tensor, eps: float = 1e-12):
         super().__init__()
         weights = torch.cos(torch.deg2rad(latitudes))
-        self.register_buffer("weights", weights) # will move with model and be on same device/dtype as inputs
+        self.register_buffer("weights", weights)  # 1D tensor length H
+        self.eps = float(eps)
 
-    def forward(
-        self,
-        y_pred: torch.Tensor,        # corrected forecast
-        y_true: torch.Tensor,        # analysis
-    ):
-        sq_err = (y_pred - y_true) ** 2 # shape NCHW
+    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor, mask: Optional[torch.Tensor] = None):
+        """
+        y_pred / y_true: (N,C,H,W)
+        mask: broadcastable to y_true (True=valid)
+        """
+        if y_pred.shape != y_true.shape:
+            raise ValueError("y_pred and y_true must have the same shape")
 
-        # Reshape for broadcasting over H
-        w = self.weights.view(1, 1, sq_err.shape[2], 1)
+        mask_b = _expand_mask_to(y_true, mask).to(device=y_true.device, dtype=torch.bool)  # boolean same shape as y_true
+        sq_err = (y_pred - y_true) ** 2
+        sq_err = sq_err * mask_b.to(dtype=sq_err.dtype, device=sq_err.device)  # zero invalid
 
-        # Expand to NCHW and guard against division by zero
-        return (sq_err * w).sum() / w.expand_as(sq_err).sum().clamp_min(1e-12)
+        # build latitude weight shape and broadcast
+        lat = self.weights.to(dtype=y_true.dtype, device=y_true.device)
+        # assume 4D (N,C,H,W)
+        H = y_true.shape[2]
+        if lat.numel() != H:
+            raise ValueError(f"latitudes length {lat.numel()} != H {H}")
+        w = lat.view(1, 1, H, 1).expand_as(y_true).to(dtype=sq_err.dtype)
 
-class VarianceNormalizedMSELoss (nn.Module):
+        # zero-out weights at masked positions, then compute weighted mean over valid pixels
+        w_masked = w * mask_b.to(dtype=w.dtype, device=w.device)
+        numerator = (sq_err * w_masked).sum()
+        denom = w_masked.sum()
+        if denom == 0:
+            raise ValueError("GeoWeightedMSELoss: mask has zero valid (weighted) elements")
+        denom = denom.clamp_min(self.eps)
+        return numerator / denom
+
+
+# -------------------------
+# VarianceNormalizedMSELoss
+# -------------------------
+class VarianceNormalizedMSELoss(nn.Module):
     """
-    MSE loss normalized by variance of the target field.
-
-    Supported variance types:
-      - "channel"      : per-channel variance across batch and all non-channel dims
-      - "geochannel"   : same as "channel" but latitude-weighted (requires `latitudes`)
-      - "spatial"      : per-spatial variance across batch and channel -> shape (1,1,H,W)
-      - "temporal"     : per-channel variance across time & batch (requires time dim)
-      - "geotemporal"  : temporal variance weighted by latitude (requires time dim & latitudes)
-
-    Input shapes supported:
-      - 4D: (N, C, H, W)
-      - 5D: (N, C, T, H, W)
+    MSE normalized by variance with mask support.
+    - spatial: variance at each spatial cell across (N,C) -> shape (1,1,H,W)
+    - channel: per-channel variance across all non-channel dims -> shape (1,C,1,1)
+    - geochannel, temporal, geotemporal supported (masked)
     """
-    def __init__ (
+    def __init__(
         self,
         eps: float = 1e-12,
         variance_type: Literal["channel", "geochannel", "spatial", "temporal", "geotemporal"] = "channel",
-        latitudes: Optional[torch.Tensor] = None,  # 1D tensor of latitudes (degrees) length == H
+        latitudes: Optional[torch.Tensor] = None,
+        relative_floor_frac: float = 1e-3,
+        min_valid_count: int = 1,
     ):
         super().__init__()
         self.eps = float(eps)
         self.variance_type = variance_type
+        self.relative_floor_frac = float(relative_floor_frac)
+        self.min_valid_count = int(min_valid_count)
 
         if variance_type in ("geochannel", "geotemporal"):
             if latitudes is None:
                 raise ValueError(f"latitudes must be provided for variance_type='{variance_type}'")
-            # keep raw lat array; converted to module device/dtype in forward
             if not isinstance(latitudes, torch.Tensor):
                 latitudes = torch.tensor(latitudes, dtype=torch.float32)
             self.register_buffer("latitudes", latitudes)
         else:
             self.register_buffer("latitudes", None)
 
-    def _dims_except_channel (self, x: torch.Tensor):
-        return tuple(d for d in range(x.ndim) if d != 1)
+    def _check_var_field_broadcastable(self, var_field: torch.Tensor, target: torch.Tensor):
+        # quick broadcastability check
+        try:
+            _ = (var_field + target).shape
+        except Exception:
+            raise ValueError("var_field must be broadcastable to y_true/target shape")
 
-    def forward (
+    def forward(
         self,
-        y_pred: torch.Tensor,        # corrected forecast
-        y_true: torch.Tensor,        # analysis (target)
+        y_pred: torch.Tensor,
+        y_true: torch.Tensor,
         var_field: Optional[torch.Tensor] = None,
+        mask: Optional[torch.Tensor] = None,
     ):
-        """
-        y_true / y_pred: shape (N, C, H, W) or (N, C, T, H, W)
-        var_field: optional externally provided variance; must be broadcastable to sq_err
-        """
-        if y_true.shape != y_pred.shape:
+        if y_pred.shape != y_true.shape:
             raise ValueError("y_pred and y_true must have the same shape")
 
-        sq_err = (y_pred - y_true) ** 2
+        # mask expanded to full shape
+        mask_b = _expand_mask_to(y_true, mask).to(device=y_true.device, dtype=torch.bool)
 
+        sq_err = (y_pred - y_true) ** 2
+        sq_err = sq_err * mask_b.to(dtype=sq_err.dtype, device=sq_err.device)  # zero invalid
+
+        x = y_true
+        ndim = x.ndim
+        if ndim not in (4, 5):
+            raise ValueError("y_true must be 4D (N,C,H,W) or 5D (N,C,T,H,W)")
+
+        # If var_field provided, trust it (but clamp) — validate broadcastability
         if var_field is not None:
-            # Use provided variance (assumed already appropriate shape), clamp to avoid 0
+            self._check_var_field_broadcastable(var_field, sq_err)
             denom = var_field.clamp_min(self.eps)
         else:
-            x = y_true
-            ndim = x.ndim
-            if ndim not in (4, 5):
-                raise ValueError("y_true must be 4D (N,C,H,W) or 5D (N,C,T,H,W)")
-
-            # Sum over all dims except channel (1)
-            sum_dims = self._dims_except_channel(x)
-
+            # choose reduction dims common to many types:
+            # For "channel" we reduce over all except dim=1 (channel)
+            # For "spatial" we reduce over (0,1) to keep spatial dims
             if self.variance_type == "channel":
-                # Per-channel variance across batch and all non-channel dims
-                # Mean per-channel:
-                mean = x.mean(dim=sum_dims, keepdim=True)
-                est_var = ((x - mean) ** 2).mean(dim=sum_dims, keepdim=True)
-                denom = est_var.clamp_min(self.eps)
+                reduce_dims = tuple(d for d in range(x.ndim) if d != 1)
+                _, var, count = _masked_mean_var(x, mask_b, reduce_dims, unbiased=False, keepdim=True, eps=self.eps)
+                denom = var.clamp_min(self.eps)
 
             elif self.variance_type == "geochannel":
-                # Weighted per-channel variance with latitudes (weights along H axis)
+                # weighted per-channel variance along lat dimension
                 lat = self.latitudes
                 if lat is None:
                     raise ValueError("latitudes buffer missing for 'geochannel'")
-                # Ensure lat on same device/dtype as x
                 lat = lat.to(dtype=x.dtype, device=x.device)
-
-                # Find latitude axis index (H). For 4D: idx=2, for 5D: idx=3
                 lat_axis = 2 if ndim == 4 else 3
                 H = x.shape[lat_axis]
                 if lat.numel() != H:
                     raise ValueError(f"latitudes length {lat.numel()} does not match H={H}")
 
-                # Build weight tensor broadcastable to x shape
-                # Start with shape (H,)
-                w = torch.cos(torch.deg2rad(lat)).view([1, 1] + ([H] if ndim == 4 else [1, H]) + ([1] if ndim == 4 else [1]))
-                # The above view yields:
-                #  - 4D: (1,1,H,1)
-                #  - 5D: (1,1,1,H,1)  -> later expand to x shape
-
-                w = w.expand_as(x)
-
-                # Weighted mean per-channel
-                numerator = (x * w).sum(dim=sum_dims, keepdim=True)
-                denom_w = w.sum(dim=sum_dims, keepdim=True).clamp_min(1e-12)
-                mean_w = numerator / denom_w
-
-                # Weighted variance per-channel
-                est_var = (((x - mean_w) ** 2) * w).sum(dim=sum_dims, keepdim=True) / denom_w
-                denom = est_var.clamp_min(self.eps)
+                # build w with shape broadcastable to x
+                if ndim == 4:
+                    w = torch.cos(torch.deg2rad(lat)).view(1,1,H,1).expand_as(x).to(dtype=x.dtype)
+                else:
+                    w = torch.cos(torch.deg2rad(lat)).view(1,1,1,H,1).expand_as(x).to(dtype=x.dtype)
+                # zero weights at invalid positions
+                w = w * mask_b.to(dtype=w.dtype, device=w.device)
+                # compute weighted mean/var per-channel over all dims except channel
+                reduce_dims = tuple(d for d in range(x.ndim) if d != 1)
+                numerator = (x * w).sum(dim=reduce_dims, keepdim=True)
+                wsum = w.sum(dim=reduce_dims, keepdim=True)
+                if (wsum == 0).any():
+                    raise ValueError("geochannel: no valid weighted elements for some channels/positions")
+                wsum = wsum.clamp_min(self.eps)
+                mean_w = numerator / wsum
+                var_w = (((x - mean_w) ** 2) * w).sum(dim=reduce_dims, keepdim=True) / wsum
+                var_w = var_w.clamp_min(0.0)
+                denom = var_w.clamp_min(self.eps)
 
             elif self.variance_type == "spatial":
-                # Variance per-spatial location across batch and channel.
-                # Result shape: (1,1,H,W) for 4D, (1,1,T,H,W) for 5D
-                # Sum dims: batch (0) and channel (1)
-                if ndim == 4:
-                    est_var = x.var(dim=(0,1), unbiased=False, keepdim=True)  # shape (1,1,H,W)
-                else:
-                    # 5D: (N,C,T,H,W) -> variance over N and C -> shape (1,1,1,H,W)
-                    est_var = x.var(dim=(0,1,2), unbiased=False, keepdim=True)
-                denom = est_var.clamp_min(self.eps)
+                # reduce over batch and channel -> keep spatial dims (and time if present)
+                reduce_dims = (0, 1)
+                _, var, count = _masked_mean_var(x, mask_b, reduce_dims, unbiased=False, keepdim=True, eps=self.eps)
+                # put a relative floor based on mean variance to avoid tiny denom at a few pixels
+                mean_var = var.mean().item()
+                floor_val = max(self.eps, self.relative_floor_frac * mean_var)
+                # if count < min_valid_count, use a larger floor so that poorly-sampled cells are downweighted
+                small_count_mask = (count < self.min_valid_count)
+                denom = var.clone()
+                denom = denom.clamp_min(floor_val)
+                if small_count_mask.any():
+                    big_floor_t = torch.tensor(max(floor_val, 10.0 * self.eps), device=denom.device, dtype=denom.dtype)
+                    denom = torch.where(small_count_mask, torch.maximum(denom, big_floor_t), denom)
 
             elif self.variance_type == "temporal":
-                # Per-channel variance across time and batch. Requires time dim (5D).
+                # per-channel variance across batch + time + spatial dims
                 if ndim != 5:
-                    # Fallback: treat as channel variance if no time dim exists
-                    mean = x.mean(dim=sum_dims, keepdim=True)
-                    est_var = ((x - mean) ** 2).mean(dim=sum_dims, keepdim=True)
+                    # fallback: channel variance
+                    reduce_dims = tuple(d for d in range(x.ndim) if d != 1)
+                    _, var, _ = _masked_mean_var(x, mask_b, reduce_dims, unbiased=False, keepdim=True, eps=self.eps)
                 else:
-                    # Sum over batch and time and spatial dims except channel:
-                    sum_dims_temp = tuple(d for d in range(x.ndim) if d not in (1,))  # sum all except channel
-                    mean = x.mean(dim=sum_dims_temp, keepdim=True)
-                    est_var = ((x - mean) ** 2).mean(dim=sum_dims_temp, keepdim=True)
-                denom = est_var.clamp_min(self.eps)
+                    # reduce over batch and time and spatial dims -> keep channel
+                    reduce_dims = (0, 2, 3, 4)
+                    _, var, count = _masked_mean_var(x, mask_b, reduce_dims, unbiased=False, keepdim=True, eps=self.eps)
+                denom = var.clamp_min(self.eps)
 
             elif self.variance_type == "geotemporal":
-                # Weighted in latitude and across time & batch; requires 5D input
+                # weighted in latitude across time & batch; requires 5D
                 if ndim != 5:
                     raise ValueError("'geotemporal' requires a 5D input (N,C,T,H,W)")
                 lat = self.latitudes
                 if lat is None:
                     raise ValueError("latitudes buffer missing for 'geotemporal'")
                 lat = lat.to(dtype=x.dtype, device=x.device)
-                lat_axis = 3  # (N,C,T,H,W) -> H is axis 3
-                H = x.shape[lat_axis]
+                H = x.shape[3]
                 if lat.numel() != H:
                     raise ValueError(f"latitudes length {lat.numel()} does not match H={H}")
 
-                # Create weight shape (1,1,1,H,1) and expand
-                w = torch.cos(torch.deg2rad(lat)).view(1, 1, 1, H, 1).expand_as(x)
-
-                sum_dims_geo = tuple(d for d in range(x.ndim) if d != 1)  # all except channel
-                numerator = (x * w).sum(dim=sum_dims_geo, keepdim=True)
-                denom_w = w.sum(dim=sum_dims_geo, keepdim=True).clamp_min(1e-12)
-                mean_w = numerator / denom_w
-                est_var = (((x - mean_w) ** 2) * w).sum(dim=sum_dims_geo, keepdim=True) / denom_w
-                denom = est_var.clamp_min(self.eps)
+                w = torch.cos(torch.deg2rad(lat)).view(1,1,1,H,1).expand_as(x).to(dtype=x.dtype)
+                # zero weights at masked positions
+                w = w * mask_b.to(dtype=w.dtype, device=w.device)
+                reduce_dims = tuple(d for d in range(x.ndim) if d != 1)
+                numerator = (x * w).sum(dim=reduce_dims, keepdim=True)
+                wsum = w.sum(dim=reduce_dims, keepdim=True)
+                if (wsum == 0).any():
+                    raise ValueError("geotemporal: no valid weighted elements for some channels/positions")
+                wsum = wsum.clamp_min(self.eps)
+                mean_w = numerator / wsum
+                var_w = (((x - mean_w) ** 2) * w).sum(dim=reduce_dims, keepdim=True) / wsum
+                denom = var_w.clamp_min(self.eps)
 
             else:
                 raise ValueError(f"Unknown variance_type: {self.variance_type}")
 
-        # Final normalized MSE
-        var_norm_mse = (sq_err / denom).mean()
-        return var_norm_mse
+        # final masked average: sum((sq_err / denom) over valid pixels) / number_of_valid_pixels
+        # denom should broadcast to sq_err shape
+        # count valid pixels overall:
+        valid_count = mask_b.to(dtype=sq_err.dtype, device=sq_err.device).sum()
+        if valid_count == 0:
+            raise ValueError("VarianceNormalizedMSELoss: mask has zero valid elements")
+        valid_count = valid_count.clamp_min(self.eps)
+        loss = (sq_err / denom).sum() / valid_count
+        return loss
 
-class HeteroBiasCorrectionLoss (nn.Module):
+
+# -------------------------
+# HeteroBiasCorrectionLoss
+# -------------------------
+class HeteroBiasCorrectionLoss(nn.Module):
     """
-    Loss for bias correction with:
-    - variance-normalized MSE
-    - identity-preserving term when true bias is small
+    Loss = variance-normalized MSE + lambda_identity * identity-preserving term.
+    Both terms respect mask. For variance normalization we use simple per-channel masked variance unless var_field provided.
     """
-    def __init__(
-        self,
-        lambda_identity: float = 0.1,
-        bias_scale: float = 0.5,
-        eps: float = 1e-6,
-    ):
+    def __init__(self, lambda_identity: float = 0.1, bias_scale: float = 0.5, eps: float = 1e-6):
         super().__init__()
-        self.lambda_identity = lambda_identity
-        self.bias_scale = bias_scale
-        self.eps = eps
+        self.lambda_identity = float(lambda_identity)
+        self.bias_scale = float(bias_scale)
+        self.eps = float(eps)
         self.loss_components = None
+
+    def _check_var_field_broadcastable(self, var_field: torch.Tensor, target: torch.Tensor):
+        try:
+            _ = (var_field + target).shape
+        except Exception:
+            raise ValueError("var_field must be broadcastable to y_true/target shape")
 
     def forward(
         self,
-        y_pred: torch.Tensor,        # corrected forecast
-        y_true: torch.Tensor,        # analysis
-        x_input: torch.Tensor,       # raw forecast
-        var_field: torch.Tensor | None = None,
+        y_pred: torch.Tensor,
+        y_true: torch.Tensor,
+        x_input: torch.Tensor,
+        var_field: Optional[torch.Tensor] = None,
+        mask: Optional[torch.Tensor] = None,
     ):
-        # Variance-normalized MSE term
+        mask_b = _expand_mask_to(y_true, mask).to(device=y_true.device, dtype=torch.bool)
         sq_err = (y_pred - y_true) ** 2
+        sq_err = sq_err * mask_b.to(dtype=sq_err.dtype, device=sq_err.device)
 
+        # denom: either provided or per-channel masked variance
         if var_field is not None:
-            denom = var_field + self.eps
+            self._check_var_field_broadcastable(var_field, sq_err)
+            denom = var_field.clamp_min(self.eps)
         else:
-            # Per-channel variance estimated from batch
-            est_var = y_true.var(dim=(0, 2, 3), keepdim=True)
-            denom = est_var + self.eps
+            # compute per-channel masked variance across batch + spatial dims
+            reduce_dims = tuple(d for d in range(y_true.ndim) if d != 1)
+            _, var, count = _masked_mean_var(y_true, mask_b, reduce_dims, unbiased=False, keepdim=True, eps=self.eps)
+            # floor denom
+            mean_var = var.mean().item()
+            floor = max(self.eps, 1e-3 * mean_var)
+            denom = var.clamp_min(floor)
 
-        var_norm_mse = (sq_err / denom).mean()
+        valid_count = mask_b.to(dtype=sq_err.dtype, device=sq_err.device).sum()
+        if valid_count == 0:
+            raise ValueError("HeteroBiasCorrectionLoss: mask has zero valid elements")
+        valid_count = valid_count.clamp_min(self.eps)
+        var_norm_mse = (sq_err / denom).sum() / valid_count
 
-        # Identity-preserving term
-        # True bias between raw input and target
+        # Identity-preserving term (weighted by where true bias is small)
         true_bias = y_true - x_input
         bias_mag = true_bias.abs()
-
-        # Weight strong where true bias is small
-        w_id = torch.exp(-bias_mag / self.bias_scale)
-
-        # Penalize changing the input when its bias is small
+        w_id = torch.exp(-bias_mag / self.bias_scale) * mask_b.to(dtype=bias_mag.dtype, device=bias_mag.device)
         id_err = (y_pred - x_input) ** 2
-        identity_loss = (w_id * id_err).mean()
+        w_id_sum = w_id.sum().clamp_min(self.eps)          # tensor on same device
+        identity_loss = (w_id * id_err).sum() / w_id_sum
 
         total_loss = var_norm_mse + self.lambda_identity * identity_loss
-
+        # store detach() components for logging (move to CPU for external loggers)
         self.loss_components = {
-            "var_norm_mse": var_norm_mse.detach(),
-            "identity_loss": identity_loss.detach(),
+            "var_norm_mse": var_norm_mse.detach().cpu(),
+            "identity_loss": identity_loss.detach().cpu(),
         }
         return total_loss
 
+
+# -------------------------
+# GaussianNLLFromLogits
+# -------------------------
 class GaussianNLLFromLogits(nn.Module):
     """
-    Expects pred to be either:
-      - tuple/list: (mu, var)  where var is variance (positive)
-      - tensor:     [B, 2*C, H, W] where channels are (mu, raw_var)
-    Converts raw_var -> var via softplus, then applies GaussianNLLLoss.
+    Computes Gaussian NLL from logits (mu, raw_var) with optional mask:
+      - if pred is (mu, var) pair, var must be positive already
+      - if pred is tensor with 2*C channels, split into mu and raw_var -> var = softplus(raw_var)+eps
+    Masking: compute elementwise NLL, zero invalid positions, then average over valid pixels.
     """
-    def __init__(
-        self,
-        reduction: str = "mean",
-        eps: float = 1e-6,
-    ):
+    def __init__(self, eps: float = 1e-6):
         super().__init__()
-        self.eps = eps
-        self.nll = nn.GaussianNLLLoss(eps=eps, reduction=reduction)
+        self.eps = float(eps)
 
-    def forward(self, pred, target):
+    def forward(self, pred, target: torch.Tensor, mask: Optional[torch.Tensor] = None):
         if isinstance(pred, (tuple, list)):
             mu, var = pred
         else:
             mu, raw_var = torch.chunk(pred, 2, dim=1)
             var = F.softplus(raw_var) + self.eps
 
-        return self.nll(mu, target, var)
+        if mu.shape != target.shape:
+            raise ValueError("mu and target must have same shape")
+
+        mask_b = _expand_mask_to(target, mask).to(device=target.device, dtype=torch.bool)
+        # Gaussian NLL per element (no reduction):
+        # 0.5 * (log(2*pi*var) + (target-mu)^2 / var)
+        var = var.clamp_min(self.eps)
+        diff2 = (target - mu) ** 2
+        nll_elem = 0.5 * (torch.log(2.0 * math.pi * var) + diff2 / var)
+        nll_elem = nll_elem * mask_b.to(dtype=nll_elem.dtype, device=nll_elem.device)
+        valid_count = mask_b.to(dtype=nll_elem.dtype, device=nll_elem.device).sum()
+        if valid_count == 0:
+            raise ValueError("GaussianNLLFromLogits: mask has zero valid elements")
+        valid_count = valid_count.clamp_min(self.eps)
+        loss = nll_elem.sum() / valid_count
+        return loss
