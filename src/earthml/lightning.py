@@ -1,4 +1,5 @@
 from typing import List
+import inspect
 import importlib, joblib
 import numpy as np
 import xarray as xr
@@ -13,6 +14,42 @@ from torchmetrics.image import SpatialCorrelationCoefficient
 import matplotlib.cm as cm
 
 from .utils import guess_realization_dim, guess_time_dim, guess_lon_dim, guess_lat_dim
+
+# Module level functions
+
+def call_loss (
+        loss_fn, y_pred: torch.Tensor, y_true: torch.Tensor,
+        x0: Optional[torch.Tensor] = None,
+        mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+    """
+    Calls loss_fn with supported kwargs only.
+    Supports losses with signatures:
+      - loss(y_pred, y_true)
+      - loss(y_pred, y_true, mask=...)
+      - loss(y_pred, y_true, x_input, mask=...)  (your custom)
+    """
+    sig = inspect.signature(loss_fn.forward if hasattr(loss_fn, "forward") else loss_fn)
+    params = sig.parameters
+
+    kwargs: dict[str, Any] = {}
+
+    # only pass mask if accepted
+    if mask is not None and "mask" in params:
+        kwargs["mask"] = mask
+
+    # pass x_input if requested and accepted (you call it x_input in your custom)
+    if x0 is not None:
+        if "x_input" in params:
+            kwargs["x_input"] = x0
+            return loss_fn(y_pred, y_true, **kwargs)
+        # some custom losses might take it positionally, but your code uses positional (mu,y,x0,...)
+        # If forward has 3rd positional param and you want to use it, do it explicitly:
+        positional = [p for p in params.values() if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+        if len(positional) >= 3:
+            return loss_fn(y_pred, y_true, x0, **kwargs)
+
+    return loss_fn(y_pred, y_true, **kwargs)
 
 class EarthMLLightningModule (L.LightningModule):
     def __init__ (self, use_first_input=False):
@@ -212,9 +249,9 @@ class EarthMLLightningModule (L.LightningModule):
             mu = pred
 
         if self.use_first_input:
-            loss = self.loss(mu, y, x[0], mask=mask)
+            loss = call_loss(self.loss, mu, y, x0=x[0], mask=mask)
         else:
-            loss = self.loss(mu, y, mask=mask)
+            loss = call_loss(self.loss, mu, y, mask=mask)
 
         mu = mu.contiguous()
         y  = y.contiguous()
@@ -257,9 +294,9 @@ class EarthMLLightningModule (L.LightningModule):
             mu = pred
 
         if self.use_first_input:
-            loss = self.loss(mu, y, x[0], mask=mask)
+            loss = call_loss(self.loss, mu, y, x0=x[0], mask=mask)
         else:
-            loss = self.loss(mu, y, mask=mask)
+            loss = call_loss(self.loss, mu, y, mask=mask)
 
         mu = mu.contiguous()
         y  = y.contiguous()
@@ -303,9 +340,9 @@ class EarthMLLightningModule (L.LightningModule):
             mu = pred
 
         if self.use_first_input:
-            loss = self.loss(mu, y, x[0], mask=mask)
+            loss = call_loss(self.loss, mu, y, x0=x[0], mask=mask)
         else:
-            loss = self.loss(mu, y, mask=mask)
+            loss = call_loss(self.loss, mu, y, mask=mask)
 
         mu = mu.contiguous()
         y  = y.contiguous()
