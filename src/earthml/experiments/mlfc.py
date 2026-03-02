@@ -51,27 +51,6 @@ class ExperimentMLFC:
         # Tensorboard
         self.tl_logger = TensorBoardLogger(self.config.work_path, name="tensorboard_logs") # version=self.run_number
 
-        # Calculate latitudes if necessary for loss function
-        if self.config.loss in ["earthml.losses.WeightedMSELoss"] or (isinstance(self.config.loss, str) and self.config.loss.endswith("WeightedMSELoss")):
-            self.latitudes = self._get_latitudes(self.source_test_data[0].load())
-        else:
-            self.latitudes = None
-
-        # Initialize model
-        self.model = build_net(
-            self.config.net,
-            learning_rate=self.config.learning_rate,
-            loss=self.config.loss,
-            loss_params=self.config.loss_params | (dict(loss=dict(latitudes=self.latitudes)) if self.latitudes is not None else {}),
-            norm=self.config.norm_strategy,
-            supervised=self.config.supervised,
-            **self.config.extra_net_args,
-        ).to(self.device)
-
-        # Log model info
-        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        print(f"Net {type(self.model).__name__} trainable parameters: {trainable_params:,}")
-
         # Init
         self.normalize = None
         self.train_datamodule = None
@@ -96,6 +75,27 @@ class ExperimentMLFC:
         # Init source data objects
         self.source_train_data = self._init_source_data(self.config.train, 'train')
         self.source_test_data = self._init_source_data(self.config.test, 'test')
+
+        # Calculate latitudes if necessary for loss function
+        if self.config.loss in ["earthml.losses.WeightedMSELoss"] or (isinstance(self.config.loss, str) and self.config.loss.endswith("WeightedMSELoss")):
+            self.latitudes = torch.from_numpy(self._get_latitudes(self.source_test_data['input'].load()).astype(np.float32))
+        else:
+            self.latitudes = None
+
+        # Initialize model
+        self.model = build_net(
+            self.config.net,
+            learning_rate=self.config.learning_rate,
+            loss=self.config.loss,
+            loss_params=self.config.loss_params | (dict(loss=dict(latitudes=self.latitudes)) if self.latitudes is not None else {}),
+            norm=self.config.norm_strategy,
+            supervised=self.config.supervised,
+            **self.config.extra_net_args,
+        ).to(self.device)
+
+        # Log model info
+        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        print(f"Net {type(self.model).__name__} trainable parameters: {trainable_params:,}")
 
         # Save experiment
         with open(self.work_path.joinpath("experiment.cfg"), 'wb') as f:
@@ -140,6 +140,7 @@ class ExperimentMLFC:
         except:
             self.ckpt_path = self.ckpt_folder_path.joinpath(f"{self.ckpt_filename}.ckpt")
 
+    @staticmethod
     def _get_latitudes (ds: xr.Dataset) -> np.ndarray:
         print("Getting latitudes from dataset for loss function...")
         return ds[guess_lat_dim(ds)].values
