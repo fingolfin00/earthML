@@ -73,21 +73,50 @@ class ExperimentMLFC:
         self.config.test.append(preds_exp)
 
         # Init source data objects
-        self.source_train_data = self._init_source_data(self.config.train, 'train')
-        self.source_test_data = self._init_source_data(self.config.test, 'test')
+        self.source_train_data = self._init_source_data(self.config.train, "train")
+        self.source_test_data  = self._init_source_data(self.config.test,  "test")
 
-        # Calculate latitudes if necessary for loss function
-        if self.config.loss in ["earthml.losses.WeightedMSELoss"] or (isinstance(self.config.loss, str) and self.config.loss.endswith("WeightedMSELoss")):
-            self.latitudes = torch.from_numpy(self._get_latitudes(self.source_test_data['input'].load()).astype(np.float32))
-        else:
+        # Handle latitudes for optional spatial weighting
+        self.latitudes = None
+        loss_cfg = self.config.loss_params.get("loss", {})  # safe access
+        net_cfg = self.config.loss_params.get("net", {})
+
+        lat_cfg = loss_cfg.get("latitudes", False)
+        if lat_cfg is True:
+            # Compute from test data
+            ds_in = self.source_test_data["input"].load()
+            lat_np = self._get_latitudes(ds_in).astype(np.float32)
+            self.latitudes = torch.from_numpy(lat_np)
+        elif lat_cfg is False or lat_cfg is None:
+            # Explicit opt-out or absent
             self.latitudes = None
+        else:
+            # User provided array-like or torch.Tensor in config
+            if isinstance(lat_cfg, torch.Tensor):
+                self.latitudes = lat_cfg.to(dtype=torch.float32).cpu()
+            else:
+                lat_arr = np.asarray(lat_cfg, dtype=np.float32)
+                self.latitudes = torch.from_numpy(lat_arr)
+
+        # TODO add latitudes validation
+        # if self.latitudes is not None:
+        #     expected_H = ...  # compute or fetch from a sample input shape
+        #     if self.latitudes.numel() != expected_H:
+        #         raise ValueError(f"latitudes length {self.latitudes.numel()} != H {expected_H}")
+
+        # Build merged loss_params
+        base_loss_params = dict(self.config.loss_params)  # shallow copy
+        nested_loss = dict(base_loss_params.get("loss", {}))
+        nested_loss["latitudes"] = self.latitudes  # may be None
+        base_loss_params["loss"] = nested_loss
+        base_loss_params["net"] = net_cfg
 
         # Initialize model
         self.model = build_net(
             self.config.net,
             learning_rate=self.config.learning_rate,
             loss=self.config.loss,
-            loss_params=self.config.loss_params | (dict(loss=dict(latitudes=self.latitudes)) if self.latitudes is not None else {}),
+            loss_params=base_loss_params,
             norm=self.config.norm_strategy,
             supervised=self.config.supervised,
             **self.config.extra_net_args,
