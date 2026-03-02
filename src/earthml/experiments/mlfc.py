@@ -107,7 +107,8 @@ class ExperimentMLFC:
         # Build merged loss_params
         base_loss_params = dict(self.config.loss_params)  # shallow copy
         nested_loss = dict(base_loss_params.get("loss", {}))
-        nested_loss["latitudes"] = self.latitudes  # may be None
+        if self.latitudes is not None:
+            nested_loss["latitudes"] = self.latitudes
         base_loss_params["loss"] = nested_loss
         base_loss_params["net"] = net_cfg
 
