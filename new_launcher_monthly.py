@@ -207,7 +207,16 @@ if __name__ == "__main__":
                     #         bias_scale=0.5,
                     #         eps=1e-6)
                     # ),
-                    # loss="earthml.losses.GeoWeightedMSELoss", # latitudes are extracted from input testa dataset in experiment (mlfc.py) initialization and passed as loss_params
+                    # loss="earthml.losses.GeoWeightedMSELoss",
+                    # loss="earthml.losses.VarianceNormalizedMSELoss",
+                    # if latitudes is True latitudes are extracted from input test dataset in experiment (mlfc.py) initialization and passed as loss_params
+                    # loss_params=dict(
+                    #     # net=dict(),
+                    #     loss=dict(
+                    #         variance_type="channel", # only for VarianceNormalizedMSELoss
+                    #         latitudes=True,
+                    #     )
+                    # ),
                     accumulate_grad_batches=2,
                     earlystopping_patience=30,
                 )
