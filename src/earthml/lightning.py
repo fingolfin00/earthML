@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Any, Optional
 import inspect
 import importlib, joblib
 import numpy as np
@@ -51,6 +51,86 @@ def call_loss (
 
     return loss_fn(y_pred, y_true, **kwargs)
 
+# Classes
+
+# Masked metrics
+class MaskedMAE(Metric):
+    is_differentiable = False
+    higher_is_better = False
+
+    def __init__(self):
+        super().__init__()
+        self.add_state("sum_abs", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("count", default=torch.tensor(0.0), dist_reduce_fx="sum")
+
+    def update(self, preds: torch.Tensor, target: torch.Tensor, mask: torch.Tensor):
+        m = mask.to(dtype=preds.dtype, device=preds.device)
+        self.sum_abs += (preds.sub(target).abs() * m).sum()
+        self.count += m.sum()
+
+    def compute(self):
+        return self.sum_abs / self.count # NaN if count is zero
+
+
+class MaskedRMSE(Metric):
+    is_differentiable = False
+    higher_is_better = False
+
+    def __init__(self):
+        super().__init__()
+        self.add_state("sum_sq", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("count", default=torch.tensor(0.0), dist_reduce_fx="sum")
+
+    def update(self, preds: torch.Tensor, target: torch.Tensor, mask: torch.Tensor):
+        m = mask.to(dtype=preds.dtype, device=preds.device)
+        self.sum_sq += ((preds - target) ** 2 * m).sum()
+        self.count += m.sum()
+
+    def compute(self):
+        return torch.sqrt(self.sum_sq / self.count) # NaN if count is zero
+
+class MaskedSpatialCorr(Metric):
+    is_differentiable = False
+    higher_is_better = True
+
+    def __init__(self, eps: float = 1e-12):
+        super().__init__()
+        self.eps = eps
+        self.add_state("sum_corr", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("num", default=torch.tensor(0.0), dist_reduce_fx="sum")
+
+    def update(self, preds: torch.Tensor, target: torch.Tensor, mask: torch.Tensor):
+        # preds/target: (N,C,H,W), mask broadcastable to that
+        m = mask.to(dtype=preds.dtype, device=preds.device)
+        N, C = preds.shape[:2]
+        x = preds.reshape(N, C, -1)
+        y = target.reshape(N, C, -1)
+        mm = m.reshape(N, C, -1)
+
+        count = mm.sum(dim=-1)  # (N,C)
+        valid = count > 1
+
+        # masked means
+        denom = count.clamp_min(1.0)
+        mx = (x * mm).sum(dim=-1) / denom
+        my = (y * mm).sum(dim=-1) / denom
+
+        xc = (x - mx.unsqueeze(-1)) * mm
+        yc = (y - my.unsqueeze(-1)) * mm
+
+        cov = (xc * yc).sum(dim=-1)
+        vx = (xc * xc).sum(dim=-1)
+        vy = (yc * yc).sum(dim=-1)
+
+        corr = cov / (torch.sqrt(vx * vy).clamp_min(self.eps))
+        corr = corr[valid]
+
+        self.sum_corr += corr.sum()
+        self.num += torch.tensor(corr.numel(), device=self.sum_corr.device, dtype=self.sum_corr.dtype)
+
+    def compute(self):
+        return self.sum_corr / self.num # NaN if count is zero
+
 class EarthMLLightningModule (L.LightningModule):
     def __init__ (self, use_first_input=False):
         super().__init__()
@@ -59,19 +139,19 @@ class EarthMLLightningModule (L.LightningModule):
         self.use_first_input = use_first_input
 
         # Metrics
-        self.train_mae = MeanAbsoluteError()
-        self.train_rmse = MeanSquaredError(squared=False) # squared=False for RMSE
-        self.train_scc = SpatialCorrelationCoefficient()
+        self.train_mae = MaskedMAE()
+        self.train_rmse = MaskedRMSE()
+        self.train_scc = MaskedSpatialCorr()
         # self.train_acc = AnomalyCorrelationCoefficient()
 
-        self.val_mae = MeanAbsoluteError()
-        self.val_rmse = MeanSquaredError(squared=False) # squared=False for RMSE
-        self.val_scc = SpatialCorrelationCoefficient() # Your custom SCC
+        self.val_mae = MaskedMAE()
+        self.val_rmse = MaskedRMSE()
+        self.val_scc = MaskedSpatialCorr() # Your custom SCC
         # self.val_acc = AnomalyCorrelationCoefficient() # Your custom ACC
 
-        self.test_mae = MeanAbsoluteError()
-        self.test_rmse = MeanSquaredError(squared=False)
-        self.test_scc = SpatialCorrelationCoefficient()
+        self.test_mae = MaskedMAE()
+        self.test_rmse = MaskedRMSE()
+        self.test_scc = MaskedSpatialCorr()
         # self.test_acc = AnomalyCorrelationCoefficient()
 
         # Metrics storage
@@ -256,9 +336,9 @@ class EarthMLLightningModule (L.LightningModule):
         mu = mu.contiguous()
         y  = y.contiguous()
 
-        self.train_mae.update(mu, y)
-        self.train_rmse.update(mu, y)
-        self.train_scc.update(mu, y)
+        self.train_mae.update(mu, y, mask)
+        self.train_rmse.update(mu, y, mask)
+        self.train_scc.update(mu, y, mask)
         # self.train_acc.update(pred, y)
 
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
@@ -301,9 +381,9 @@ class EarthMLLightningModule (L.LightningModule):
         mu = mu.contiguous()
         y  = y.contiguous()
 
-        self.val_mae.update(mu, y)
-        self.val_rmse.update(mu, y)
-        self.val_scc.update(mu, y)
+        self.val_mae.update(mu, y, mask)
+        self.val_rmse.update(mu, y, mask)
+        self.val_scc.update(mu, y, mask)
         # self.val_acc.update(mu, y)
 
         self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
@@ -347,9 +427,9 @@ class EarthMLLightningModule (L.LightningModule):
         mu = mu.contiguous()
         y  = y.contiguous()
 
-        self.test_mae.update(mu, y)
-        self.test_rmse.update(mu, y)
-        self.test_scc.update(mu, y)
+        self.test_mae.update(mu, y, mask)
+        self.test_rmse.update(mu, y, mask)
+        self.test_scc.update(mu, y, mask)
         # self.test_acc.update(mu, y)
 
         # Log per-batch loss. Metrics will be logged at epoch end using their aggregated state.
