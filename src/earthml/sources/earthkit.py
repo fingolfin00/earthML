@@ -398,15 +398,15 @@ class EarthkitSource (BaseSource):
                         ds_chunk = ds_chunk.assign_coords({leadtime_name: (leadtime_name, np.array([target_np], dtype=coord_dtype))})
 
                     else:
-                        if ds_chunk.sizes.get(leadtime_name, 0) > 1:
-                            # Move step first to make bfill deterministic across the step axis
-                            ds_chunk = ds_chunk.transpose(leadtime_name, ...)
+                        # if ds_chunk.sizes.get(leadtime_name, 0) > 1:
+                        # Move step first to make bfill deterministic across the step axis
+                        ds_chunk = ds_chunk.transpose(leadtime_name, ...)
 
-                            # Since at most one is non-NaN, bfill then take step=0 gives the only valid value
-                            ds_chunk = ds_chunk.bfill(leadtime_name).isel({leadtime_name: 0})
+                        # Since at most one is non-NaN, bfill then take step=0 gives the only valid value
+                        ds_chunk = ds_chunk.bfill(leadtime_name).isel({leadtime_name: 0})
 
-                            # Restore a length-1 step dimension with the requested conceptual value
-                            ds_chunk = ds_chunk.expand_dims({leadtime_name: [target_np]})
+                        # Restore a length-1 step dimension with the requested conceptual value
+                        ds_chunk = ds_chunk.expand_dims({leadtime_name: [target_np]})
 
                     print(f"   Size after all processing: {ds_chunk.sizes}")
 
