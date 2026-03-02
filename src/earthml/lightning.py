@@ -195,11 +195,12 @@ class EarthMLLightningModule (L.LightningModule):
 
     def training_step (self, batch, batch_idx):
         if self.supervised:
-            x, y = batch
+            x, y, mask = batch
         else:
-            x, _ = batch
+            x, _, mask = batch
             y = x
         pred = self(x)
+        mask = mask.to(self.device)
         # ensure contiguous
         pred = pred.contiguous()
         y = y.contiguous()
@@ -211,9 +212,9 @@ class EarthMLLightningModule (L.LightningModule):
             mu = pred
 
         if self.use_first_input:
-            loss = self.loss(mu, y, x[0])
+            loss = self.loss(mu, y, x[0], mask=mask)
         else:
-            loss = self.loss(mu, y)
+            loss = self.loss(mu, y, mask=mask)
 
         mu = mu.contiguous()
         y  = y.contiguous()
@@ -238,12 +239,13 @@ class EarthMLLightningModule (L.LightningModule):
 
     def validation_step (self, batch, batch_idx):
         if self.supervised:
-            x, y = batch
+            x, y, mask = batch
         else:
-            x, _ = batch
+            x, _, mask = batch
             y = x
 
         pred = self(x)
+        mask = mask.to(self.device)
         # ensure contiguous
         pred = pred.contiguous()
         y = y.contiguous()
@@ -255,9 +257,9 @@ class EarthMLLightningModule (L.LightningModule):
             mu = pred
 
         if self.use_first_input:
-            loss = self.loss(mu, y, x[0])
+            loss = self.loss(mu, y, x[0], mask=mask)
         else:
-            loss = self.loss(mu, y)
+            loss = self.loss(mu, y, mask=mask)
 
         mu = mu.contiguous()
         y  = y.contiguous()
@@ -284,11 +286,12 @@ class EarthMLLightningModule (L.LightningModule):
 
     def test_step (self, batch, batch_idx):
         if self.supervised:
-            x, y = batch
+            x, y, mask = batch
         else:
-            x, _ = batch
+            x, _, mask = batch
             y = x
         pred = self(x)
+        mask = mask.to(self.device)
         # ensure contiguous
         pred = pred.contiguous()
         y = y.contiguous()
@@ -300,9 +303,9 @@ class EarthMLLightningModule (L.LightningModule):
             mu = pred
 
         if self.use_first_input:
-            loss = self.loss(mu, y, x[0])
+            loss = self.loss(mu, y, x[0], mask=mask)
         else:
-            loss = self.loss(mu, y)
+            loss = self.loss(mu, y, mask=mask)
 
         mu = mu.contiguous()
         y  = y.contiguous()
@@ -646,8 +649,10 @@ class XarrayDataset (Dataset):
     def __len__ (self):
         return len(self.x)
 
-    def __getitem__ (self, idx):
-        x, y = self.x[idx], self.y[idx]
+    def __getitem__(self, idx):
+        x, y = self.x[idx], self.y[idx]           # shapes: (C,H,W) or (C,T,H,W) if using time
+        mx, my = self.x_mask[idx], self.y_mask[idx]
+        mask = mx & my                            # True where both input and target valid
         if self.transform:
             x, y = self.transform(x, y, **self.transform_args)
-        return x, y
+        return x, y, mask
