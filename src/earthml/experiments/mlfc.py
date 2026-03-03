@@ -541,6 +541,68 @@ class ExperimentMLFC:
 
         self.save(self.preds, 'input')
 
+    def _reconstruct_pred_tensor (
+        self,
+        data: torch.Tensor,     # expected (N, C, H, W)
+        meta_ds: xr.Dataset,    # transposed already
+    ) -> tuple[torch.Tensor, xr.Dataset]:
+        """
+        Returns:
+        data_vars: torch.Tensor shaped either (C,T,H,W) or (C,R,T,H,W) depending on meta_ds dims
+        meta_ds: possibly sliced so dims match (e.g., R->1 for deterministic preds)
+        """
+        if data.ndim != 4:
+            raise ValueError(f"Expected preds as (N,C,H,W), got {data.shape}")
+
+        meta_ds_ndims = [meta_ds[var.name].ndim for var in self.test_var_list]
+        meta_ds_shapes = [meta_ds[var.name].shape for var in self.test_var_list]
+
+        # (C,N,H,W)
+        data_permuted = data.permute(1, 0, 2, 3).contiguous()
+
+        tdim = guess_time_dim(meta_ds)
+        rdim = guess_realization_dim(meta_ds)
+        has_r = rdim in meta_ds.dims
+        T_meta = meta_ds.dims.get(tdim, None)
+        R_meta = meta_ds.dims.get(rdim, None) if has_r else None
+
+        N = data_permuted.shape[1]
+
+        if self.config.realization_as_channel:
+            # In this mode N should be time
+            if T_meta is not None and N != T_meta:
+                raise ValueError(f"realization_as_channel=True but preds N={N} != T_meta={T_meta}")
+
+            if has_r:
+                # deterministic output: keep only one realization in metadata
+                meta_ds = meta_ds.isel({rdim: slice(0, 1)})
+                # add singleton realization dim to data: (C,1,T,H,W)
+                data_permuted = data_permuted.unsqueeze(1)
+            # else: meta has no R dim -> keep (C,T,H,W) as-is
+
+            print(f"Input dataset shape: {len(meta_ds_ndims)},{meta_ds_shapes[0]}, permuted pred tensor shape: {data_permuted.shape}")
+            return data_permuted, meta_ds
+
+        else:
+            # In this mode N is (T*R) (or sometimes R*T depending on your flattening; yours is T*R)
+            if not has_r:
+                raise ValueError("realization_as_channel=False but metadata has no realization dim to unflatten into.")
+
+            if T_meta is None or R_meta is None:
+                raise ValueError(f"Missing required dims in metadata: T={T_meta}, R={R_meta}")
+
+            if N != (T_meta * R_meta):
+                raise ValueError(f"Expected preds N=T*R={T_meta*R_meta}, got N={N}")
+
+            # Our dataset uses flatten(start_dim=1,end_dim=2) with (C,T,R,H,W) -> (C,T*R,H,W)
+            # so the flattened order is (time-major): t changes slowest, r fastest.
+            # Unflatten dim=1 back to (T,R), then permute to (R,T) to match canonical meta order (R,T,H,W).
+            data_permuted = data_permuted.unflatten(1, (T_meta, R_meta))      # (C,T,R,H,W)
+            data_permuted = data_permuted.permute(0, 2, 1, 3, 4).contiguous()  # (C,R,T,H,W)
+
+            print(f"Input dataset shape: {len(meta_ds_ndims)},{meta_ds_shapes[0]}, permuted pred tensor shape: {data_permuted.shape}")
+            return data_permuted, meta_ds
+
     def save (self, data: torch.Tensor, metadata_source: str):
         """
         Convert torch.Tensor to xarray.Dataset using metadata_source
@@ -569,27 +631,14 @@ class ExperimentMLFC:
         # Force dataset-wide dim order (dims missing on some vars are ignored)
         meta_ds = meta_ds.transpose(*order, missing_dims="ignore")
 
-        # Permute data to have channels (variables) as first dim
-        data_permuted = data.permute(1, 0, 2, 3)
-        meta_ds_ndims = [meta_ds[var.name].ndim for var in self.test_var_list]
-        meta_ds_shapes = [meta_ds[var.name].shape for var in self.test_var_list]
-        if len(set(meta_ds_ndims)) > 1:
-            raise ValueError(f"Unhandled mixed dimensions {meta_ds_ndims} for vars {self.test_var_list}")
-        # if len(self.test_dataloader. input_tensor.shape) == 4: # C,T,H,W
-        #     T = input_tensor.shape[1]
-        #     R = 1
+        data_vars, meta_ds = self._reconstruct_pred_tensor(data, meta_ds)
 
-        if meta_ds_ndims[0] == 4: # R,T,H,W (canonical)
-            T = meta_ds[guess_time_dim(meta_ds)].size
-            R = meta_ds[guess_realization_dim(meta_ds)].size
-            data_permuted = data_permuted.unflatten(1, (R,T))
-        else:
-            raise ValueError(f"Unexpected meta dataset shape: {len(meta_ds_ndims)},{meta_ds_shapes[0]}")
-
-        print(f"Input dataset shape: {len(meta_ds_ndims)},{meta_ds_shapes[0]}, permuted pred tensor shape: {data_permuted.shape}")
-
+        # Now build xr.Dataset variables with meta_ds[var].dims
         ds = xr.Dataset(
-            {var.name: (meta_ds[var.name].dims, data_permuted[i].cpu().numpy()) for i, var in enumerate(self.test_var_list)},
+            {
+                var.name: (meta_ds[var.name].dims, data_vars[i].cpu().numpy())
+                for i, var in enumerate(self.test_var_list)
+            },
             coords={c: meta_ds.coords[c] for c in meta_ds.coords},
             attrs=meta_ds.attrs,
         )
