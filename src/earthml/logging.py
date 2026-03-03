@@ -1,36 +1,42 @@
-import colorlog, logging
+from dataclasses import dataclass
+import datetime
+from rich import print
 
-class Logger:
-    def __init__(self, log_filename, log_level="info"):
-        self.log_level = getattr(logging, log_level.upper())
-        self.log_filename = log_filename
-        self.log_format_string = ('[%(asctime)s %(levelname)s] %(message)s')
-        self.log_format_string_color = (
-                                        # '%(log_color)s%(asctime)s [%(levelname)s: %(name)s] %(message)s'
-                                        # '%(log_color)s[%(levelname)s]%(reset)s %(name)s: %(message)s'
-                                        '%(log_color)s[%(levelname)s]%(reset)s %(message)s'
-                                        # '%(funcName)s:%(lineno)d - %(message)s'
-        )
-        self.logger = self.setup_logger(logging.getLogger(__name__))
+@dataclass(frozen=True)
+class RunKey:
+    var_exp: str
+    region: str
+    experiment_type: str
+    var_fc_key: str
+    var_an_key: str
+    loss_suf: str
+    lt_fc_value: int | float
+    lt_fc_unit: str
+    lt_value: int | float
+    lt_unit: str
+    train_in_start: datetime
+    train_in_end: datetime
+    train_tar_start: datetime
+    train_tar_end: datetime
 
-    def setup_logger(self, logger: logging.Logger):
-        logger.setLevel(self.log_level)
-        logger.handlers = []  # Clear existing handlers
-        formatter_color = colorlog.ColoredFormatter(
-            self.log_format_string_color,
-            log_colors={
-                'DEBUG':    'cyan',
-                'INFO':     'green',
-                'WARNING':  'yellow',
-                'ERROR':    'red',
-                'CRITICAL': 'red,bg_white',
-            },
+    def short(self) -> str:
+        # Compact, stable, grep-friendly
+        return (
+            f"{self.experiment_type}|{self.var_exp}|{self.region}|"
+            f"{self.loss_suf}|fc{self.lt_fc_value}{self.lt_fc_unit}|"
+            f"lt{self.lt_value}{self.lt_unit}|"
+            f"in{self.train_in_start:%Y%m}-{self.train_in_end:%Y%m}|"
+            f"tar{self.train_tar_start:%Y%m}-{self.train_tar_end:%Y%m}"
         )
-        console_handler = colorlog.StreamHandler()
-        console_handler.setFormatter(formatter_color)
-        logger.addHandler(console_handler)
-        formatter = logging.Formatter(self.log_format_string)
-        file_handler = logging.FileHandler(self.log_filename)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-        return logger
+
+def log_event(kind: str, run_key: RunKey | None = None, msg: str = "", **kv):
+    # kind examples: PLAN, RUN, OK, RETRY, FAIL, SKIP, SUMMARY
+    base = f"[{kind}]"
+    if run_key is not None:
+        base += f" {run_key.short()}"
+    if msg:
+        base += f" | {msg}"
+    if kv:
+        extra = " ".join(f"{k}={v}" for k, v in kv.items())
+        base += f" | {extra}"
+    print(base)
