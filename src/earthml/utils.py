@@ -1849,7 +1849,7 @@ def make_exp_folder_path (
         f"_{train_period}"
         f"_{test_period}"
         f"_{input_provider}_{target_provider}"
-        f"_{v_d['exp_suffix']}"
+        f"{v_d['exp_suffix']}"
     )
     return Path(exp_root) / exp_full_name
 
