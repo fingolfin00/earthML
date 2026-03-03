@@ -654,104 +654,148 @@ class ExperimentMLFC:
         self.rich_console.print(Table({"Test run info": meta}, twocols=True).table)
         self.rich_console.print(Table({"Test metrics (per variable)": var_cols}).table)
 
-        self.save(self.preds, 'input')
+        self.save(self.preds, test_dataset, 'input')
+
+    def _infer_RT_from_source (self, dataset: XarrayDataset) -> tuple[int, int]:
+        """
+        Infer (R_out, T_out) from the ORIGINAL xarray datasets attached to the torch dataset,
+        never from meta_ds.
+
+        Assumptions (per your XarrayDataset docstring):
+        - output_realizations="deterministic" -> R_out = 1
+        - output_realizations="ensemble"      -> R_out = input R (or 1 if none)
+        - output_realizations="nochange"      -> R_out = target R (or input R, fallback 1)
+        """
+        input_ds = dataset.input_ds
+        target_ds = dataset.target_ds
+
+        tdim_tgt = guess_time_dim(target_ds)
+        T_out = int(target_ds.sizes.get(tdim_tgt, 1))
+
+        # realization sizes (safe even if no realization dim exists)
+        rdim_in = guess_realization_dim(input_ds)
+        rdim_tgt = guess_realization_dim(target_ds)
+        R_in = int(input_ds.sizes.get(rdim_in, 1))
+        R_tgt = int(target_ds.sizes.get(rdim_tgt, 1))
+
+        mode = self.config.output_realizations  # "deterministic" | "ensemble" | "nochange"
+        if mode == "deterministic":
+            R_out = 1
+        elif mode == "ensemble":
+            R_out = R_in
+        elif mode == "nochange":
+            # If target has no R dim, treat as deterministic; otherwise keep target R.
+            # Fallback to input R if target is missing/degenerate.
+            R_out = R_tgt if R_tgt >= 1 else R_in
+        else:
+            raise ValueError(f"Unknown output_realizations={mode}")
+
+        if R_out < 1:
+            raise ValueError(f"Inferred invalid R_out={R_out}")
+        if T_out < 1:
+            raise ValueError(f"Inferred invalid T_out={T_out}")
+
+        return R_out, T_out
+
 
     def _reconstruct_pred_tensor (
         self,
-        data: torch.Tensor,     # expected (N, C, H, W)
-        meta_ds: xr.Dataset,    # transposed already
+        data: torch.Tensor,     # (N,C,H,W)
+        meta_ds: xr.Dataset,    # ONLY for slicing/copying coords/attrs
+        R_out: int,
+        T_out: int,
     ) -> tuple[torch.Tensor, xr.Dataset]:
         """
-        Returns:
-        data_vars: torch.Tensor shaped either (C,T,H,W) or (C,R,T,H,W) depending on meta_ds dims
-        meta_ds: possibly sliced so dims match (e.g., R->1 for deterministic preds)
+        Canonical output ALWAYS (C, R_out, T_out, H, W).
+        If output is deterministic, ensures R_out==1 and adds singleton realization dim.
         """
         if data.ndim != 4:
-            raise ValueError(f"Expected preds as (N,C,H,W), got {data.shape}")
-
-        meta_ds_ndims = [meta_ds[var.name].ndim for var in self.test_var_list]
-        meta_ds_shapes = [meta_ds[var.name].shape for var in self.test_var_list]
+            raise ValueError(f"Expected preds as (N,C,H,W), got {tuple(data.shape)}")
 
         # (C,N,H,W)
-        data_permuted = data.permute(1, 0, 2, 3).contiguous()
-
-        tdim = guess_time_dim(meta_ds)
-        rdim = guess_realization_dim(meta_ds)
-        has_r = rdim in meta_ds.dims
-        T_meta = meta_ds.dims.get(tdim, None)
-        R_meta = meta_ds.dims.get(rdim, None) if has_r else None
-
-        N = data_permuted.shape[1]
+        x = data.permute(1, 0, 2, 3).contiguous()
+        C_model, N, H, W = x.shape
 
         if self.config.realization_as_channel:
-            # In this mode N should be time
-            if T_meta is not None and N != T_meta:
-                raise ValueError(f"realization_as_channel=True but preds N={N} != T_meta={T_meta}")
+            # Here N should be time
+            if N != T_out:
+                raise ValueError(f"realization_as_channel=True expects N==T ({N} != {T_out})")
 
-            if has_r:
-                # deterministic output: keep only one realization in metadata
-                meta_ds = meta_ds.isel({rdim: slice(0, 1)})
-                # add singleton realization dim to data: (C,1,T,H,W)
-                data_permuted = data_permuted.unsqueeze(1)
-            # else: meta has no R dim -> keep (C,T,H,W) as-is
-
-            print(f"Input dataset shape: {len(meta_ds_ndims)},{meta_ds_shapes[0]}, permuted pred tensor shape: {data_permuted.shape}")
-            return data_permuted, meta_ds
+            if R_out == 1:
+                x = x.unsqueeze(1)  # (C,1,T,H,W)
+            else:
+                # channels contain realizations: C_model == C * R_out
+                if C_model % R_out != 0:
+                    raise ValueError(f"C_model={C_model} not divisible by R_out={R_out}")
+                C = C_model // R_out
+                # (C*R, T, H, W) -> (R, C, T, H, W) -> (C, R, T, H, W)
+                x = x.unflatten(0, (R_out, C)).permute(1, 0, 2, 3, 4).contiguous()
 
         else:
-            # In this mode N is (T*R) (or sometimes R*T depending on your flattening; yours is T*R)
-            if not has_r:
-                raise ValueError("realization_as_channel=False but metadata has no realization dim to unflatten into.")
+            # Here realizations are flattened into N if R_out>1, else N is time
+            if R_out == 1:
+                if N != T_out:
+                    raise ValueError(f"deterministic expects N==T ({N} != {T_out})")
+                x = x.unsqueeze(1)  # (C,1,T,H,W)
+            else:
+                if N != T_out * R_out:
+                    raise ValueError(f"ensemble expects N==T*R ({N} != {T_out*R_out})")
+                # time-major flatten (t slow, r fast): (C,N,H,W)->(C,T,R,H,W)->(C,R,T,H,W)
+                x = x.unflatten(1, (T_out, R_out)).permute(0, 2, 1, 3, 4).contiguous()
 
-            if T_meta is None or R_meta is None:
-                raise ValueError(f"Missing required dims in metadata: T={T_meta}, R={R_meta}")
+        # meta_ds only sliced to match inferred sizes; never used to infer them
+        tdim = guess_time_dim(meta_ds)
+        rdim = guess_realization_dim(meta_ds)
+        ydim = guess_lat_dim(meta_ds)
+        xdim = guess_lon_dim(meta_ds)
 
-            if N != (T_meta * R_meta):
-                raise ValueError(f"Expected preds N=T*R={T_meta*R_meta}, got N={N}")
+        indexers: dict[str, slice] = {}
+        if rdim in meta_ds.dims:
+            indexers[rdim] = slice(0, R_out)
+        if tdim in meta_ds.dims:
+            indexers[tdim] = slice(0, T_out)
+        if ydim in meta_ds.dims:
+            indexers[ydim] = slice(0, H)
+        if xdim in meta_ds.dims:
+            indexers[xdim] = slice(0, W)
+        if indexers:
+            meta_ds = meta_ds.isel(indexers)
 
-            # Our dataset uses flatten(start_dim=1,end_dim=2) with (C,T,R,H,W) -> (C,T*R,H,W)
-            # so the flattened order is (time-major): t changes slowest, r fastest.
-            # Unflatten dim=1 back to (T,R), then permute to (R,T) to match canonical meta order (R,T,H,W).
-            data_permuted = data_permuted.unflatten(1, (T_meta, R_meta))      # (C,T,R,H,W)
-            data_permuted = data_permuted.permute(0, 2, 1, 3, 4).contiguous()  # (C,R,T,H,W)
+        return x, meta_ds
 
-            print(f"Input dataset shape: {len(meta_ds_ndims)},{meta_ds_shapes[0]}, permuted pred tensor shape: {data_permuted.shape}")
-            return data_permuted, meta_ds
-
-    def save (self, data: torch.Tensor, metadata_source: str):
-        """
-        Convert torch.Tensor to xarray.Dataset using metadata_source
-        to select ds metadata and save it to Zarr storage
-        """
+    def save (self, data: torch.Tensor, dataset: XarrayDataset, metadata_source: str):
         meta_ds = self.source_test_data[metadata_source].load()
 
-        # Keep only allowed dims and coords
-        allowed_dims = {
-            guess_time_dim(meta_ds),
-            guess_lat_dim(meta_ds),
-            guess_lon_dim(meta_ds),
-            guess_realization_dim(meta_ds),
-            # guess_leadtime_dim(meta_ds), # leadtime dim must be removed (should be 1D at most)
-            "missed_time",
-        }
+        rdim = guess_realization_dim(meta_ds)
+        tdim = guess_time_dim(meta_ds)
+        ydim = guess_lat_dim(meta_ds)
+        xdim = guess_lon_dim(meta_ds)
+
+        allowed_dims = {tdim, ydim, xdim, rdim, "missed_time"}
         meta_ds = remove_unwanted_dims_and_coords(meta_ds, allowed_dims)
-
-        # Canonical dim order
-        base_order = [guess_realization_dim(meta_ds), guess_time_dim(meta_ds), guess_lat_dim(meta_ds), guess_lon_dim(meta_ds)]
-        # Build the actual order based on what exists
+        print(" after remove_unwanted_dims_and_coords")
+        base_order = [rdim, tdim, ydim, xdim]
         order = [d for d in base_order if d in meta_ds.dims]
-        # If there are other unexpected dims, tack them on at the end
         order += [d for d in meta_ds.dims if d not in order]
-
-        # Force dataset-wide dim order (dims missing on some vars are ignored)
         meta_ds = meta_ds.transpose(*order, missing_dims="ignore")
 
-        data_vars, meta_ds = self._reconstruct_pred_tensor(data, meta_ds)
+        R_out, T_out = self._infer_RT_from_source(dataset)
 
-        # Now build xr.Dataset variables with meta_ds[var].dims
+        data_vars, meta_ds = self._reconstruct_pred_tensor(data, meta_ds, R_out=R_out, T_out=T_out)
+
+        # Use meta dim names if present; otherwise drop them safely.
+        dims = []
+        if rdim in meta_ds.dims:
+            dims.append(rdim)
+        dims += [d for d in (tdim, ydim, xdim) if d in meta_ds.dims]
+
+        # If metadata lacks realization dim, write deterministic view
+        if rdim not in meta_ds.dims:
+            data_vars = data_vars.squeeze(1)  # (C,T,H,W)
+
         ds = xr.Dataset(
             {
-                var.name: (meta_ds[var.name].dims, data_vars[i].cpu().numpy())
+                var.name: (dims, data_vars[i].cpu().numpy())
                 for i, var in enumerate(self.test_var_list)
             },
             coords={c: meta_ds.coords[c] for c in meta_ds.coords},
@@ -759,10 +803,8 @@ class ExperimentMLFC:
         )
 
         compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
-        encoding_zarr = (
-            {v.name: {"compressors": compressor} for v in self.test_var_list}
-        )
-        print(f"Save to {self.preds_store}")
-        ds.to_zarr(self.preds_store, encoding=encoding_zarr, mode='w', consolidated=self.consolidated_zarr)
+        encoding_zarr = {v.name: {"compressors": compressor} for v in self.test_var_list}
 
+        print(f"Save preds to {self.preds_store}")
+        ds.to_zarr(self.preds_store, encoding=encoding_zarr, mode="w", consolidated=self.consolidated_zarr)
         return ds
