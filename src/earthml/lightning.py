@@ -368,6 +368,7 @@ class EarthMLLightningModule (L.LightningModule):
         y = y.contiguous()
 
         # If pred has 2C channels, first half is mean
+        # # TODO make it more robust: very weak condition, what if we have input R=2 and target R=1?
         if pred.shape[1] == 2 * y.shape[1]:
             mu = pred[:, : y.shape[1], ...]
         else:
@@ -398,7 +399,7 @@ class EarthMLLightningModule (L.LightningModule):
         self.log("val_scc", self.val_scc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         # self.log("val_acc", self.val_acc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         
-        self.last_val_pred = pred.detach().cpu()
+        self.last_val_pred = mu.detach().cpu()
         self.last_val_target = y.detach().cpu()
 
     def test_step (self, batch, batch_idx):
@@ -439,7 +440,7 @@ class EarthMLLightningModule (L.LightningModule):
         self.log("test_scc", self.test_scc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         # self.log("test_acc", self.test_acc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
 
-        self.test_step_outputs.append({"preds": pred.detach().cpu(), "targets": y.detach().cpu()})
+        self.test_step_outputs.append({"preds": mu.detach().cpu(), "targets": y.detach().cpu()})
 
     def on_train_epoch_start (self):
         # Access the optimizer's learning rate
