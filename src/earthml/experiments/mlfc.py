@@ -763,7 +763,6 @@ class ExperimentMLFC:
 
         allowed_dims = {tdim, ydim, xdim, rdim, "missed_time"}
         meta_ds = remove_unwanted_dims_and_coords(meta_ds, allowed_dims)
-        print(" after remove_unwanted_dims_and_coords")
         base_order = [rdim, tdim, ydim, xdim]
         order = [d for d in base_order if d in meta_ds.dims]
         order += [d for d in meta_ds.dims if d not in order]
