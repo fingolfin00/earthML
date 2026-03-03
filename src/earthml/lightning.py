@@ -1,4 +1,4 @@
-from typing import List, Any, Optional, Callable, Literal
+from typing import List, Any, Optional, Callable, Literal, Dict
 import inspect
 import importlib, joblib
 import numpy as np
@@ -555,30 +555,118 @@ class Normalize:
         self.std = std
 
     @staticmethod
-    def _masked_stats (
-        data: torch.Tensor,
-        mask: torch.Tensor,
+    def _masked_metrics (
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        pred_mask: Optional[torch.Tensor] = None,
+        target_mask: Optional[torch.Tensor] = None,
+        metric_mask: Optional[torch.Tensor] = None,
         eps: float = 1e-12,
-        per_channel_mean: bool = True
-    ):
+        per_channel_mean: bool = True,
+    ) -> Dict[str, torch.Tensor]:
         """
-        data: (N, C, H, W)
-        mask: (N, C, H, W) bool/0-1
-        returns mean/std: (1, C, 1, 1)
+        pred, target: (N, C, H, W)
+
+        Masks (all optional, bool or 0/1, shape (N,C,H,W)):
+        - pred_mask:   used for pred mean/std
+        - target_mask: used for target mean/std
+        - metric_mask: used for error/R2/corr computations
+
+        If a mask is None, it defaults as follows:
+        - pred_mask   -> metric_mask if provided else all-ones
+        - target_mask -> metric_mask if provided else all-ones
+        - metric_mask -> (pred_mask & target_mask) if both provided else whichever is provided else all-ones
+
+        Returns dict with:
+        pred_mean, pred_std, target_mean, target_std, mae, rmse, r2, corr
+        Shapes:
+        (1, C, 1, 1) if per_channel_mean=True
+        (1, 1, 1, 1) otherwise
         """
-        if data.ndim != 4 or mask.ndim != 4:
-            raise ValueError(f"Expected (N,C,H,W), got data {data.shape}, mask {mask.shape}")
 
-        mean_dims = (0, 2, 3) if per_channel_mean else (0, 1, 2, 3)
-        mask = mask.bool()
-        count = mask.sum(dim=mean_dims, keepdim=True).clamp_min(1)  # (1,C,1,1)
+        if pred.shape != target.shape:
+            raise ValueError(f"Shape mismatch: {pred.shape} vs {target.shape}")
+        if pred.ndim != 4:
+            raise ValueError("Expected pred/target shape (N,C,H,W)")
 
-        sum_vals = (data * mask).sum(dim=mean_dims, keepdim=True)
-        mean = sum_vals / count
+        device = pred.device
+        dtype = pred.dtype
 
-        var = ((data - mean) ** 2 * mask).sum(dim=mean_dims, keepdim=True) / count
-        std = torch.sqrt(var + eps)
-        return mean, std
+        def _as_bool_mask (m: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+            if m is None:
+                return None
+            if m.shape != pred.shape:
+                raise ValueError(f"Mask shape mismatch: expected {pred.shape}, got {m.shape}")
+            return m.to(device=device).bool()
+
+        pred_mask_b = _as_bool_mask(pred_mask)
+        target_mask_b = _as_bool_mask(target_mask)
+        metric_mask_b = _as_bool_mask(metric_mask)
+
+        if metric_mask_b is None:
+            if pred_mask_b is not None and target_mask_b is not None:
+                metric_mask_b = pred_mask_b & target_mask_b
+            elif pred_mask_b is not None:
+                metric_mask_b = pred_mask_b
+            elif target_mask_b is not None:
+                metric_mask_b = target_mask_b
+            else:
+                metric_mask_b = torch.ones_like(pred, dtype=torch.bool, device=device)
+
+        if pred_mask_b is None:
+            pred_mask_b = metric_mask_b
+        if target_mask_b is None:
+            target_mask_b = metric_mask_b
+
+        reduce_dims = (0, 2, 3) if per_channel_mean else (0, 1, 2, 3)
+
+        def _masked_mean_std (x: torch.Tensor, m: torch.Tensor) -> (torch.Tensor, torch.Tensor):
+            m = m.bool()
+            count = m.sum(dim=reduce_dims, keepdim=True).clamp_min(1).to(dtype=dtype)
+            s = (x * m).sum(dim=reduce_dims, keepdim=True)
+            mu = s / count
+            var = ((x - mu) ** 2 * m).sum(dim=reduce_dims, keepdim=True) / count
+            sd = torch.sqrt(var + eps)
+            return mu, sd
+
+        pred_mean, pred_std = _masked_mean_std(pred, pred_mask_b)
+        target_mean, target_std = _masked_mean_std(target, target_mask_b)
+
+        # Metrics computed on metric_mask
+        m = metric_mask_b
+        count_m = m.sum(dim=reduce_dims, keepdim=True).clamp_min(1).to(dtype=dtype)
+
+        diff = (pred - target) * m
+        mae = diff.abs().sum(dim=reduce_dims, keepdim=True) / count_m
+        mse = (diff ** 2).sum(dim=reduce_dims, keepdim=True) / count_m
+        rmse = torch.sqrt(mse + eps)
+
+        # R² uses target mean over the metric mask (standard definition for masked set)
+        target_mean_m, _ = _masked_mean_std(target, m)
+        ss_res = (diff ** 2).sum(dim=reduce_dims, keepdim=True)
+        ss_tot = ((target - target_mean_m) ** 2 * m).sum(dim=reduce_dims, keepdim=True)
+        r2 = 1 - ss_res / (ss_tot + eps)
+
+        # Corr over metric mask
+        pred_mean_m, _ = _masked_mean_std(pred, m)
+        pred_centered = (pred - pred_mean_m) * m
+        target_centered = (target - target_mean_m) * m
+
+        cov = (pred_centered * target_centered).sum(dim=reduce_dims, keepdim=True) / count_m
+        pred_var = (pred_centered ** 2).sum(dim=reduce_dims, keepdim=True) / count_m
+        target_var = (target_centered ** 2).sum(dim=reduce_dims, keepdim=True) / count_m
+        corr = cov / (torch.sqrt(pred_var * target_var) + eps)
+
+        return {
+            "pred_mean": pred_mean,
+            "pred_std": pred_std,
+            "target_mean": target_mean,
+            "target_std": target_std,
+            "mae": mae,
+            "rmse": rmse,
+            "r2": r2,
+            "corr": corr,
+        }
 
     def fitted (self) -> bool:
         return self.mean is not None and self.std is not None
@@ -598,7 +686,18 @@ class Normalize:
         data = getattr(dataset, dim)
         mask = getattr(dataset, f"{dim}_mask")
 
-        self.mean, self.std = self._masked_stats(data, mask, eps=eps)
+        stats = self._masked_metrics(
+            pred=data,
+            target=data,
+            pred_mask=mask,
+            target_mask=mask,
+            metric_mask=mask,
+            eps=eps,
+            per_channel_mean=True,  # or pass your existing setting
+        )
+
+        self.mean = stats["target_mean"]
+        self.std = stats["target_std"]
 
         if filepath is not None:
             self.save(filepath)

@@ -29,6 +29,8 @@ class ExperimentMLFC:
         self.config = config
         self.rich_console = Console()
 
+        self.per_channel_masked_mean = False if self.config.output_realizations else True # TODO not sure it's super general
+
         # Get test variable list,
         # TODO I have doubts on this implementation cause we are picking the first test datasource and it may not be representative of the others,
         # but for now we assume all test datasources have the same variable and region selection
@@ -419,9 +421,26 @@ class ExperimentMLFC:
             output_realizations=self.config.output_realizations,
         )
 
-        per_channel_masked_mean = False if self.config.output_realizations else True # TODO not sure it's super general
-        x_mean, x_std = Normalize._masked_stats(torch_dataset.x, torch_dataset.x_mask, per_channel_mean=per_channel_masked_mean)
-        y_mean, y_std = Normalize._masked_stats(torch_dataset.y, torch_dataset.y_mask, per_channel_mean=per_channel_masked_mean)
+        x_stats = Normalize._masked_metrics(
+            pred=torch_dataset.x,
+            target=torch_dataset.x,
+            pred_mask=torch_dataset.x_mask,
+            target_mask=torch_dataset.x_mask,
+            metric_mask=torch_dataset.x_mask,
+            per_channel_mean=self.per_channel_masked_mean,
+        )
+
+        y_stats = Normalize._masked_metrics(
+            pred=torch_dataset.y,
+            target=torch_dataset.y,
+            pred_mask=torch_dataset.y_mask,
+            target_mask=torch_dataset.y_mask,
+            metric_mask=torch_dataset.y_mask,
+            per_channel_mean=self.per_channel_masked_mean,
+        )
+
+        x_mean, x_std = x_stats["target_mean"], x_stats["target_std"]
+        y_mean, y_std = y_stats["target_mean"], y_stats["target_std"]
 
         self.rich_console.print(Table({f'{data_type} dataset': {
             'input': {
@@ -449,78 +468,100 @@ class ExperimentMLFC:
             return x
 
     def _make_test_info_table (self, test_dataset, preds_norm, preds_rescaled):
-        # per-variable columns
+        """
+        Returns:
+        meta: dict (run metadata)
+        var_cols: dict keyed by variable name with shapes + masked metrics
+
+        Notes:
+        - Uses Normalize._masked_metrics(pred, target, pred_mask=..., target_mask=..., metric_mask=...)
+        - For "stats" on x/y alone, calls with pred==target so mae/rmse/etc are defined (0) but you mainly read *_mean/*_std
+        - Prediction metrics are computed vs y, using y_mask by default (or intersection if you pass both masks)
+        """
         var_cols = {}
-        if self.config.realization_as_channel:
-            name = getattr(next(iter(self.test_var_list)), "name", str(next(iter(self.test_var_list)))) # only 1 var support for R as C
 
-            x_mean = self._to_float(test_dataset.x.mean())
-            x_std  = self._to_float(test_dataset.x.std())
-            y_mean = self._to_float(test_dataset.y.mean())
-            y_std  = self._to_float(test_dataset.y.std())
+        def _pack (name: str,
+                x: torch.Tensor, x_mask: torch.Tensor,
+                y: torch.Tensor, y_mask: torch.Tensor,
+                pn: torch.Tensor, pr: torch.Tensor):
+            # Masked stats (means/stds) for x and y (computed on their own masks)
+            x_stats = Normalize._masked_metrics(
+                pred=x, target=x,
+                pred_mask=x_mask, target_mask=x_mask, metric_mask=x_mask,
+                per_channel_mean=self.per_channel_masked_mean,
+            )
+            y_stats = Normalize._masked_metrics(
+                pred=y, target=y,
+                pred_mask=y_mask, target_mask=y_mask, metric_mask=y_mask,
+                per_channel_mean=self.per_channel_masked_mean,
+            )
 
-            pn_mean = self._to_float(preds_norm.mean())
-            pn_std  = self._to_float(preds_norm.std())
+            # Pred stats (means/stds) on x_mask (usually where the input is valid)
+            pn_stats = Normalize._masked_metrics(
+                pred=pn, target=pn,
+                pred_mask=x_mask, target_mask=x_mask, metric_mask=x_mask,
+                per_channel_mean=self.per_channel_masked_mean,
+            )
+            pr_stats = Normalize._masked_metrics(
+                pred=pr, target=pr,
+                pred_mask=x_mask, target_mask=x_mask, metric_mask=x_mask,
+                per_channel_mean=self.per_channel_masked_mean,
+            )
 
-            pr_mean = self._to_float(preds_rescaled.mean())
-            pr_std  = self._to_float(preds_rescaled.std())
-
-            rmse = self._to_float(np.sqrt(((test_dataset.y - preds_rescaled) ** 2).mean().item()))
+            # Pred vs target metrics on an "intelligent" mask:
+            # use intersection of x/y validity if both exist; the helper will do this if metric_mask=None.
+            pred_vs_y = Normalize._masked_metrics(
+                pred=pr, target=y,
+                pred_mask=x_mask, target_mask=y_mask, metric_mask=None,
+                per_channel_mean=self.per_channel_masked_mean,
+            )
 
             var_cols[name] = {
-                "x shape": tuple(test_dataset.x.shape),
-                "x mean": x_mean,
-                "x std": x_std,
-                "y shape": tuple(test_dataset.y.shape),
-                "y mean": y_mean,
-                "y std": y_std,
-                "pred shape": tuple(preds_norm.shape),
-                "pred(norm) mean": pn_mean,
-                "pred(norm) std": pn_std,
-                "pred mean": pr_mean,
-                "pred std": pr_std,
-                "rmse(y,pred)": rmse,
+                "x shape": tuple(x.shape),
+                "x mean(masked)": x_stats["target_mean"],
+                "x std(masked)": x_stats["target_std"],
+
+                "y shape": tuple(y.shape),
+                "y mean(masked)": y_stats["target_mean"],
+                "y std(masked)": y_stats["target_std"],
+
+                "pred(norm) shape": tuple(pn.shape),
+                "pred(norm) mean(masked)": pn_stats["pred_mean"],
+                "pred(norm) std(masked)": pn_stats["pred_std"],
+
+                "pred shape": tuple(pr.shape),
+                "pred mean(masked)": pr_stats["pred_mean"],
+                "pred std(masked)": pr_stats["pred_std"],
+
+                # full masked prediction metrics
+                "mae(y,pred)": pred_vs_y["mae"],
+                "rmse(y,pred)": pred_vs_y["rmse"],
+                "r2(y,pred)": pred_vs_y["r2"],
+                "corr(y,pred)": pred_vs_y["corr"],
             }
+
+        if self.config.realization_as_channel:
+            # only 1 var support for R as C
+            name = getattr(next(iter(self.test_var_list)), "name", str(next(iter(self.test_var_list))))
+            _pack(
+                name=name,
+                x=test_dataset.x, x_mask=test_dataset.x_mask,
+                y=test_dataset.y, y_mask=test_dataset.y_mask,
+                pn=preds_norm, pr=preds_rescaled,
+            )
         else:
             for i, var in enumerate(self.test_var_list):
                 name = getattr(var, "name", str(var))
+                _pack(
+                    name=name,
+                    x=test_dataset.x[:, i:i+1, :, :], x_mask=test_dataset.x_mask[:, i:i+1, :, :],
+                    y=test_dataset.y[:, i:i+1, :, :], y_mask=test_dataset.y_mask[:, i:i+1, :, :],
+                    pn=preds_norm[:, i:i+1, :, :], pr=preds_rescaled[:, i:i+1, :, :],
+                )
 
-                x_mean = self._to_float(test_dataset.x[:, i, :, :].mean())
-                x_std  = self._to_float(test_dataset.x[:, i, :, :].std())
-                y_mean = self._to_float(test_dataset.y[:, i, :, :].mean())
-                y_std  = self._to_float(test_dataset.y[:, i, :, :].std())
-
-                pn_mean = self._to_float(preds_norm[:, i, :, :].mean())
-                pn_std  = self._to_float(preds_norm[:, i, :, :].std())
-
-                pr_mean = self._to_float(preds_rescaled[:, i, :, :].mean())
-                pr_std  = self._to_float(preds_rescaled[:, i, :, :].std())
-
-                rmse = self._to_float(np.sqrt(((test_dataset.y[:, i, :, :] - preds_rescaled[:, i, :, :]) ** 2).mean().item()))
-
-                var_cols[name] = {
-                    "x shape": tuple(test_dataset.x[:, i, :, :].shape),
-                    "x mean": x_mean,
-                    "x std": x_std,
-                    "x shape": tuple(test_dataset.y[:, i, :, :].shape),
-                    "y mean": y_mean,
-                    "y std": y_std,
-                    "pred shape": tuple(preds_norm[:, i, :, :].shape),
-                    "pred(norm) mean": pn_mean,
-                    "pred(norm) std": pn_std,
-                    "pred mean": pr_mean,
-                    "pred std": pr_std,
-                    "rmse(y,pred)": rmse,
-                }
-
-        # run metadata (two columns)
         meta = {
             "device": str(self.device),
             "torch_workers": self.torch_workers,
-            "x shape (B,C,H,W)": tuple(test_dataset.x.shape),
-            "y shape (B,C,H,W)": tuple(test_dataset.y.shape),
-            "pred(norm) shape": tuple(preds_norm.shape),
-            "pred shape": tuple(preds_rescaled.shape),
             "input source": getattr(self.source_test_data["input"].datasource, "source", ""),
             "target source": getattr(self.source_test_data["target"].datasource, "source", ""),
             "ckpt_path": str(getattr(self, "ckpt_path", "")),
