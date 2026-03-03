@@ -199,7 +199,8 @@ if __name__ == "__main__":
                     learning_rate=1e-3,
                     batch_size=32,
                     epochs=50,
-                    loss="MSELoss",
+                    # loss="MSELoss",
+                    loss="earthml.losses.MaskedMSELoss",
                     # loss="earthml.losses.GaussianNLLFromLogits",
                     # loss="earthml.losses.HeteroBiasCorrectionLoss",
                     # loss_params=dict(
@@ -215,10 +216,9 @@ if __name__ == "__main__":
                     # loss="earthml.losses.VarianceNormalizedMSELoss",
                     # if latitudes is True latitudes are extracted from input test dataset in experiment (mlfc.py) initialization and passed as loss_params
                     # loss_params=dict(
-                    #     # net=dict(),
                     #     loss=dict(
-                    #         variance_type="channel", # only for VarianceNormalizedMSELoss
-                    #         latitudes=True,
+                    #         variance_type="spatial", # only for VarianceNormalizedMSELoss
+                    #         latitudes=False,
                     #     )
                     # ),
                     accumulate_grad_batches=2,
