@@ -4,8 +4,6 @@ from os import name
 from pathlib import Path
 from typing import List, Set, Dict, Optional, Callable, Tuple, Literal
 import xarray as xr
-# Local imports
-from .logging import Logger
 
 @dataclass
 class Region:
