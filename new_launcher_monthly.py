@@ -7,12 +7,24 @@ from earthml.utils import halved_windows_split_by_cutoff, half_train_periods_day
 from earthml.conversion import celsius_to_kelvin
 
 if __name__ == "__main__":
-    max_retries = 10
 
-    var_exp = "sst" # sst (atmo), sss, t14d, t17d, ssh
+    # -------------------------
+    # User params
+    # -------------------------
+    max_retries = 10
+    var_exp = "sst"                  # sst (atmo), sss, t14d, t17d, ssh
     target_realization_avg = False   # average over realizations for target variable
-    realization_as_channel = False    # use realization a channel dim
+    realization_as_channel = False   # use realization a channel dim
+    n_input_realizations = 30        # used only if realization_as_channel = True
     only_longest_train_period = True # only train on the largest train period (if False, train on all periods, which can be much slower but allows to see variability across train periods)
+    loss_sel = "MaskedMSELoss"       # MSELoss, MaskedMSELoss, GeoWeightedMSELoss, VarianceNormalizedMSELoss, HeteroBiasCorrectionLoss, GaussianNLLFromLogits
+    # For HeteroBiasCorrectionLoss only
+    use_first_input = True
+    # For GeoWeightedMSELoss and VarianceNormalizedMSELoss (only for variance_type: geochannel, geotemporal)
+    latitudes =  False               # if latitudes=True latitudes are extracted from input test dataset in experiment (mlfc.py) initialization and passed as loss_params
+    # For VarianceNormalizedMSELoss only
+    variance_type = "spatial"        # channel, geochannel, spatial, temporal, geotemporal
+    # -------------------------
 
     vars_cloud_oras5 = ("sst", "ssh")
     vars_cloud_cds_atmo = ("sst",)
@@ -135,6 +147,17 @@ if __name__ == "__main__":
 
     input_provider_kwargs = provider_kwargs_common | dict(earthkit_cache_dir="/Users/jacopodallaglio/ML/.earthkit-cache", split_month=12) if experiment_type == "cds-cmcc_oras5" else provider_kwargs_common
 
+    # Loss selection
+    if loss_sel == "MSELoss":
+        loss_name, loss_params, loss_suf = "MSELoss" , {}, loss_sel.lower()
+    else:
+        loss_name, loss_params, loss_suf = f"earthml.losses.{loss_sel}", {}, loss_sel.lower()
+        if loss_sel == "VarianceNormalizedMSELoss":
+            loss_params = dict(loss=dict(variance_type=variance_type, latitudes=latitudes))
+            loss_suf += f"_{variance_type}"
+        elif loss_sel == "HeteroBiasCorrectionLoss":
+            loss_params = dict(net=dict(use_first_input=use_first_input), loss=dict(reduction="mean", lambda_identity=0.1, bias_scale=0.5, eps=1e-12))
+
     for var_fc_key, var_an_key in var_keys:
         for leadtime_var_fc_value, leadtime_mult in zip(full_leadtimes, full_leadtime_multiple):
             for train_p_in, train_p_tar in zip(train_periods_input, train_periods_target):
@@ -189,38 +212,19 @@ if __name__ == "__main__":
                     realization_as_channel=realization_as_channel,
                 )
 
+                batch_size = int(32*n_input_realizations) if realization_as_channel else 32 # an attempt to adapt batch size to sample size
                 runner = MLFCRunner(
                     scenario=ocean_scenario,
-                    exp_root_folder="/work/cmcc/jd19424/test-ML/experiments_earthML_ocean/",
-                    exp_suffix="_32bs_50epoch_maskedmse"+("_taravg" if target_realization_avg else "")+("_rasc" if realization_as_channel else ""),
+                    exp_root_folder="/Users/jacopodallaglio/ML/experiments_earthML_ocean/",
+                    exp_suffix=f"_{str(batch_size)}bs_50epoch_{loss_suf}"+("_taravg" if target_realization_avg else "")+("_rasc" if realization_as_channel else ""),
                     # ML options
-                    n_channels=30, # ignored if realization_as_channel is false
-                    n_classes=1,   # ignored if realization_as_channel is false
+                    n_channels=n_input_realizations, # ignored if realization_as_channel is false
+                    n_classes=1,                     # ignored if realization_as_channel is false
                     learning_rate=1e-3,
-                    batch_size=32,
+                    batch_size=batch_size,
                     epochs=50,
-                    # loss="MSELoss",
-                    loss="earthml.losses.MaskedMSELoss",
-                    # loss="earthml.losses.GaussianNLLFromLogits",
-                    # loss="earthml.losses.HeteroBiasCorrectionLoss",
-                    # loss_params=dict(
-                    #     # net=dict(use_first_input=False), # gnll
-                    #     net=dict(use_first_input=True),
-                    #     loss=dict(
-                    #         # reduction="mean", # gnll
-                    #         lambda_identity=0.1,
-                    #         bias_scale=0.5,
-                    #         eps=1e-6)
-                    # ),
-                    # loss="earthml.losses.GeoWeightedMSELoss",
-                    # loss="earthml.losses.VarianceNormalizedMSELoss",
-                    # if latitudes is True latitudes are extracted from input test dataset in experiment (mlfc.py) initialization and passed as loss_params
-                    # loss_params=dict(
-                    #     loss=dict(
-                    #         variance_type="spatial", # only for VarianceNormalizedMSELoss
-                    #         latitudes=False,
-                    #     )
-                    # ),
+                    loss=loss_name,
+                    loss_params=loss_params,
                     accumulate_grad_batches=2,
                     earlystopping_patience=30,
                 )
