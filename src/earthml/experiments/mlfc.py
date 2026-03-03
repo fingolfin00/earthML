@@ -410,7 +410,13 @@ class ExperimentMLFC:
         if self.config.torch_preprocess_fn is not None:
             input_ds, target_ds = self.config.torch_preprocess_fn(input_ds, target_ds)
 
-        torch_dataset = XarrayDataset(input_ds, target_ds, target_realization_avg=self.config.target_realization_avg, realization_as_channel=self.config.realization_as_channel)
+        torch_dataset = XarrayDataset(
+            input_ds, target_ds,
+            target_realization_avg=self.config.target_realization_avg,
+            realization_as_channel=self.config.realization_as_channel,
+            output_realizations=self.config.output_realizations,
+        )
+
         x_mean, x_std = Normalize._masked_stats(torch_dataset.x, torch_dataset.x_mask)
         y_mean, y_std = Normalize._masked_stats(torch_dataset.y, torch_dataset.y_mask)
 

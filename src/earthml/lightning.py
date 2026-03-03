@@ -1,4 +1,4 @@
-from typing import List, Any, Optional, Callable
+from typing import List, Any, Optional, Callable, Literal
 import inspect
 import importlib, joblib
 import numpy as np
@@ -649,6 +649,7 @@ class XarrayDataset (Dataset):
         transform_x_args: dict = None,
         transform_y_args: dict = None,
         realization_as_channel: bool = False,
+        output_realizations: Literal["deterministic", "ensemble", "nochange"] = "deterministic", # deterministic -> output R = 1, ensemble -> output R = input R
     ):
         """
         input_ds: xarray.Dataset
@@ -658,6 +659,7 @@ class XarrayDataset (Dataset):
         transform_x_args: dict of keyword args to pass to transform_x
         transform_y_args: dict of keyword args to pass to transform_y
         """
+
         self.target_ds = target_ds # .load(scheduler="synchronous")
         self.input_ds = input_ds
         assert isinstance(self.input_ds, xr.Dataset) and isinstance(self.target_ds, xr.Dataset), f"Input ds type: {self.input_ds}, target ds type: {self.target_ds}"
@@ -701,14 +703,42 @@ class XarrayDataset (Dataset):
             self.x      = torch.tensor(x_np_filled_, dtype=torch.float32).permute(1, 0, 2, 3)  # (T,Cin,H,W)
             self.x_mask = torch.tensor(mask_x_np_,   dtype=torch.bool).permute(1, 0, 2, 3)     # (T,Cin,H,W)
 
-            # Y: keep deterministic (always average if it has R, target_realization_avg ignored in this branch)
-            if y_np_filled.ndim == 5:  # (C,T,R,H,W)
-                # If deterministic target is stored with R=1, this just squeezes/averages safely.
-                y_np_filled_ = np.nanmean(y_np_filled, axis=2)   # -> (C,T,H,W)
-                mask_y_np_   = np.any(mask_y_np, axis=2)         # -> (C,T,H,W)
-            else:  # (C,T,H,W)
-                y_np_filled_ = y_np_filled
-                mask_y_np_   = mask_y_np
+            if output_realizations=="deterministic":
+                # Y: keep deterministic (always average if it has R, target_realization_avg ignored in this branch)
+                if y_np_filled.ndim == 5:  # (C,T,R,H,W)
+                    # If deterministic target is stored with R=1, this just squeezes/averages safely.
+                    y_np_filled_ = np.nanmean(y_np_filled, axis=2)   # -> (C,T,H,W)
+                    mask_y_np_   = np.any(mask_y_np, axis=2)         # -> (C,T,H,W)
+                else:  # (C,T,H,W)
+                    y_np_filled_ = y_np_filled
+                    mask_y_np_   = mask_y_np
+
+            elif output_realizations=="ensemble":
+                # Y: ensemble target with R_in realizations,
+                # then fold R into channels so y has Cout*R_in channels (matching model output convention).
+
+                R_in = x_np_filled.shape[2] if x_np_filled.ndim == 5 else 1
+
+                # Make deterministic base target y_det: (C, T, H, W)
+                if y_np_filled.ndim == 5:  # (C,T,R,H,W) -> deterministic base
+                    y_det = np.nanmean(y_np_filled, axis=2)   # (C,T,H,W)
+                    m_det = np.any(mask_y_np, axis=2)         # (C,T,H,W)
+                else:  # (C,T,H,W)
+                    y_det = y_np_filled
+                    m_det = mask_y_np
+
+                # Expand across R_in: (C,T,H,W) -> (C,T,R_in,H,W)
+                # Use repeat to physically materialize
+                y_rep = np.repeat(y_det[:, :, None, :, :], R_in, axis=2)  # (C,T,R_in,H,W)
+                m_rep = np.repeat(m_det[:, :, None, :, :], R_in, axis=2)  # (C,T,R_in,H,W)
+
+                # Fold R into channels: (C,T,R,H,W) -> (C*R,T,H,W)
+                C, T, R, H, W = y_rep.shape
+                y_np_filled_ = y_rep.reshape(C * R, T, H, W)  # (Cout*R_in, T, H, W)
+                mask_y_np_   = m_rep.reshape(C * R, T, H, W)  # (Cout*R_in, T, H, W)
+
+            else:
+                raise ValueError(f"Unsupported output_realizations={output_realizations}")
 
             self.y      = torch.tensor(y_np_filled_, dtype=torch.float32).permute(1, 0, 2, 3)  # (T,Cout,H,W)
             self.y_mask = torch.tensor(mask_y_np_,   dtype=torch.bool).permute(1, 0, 2, 3)     # (T,Cout,H,W)

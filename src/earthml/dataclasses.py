@@ -1,7 +1,8 @@
 from dataclasses import dataclass, field
 from datetime import datetime
+from os import name
 from pathlib import Path
-from typing import List, Set, Dict, Optional, Callable, Tuple
+from typing import List, Set, Dict, Optional, Callable, Tuple, Literal
 import xarray as xr
 # Local imports
 from .logging import Logger
@@ -126,27 +127,29 @@ PreprocessFn = Callable[[xr.Dataset, xr.Dataset], Tuple[xr.Dataset, xr.Dataset]]
 @dataclass
 class ExperimentConfig:
     # Globals
-    name: str
-    work_path: str
+    name                        : str
+    work_path                   : str
     # NN
-    seed: int
-    net: str
-    extra_net_args: dict
+    seed                        : int
+    net                         : str
+    extra_net_args              : dict
     # Hyperparameters
-    learning_rate: float
-    batch_size: int
-    epochs: int
-    loss: str
-    loss_params: dict
-    norm_strategy: str
-    supervised: bool
-    train_percent: float
-    earlystopping_patience: int
-    accumulate_grad_batches: int
+    learning_rate               : float
+    batch_size                  : int
+    epochs                      : int
+    loss                        : str
+    loss_params                 : dict
+    norm_strategy               : str
+    supervised                  : bool
+    train_percent               : float
+    earlystopping_patience      : int
+    accumulate_grad_batches     : int
     # Dataset
-    train: ExperimentDataset | List[ExperimentDataset]
-    test: ExperimentDataset | List[ExperimentDataset]
+    train                       : ExperimentDataset | List[ExperimentDataset]
+    test                        : ExperimentDataset | List[ExperimentDataset]
     # Optional
-    torch_preprocess_fn: Optional[PreprocessFn] = None # called after Xarray dataset loading, before torch dataset generation
-    target_realization_avg: bool = False  # whether to average over target realizations when loading target data
-    realization_as_channel: bool = False  # whether to use realization a channel dimension
+    torch_preprocess_fn         : Optional[PreprocessFn]            = None              # called after Xarray dataset loading, before torch dataset generation
+    target_realization_avg      : Optional[bool]                    = False             # whether to average over target realizations when loading target data
+    realization_as_channel      : Optional[bool]                    = False             # whether to use realization a channel dimension
+    output_realizations         : Optional[Literal[
+                                    "deterministic", "ensemble"]]   = "deterministic"   # deterministic -> output R = 1, ensemble -> output R = input R

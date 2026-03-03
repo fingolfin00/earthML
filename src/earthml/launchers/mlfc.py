@@ -262,6 +262,14 @@ class MLFCRunner:
 
         # If realization_as_channel is true use provided input and output channel dims, else infer from number of variables
         n_channels, n_classes = (self.n_channels, self.n_classes) if self.scenario.realization_as_channel else self.scenario.net_channels()
+        # Determine output realizations from requested n_channels and n_classes
+        if n_classes==1:
+            output_realizations = "deterministic"
+        else:
+            if n_classes==n_channels:
+                output_realizations = "ensemble"
+            else:
+                raise ValueError(f"Unsupported combo input n_channels={n_channels}, output n_classes={n_classes}")
 
         cfg = ExperimentConfig(
             name=exp_name,
@@ -289,6 +297,7 @@ class MLFCRunner:
             torch_preprocess_fn=self.scenario.torch_preprocess_fun,
             target_realization_avg=self.scenario.target_realization_avg,
             realization_as_channel=self.scenario.realization_as_channel,
+            output_realizations=output_realizations,
         )
         return cfg
 
