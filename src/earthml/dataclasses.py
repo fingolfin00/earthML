@@ -149,3 +149,4 @@ class ExperimentConfig:
     # Optional
     torch_preprocess_fn: Optional[PreprocessFn] = None # called after Xarray dataset loading, before torch dataset generation
     target_realization_avg: bool = False  # whether to average over target realizations when loading target data
+    realization_as_channel: bool = False  # whether to use realization a channel dimension

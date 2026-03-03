@@ -1,4 +1,4 @@
-from typing import List, Any, Optional
+from typing import List, Any, Optional, Callable
 import inspect
 import importlib, joblib
 import numpy as np
@@ -653,13 +653,13 @@ class Normalize:
 
 class XarrayDataset (Dataset):
     def __init__ (
-            self,
-            input_ds: xr.Dataset,
-            target_ds: xr.Dataset,
-            target_realization_avg=True,
-            transform=None,
-            transform_args=None
-        ):
+        self,
+        input_ds: xr.Dataset,
+        target_ds: xr.Dataset,
+        target_realization_avg: bool = True,
+        transform: Callable = None,
+        realization_as_channel: bool = False,
+    ):
         """
         input_ds: xarray.Dataset
         target_ds: xarray.Dataset
@@ -687,48 +687,90 @@ class XarrayDataset (Dataset):
         #     y_np = y_np.squeeze(1)
         mask_y_np = np.isfinite(y_np)
         y_np_filled = np.where(mask_y_np, y_np, 0.0)
-        if target_realization_avg and len(y_np.shape) == 5:
-            y_np_filled = np.nanmean(y_np_filled, axis=2)          # average over R
-            mask_y_np = np.any(mask_y_np, axis=2)                  # valid if any realization is valid
+
         # print(f"Dataset x mean: {np.nanmean(x_np)}, std: {np.nanstd(x_np)}")
         # print(f"Dataset y mean: {np.nanmean(y_np)}, std: {np.nanstd(y_np)}")
+        # print("input vars:", list(input_ds.data_vars))
+        # print("target vars:", list(target_ds.data_vars))
         # print(f"Input shape: {x_np.shape}, target shape: {y_np.shape}")
 
-        # Uniform realizations: only works if one of input and target has R>1 and the other R=1
-        if len(x_np_filled.shape) == 5: # C,T,R,H,W
-            self.x = torch.tensor(x_np_filled, dtype=torch.float32).flatten(start_dim=1, end_dim=2).permute(1, 0, 2, 3) # (T*R),C,H,W
-            self.x_mask = torch.tensor(mask_x_np, dtype=torch.bool).flatten(start_dim=1, end_dim=2).permute(1, 0, 2, 3)
-        else: # C,T,H,W
-            if len(y_np_filled.shape) == 5: # C,T,R,H,W
-                R = y_np_filled.shape[2]
-                x = torch.tensor(x_np_filled, dtype=torch.float32)      # C,T,H,W
-                x = x.unsqueeze(2).repeat(1, 1, R, 1, 1)                # C,T,R,H,W
-                self.x = x.flatten(1, 2).permute(1, 0, 2, 3)            # (T*R),C,H,W
-                x_mask = torch.tensor(mask_x_np, dtype=torch.bool)      # C,T,H,W
-                x_mask = x_mask.unsqueeze(2).repeat(1, 1, R, 1, 1)      # C,T,R,H,W
-                self.x_mask = x_mask.flatten(1, 2).permute(1, 0, 2, 3)  # (T*R),C,H,W
-            else:
-                self.x = torch.tensor(x_np_filled, dtype=torch.float32).permute(1, 0, 2, 3) # T,C,H,W
-                self.x_mask = torch.tensor(mask_x_np, dtype=torch.bool).permute(1, 0, 2, 3)
-        if len(y_np_filled.shape) == 5:
-            self.y = torch.tensor(y_np_filled, dtype=torch.float32).flatten(start_dim=1, end_dim=2).permute(1, 0, 2, 3)
-            self.y_mask = torch.tensor(mask_y_np, dtype=torch.bool).flatten(start_dim=1, end_dim=2).permute(1, 0, 2, 3)
-        else:
-            if len(x_np_filled.shape) == 5: # C,R,T,H,W
-                R = x_np_filled.shape[2]
-                y = torch.tensor(y_np_filled, dtype=torch.float32)      # C,T,H,W
-                y = y.unsqueeze(2).repeat(1, 1, R, 1, 1)                # C,T,R,H,W
-                self.y = y.flatten(1, 2).permute(1, 0, 2, 3)            # (T*R),C,H,W
-                y_mask = torch.tensor(mask_y_np, dtype=torch.bool)
-                y_mask = y_mask.unsqueeze(2).repeat(1, 1, R, 1, 1)
-                self.y_mask = y_mask.flatten(1, 2).permute(1, 0, 2, 3)
-            else:
-                self.y = torch.tensor(y_np_filled, dtype=torch.float32).permute(1, 0, 2, 3)
-                self.y_mask = torch.tensor(mask_y_np, dtype=torch.bool).permute(1, 0, 2, 3)
+        if realization_as_channel:
+            print("Realization as channel branch")
+            # X: merge R into C
+            if x_np_filled.ndim == 5:  # (C,T,R,H,W)
+                C, T, R, H, W = x_np_filled.shape
+                x_np_filled_ = x_np_filled.reshape(C * R, T, H, W)          # (C*R,T,H,W)
+                mask_x_np_   = mask_x_np.reshape(C * R, T, H, W)
+            else:  # (C,T,H,W)
+                x_np_filled_ = x_np_filled                                  # (C,T,H,W)
+                mask_x_np_   = mask_x_np
 
-        # self.x = torch.tensor(self.input_ds.to_array().values, dtype=torch.float32).permute(1, 0, 2, 3)
-        # self.y = torch.tensor(self.target_ds.to_array().values, dtype=torch.float32).permute(1, 0, 2, 3)
-        assert self.x.shape == self.y.shape, (f"Mismatched dataset shape: x={self.x.shape}, y={self.y.shape}")
+            self.x      = torch.tensor(x_np_filled_, dtype=torch.float32).permute(1, 0, 2, 3)  # (T,Cin,H,W)
+            self.x_mask = torch.tensor(mask_x_np_,   dtype=torch.bool).permute(1, 0, 2, 3)     # (T,Cin,H,W)
+
+            # Y: keep deterministic (always average if it has R, target_realization_avg ignored in this branch)
+            if y_np_filled.ndim == 5:  # (C,T,R,H,W)
+                # If deterministic target is stored with R=1, this just squeezes/averages safely.
+                y_np_filled_ = np.nanmean(y_np_filled, axis=2)   # -> (C,T,H,W)
+                mask_y_np_   = np.any(mask_y_np, axis=2)         # -> (C,T,H,W)
+            else:  # (C,T,H,W)
+                y_np_filled_ = y_np_filled
+                mask_y_np_   = mask_y_np
+
+            self.y      = torch.tensor(y_np_filled_, dtype=torch.float32).permute(1, 0, 2, 3)  # (T,Cout,H,W)
+            self.y_mask = torch.tensor(mask_y_np_,   dtype=torch.bool).permute(1, 0, 2, 3)     # (T,Cout,H,W)
+
+            # print("TENSORS self.x", self.x.shape, "self.y", self.y.shape, "self.y_mask", self.y_mask.shape)
+            assert self.y.shape == self.y_mask.shape, (self.y.shape, self.y_mask.shape)
+
+            # Basic spatial + sample checks (channels may differ)
+            assert self.x.shape[0]  == self.y.shape[0], (f"Mismatched dataset shape: x={self.x.shape}, y={self.y.shape}")  # same T
+            assert self.x.shape[2:] == self.y.shape[2:], (f"Mismatched dataset shape: x={self.x.shape}, y={self.y.shape}") # same H,W
+
+        else:
+            if target_realization_avg and len(y_np.shape) == 5:
+                y_np_filled = np.nanmean(y_np_filled, axis=2)          # average over R
+                mask_y_np = np.any(mask_y_np, axis=2)                  # valid if any realization is valid
+
+            # Uniform realizations: only works if one of input and target has R>1 and the other R=1
+            if len(x_np_filled.shape) == 5: # C,T,R,H,W
+                self.x = torch.tensor(x_np_filled, dtype=torch.float32).flatten(start_dim=1, end_dim=2).permute(1, 0, 2, 3) # (T*R),C,H,W
+                self.x_mask = torch.tensor(mask_x_np, dtype=torch.bool).flatten(start_dim=1, end_dim=2).permute(1, 0, 2, 3)
+            else: # C,T,H,W
+                if len(y_np_filled.shape) == 5: # C,T,R,H,W
+                    R = y_np_filled.shape[2]
+                    x = torch.tensor(x_np_filled, dtype=torch.float32)      # C,T,H,W
+                    x = x.unsqueeze(2).repeat(1, 1, R, 1, 1)                # C,T,R,H,W
+                    self.x = x.flatten(1, 2).permute(1, 0, 2, 3)            # (T*R),C,H,W
+                    x_mask = torch.tensor(mask_x_np, dtype=torch.bool)      # C,T,H,W
+                    x_mask = x_mask.unsqueeze(2).repeat(1, 1, R, 1, 1)      # C,T,R,H,W
+                    self.x_mask = x_mask.flatten(1, 2).permute(1, 0, 2, 3)  # (T*R),C,H,W
+                else:
+                    self.x = torch.tensor(x_np_filled, dtype=torch.float32).permute(1, 0, 2, 3) # T,C,H,W
+                    self.x_mask = torch.tensor(mask_x_np, dtype=torch.bool).permute(1, 0, 2, 3)
+            if len(y_np_filled.shape) == 5:
+                self.y = torch.tensor(y_np_filled, dtype=torch.float32).flatten(start_dim=1, end_dim=2).permute(1, 0, 2, 3)
+                self.y_mask = torch.tensor(mask_y_np, dtype=torch.bool).flatten(start_dim=1, end_dim=2).permute(1, 0, 2, 3)
+            else:
+                if len(x_np_filled.shape) == 5: # C,T,R,H,W
+                    R = x_np_filled.shape[2]
+                    y = torch.tensor(y_np_filled, dtype=torch.float32)      # C,T,H,W
+                    y = y.unsqueeze(2).repeat(1, 1, R, 1, 1)                # C,T,R,H,W
+                    self.y = y.flatten(1, 2).permute(1, 0, 2, 3)            # (T*R),C,H,W
+                    y_mask = torch.tensor(mask_y_np, dtype=torch.bool)
+                    y_mask = y_mask.unsqueeze(2).repeat(1, 1, R, 1, 1)
+                    self.y_mask = y_mask.flatten(1, 2).permute(1, 0, 2, 3)
+                else:
+                    self.y = torch.tensor(y_np_filled, dtype=torch.float32).permute(1, 0, 2, 3)
+                    self.y_mask = torch.tensor(mask_y_np, dtype=torch.bool).permute(1, 0, 2, 3)
+
+            # print("TENSORS self.x", self.x.shape, "self.y", self.y.shape, "self.y_mask", self.y_mask.shape)
+            assert self.y.shape == self.y_mask.shape, (self.y.shape, self.y_mask.shape)
+
+            # self.x = torch.tensor(self.input_ds.to_array().values, dtype=torch.float32).permute(1, 0, 2, 3)
+            # self.y = torch.tensor(self.target_ds.to_array().values, dtype=torch.float32).permute(1, 0, 2, 3)
+
+            assert self.x.shape == self.y.shape, (f"Mismatched dataset shape: x={self.x.shape}, y={self.y.shape}")
 
     @staticmethod
     def _transpose_dims_ds_to_da (ds: xr.Dataset, excluded_vars: str | List[str] | None = "_has_var") -> xr.DataArray:

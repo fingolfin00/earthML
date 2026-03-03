@@ -9,8 +9,9 @@ from earthml.conversion import celsius_to_kelvin
 if __name__ == "__main__":
     max_retries = 10
 
-    var_exp = "sss" # sst (atmo), sss, t14d, t17d, ssh
-    target_realization_avg = False # average over realizations for target variable
+    var_exp = "sst" # sst (atmo), sss, t14d, t17d, ssh
+    target_realization_avg = False   # average over realizations for target variable
+    realization_as_channel = False    # use realization a channel dim
     only_longest_train_period = True # only train on the largest train period (if False, train on all periods, which can be much slower but allows to see variability across train periods)
 
     vars_cloud_oras5 = ("sst", "ssh")
@@ -185,13 +186,16 @@ if __name__ == "__main__":
                     save_test=True,
                     torch_preprocess_fn=None,
                     target_realization_avg=target_realization_avg,
+                    realization_as_channel=realization_as_channel,
                 )
 
                 runner = MLFCRunner(
                     scenario=ocean_scenario,
                     exp_root_folder="/work/cmcc/jd19424/test-ML/experiments_earthML_ocean/",
-                    exp_suffix="_32bs_50epoch_mse"+("_taravg" if target_realization_avg else ""),
+                    exp_suffix="_32bs_50epoch_maskedmse"+("_taravg" if target_realization_avg else "")+("_rasc" if realization_as_channel else ""),
                     # ML options
+                    n_channels=30, # ignored if realization_as_channel is false
+                    n_classes=1,   # ignored if realization_as_channel is false
                     learning_rate=1e-3,
                     batch_size=32,
                     epochs=50,

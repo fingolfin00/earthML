@@ -106,6 +106,7 @@ class MLFCScenario:
 
     torch_preprocess_fn: Callable | None = None
     target_realization_avg: bool = False  # whether to average over target realizations when loading target data to torch
+    realization_as_channel: bool = False  # whether to use realization a channel dimension
 
     def _cat (self) -> SimpleNamespace:
         return catalog.make_catalog(
@@ -242,6 +243,8 @@ class MLFCRunner:
     epochs: int = 50
     loss: str = "MSELoss"
     loss_params: dict[str, dict[str, Any]] = field(default_factory=lambda: {"net": {}, "loss": {}})
+    n_channels: int = 1
+    n_classes: int = 1
 
     norm_strategy: str = "BatchNorm2d"
     supervised: bool = True
@@ -257,7 +260,8 @@ class MLFCRunner:
         exp_path = Path(self.exp_root_folder) / f"{exp_name}{self.exp_suffix}"
         print(f"Experiment path: {exp_path}")
 
-        n_channels, n_classes = self.scenario.net_channels()
+        # If realization_as_channel is true use provided input and output channel dims, else infer from number of variables
+        n_channels, n_classes = (self.n_channels, self.n_classes) if self.scenario.realization_as_channel else self.scenario.net_channels()
 
         cfg = ExperimentConfig(
             name=exp_name,
@@ -284,6 +288,7 @@ class MLFCRunner:
 
             torch_preprocess_fn=self.scenario.torch_preprocess_fun,
             target_realization_avg=self.scenario.target_realization_avg,
+            realization_as_channel=self.scenario.realization_as_channel,
         )
         return cfg
 
