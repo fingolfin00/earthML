@@ -1869,7 +1869,7 @@ def date_diff (ymd_range: str):
         "total_months": delta.years * 12 + delta.months
     }
 
-def load_exp (exp_root, exp_cfg, type_data: str, only_sizes: bool = False, merge_compat: str = "override") -> dict:
+def load_exp (exp_cfg, type_data: str, only_sizes: bool = False, merge_compat: str = "override") -> dict:
     """
     Return dict keyed by train_period and number of valid samples.
 
@@ -1877,6 +1877,7 @@ def load_exp (exp_root, exp_cfg, type_data: str, only_sizes: bool = False, merge
     out[tp]["an"] -> Dataset with dim 'leadtime'
     out[tp]["pr"] -> Dataset with dim 'leadtime' (or None if type_data != 'test')
     """
+    exp_root      = exp_cfg["root"]
     exp_name      = exp_cfg["name"]
     var_specs     = exp_cfg["vars"]
     leadtimes     = exp_cfg["leadtimes"]

@@ -353,7 +353,6 @@ def get_runs_and_metrics (
     }
 
     runs, _ = load_exp(
-        exp_root=exp_root,
         exp_cfg=experiments,
         type_data=type_data,
     )
