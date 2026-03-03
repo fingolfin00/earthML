@@ -555,7 +555,12 @@ class Normalize:
         self.std = std
 
     @staticmethod
-    def _masked_stats (data: torch.Tensor, mask: torch.Tensor, eps: float = 1e-12):
+    def _masked_stats (
+        data: torch.Tensor,
+        mask: torch.Tensor,
+        eps: float = 1e-12,
+        per_channel_mean: bool = True
+    ):
         """
         data: (N, C, H, W)
         mask: (N, C, H, W) bool/0-1
@@ -564,13 +569,14 @@ class Normalize:
         if data.ndim != 4 or mask.ndim != 4:
             raise ValueError(f"Expected (N,C,H,W), got data {data.shape}, mask {mask.shape}")
 
+        mean_dims = (0, 2, 3) if per_channel_mean else (0, 1, 2, 3)
         mask = mask.bool()
-        count = mask.sum(dim=(0, 2, 3), keepdim=True).clamp_min(1)  # (1,C,1,1)
+        count = mask.sum(dim=mean_dims, keepdim=True).clamp_min(1)  # (1,C,1,1)
 
-        sum_vals = (data * mask).sum(dim=(0, 2, 3), keepdim=True)
+        sum_vals = (data * mask).sum(dim=mean_dims, keepdim=True)
         mean = sum_vals / count
 
-        var = ((data - mean) ** 2 * mask).sum(dim=(0, 2, 3), keepdim=True) / count
+        var = ((data - mean) ** 2 * mask).sum(dim=mean_dims, keepdim=True) / count
         std = torch.sqrt(var + eps)
         return mean, std
 

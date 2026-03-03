@@ -417,8 +417,9 @@ class ExperimentMLFC:
             output_realizations=self.config.output_realizations,
         )
 
-        x_mean, x_std = Normalize._masked_stats(torch_dataset.x, torch_dataset.x_mask)
-        y_mean, y_std = Normalize._masked_stats(torch_dataset.y, torch_dataset.y_mask)
+        per_channel_masked_mean = False if self.config.output_realizations else True # TODO not sure it's super general
+        x_mean, x_std = Normalize._masked_stats(torch_dataset.x, torch_dataset.x_mask, per_channel_mean=per_channel_masked_mean)
+        y_mean, y_std = Normalize._masked_stats(torch_dataset.y, torch_dataset.y_mask, per_channel_mean=per_channel_masked_mean)
 
         self.rich_console.print(Table({f'{data_type} dataset': {
             'input': {
