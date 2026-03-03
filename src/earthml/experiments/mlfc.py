@@ -678,17 +678,7 @@ class ExperimentMLFC:
         R_in = int(input_ds.sizes.get(rdim_in, 1))
         R_tgt = int(target_ds.sizes.get(rdim_tgt, 1))
 
-        mode = self.config.output_realizations  # "deterministic" | "ensemble" | "nochange"
-        if mode == "deterministic":
-            R_out = 1
-        elif mode == "ensemble":
-            R_out = R_in
-        elif mode == "nochange":
-            # If target has no R dim, treat as deterministic; otherwise keep target R.
-            # Fallback to input R if target is missing/degenerate.
-            R_out = R_tgt if R_tgt >= 1 else R_in
-        else:
-            raise ValueError(f"Unknown output_realizations={mode}")
+        R_out = R_in
 
         if R_out < 1:
             raise ValueError(f"Inferred invalid R_out={R_out}")
