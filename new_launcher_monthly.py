@@ -29,16 +29,17 @@ if __name__ == "__main__":
     start_test_date             = datetime(2021, 1, 1)
     end_test_date               = datetime(2022, 12, 31)
 
+    target_realization_avg      = False             # average over realizations for target variable (if True, add _taravg suffix to exp_suffix)
+    realization_as_channel      = False             # use realization a channel dim (if True, add _rasc suffix to exp_suffix)
+    n_input_realizations        = 30                # used only if realization_as_channel = True
+
     # Hyperparams
     batch_size                  = 32
-    max_epochs                  = 50
+    max_epochs                  = 50*n_input_realizations if realization_as_channel else 50
     init_learning_rate          = 1e-3
     accumulate_grad_batches     = 2
     earlystopping_patience      = 30
-    target_realization_avg      = False             # average over realizations for target variable (if True, add _taravg suffix to exp_suffix)
-    realization_as_channel      = True              # use realization a channel dim (if True, add _rasc suffix to exp_suffix)
-    n_input_realizations        = 30                # used only if realization_as_channel = True
-    loss_sel                    = "MaskedMSELoss"   # MSELoss, MaskedMSELoss, GeoWeightedMSELoss, VarianceNormalizedMSELoss, HeteroBiasCorrectionLoss, GaussianNLLFromLogits
+
     # For HeteroBiasCorrectionLoss only
     use_first_input             = True
     # For GeoWeightedMSELoss and VarianceNormalizedMSELoss (only for variance_type: geochannel, geotemporal)
