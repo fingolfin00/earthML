@@ -127,6 +127,8 @@ class ExperimentMLFC:
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         print(f"Net {type(self.model).__name__} trainable parameters: {trainable_params:,}")
 
+        self.rich_console.print(Table(self.config, title="ExperimentConfig", twocols=True).table)
+
         # Save experiment
         with open(self.work_path.joinpath("experiment.cfg"), 'wb') as f:
             joblib.dump({
