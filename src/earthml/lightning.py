@@ -544,48 +544,60 @@ class EpochRandomSplitDataModule (L.LightningDataModule):
             # re-split at every epoch
             self._resplit()
 
+# Normalizer
 class Normalize:
     def __init__ (self, mean=None, std=None):
         """
-        mean, std: optional scalars or tensors for normalization.
-                   If None, must call fit(dataset) before using.
+        mean/std expected shapes after fit: (1, C, 1, 1)
         """
         self.mean = mean
         self.std = std
 
     @staticmethod
-    def _masked_stats(data, mask):
+    def _masked_stats (data: torch.Tensor, mask: torch.Tensor, eps: float = 1e-12):
         """
-        Compute per-channel mean/std using only masked-valid entries.
+        data: (N, C, H, W)
+        mask: (N, C, H, W) bool/0-1
+        returns mean/std: (1, C, 1, 1)
+        """
+        if data.ndim != 4 or mask.ndim != 4:
+            raise ValueError(f"Expected (N,C,H,W), got data {data.shape}, mask {mask.shape}")
 
-        data: [N, C, H, W] float tensor (possibly contains zeros)
-        mask: [N, C, H, W] bool or 0/1 tensor
-        """
         mask = mask.bool()
-        # Number of valid entries per-channel
-        count = mask.sum(dim=(0, 2, 3), keepdim=True)  # shape [1, C, 1, 1]
+        count = mask.sum(dim=(0, 2, 3), keepdim=True).clamp_min(1)  # (1,C,1,1)
 
-        # Avoid divide-by-zero for channels with no valid data
-        count = count.clamp(min=1)
-        print(f"Normalization, masked count: {count}")
-
-        # Masked mean
         sum_vals = (data * mask).sum(dim=(0, 2, 3), keepdim=True)
         mean = sum_vals / count
 
-        # Masked variance
         var = ((data - mean) ** 2 * mask).sum(dim=(0, 2, 3), keepdim=True) / count
-        std = torch.sqrt(var + 1e-6)
-
+        std = torch.sqrt(var + eps)
         return mean, std
 
-    def _norm (self, data, epsilon=1e-6):
-        return (data - self.mean) / (self.std + epsilon)
+    def fitted (self) -> bool:
+        return self.mean is not None and self.std is not None
 
-    def _denorm (self, data):
-        return self.std * data + self.mean
+    def save (self, filepath: str):
+        joblib.dump(self, filepath)
 
-    def _check_filepath (self, filepath):
+    @classmethod
+    def load (cls, filepath: str) -> "Normalize":
+        return joblib.load(filepath)
+
+    def fit (self, dataset, filepath: str | None = None, dim: str = "x", eps: float = 1e-12):
+        """
+        dataset.<dim>      : (N,C,H,W)
+        dataset.<dim>_mask : (N,C,H,W)
+        """
+        data = getattr(dataset, dim)
+        mask = getattr(dataset, f"{dim}_mask")
+
+        self.mean, self.std = self._masked_stats(data, mask, eps=eps)
+
+        if filepath is not None:
+            self.save(filepath)
+        return self
+
+    def _check_filepath (self, filepath: str):
         if self.mean is None or self.std is None:
             try:
                 self = self.load(filepath)
@@ -593,85 +605,65 @@ class Normalize:
                 print(e)
                 raise ValueError("Transform not fitted.")
 
-    def save (self, filepath):
-        joblib.dump(self, filepath)
-
-    def load (self, filepath):
-        return joblib.load(filepath)
-
-    def fit(self, dataset, filepath, dim="x"):
+    def _broadcast_params (self, t: torch.Tensor):
         """
-        Fit mean/std only on valid pixels.
-        dataset.<dim>      = tensor [N, C, H, W]
-        dataset.<dim>_mask = tensor [N, C, H, W]
-        dim: select the data to fit, input (x) or target (y)
+        Return mean/std broadcastable to t without mutating state.
         """
-        data = getattr(dataset, dim)
-        mask = getattr(dataset, f"{dim}_mask")
+        if not self.fitted():
+            raise ValueError("Transform not fitted (mean/std are None)")
 
-        self.mean, self.std = self._masked_stats(data, mask)
+        if t.ndim == 4:      # (N,C,H,W)
+            mean = self.mean
+            std = self.std
+        elif t.ndim == 3:    # (C,H,W)
+            # expect stored (1,C,1,1) -> (C,1,1)
+            mean = self.mean.squeeze(0)
+            std = self.std.squeeze(0)
+        else:
+            raise ValueError(f"Unsupported tensor shape {t.shape}")
 
-        print(f"Masked (mean, std) for normalization: ({self.mean.flatten().tolist()}, {self.std.flatten().tolist()})")
+        if t.ndim == 3 and t.shape[0] != mean.shape[0]:
+            raise ValueError(f"Channel mismatch: tensor has C={t.shape[0]}, normalizer has C={mean.shape[0]}")
 
-        self.save(filepath)
-        return self
+        return mean.to(device=t.device, dtype=t.dtype), std.to(device=t.device, dtype=t.dtype)
 
-    def inverse (self, dataset, filepath=None):
-        """
-        Return a new dataset with denormalized data.
-        Does not modify the original dataset in-place.
-        """
+    def __call__ (self, t: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+        mean, std = self._broadcast_params(t)
+        return (t - mean) / (std + eps)
+
+    def inverse_tensor (self, t: torch.Tensor, filepath: str) -> torch.Tensor:
         self._check_filepath(filepath)
+        mean, std = self._broadcast_params(t)
+        return t * std + mean
 
-        new_dataset = dataset.__class__.__new__(dataset.__class__)
-        new_dataset.__dict__ = dataset.__dict__.copy()
-
-        if hasattr(dataset, "x") and dataset.x is not None:
-            new_dataset.x = self._denorm(dataset.x)
-        if hasattr(dataset, "y") and dataset.y is not None:
-            new_dataset.y = self._denorm(dataset.y)
-
-        return new_dataset
-
-    def inverse_tensor (self, data, filepath=None):
-        """
-        Return denormalized data.
-        """
-        self._check_filepath(filepath)
-        return self._denorm(data)
-
-    def __call__ (self, x, y, epsilon=1e-6):
-        if self.mean is None or self.std is None:
-            raise ValueError("Transform not fitted")
-
-        # Remove time dimension because we call this in Dataset __getitem__
-        x = self._norm(x, epsilon=epsilon).squeeze(0)
-        # print(f"X normalized shape: {x.shape}, mean: {x.mean()}, std: {x.std()}")
-        y = self._norm(y, epsilon=epsilon).squeeze(0)
-        # print(f"Y normalized shape: {y.shape}, mean: {y.mean()}, std: {y.std()}")
-        return x, y
-
+# Torch dataset
 class XarrayDataset (Dataset):
     def __init__ (
         self,
         input_ds: xr.Dataset,
         target_ds: xr.Dataset,
         target_realization_avg: bool = True,
-        transform: Callable = None,
+        transform_x: Callable = None,
+        transform_y: Callable = None,
+        transform_x_args: dict = None,
+        transform_y_args: dict = None,
         realization_as_channel: bool = False,
     ):
         """
         input_ds: xarray.Dataset
         target_ds: xarray.Dataset
-        transform: callable with signature (x, y, **kwargs) -> (x, y)
-        transform_args: dict of keyword args to pass to transform
+        transform_x: callable with signature (x, **kwargs) -> x (for input)
+        transform_y: callable with signature (y, **kwargs) -> y (for target)
+        transform_x_args: dict of keyword args to pass to transform_x
+        transform_y_args: dict of keyword args to pass to transform_y
         """
         self.target_ds = target_ds # .load(scheduler="synchronous")
         self.input_ds = input_ds
         assert isinstance(self.input_ds, xr.Dataset) and isinstance(self.target_ds, xr.Dataset), f"Input ds type: {self.input_ds}, target ds type: {self.target_ds}"
 
-        self.transform = transform
-        self.transform_args = transform_args or {}
+        self.transform_x, self.transform_y = transform_x, transform_y
+        self.transform_x_args = transform_x_args or {}
+        self.transform_y_args = transform_y_args or {}
 
         # NumPy arrays with NaNs for missing data
         x_np = self._transpose_dims_ds_to_da(self.input_ds).to_numpy()
@@ -809,9 +801,15 @@ class XarrayDataset (Dataset):
         return len(self.x)
 
     def __getitem__(self, idx):
-        x, y = self.x[idx], self.y[idx]           # shapes: (C,H,W) or (C,T,H,W) if using time
+        x, y = self.x[idx], self.y[idx]              # shapes: (C,H,W) or (C,T,H,W) if using time
         mx, my = self.x_mask[idx], self.y_mask[idx]
-        mask = mx & my                            # True where both input and target valid
-        if self.transform:
-            x, y = self.transform(x, y, **self.transform_args)
+
+        if self.transform_x:
+            x = self.transform_x(x, **self.transform_x_args)
+        if self.transform_y:
+            y = self.transform_y(y, **self.transform_y_args)
+
+        mask = my           # use target mask
+        # mask = mx & my    # combine input and target masks
+
         return x, y, mask

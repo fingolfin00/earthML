@@ -157,9 +157,11 @@ class ExperimentMLFC:
         self.weights_path = self.weights_folder_path.joinpath(self.weights_filename+'.ckpt')
         # Train dataset normalization data location
         norm_data_folder_path = self.work_path.joinpath("./normdata")
-        normdata_filename = f"{self.config.name}_normdata.gz"
+        normdata_input_filename = f"{self.config.name}_normdata_input.gz"
+        normdata_target_filename = f"{self.config.name}_normdata_target.gz"
         norm_data_folder_path.mkdir(parents=True, exist_ok=True)
-        self.normdata_path = norm_data_folder_path.joinpath(normdata_filename)
+        self.normdata_input_path = norm_data_folder_path.joinpath(normdata_input_filename)
+        self.normdata_target_path = norm_data_folder_path.joinpath(normdata_target_filename)
         # Lightning checkpoints location
         self.ckpt_filename = "checkpoint"
         self.ckpt_folder_path = self.work_path.joinpath("./checkpoints")
@@ -433,10 +435,14 @@ class ExperimentMLFC:
     def train (self):
         # Generate torch train dataset
         train_dataset = self._generate_torch_dataset(self.source_train_data, self.config.train, 'Train')
+
         # Normalize
-        self.normalize = Normalize().fit(train_dataset, filepath=self.normdata_path, dim='x') # uses mean and std of train input (x) data
+        self.normalize_input  = Normalize().fit(train_dataset, filepath=self.normdata_input_path, dim='x')  # mean and std of train input (x) data
+        self.normalize_target = Normalize().fit(train_dataset, filepath=self.normdata_target_path, dim='y') # mean and std of train target (y) data
         # print(f"Normalize type: {type(self.normalize.mean)} and shape: {self.normalize.mean.shape}")
-        train_dataset.transform = self.normalize
+        train_dataset.transform_x = self.normalize_input
+        train_dataset.transform_y = self.normalize_target
+
         # Create train datamodule and split train datase\t into train and validation based on self.config.train_percent
         self.train_datamodule = EpochRandomSplitDataModule(
             train_dataset,
@@ -446,6 +452,7 @@ class ExperimentMLFC:
             num_workers=self.torch_workers,
             per_epoch_replit=False
         )
+
         # Train
         trainer = self._init_train_trainer()
         ckpt_path = Path(self.ckpt_path) if Path(self.ckpt_path).exists() else None
@@ -477,11 +484,19 @@ class ExperimentMLFC:
         #         'target std': {var.name: test_dataset.y[:,i,:,:].std().item() for i, var in enumerate(self.test_var_list)},
         #         'rmse target-input': {var.name: np.sqrt(((test_dataset.y[:,i,:,:] - test_dataset.x[:,i,:,:])**2).mean().item()) for i, var in enumerate(self.test_var_list)}
         # }}, params_name='metric').table)
-        # Normalize
-        if not self.normalize:
-            print(f"Load normalization data from {self.normdata_path}")
-            self.normalize = Normalize().load(self.normdata_path)
-        test_dataset.transform = self.normalize
+
+        # Normalize input
+        if not self.normalize_input:
+            print(f"Load normalization data from {self.normdata_input_path}")
+            self.normalize_input = Normalize().load(self.normdata_input_path)
+        test_dataset.transform_x = self.normalize_input
+
+        # Normalize target
+        if not self.normalize_target:
+            print(f"Load normalization data from {self.normdata_target_path}")
+            self.normalize_target = Normalize().load(self.normdata_target_path)
+        test_dataset.transform_y = self.normalize_target
+
         # Create test dataloader
         self.test_dataloader = DataLoader(test_dataset, batch_size=1, num_workers=self.torch_workers, shuffle=False)
         if not weights_filename:
@@ -501,10 +516,12 @@ class ExperimentMLFC:
             weights_file = Path(last_callback["best_model_path"])
             if not weights_file.is_file(): # fallback to config weights filename
                 weights_file = Path(self.weights_path)
+
         # Load weights
         print(f"Load weights from file: {weights_file}")
         weights = torch.load(weights_file, map_location=self.device)
         self.model.load_state_dict(weights['state_dict'])
+
         # Test
         self._init_test_trainer().test(self.model, dataloaders=self.test_dataloader)
         # print(f"Available attributes in model: {dir(self.model)}")
@@ -513,9 +530,9 @@ class ExperimentMLFC:
         mean_norm_pred_d = {var.name: self.model.test_preds[:,i,:,:].mean().item() for i, var in enumerate(self.test_var_list)}
         std_norm_pred_d = {var.name: self.model.test_preds[:,i,:,:].std().item() for i, var in enumerate(self.test_var_list)}
         print(f"Normalized prediction shape: {self.model.test_preds.shape}, mean: {mean_norm_pred_d}, std: {std_norm_pred_d}")
+        # Rescale preds with target normalization
+        self.preds = self.normalize_target.inverse_tensor(self.model.test_preds, self.normdata_target_path) # .squeeze()
 
-        # Rescale
-        self.preds = self.normalize.inverse_tensor(self.model.test_preds, self.normdata_path) # .squeeze()
         mean_pred_d = {var.name: self.preds[:,i,:,:].mean().item() for i, var in enumerate(self.test_var_list)}
         std_pred_d = {var.name: self.preds[:,i,:,:].std().item() for i, var in enumerate(self.test_var_list)}
         print(f"Rescaled prediction shape: {self.preds.shape}, mean: {mean_pred_d}, std: {std_pred_d}")
