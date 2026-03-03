@@ -8,52 +8,82 @@ from earthml.conversion import celsius_to_kelvin
 
 if __name__ == "__main__":
 
-    # -------------------------
+    # ----------------------------------------------------------------------------------
     # User params
-    # -------------------------
-    max_retries = 10
-    var_exp = "sst"                  # sst (atmo), sss, t14d, t17d, ssh
-    target_realization_avg = False   # average over realizations for target variable
-    realization_as_channel = False   # use realization a channel dim
-    n_input_realizations = 30        # used only if realization_as_channel = True
-    only_longest_train_period = True # only train on the largest train period (if False, train on all periods, which can be much slower but allows to see variability across train periods)
-    loss_sel = "MaskedMSELoss"       # MSELoss, MaskedMSELoss, GeoWeightedMSELoss, VarianceNormalizedMSELoss, HeteroBiasCorrectionLoss, GaussianNLLFromLogits
+    # ----------------------------------------------------------------------------------
+    max_retries                 = 10                # n attempts in case of errors in mainloop
+    run_mode                    = "train_test"      # train_test, dryrun, train, test
+    host_machine                = "local"           # local, juno
+    experiment_mode             = "short"           # full, short, debug
+    only_longest_train_period   = True              # only train on the largest train period (if False, train on all periods, which can be much slower but allows to see variability across train periods)
+    add_hyper_exp_name_suffix   = False             # if True use also batch_size, max_epochs, initial_learning_rate in exp name (and resulting folder) automatically extending exp_suffix
+
+    exp_root_folder             = "/Users/jacopodallaglio/ML/experiments_earthML_ocean/"
+    earthkit_cache_dir          = "/Users/jacopodallaglio/ML/.earthkit-cache"   # if using earthkit datasource
+
+    var_exp                     = "sst"             # sst (atmo), sss, t14d, t17d, ssh
+    region_sel                  = "pacific"
+
+    start_train_date            = datetime(1993, 7, 1)
+    end_train_date              = datetime(2020, 12, 31)
+    start_test_date             = datetime(2021, 1, 1)
+    end_test_date               = datetime(2022, 12, 31)
+
+    # Hyperparams
+    batch_size                  = 32
+    max_epochs                  = 50
+    init_learning_rate          = 1e-3
+    accumulate_grad_batches     = 2
+    earlystopping_patience      = 30
+    target_realization_avg      = False             # average over realizations for target variable (if True, add _taravg suffix to exp_suffix)
+    realization_as_channel      = True              # use realization a channel dim (if True, add _rasc suffix to exp_suffix)
+    n_input_realizations        = 30                # used only if realization_as_channel = True
+    loss_sel                    = "MaskedMSELoss"   # MSELoss, MaskedMSELoss, GeoWeightedMSELoss, VarianceNormalizedMSELoss, HeteroBiasCorrectionLoss, GaussianNLLFromLogits
     # For HeteroBiasCorrectionLoss only
-    use_first_input = True
+    use_first_input             = True
     # For GeoWeightedMSELoss and VarianceNormalizedMSELoss (only for variance_type: geochannel, geotemporal)
-    latitudes =  False               # if latitudes=True latitudes are extracted from input test dataset in experiment (mlfc.py) initialization and passed as loss_params
+    latitudes                   = False             # if latitudes=True latitudes are extracted from input test dataset in experiment (mlfc.py) initialization and passed as loss_params
     # For VarianceNormalizedMSELoss only
-    variance_type = "spatial"        # channel, geochannel, spatial, temporal, geotemporal
-    # -------------------------
+    variance_type               = "spatial"         # channel, geochannel, spatial, temporal, geotemporal
+    # ----------------------------------------------------------------------------------
 
-    vars_cloud_oras5 = ("sst", "ssh")
-    vars_cloud_cds_atmo = ("sst",)
-    vars_cloud_cds_ocean = ("ssh",)
+    if experiment_mode in ("short", "debug"):
+        # Short exp
+        full_leadtimes_days         = (165,)
+        full_leadtimes_atmo_days    = (180,)
+        full_leadtimes_months       = (6,)
+        if experiment_mode == "debug":
+            # Very short periods for debug
+            start_train_date        = datetime(1993, 7, 1)
+            end_train_date          = datetime(1994, 12, 31)
+            start_test_date         = datetime(2021, 1, 1)
+            end_test_date           = datetime(2021, 12, 31)
+    else:
+        # Full exp
+        full_leadtimes_days         = (15, 45, 75, 105, 135, 165)
+        full_leadtimes_atmo_days    = (30, 60, 90, 120, 150, 180) # atmo seasonal forecast has end of month leadtimes
+        full_leadtimes_months       = (1, 2, 3, 4, 5, 6)
+        full_leadtime_hours_sst     = (12, 24, 48, 72, 96, 120, 144, 168) # Juno SST is only 6-hourly, TODO remove support for this
 
-    full_leadtimes_days = (15, 45, 75, 105, 135, 165)
-    full_leadtimes_atmo_days = (30, 60, 90, 120, 150, 180) # atmo seasonal forecast has end of month leadtimes
-    full_leadtimes_months = (1, 2, 3, 4, 5, 6)
-    full_leadtime_hours_sst = (12, 24, 48, 72, 96, 120, 144, 168)
+    # Set var categories
+    vars_cloud_oras5        = ("sst", "ssh")
+    vars_cloud_cds_atmo     = ("sst",)
+    vars_cloud_cds_ocean    = ("ssh",)
 
-    start_train_date = datetime(1993, 7, 1)
-    end_train_date = datetime(2020, 12, 31)
-    # Short exp for debug
-    # full_leadtimes_days = (165,)
-    # full_leadtimes_atmo_days = (180,)
-    # full_leadtimes_months = (6,)
-    # start_train_date = datetime(1993, 7, 1)
-    # end_train_date = datetime(1993, 12, 31)
+    # Select experiment type
+    if host_machine == "juno":
+        # experiment_type = "juno-cmcc_juno-cmcc" # analysis in forecast dataset (lt=15d) WRONG!
+        experiment_type = "cds-cmcc_oras5" if var_exp in vars_cloud_oras5 else "juno-cmcc_oras5"
+    else:
+        experiment_type = "cds-cmcc_oras5"
 
-    # experiment_type = "juno-cmcc_juno-cmcc" # analysis in forecast dataset (lt=15d) WRONG!
-    experiment_type = "cds-cmcc_oras5" if var_exp in vars_cloud_oras5 else "juno-cmcc_oras5"
-    # experiment_type = "cds-cmcc_oras5"
-
-    train_period = TimeRange(start=start_train_date, end=end_train_date, freq='MS')
-    test_period = TimeRange(start=datetime(2021, 1, 1), end=datetime(2022, 12, 31), freq='MS')
+    # Set periods and data providers
+    train_period    = TimeRange(start=start_train_date, end=end_train_date, freq='MS')
+    test_period     = TimeRange(start=start_test_date,  end=end_test_date,  freq='MS')
 
     month_start_flag = False if var_exp=="sst" and experiment_type=="juno-cmcc_oras5" else True # SST is 6-hourly in Juno
 
-    # input has no cutoff date (only ORAS5 for consolidate vs operational datasets)
+    # Input has no cutoff date (only ORAS5 for consolidate vs operational datasets)
     train_periods_input = [train_period] if only_longest_train_period else half_train_periods_days(train_period, min_months=12, anchor="end", month_start=month_start_flag)
 
     delta_train = relativedelta(end_train_date, start_train_date)
@@ -102,12 +132,12 @@ if __name__ == "__main__":
     for i, p in enumerate(train_periods_target, 1):
         if isinstance(p, list):
             p_start = p[0].start
-            p_end = p[-1].end
+            p_end   = p[-1].end
         else:
             p_start = p.start
-            p_end = p.end
-        rd = relativedelta(p_end, p_start)
-        months = rd.years * 12 + rd.months
+            p_end   = p.end
+        rd      = relativedelta(p_end, p_start)
+        months  = rd.years * 12 + rd.months
         print(i, p_start.date(), "->", p_end.date(), "months:", months)
 
     if experiment_type == "juno-cmcc_juno-cmcc":
@@ -129,7 +159,7 @@ if __name__ == "__main__":
         leadtime_unit = "months"
 
     target_provider_kwargs_earthkit_oras5_consolidated = target_provider_kwargs_common | dict(
-        earthkit_cache_dir="/work/cmcc/jd19424/.earthkit-cache",
+        earthkit_cache_dir=earthkit_cache_dir,
         request_extra_args=dict(
             product_type="consolidated",
             vertical_resolution="single_level"
@@ -137,7 +167,7 @@ if __name__ == "__main__":
         convert_unit={"sst": (celsius_to_kelvin, "K")} if var_exp=="sst" else None, # ORAS5 has SST in °C, while seasonal models has SST in K (only earthkit source supports on the fly conersion)
     )
     target_provider_kwargs_earthkit_oras5_operational = target_provider_kwargs_common | dict(
-        earthkit_cache_dir="/work/cmcc/jd19424/.earthkit-cache",
+        earthkit_cache_dir=earthkit_cache_dir,
         request_extra_args=dict(
             product_type="operational",
             vertical_resolution="single_level"
@@ -145,7 +175,7 @@ if __name__ == "__main__":
         convert_unit={"sst": (celsius_to_kelvin, "K")} if var_exp=="sst" else None,
     )
 
-    input_provider_kwargs = provider_kwargs_common | dict(earthkit_cache_dir="/Users/jacopodallaglio/ML/.earthkit-cache", split_month=12) if experiment_type == "cds-cmcc_oras5" else provider_kwargs_common
+    input_provider_kwargs = provider_kwargs_common | dict(earthkit_cache_dir=earthkit_cache_dir, split_month=12) if experiment_type == "cds-cmcc_oras5" else provider_kwargs_common
 
     # Loss selection
     if loss_sel == "MSELoss":
@@ -158,6 +188,7 @@ if __name__ == "__main__":
         elif loss_sel == "HeteroBiasCorrectionLoss":
             loss_params = dict(net=dict(use_first_input=use_first_input), loss=dict(reduction="mean", lambda_identity=0.1, bias_scale=0.5, eps=1e-12))
 
+    # Mainloop
     for var_fc_key, var_an_key in var_keys:
         for leadtime_var_fc_value, leadtime_mult in zip(full_leadtimes, full_leadtime_multiple):
             for train_p_in, train_p_tar in zip(train_periods_input, train_periods_target):
@@ -192,7 +223,7 @@ if __name__ == "__main__":
                     leadtime_unit=leadtime_unit, # SST -> hours, other vars -> months
                     var_fc_key=var_fc_key,
                     var_an_key=var_an_key,
-                    region_key="pacific",
+                    region_key=region_sel,
                     train_period=dict(
                         input=train_p_in,
                         target=train_p_tar,
@@ -212,28 +243,34 @@ if __name__ == "__main__":
                     realization_as_channel=realization_as_channel,
                 )
 
-                batch_size = int(32*n_input_realizations) if realization_as_channel else 32 # an attempt to adapt batch size to sample size
+                # Generate exp_suffix
+                if add_hyper_exp_name_suffix:
+                    exp_suffix = f"_{str(batch_size)}bs_{str(max_epochs)}epoch_{str(init_learning_rate)}lr_{loss_suf}"
+                else:
+                    exp_suffix = f"_{loss_suf}"
+                exp_suffix += ("_taravg" if target_realization_avg else "") + ("_rasc" if realization_as_channel else "")
+
                 runner = MLFCRunner(
                     scenario=ocean_scenario,
-                    exp_root_folder="/Users/jacopodallaglio/ML/experiments_earthML_ocean/",
-                    exp_suffix=f"_{str(batch_size)}bs_50epoch_{loss_suf}"+("_taravg" if target_realization_avg else "")+("_rasc" if realization_as_channel else ""),
+                    exp_root_folder=exp_root_folder,
+                    exp_suffix=exp_suffix,
                     # ML options
                     n_channels=n_input_realizations, # ignored if realization_as_channel is false
-                    n_classes=1,                     # ignored if realization_as_channel is false
-                    learning_rate=1e-3,
+                    n_classes=n_input_realizations,  # ignored if realization_as_channel is false
+                    learning_rate=init_learning_rate,
                     batch_size=batch_size,
-                    epochs=50,
+                    epochs=max_epochs,
                     loss=loss_name,
                     loss_params=loss_params,
-                    accumulate_grad_batches=2,
-                    earlystopping_patience=30,
+                    accumulate_grad_batches=accumulate_grad_batches,
+                    earlystopping_patience=earlystopping_patience,
                 )
 
                 success = False
 
                 for _ in range(max_retries):
                     try:
-                        runner.run(mode="dryrun") # train_test
+                        runner.run(mode=run_mode)
                         success = True
                         break
                     except (RuntimeError, OSError) as e:
