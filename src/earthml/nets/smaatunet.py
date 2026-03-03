@@ -230,8 +230,8 @@ class SmaAt_UNet (EarthMLLightningModule):
 
         needs_var = ("GaussianNLL" in loss) or ("GaussianNLLFromLogits" in loss)
         
-        self.n_channels = n_channels
-        self.n_classes = n_classes
+        self.n_channels = n_channels # input channels
+        self.n_classes = n_classes   # output channels
         out_channels = (2 * self.n_classes) if needs_var else self.n_classes
         kernels_per_layer = kernels_per_layer
         self.bilinear = bilinear
