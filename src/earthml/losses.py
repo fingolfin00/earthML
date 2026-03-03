@@ -304,21 +304,36 @@ class VarianceNormalizedMSELoss(nn.Module):
 # -------------------------
 class HeteroBiasCorrectionLoss(nn.Module):
     """
-    Loss = variance-normalized MSE + lambda_identity * identity-preserving term.
-    Both terms respect mask. For variance normalization we use simple per-channel masked variance unless var_field provided.
+    Loss = VarianceNormalizedMSELoss + lambda_identity * identity-preserving term.
+
+    Uses VarianceNormalizedMSELoss for the variance-normalized MSE term (same masking and var_field logic),
+    and keeps the same identity-preserving logic as before.
     """
-    def __init__(self, lambda_identity: float = 0.1, bias_scale: float = 0.5, eps: float = 1e-6):
+    def __init__(
+        self,
+        lambda_identity: float = 0.1,
+        bias_scale: float = 0.5,
+        eps: float = 1e-6,
+        # pass-through knobs for VarianceNormalizedMSELoss behavior
+        variance_type: Literal["channel", "geochannel", "spatial", "temporal", "geotemporal"] = "channel",
+        latitudes: Optional[torch.Tensor] = None,
+        relative_floor_frac: float = 1e-3,
+        min_valid_count: int = 1,
+    ):
         super().__init__()
         self.lambda_identity = float(lambda_identity)
         self.bias_scale = float(bias_scale)
         self.eps = float(eps)
-        self.loss_components = None
 
-    def _check_var_field_broadcastable(self, var_field: torch.Tensor, target: torch.Tensor):
-        try:
-            _ = (var_field + target).shape
-        except Exception:
-            raise ValueError("var_field must be broadcastable to y_true/target shape")
+        self.var_mse = VarianceNormalizedMSELoss(
+            eps=eps,
+            variance_type=variance_type,
+            latitudes=latitudes,
+            relative_floor_frac=relative_floor_frac,
+            min_valid_count=min_valid_count,
+        )
+
+        self.loss_components = None
 
     def forward(
         self,
@@ -327,40 +342,32 @@ class HeteroBiasCorrectionLoss(nn.Module):
         x_input: torch.Tensor,
         var_field: Optional[torch.Tensor] = None,
         mask: Optional[torch.Tensor] = None,
-    ):
+    ) -> torch.Tensor:
+        if y_pred.shape != y_true.shape:
+            raise ValueError("y_pred and y_true must have the same shape")
+        try:
+            _ = (y_true - x_input)
+        except RuntimeError:
+            raise ValueError("x_input must be broadcastable to y_true")
+
+        # Variance-normalized MSE term (delegated VarianceNormalizedMSELoss, includes mask validity checks)
+        var_norm_mse = self.var_mse(y_pred=y_pred, y_true=y_true, var_field=var_field, mask=mask)
+
+        # Identity-preserving term
         mask_b = _expand_mask_to(y_true, mask).to(device=y_true.device, dtype=torch.bool)
-        sq_err = (y_pred - y_true) ** 2
-        sq_err = sq_err * mask_b.to(dtype=sq_err.dtype, device=sq_err.device)
 
-        # denom: either provided or per-channel masked variance
-        if var_field is not None:
-            self._check_var_field_broadcastable(var_field, sq_err)
-            denom = var_field.clamp_min(self.eps)
-        else:
-            # compute per-channel masked variance across batch + spatial dims
-            reduce_dims = tuple(d for d in range(y_true.ndim) if d != 1)
-            _, var, count = _masked_mean_var(y_true, mask_b, reduce_dims, unbiased=False, keepdim=True, eps=self.eps)
-            # floor denom
-            mean_var = var.mean().item()
-            floor = max(self.eps, 1e-3 * mean_var)
-            denom = var.clamp_min(floor)
-
-        valid_count = mask_b.to(dtype=sq_err.dtype, device=sq_err.device).sum()
-        if valid_count.item() == 0:
-            raise ValueError("HeteroBiasCorrectionLoss: mask has zero valid elements")
-        valid_count = valid_count.clamp_min(self.eps)
-        var_norm_mse = (sq_err / denom).sum() / valid_count
-
-        # Identity-preserving term (weighted by where true bias is small)
         true_bias = y_true - x_input
         bias_mag = true_bias.abs()
-        w_id = torch.exp(-bias_mag / self.bias_scale) * mask_b.to(dtype=bias_mag.dtype, device=bias_mag.device)
+
+        w_id = torch.exp(-bias_mag / self.bias_scale)
+        w_id = w_id * mask_b.to(dtype=w_id.dtype, device=w_id.device)
+
         id_err = (y_pred - x_input) ** 2
-        w_id_sum = w_id.sum().clamp_min(self.eps)          # tensor on same device
+        w_id_sum = w_id.sum().clamp_min(self.eps)
         identity_loss = (w_id * id_err).sum() / w_id_sum
 
         total_loss = var_norm_mse + self.lambda_identity * identity_loss
-        # store detach() components for logging (move to CPU for external loggers)
+
         self.loss_components = {
             "var_norm_mse": var_norm_mse.detach().cpu(),
             "identity_loss": identity_loss.detach().cpu(),

@@ -187,7 +187,7 @@ if __name__ == "__main__":
             loss_params = dict(loss=dict(variance_type=variance_type, latitudes=latitudes))
             loss_suf += f"_{variance_type}"
         elif loss_sel == "HeteroBiasCorrectionLoss":
-            loss_params = dict(net=dict(use_first_input=use_first_input), loss=dict(reduction="mean", lambda_identity=0.1, bias_scale=0.5, eps=1e-12))
+            loss_params = dict(net=dict(use_first_input=use_first_input), loss=dict(lambda_identity=0.1, bias_scale=0.5, eps=1e-12))
 
     # Mainloop
     for var_fc_key, var_an_key in var_keys:
