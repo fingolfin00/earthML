@@ -70,7 +70,7 @@ class MaskedMSELoss(nn.Module):
 
     def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor, mask: Optional[torch.Tensor] = None):
         if y_pred.shape != y_true.shape:
-            raise ValueError("y_pred and y_true must have the same shape")
+            raise ValueError(f"y_pred ({y_pred.shape}) and y_true ({y_true.shape}) must have the same shape")
 
         # Broadcast mask to y_true shape; ensure boolean on same device
         mask_b = _expand_mask_to(y_true, mask).to(device=y_true.device, dtype=torch.bool)
@@ -80,7 +80,7 @@ class MaskedMSELoss(nn.Module):
 
         # valid_count as float on same device/dtype as sq_err to avoid dtype/device surprises
         valid_count = mask_b.to(dtype=sq_err.dtype, device=sq_err.device).sum()
-        if valid_count == 0:
+        if valid_count.item() == 0:
             raise ValueError("No valid pixels in mask")
         valid_count = valid_count.clamp_min(self.eps)
         return sq_err.sum() / valid_count
@@ -292,7 +292,7 @@ class VarianceNormalizedMSELoss(nn.Module):
         # denom should broadcast to sq_err shape
         # count valid pixels overall:
         valid_count = mask_b.to(dtype=sq_err.dtype, device=sq_err.device).sum()
-        if valid_count == 0:
+        if valid_count.item() == 0:
             raise ValueError("VarianceNormalizedMSELoss: mask has zero valid elements")
         valid_count = valid_count.clamp_min(self.eps)
         loss = (sq_err / denom).sum() / valid_count
@@ -346,7 +346,7 @@ class HeteroBiasCorrectionLoss(nn.Module):
             denom = var.clamp_min(floor)
 
         valid_count = mask_b.to(dtype=sq_err.dtype, device=sq_err.device).sum()
-        if valid_count == 0:
+        if valid_count.item() == 0:
             raise ValueError("HeteroBiasCorrectionLoss: mask has zero valid elements")
         valid_count = valid_count.clamp_min(self.eps)
         var_norm_mse = (sq_err / denom).sum() / valid_count
@@ -400,7 +400,7 @@ class GaussianNLLFromLogits(nn.Module):
         nll_elem = 0.5 * (torch.log(2.0 * math.pi * var) + diff2 / var)
         nll_elem = nll_elem * mask_b.to(dtype=nll_elem.dtype, device=nll_elem.device)
         valid_count = mask_b.to(dtype=nll_elem.dtype, device=nll_elem.device).sum()
-        if valid_count == 0:
+        if valid_count.item() == 0:
             raise ValueError("GaussianNLLFromLogits: mask has zero valid elements")
         valid_count = valid_count.clamp_min(self.eps)
         loss = nll_elem.sum() / valid_count
