@@ -432,6 +432,94 @@ class ExperimentMLFC:
 
         return torch_dataset
 
+    @staticmethod
+    def _to_float (x):
+        try:
+            return float(x.item()) if hasattr(x, "item") else float(x)
+        except Exception:
+            return x
+
+    def _make_test_info_table (self, test_dataset, preds_norm, preds_rescaled):
+        # per-variable columns
+        var_cols = {}
+        if self.config.realization_as_channel:
+            name = getattr(next(iter(self.test_var_list)), "name", str(next(iter(self.test_var_list)))) # only 1 var support for R as C
+
+            x_mean = self._to_float(test_dataset.x.mean())
+            x_std  = self._to_float(test_dataset.x.std())
+            y_mean = self._to_float(test_dataset.y.mean())
+            y_std  = self._to_float(test_dataset.y.std())
+
+            pn_mean = self._to_float(preds_norm.mean())
+            pn_std  = self._to_float(preds_norm.std())
+
+            pr_mean = self._to_float(preds_rescaled.mean())
+            pr_std  = self._to_float(preds_rescaled.std())
+
+            rmse = self._to_float(np.sqrt(((test_dataset.y - preds_rescaled) ** 2).mean().item()))
+
+            var_cols[name] = {
+                "x shape": tuple(test_dataset.x.shape),
+                "x mean": x_mean,
+                "x std": x_std,
+                "y shape": tuple(test_dataset.y.shape),
+                "y mean": y_mean,
+                "y std": y_std,
+                "pred shape": tuple(preds_norm.shape),
+                "pred(norm) mean": pn_mean,
+                "pred(norm) std": pn_std,
+                "pred mean": pr_mean,
+                "pred std": pr_std,
+                "rmse(y,pred)": rmse,
+            }
+        else:
+            for i, var in enumerate(self.test_var_list):
+                name = getattr(var, "name", str(var))
+
+                x_mean = self._to_float(test_dataset.x[:, i, :, :].mean())
+                x_std  = self._to_float(test_dataset.x[:, i, :, :].std())
+                y_mean = self._to_float(test_dataset.y[:, i, :, :].mean())
+                y_std  = self._to_float(test_dataset.y[:, i, :, :].std())
+
+                pn_mean = self._to_float(preds_norm[:, i, :, :].mean())
+                pn_std  = self._to_float(preds_norm[:, i, :, :].std())
+
+                pr_mean = self._to_float(preds_rescaled[:, i, :, :].mean())
+                pr_std  = self._to_float(preds_rescaled[:, i, :, :].std())
+
+                rmse = self._to_float(np.sqrt(((test_dataset.y[:, i, :, :] - preds_rescaled[:, i, :, :]) ** 2).mean().item()))
+
+                var_cols[name] = {
+                    "x shape": tuple(test_dataset.x[:, i, :, :].shape),
+                    "x mean": x_mean,
+                    "x std": x_std,
+                    "x shape": tuple(test_dataset.y[:, i, :, :].shape),
+                    "y mean": y_mean,
+                    "y std": y_std,
+                    "pred shape": tuple(preds_norm[:, i, :, :].shape),
+                    "pred(norm) mean": pn_mean,
+                    "pred(norm) std": pn_std,
+                    "pred mean": pr_mean,
+                    "pred std": pr_std,
+                    "rmse(y,pred)": rmse,
+                }
+
+        # run metadata (two columns)
+        meta = {
+            "device": str(self.device),
+            "torch_workers": self.torch_workers,
+            "x shape (B,C,H,W)": tuple(test_dataset.x.shape),
+            "y shape (B,C,H,W)": tuple(test_dataset.y.shape),
+            "pred(norm) shape": tuple(preds_norm.shape),
+            "pred shape": tuple(preds_rescaled.shape),
+            "input source": getattr(self.source_test_data["input"].datasource, "source", ""),
+            "target source": getattr(self.source_test_data["target"].datasource, "source", ""),
+            "ckpt_path": str(getattr(self, "ckpt_path", "")),
+            "weights_path": str(getattr(self, "weights_path", "")),
+        }
+
+        return meta, var_cols
+
     def train (self):
         # Generate torch train dataset
         train_dataset = self._generate_torch_dataset(self.source_train_data, self.config.train, 'Train')
@@ -466,24 +554,6 @@ class ExperimentMLFC:
 
     def test (self, weights_filename=None):
         test_dataset = self._generate_torch_dataset(self.source_test_data, self.config.test, 'Test')
-        # self.rich_console.print(Table({'Test dataset': {
-        #     'input': {
-        #         'shape': test_dataset.x.shape,
-        #         'source': self.config.test[0].datasource.source
-        #     },
-        #     'target': {
-        #         'shape': test_dataset.y.shape,
-        #         'source': self.config.test[1].datasource.source
-        #     },
-        #     'loading_time': loading_time
-        # }}, params_name='data type').table)
-        # self.rich_console.print(Table({"Test dataset metrics": {
-        #         'input mean': {var.name: test_dataset.x[:,i,:,:].mean().item() for i, var in enumerate(self.test_var_list)},
-        #         'input std': {var.name: test_dataset.x[:,i,:,:].std().item() for i, var in enumerate(self.test_var_list)},
-        #         'target mean': {var.name: test_dataset.y[:,i,:,:].mean().item() for i, var in enumerate(self.test_var_list)},
-        #         'target std': {var.name: test_dataset.y[:,i,:,:].std().item() for i, var in enumerate(self.test_var_list)},
-        #         'rmse target-input': {var.name: np.sqrt(((test_dataset.y[:,i,:,:] - test_dataset.x[:,i,:,:])**2).mean().item()) for i, var in enumerate(self.test_var_list)}
-        # }}, params_name='metric').table)
 
         # Normalize input
         if not self.normalize_input:
@@ -526,18 +596,13 @@ class ExperimentMLFC:
         self._init_test_trainer().test(self.model, dataloaders=self.test_dataloader)
         # print(f"Available attributes in model: {dir(self.model)}")
 
-        # TODO use Table to pretty print this info
-        mean_norm_pred_d = {var.name: self.model.test_preds[:,i,:,:].mean().item() for i, var in enumerate(self.test_var_list)}
-        std_norm_pred_d = {var.name: self.model.test_preds[:,i,:,:].std().item() for i, var in enumerate(self.test_var_list)}
-        print(f"Normalized prediction shape: {self.model.test_preds.shape}, mean: {mean_norm_pred_d}, std: {std_norm_pred_d}")
         # Rescale preds with target normalization
         self.preds = self.normalize_target.inverse_tensor(self.model.test_preds, self.normdata_target_path) # .squeeze()
 
-        mean_pred_d = {var.name: self.preds[:,i,:,:].mean().item() for i, var in enumerate(self.test_var_list)}
-        std_pred_d = {var.name: self.preds[:,i,:,:].std().item() for i, var in enumerate(self.test_var_list)}
-        print(f"Rescaled prediction shape: {self.preds.shape}, mean: {mean_pred_d}, std: {std_pred_d}")
-        rmse_pred_d = {var.name: np.sqrt(((test_dataset.y[:,i,:,:] - self.preds[:,i,:,:])**2).mean().item()) for i, var in enumerate(self.test_var_list)}
-        print(f"RMSE target-prediction: {rmse_pred_d}")
+        # Print info
+        meta, var_cols = self._make_test_info_table(test_dataset, self.model.test_preds, self.preds)
+        self.rich_console.print(Table({"Test run info": meta}, twocols=True).table)
+        self.rich_console.print(Table({"Test metrics (per variable)": var_cols}).table)
 
         self.save(self.preds, 'input')
 
