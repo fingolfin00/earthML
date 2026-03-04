@@ -575,6 +575,105 @@ class Metrics:
         return self._generic_metric(self.truth, self.data, self._err_field, order=order, geo_weighted=geo_weighted, final_metric_fn=np.abs)
         # return [abs(x) for x in self.err(order=order, geo_weighted=geo_weighted)]
 
+    def std_data (
+        self,
+        data_type: Literal["truth", "data"],
+        order: Literal["3d", "2d", "1d"] = "1d",
+        geo_weighted: bool = True,
+    ) -> List[xr.Dataset]:
+
+        if data_type == "data":
+            data_list = self.data
+
+        elif data_type == "truth":
+            # Compute once, replicate result
+            data_list = [self.truth]
+
+        else:
+            raise ValueError(f"Invalid data_type: {data_type}")
+
+        out: List[xr.Dataset] = []
+
+        for d in data_list:
+
+            if order == "3d":
+                val = d
+
+            elif order == "2d":
+                # temporal std map
+                val = d.std(dim=self.time_dim, skipna=True)
+
+            elif order == "1d":
+                # scalar std
+                if geo_weighted:
+                    ts = geo_avg(d, self.lat_dim, self.lon_dim)
+                else:
+                    ts = d.mean(
+                        dim=(self.lat_dim, self.lon_dim),
+                        skipna=True,
+                    )
+
+                val = ts.std(dim=self.time_dim, skipna=True)
+
+            else:
+                raise ValueError(f"Invalid order: {order}")
+
+            out.append(val)
+
+        # Replicate truth result to match data length
+        if data_type == "truth":
+            out = out * len(self.data)
+
+        return out
+
+    def avg_of_std (
+        self,
+        data_type: Literal["truth", "data"],
+        order: Literal["2d", "1d"] = "1d",
+        geo_weighted: bool = True,
+    ) -> List[xr.Dataset]:
+        """
+        2d: std over time -> lat/lon map
+        1d: geo_avg( std over time ) -> scalar
+        """
+
+        if data_type == "data":
+            data_list = self.data
+            replicate = False
+        elif data_type == "truth":
+            data_list = [self.truth]  # compute once
+            replicate = True
+        else:
+            raise ValueError(f"Invalid data_type: {data_type}")
+
+        out: List[xr.Dataset] = []
+
+        for d in data_list:
+
+            # Step 1: temporal std map
+            std_map = d.std(dim=self.time_dim, skipna=True)
+
+            if order == "2d":
+                val = std_map
+
+            elif order == "1d":
+                if geo_weighted:
+                    val = geo_avg(std_map, self.lat_dim, self.lon_dim)
+                else:
+                    val = std_map.mean(
+                        dim=(self.lat_dim, self.lon_dim),
+                        skipna=True,
+                    )
+            else:
+                raise ValueError(f"Invalid order: {order}")
+
+            out.append(val)
+
+        if replicate:
+            out = out * len(self.data)
+
+        return out
+
     def std_of_errs (
         self,
         order: Literal["3d", "2d", "1d"] = "1d",
@@ -1252,7 +1351,7 @@ class Metrics:
             geo_weighted=geo_weighted,
         )
 
-    def compute_all_metrics(self, *, geo_weighted: bool = True, eps: float = 0.0) -> dict[str, Any]:
+    def compute_all_metrics (self, *, geo_weighted: bool = True, eps: float = 0.0) -> dict[str, Any]:
         """
         Compute a standard suite of metrics and return:
           res["models"][model]["scalar"][metric] -> xr.Dataset (0D per var)
@@ -1263,7 +1362,7 @@ class Metrics:
         - Scalar metrics use geo-weighting if geo_weighted=True (where applicable).
         - 3D fields are intentionally not returned.
         """
-        def by_model(lst: list[xr.Dataset]) -> dict[str, xr.Dataset]:
+        def by_model (lst: list[xr.Dataset]) -> dict[str, xr.Dataset]:
             return {name: lst[i] for i, name in enumerate(self.data_name)}
 
         # metric name -> callables producing list[xr.Dataset] aligned with self.data
@@ -1293,6 +1392,11 @@ class Metrics:
             "rmse_ens":          lambda: self.rmse_ens(order="1d", geo_weighted=geo_weighted),
             "mae_ens":           lambda: self.mae_ens(order="1d", geo_weighted=geo_weighted),
             "bias_ens":          lambda: self.bias_ens(order="1d", geo_weighted=geo_weighted),
+            # Std of data and truth
+            "std_avg_data":      lambda: self.std_data(data_type="data", order="1d", geo_weighted=geo_weighted),
+            "std_avg_truth":     lambda: self.std_data(data_type="truth", order="1d", geo_weighted=geo_weighted),
+            "avg_std_data":      lambda: self.avg_of_std(data_type="data", order="1d", geo_weighted=geo_weighted),
+            "avg_std_truth":     lambda: self.avg_of_std(data_type="truth", order="1d", geo_weighted=geo_weighted),
         }
 
         map_fns = {
@@ -1310,6 +1414,9 @@ class Metrics:
             "abs_nbias_map":     lambda: self.nabsbias_map(order="2d", geo_weighted=geo_weighted, eps=eps),
             "r2_map":            lambda: self.r2_map(),
             "corr_map":          lambda: self.corr_map(min_periods=2),
+            # Std of data and truth
+            "std_data":          lambda: self.std_data(data_type="data", order="2d", geo_weighted=geo_weighted),
+            "std_truth":         lambda: self.std_data(data_type="truth", order="2d", geo_weighted=geo_weighted),
         }
 
         # init models
