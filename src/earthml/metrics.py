@@ -1165,18 +1165,62 @@ class Metrics:
             out.append(r2)
 
         return out
+    
+    def r2_flat (self, geo_weighted: bool = False) -> list[xr.Dataset]:
+        """
+        R2 across all space-time points (flattened).
+        """
+        dims = (self.time_dim, self.lat_dim, self.lon_dim)
+        truth_stacked = self.truth.stack(_allpoints=dims)
 
-    # Correlation metrics
+        w_stacked = None
+        if geo_weighted:
+            w_lat = geo_weights(self.truth, self.lat_dim)
+            template = next(iter(self.truth.data_vars.values()))
+            w_3d = w_lat.broadcast_like(template)
+            w_stacked = w_3d.stack(_allpoints=dims)
+
+        out = []
+        for d in self.data:
+            pred_stacked = d.stack(_allpoints=dims)
+
+            resid = pred_stacked - truth_stacked
+            sse = (resid ** 2)
+
+            anom = truth_stacked - truth_stacked.mean(dim="_allpoints", skipna=True)
+            sst = (anom ** 2)
+
+            if geo_weighted and w_stacked is not None:
+                sse = (sse * w_stacked).sum(dim="_allpoints", skipna=True)
+                sst = (sst * w_stacked).sum(dim="_allpoints", skipna=True)
+            else:
+                sse = sse.sum(dim="_allpoints", skipna=True)
+                sst = sst.sum(dim="_allpoints", skipna=True)
+
+            r2 = 1 - sse / xr.where(sst > 0, sst, np.nan)
+            out.append(r2)
+
+        return out
+
+    ##########################################################
+    # --- Correlation metrics ------------------------------ #
+    ##########################################################
+
+    # --- CC calculator helper ---------------------------------------
     @staticmethod
     def _ds_corr (
         a: xr.Dataset,
-        b: xr.Dataset, dim: str,
+        b: xr.Dataset,
+        dim: str,
         min_periods: int = 2,
         weights: xr.DataArray | None = None,
+        eps: float = 1e-4,
     ) -> xr.Dataset:
         """
-        Pearson correlation per variable between two Datasets along `dim`.
-        Returns a Dataset with same data_vars (intersection).
+        Robust Pearson correlation per variable between two Datasets along `dim`.
+        - Dask-safe (no .item()/eager compute)
+        - Masks locations with < min_periods or near-zero std
+        - Supports optional weights (weights must broadcast to `dim` + remaining dims)
         """
         common = [v for v in a.data_vars if v in b.data_vars]
         out = {}
@@ -1185,16 +1229,59 @@ class Metrics:
             x = a[v]
             y = b[v]
 
-            r = xr.corr(x, y, dim=dim, weights=weights)
-
-            # enforce min_periods (pairwise finite samples)
+            # pairwise count of finite samples along dim
             n = (np.isfinite(x) & np.isfinite(y)).sum(dim=dim)
-            r = r.where(n >= min_periods)
+
+            # raw stds used to form valid mask
+            std_x_raw = x.std(dim=dim, skipna=True)
+            std_y_raw = y.std(dim=dim, skipna=True)
+            valid_loc = (n >= min_periods) & (std_x_raw > eps) & (std_y_raw > eps)
+
+            # broadcast valid mask back to time axis and mask series lazily
+            mask_for_times = valid_loc.broadcast_like(x)
+            x_masked = x.where(mask_for_times)
+            y_masked = y.where(mask_for_times)
+
+            if weights is None:
+                mean_x = x_masked.mean(dim=dim, skipna=True)
+                mean_y = y_masked.mean(dim=dim, skipna=True)
+
+                xm = x_masked - mean_x
+                ym = y_masked - mean_y
+
+                cov = (xm * ym).sum(dim=dim, skipna=True)
+                std_x = np.sqrt((xm ** 2).sum(dim=dim, skipna=True))
+                std_y = np.sqrt((ym ** 2).sum(dim=dim, skipna=True))
+
+            else:
+                # safe weight normalization: only divide where w_sum > eps
+                w = weights
+                w_sum = w.sum(dim=dim, skipna=True)
+                w_norm = xr.where(w_sum > eps, w / w_sum, 0.0)
+
+                mean_x = (x_masked * w_norm).sum(dim=dim, skipna=True)
+                mean_y = (y_masked * w_norm).sum(dim=dim, skipna=True)
+
+                xm = x_masked - mean_x
+                ym = y_masked - mean_y
+
+                cov = (xm * ym * w_norm).sum(dim=dim, skipna=True)
+                std_x = np.sqrt((xm ** 2 * w_norm).sum(dim=dim, skipna=True))
+                std_y = np.sqrt((ym ** 2 * w_norm).sum(dim=dim, skipna=True))
+
+            denom = std_x * std_y
+
+            # compute correlation only where denom > eps (no division attempted elsewhere)
+            r = xr.where(denom > eps, cov / denom, np.nan)
+
+            # finally enforce valid_loc (removes places that failed min_periods or raw-std check)
+            r = r.where(valid_loc)
 
             out[v] = r
 
         return xr.Dataset(out, attrs=a.attrs)
 
+    # --- Correlation Coefficient (CC) ------------------------------
     def corr_map (self, min_periods: int = 2) -> list[xr.Dataset]:
         """
         Pearson correlation over time at each (lat, lon) cell, per variable.
@@ -1226,7 +1313,7 @@ class Metrics:
 
     def corr_flat (self, geo_weighted: bool = False, min_periods: int = 2) -> list[xr.Dataset]:
         """
-        Correlation across all space-time points, per variable.
+        Correlation across all flattened space-time points, per variable.
         If geo_weighted=True, uses cos(lat) weights (area weighting for regular lat/lon grids).
         """
         out: list[xr.Dataset] = []
@@ -1258,8 +1345,96 @@ class Metrics:
             )
 
         return out
+    
+    # --- Climatology helpers for ACC ---------------------------------------
+    def _climatology_anom(self, ds: xr.Dataset,
+                        period: Literal["month","dayofyear","season","none"] = "month",
+                        min_periods: int = 1) -> xr.Dataset:
+        if period == "none":
+            return ds - ds.mean(dim=self.time_dim, skipna=True)
 
-    # Ensemble metrics
+        if period == "month":
+            group = f"{self.time_dim}.month"
+        elif period == "dayofyear":
+            group = f"{self.time_dim}.dayofyear"
+        elif period == "season":
+            group = f"{self.time_dim}.season"
+        else:
+            raise ValueError(f"Unsupported period: {period}")
+
+        # group counts per cell (number of non-NaN values in each group)
+        counts = ds.groupby(group).count(dim=self.time_dim)
+        clim = ds.groupby(group).mean(dim=self.time_dim, skipna=True)
+
+        # mask climatology where the group count is < min_periods
+        clim_masked = clim.where(counts >= min_periods)
+
+        # anomaly: groupwise subtraction; masked groups produce NaNs which are fine
+        anom = ds.groupby(group) - clim_masked
+
+        return anom
+
+    # --- ACC using climatology anomalies -----------------------------------
+    def acc_map (self, climatology: Literal["month","dayofyear","season","none"]="month", min_periods: int = 2) -> list[xr.Dataset]:
+        """
+        ACC per grid cell using anomalies defined relative to `climatology`.
+        Default removes monthly climatology.
+        """
+        truth_anom = self._climatology_anom(self.truth, period=climatology)
+
+        out: list[xr.Dataset] = []
+        for d in self.data:
+            pred_anom = self._climatology_anom(d, period=climatology)
+            out.append(self._ds_corr(truth_anom, pred_anom, dim=self.time_dim, min_periods=min_periods))
+        return out
+
+    def acc_global (self, climatology: Literal["month","dayofyear","season","none"]="month", geo_weighted: bool = True, min_periods: int = 2) -> list[xr.Dataset]:
+        """
+        Global ACC computed on anomaly time series after removing chosen climatology.
+        """
+        # anomalies (per-grid)
+        truth_anom = self._climatology_anom(self.truth, period=climatology)
+        if geo_weighted:
+            t = geo_avg(truth_anom, self.lat_dim, self.lon_dim)
+        else:
+            t = truth_anom.mean(dim=(self.lat_dim, self.lon_dim), skipna=True)
+
+        out: list[xr.Dataset] = []
+        for d in self.data:
+            pred_anom = self._climatology_anom(d, period=climatology)
+            if geo_weighted:
+                p = geo_avg(pred_anom, self.lat_dim, self.lon_dim)
+            else:
+                p = pred_anom.mean(dim=(self.lat_dim, self.lon_dim), skipna=True)
+            out.append(self._ds_corr(t, p, dim=self.time_dim, min_periods=min_periods))
+        return out
+
+    def acc_flat (self, climatology: Literal["month","dayofyear","season","none"]="month", geo_weighted: bool = False, min_periods: int = 2) -> list[xr.Dataset]:
+        """
+        ACC computed over stacked space-time anomaly vectors, where anomalies are computed
+        relative to chosen climatology.
+        """
+        dims = (self.time_dim, self.lat_dim, self.lon_dim)
+
+        truth_anom = self._climatology_anom(self.truth, period=climatology).stack(_allpoints=dims)
+
+        w_stacked = None
+        if geo_weighted:
+            w_lat = geo_weights(self.truth, self.lat_dim)
+            template = next(iter(self.truth.data_vars.values()))
+            w_3d = w_lat.broadcast_like(template)
+            w_stacked = w_3d.stack(_allpoints=dims)
+
+        out: list[xr.Dataset] = []
+        for d in self.data:
+            pred_anom_stacked = self._climatology_anom(d, period=climatology).stack(_allpoints=dims)
+            out.append(self._ds_corr(truth_anom, pred_anom_stacked, dim="_allpoints", min_periods=min_periods, weights=w_stacked))
+        return out
+
+    ##########################################################
+    # --- Ensemble metrics --------------------------------- #
+    ##########################################################
+
     def rmse_ens (self, order: Literal["2d", "1d"] = "1d", geo_weighted: bool = True) -> list[xr.Dataset]:
         """
         RMSE of the ensemble mean prediction.
@@ -1328,7 +1503,7 @@ class Metrics:
         )
 
     # Ensemble normalized metrics
-    def nrmse_ens (self, geo_weighted: bool = True, eps: float = 0.0) -> list[xr.Dataset]:
+    def nrmse_ens (self, order: Literal["2d", "1d"] = "1d", geo_weighted: bool = True, eps: float = 0.0) -> list[xr.Dataset]:
         """
         NRMSE of the ensemble mean prediction.
 
@@ -1347,9 +1522,242 @@ class Metrics:
             truth_ens_mean, data_ens_mean,
             lambda truth, pred: (pred - truth) ** 2,
             final_metric_fn=np.sqrt,
-            order="1d",
+            order=order,
             geo_weighted=geo_weighted,
         )
+
+    # ------------------- Ensemble R2 -------------------------------------
+    def r2_ens_map (self) -> list[xr.Dataset]:
+        """
+        R2 map (per-grid) for the ensemble mean prediction.
+        Returns list[xr.Dataset] (one per model in self.data).
+        """
+        if self.realization_dim is None:
+            return []
+
+        # ensemble means (truth and preds)
+        truth_ens_mean = self.truth.mean(dim=self.realization_dim, skipna=True)
+        data_ens_mean = [d.mean(dim=self.realization_dim, skipna=True) for d in self.data]
+
+        # SST: truth_anom squared summed over time
+        anom = truth_ens_mean - truth_ens_mean.mean(dim=self.time_dim, skipna=True)
+        sst = (anom ** 2).sum(dim=self.time_dim, skipna=True)
+
+        out: list[xr.Dataset] = []
+        for pred in data_ens_mean:
+            sse = ((pred - truth_ens_mean) ** 2).sum(dim=self.time_dim, skipna=True)
+            r2 = 1.0 - sse / xr.where(sst > 0, sst, np.nan)
+            out.append(r2)
+
+        return out
+
+    def r2_ens_global (self, geo_weighted: bool = True) -> list[xr.Dataset]:
+        """
+        Global R2 for ensemble mean prediction (scalar per variable).
+        """
+        if self.realization_dim is None:
+            return []
+
+        truth_ens_mean = self.truth.mean(dim=self.realization_dim, skipna=True)
+        data_ens_mean = [d.mean(dim=self.realization_dim, skipna=True) for d in self.data]
+
+        anom = truth_ens_mean - truth_ens_mean.mean(dim=self.time_dim, skipna=True)
+        sst_t = (anom ** 2).sum(dim=self.time_dim, skipna=True)  # 2D
+
+        out: list[xr.Dataset] = []
+        for pred in data_ens_mean:
+            sse_t = ((pred - truth_ens_mean) ** 2).sum(dim=self.time_dim, skipna=True)  # 2D
+
+            if geo_weighted:
+                sse = geo_avg(sse_t, self.lat_dim, self.lon_dim)
+                sst = geo_avg(sst_t, self.lat_dim, self.lon_dim)
+            else:
+                sse = sse_t.mean(dim=(self.lat_dim, self.lon_dim), skipna=True)
+                sst = sst_t.mean(dim=(self.lat_dim, self.lon_dim), skipna=True)
+
+            r2 = 1 - sse / xr.where(sst > 0, sst, np.nan)
+            out.append(r2)
+
+        return out
+    
+    def r2_ens_flat (self, geo_weighted: bool = False) -> list[xr.Dataset]:
+        """
+        R2 across all space-time points for ensemble mean prediction.
+        """
+        if self.realization_dim is None:
+            return []
+
+        dims = (self.time_dim, self.lat_dim, self.lon_dim)
+
+        truth_ens = self.truth.mean(dim=self.realization_dim, skipna=True)
+        truth_stacked = truth_ens.stack(_allpoints=dims)
+
+        w_stacked = None
+        if geo_weighted:
+            w_lat = geo_weights(truth_ens, self.lat_dim)
+            template = next(iter(truth_ens.data_vars.values()))
+            w_3d = w_lat.broadcast_like(template)
+            w_stacked = w_3d.stack(_allpoints=dims)
+
+        out = []
+        for d in self.data:
+            pred_ens = d.mean(dim=self.realization_dim, skipna=True)
+            pred_stacked = pred_ens.stack(_allpoints=dims)
+
+            resid = pred_stacked - truth_stacked
+            sse = resid ** 2
+
+            anom = truth_stacked - truth_stacked.mean(dim="_allpoints", skipna=True)
+            sst = anom ** 2
+
+            if geo_weighted and w_stacked is not None:
+                sse = (sse * w_stacked).sum(dim="_allpoints", skipna=True)
+                sst = (sst * w_stacked).sum(dim="_allpoints", skipna=True)
+            else:
+                sse = sse.sum(dim="_allpoints", skipna=True)
+                sst = sst.sum(dim="_allpoints", skipna=True)
+
+            r2 = 1 - sse / xr.where(sst > 0, sst, np.nan)
+            out.append(r2)
+
+        return out
+
+    # ------------------- Ensemble correlation ------------------------------
+    def corr_ens_map(self, min_periods: int = 2) -> list[xr.Dataset]:
+        """
+        Per-grid Pearson correlation (over time) between ensemble-mean truth and ensemble-mean pred.
+        """
+        if self.realization_dim is None:
+            return []
+
+        truth_ens_mean = self.truth.mean(dim=self.realization_dim, skipna=True)
+        out: list[xr.Dataset] = []
+        for d in self.data:
+            pred_ens_mean = d.mean(dim=self.realization_dim, skipna=True)
+            out.append(self._ds_corr(truth_ens_mean, pred_ens_mean, dim=self.time_dim, min_periods=min_periods))
+        return out
+
+    def corr_ens_global (self, geo_weighted: bool = True, min_periods: int = 2) -> list[xr.Dataset]:
+        """
+        Correlation of global-mean time series (truth vs ensemble-mean pred).
+        """
+        if self.realization_dim is None:
+            return []
+
+        truth_ens_mean = self.truth.mean(dim=self.realization_dim, skipna=True)
+        if geo_weighted:
+            t = geo_avg(truth_ens_mean, self.lat_dim, self.lon_dim)
+        else:
+            t = truth_ens_mean.mean(dim=(self.lat_dim, self.lon_dim), skipna=True)
+
+        out: list[xr.Dataset] = []
+        for d in self.data:
+            p = d.mean(dim=self.realization_dim, skipna=True)
+            if geo_weighted:
+                p = geo_avg(p, self.lat_dim, self.lon_dim)
+            else:
+                p = p.mean(dim=(self.lat_dim, self.lon_dim), skipna=True)
+
+            out.append(self._ds_corr(t, p, dim=self.time_dim, min_periods=min_periods))
+        return out
+
+    def corr_ens_flat (self, geo_weighted: bool = False, min_periods: int = 2) -> list[xr.Dataset]:
+        """
+        Correlation across all space-time points for ensemble-mean fields (flattened).
+        """
+        if self.realization_dim is None:
+            return []
+
+        dims = (self.time_dim, self.lat_dim, self.lon_dim)
+        truth_ens_mean = self.truth.mean(dim=self.realization_dim, skipna=True)
+        truth_stacked = truth_ens_mean.stack(_allpoints=dims)
+
+        w_stacked = None
+        if geo_weighted:
+            w_lat = geo_weights(truth_ens_mean, self.lat_dim)
+            template = next(iter(truth_ens_mean.data_vars.values()))
+            w_3d = w_lat.broadcast_like(template)
+            w_stacked = w_3d.stack(_allpoints=dims)
+
+        out: list[xr.Dataset] = []
+        for d in self.data:
+            pred_ens_mean = d.mean(dim=self.realization_dim, skipna=True)
+            pred_stacked = pred_ens_mean.stack(_allpoints=dims)
+            out.append(self._ds_corr(truth_stacked, pred_stacked, dim="_allpoints", min_periods=min_periods, weights=w_stacked))
+        return out
+
+    # ------------------- Ensemble ACC (climatology-based) ------------------
+    def acc_ens_map (self, climatology: Literal["month","dayofyear","season","none"]="month", min_periods: int = 2) -> list[xr.Dataset]:
+        """
+        ACC map for ensemble-mean predictions. Default removes monthly climatology.
+        """
+        if self.realization_dim is None:
+            return []
+
+        truth_ens_mean = self.truth.mean(dim=self.realization_dim, skipna=True)
+        truth_anom = self._climatology_anom(truth_ens_mean, period=climatology)
+
+        out: list[xr.Dataset] = []
+        for d in self.data:
+            pred_ens_mean = d.mean(dim=self.realization_dim, skipna=True)
+            pred_anom = self._climatology_anom(pred_ens_mean, period=climatology)
+            out.append(self._ds_corr(truth_anom, pred_anom, dim=self.time_dim, min_periods=min_periods))
+        return out
+
+    def acc_ens_global (self, climatology: Literal["month","dayofyear","season","none"]="month", geo_weighted: bool = True, min_periods: int = 2) -> list[xr.Dataset]:
+        """
+        Global ACC for ensemble-mean predictions (scalar).
+        """
+        if self.realization_dim is None:
+            return []
+
+        truth_ens_mean = self.truth.mean(dim=self.realization_dim, skipna=True)
+        truth_anom = self._climatology_anom(truth_ens_mean, period=climatology)
+        if geo_weighted:
+            t = geo_avg(truth_anom, self.lat_dim, self.lon_dim)
+        else:
+            t = truth_anom.mean(dim=(self.lat_dim, self.lon_dim), skipna=True)
+
+        out: list[xr.Dataset] = []
+        for d in self.data:
+            pred_ens_mean = d.mean(dim=self.realization_dim, skipna=True)
+            pred_anom = self._climatology_anom(pred_ens_mean, period=climatology)
+            if geo_weighted:
+                p = geo_avg(pred_anom, self.lat_dim, self.lon_dim)
+            else:
+                p = pred_anom.mean(dim=(self.lat_dim, self.lon_dim), skipna=True)
+
+            out.append(self._ds_corr(t, p, dim=self.time_dim, min_periods=min_periods))
+        return out
+
+    def acc_ens_flat (self, climatology: Literal["month","dayofyear","season","none"]="month", geo_weighted: bool = False, min_periods: int = 2) -> list[xr.Dataset]:
+        """
+        ACC across stacked space-time anomaly vectors for the ensemble-mean fields.
+        """
+        if self.realization_dim is None:
+            return []
+
+        dims = (self.time_dim, self.lat_dim, self.lon_dim)
+        truth_ens_mean = self.truth.mean(dim=self.realization_dim, skipna=True)
+        truth_anom_stacked = self._climatology_anom(truth_ens_mean, period=climatology).stack(_allpoints=dims)
+
+        w_stacked = None
+        if geo_weighted:
+            w_lat = geo_weights(truth_ens_mean, self.lat_dim)
+            template = next(iter(truth_ens_mean.data_vars.values()))
+            w_3d = w_lat.broadcast_like(template)
+            w_stacked = w_3d.stack(_allpoints=dims)
+
+        out: list[xr.Dataset] = []
+        for d in self.data:
+            pred_ens_mean = d.mean(dim=self.realization_dim, skipna=True)
+            pred_anom_stacked = self._climatology_anom(pred_ens_mean, period=climatology).stack(_allpoints=dims)
+            out.append(self._ds_corr(truth_anom_stacked, pred_anom_stacked, dim="_allpoints", min_periods=min_periods, weights=w_stacked))
+        return out
+
+    ##########################################################
+    # --- Computation -------------------------------------- #
+    ##########################################################
 
     def compute_all_metrics (self, *, geo_weighted: bool = True, eps: float = 0.0) -> dict[str, Any]:
         """
@@ -1386,13 +1794,22 @@ class Metrics:
             "nbias_map_mean":    lambda: self.nbias_map(order="1d", geo_weighted=geo_weighted, eps=eps),
             # Skill metrics
             "r2_global":         lambda: self.r2_global(geo_weighted=geo_weighted),
+            "r2_flat":           lambda: self.r2_flat(geo_weighted=geo_weighted),
             "corr_global":       lambda: self.corr_global(geo_weighted=geo_weighted, min_periods=2),
             "corr_flat":         lambda: self.corr_flat(geo_weighted=geo_weighted, min_periods=2),
+            "acc_global":        lambda: self.acc_global(geo_weighted=geo_weighted, min_periods=2),
+            "acc_flat":          lambda: self.acc_flat(geo_weighted=geo_weighted, min_periods=2),
             # Ensemble metrics
             "nrmse_ens":         lambda: self.nrmse_ens(order="1d", geo_weighted=geo_weighted),
             "rmse_ens":          lambda: self.rmse_ens(order="1d", geo_weighted=geo_weighted),
             "mae_ens":           lambda: self.mae_ens(order="1d", geo_weighted=geo_weighted),
             "bias_ens":          lambda: self.bias_ens(order="1d", geo_weighted=geo_weighted),
+            "r2_ens_global":     lambda: self.r2_ens_global(geo_weighted=geo_weighted),
+            "r2_ens_flat":       lambda: self.r2_ens_flat(geo_weighted=geo_weighted),
+            "corr_ens_global":   lambda: self.corr_ens_global(geo_weighted=geo_weighted, min_periods=2),
+            "corr_ens_flat":     lambda: self.corr_ens_flat(geo_weighted=geo_weighted, min_periods=2),
+            "acc_ens_global":    lambda: self.acc_ens_global(climatology="month", geo_weighted=geo_weighted, min_periods=2),
+            "acc_ens_flat":      lambda: self.acc_ens_flat(climatology="month", geo_weighted=geo_weighted, min_periods=2),
             # Std of data and truth
             "std_avg_data":      lambda: self.std_data(data_type="data", order="1d", geo_weighted=geo_weighted),
             "std_avg_truth":     lambda: self.std_data(data_type="truth", order="1d", geo_weighted=geo_weighted),
@@ -1409,17 +1826,21 @@ class Metrics:
             "std_of_errs":       lambda: self.std_of_errs(order="2d", geo_weighted=geo_weighted),
             "mape":              lambda: self.mape(order="2d", geo_weighted=geo_weighted, eps=eps),
             "smape":             lambda: self.smape(order="2d", geo_weighted=geo_weighted),
-            "nrmse_map":         lambda: self.nrmse_map(order="2d", geo_weighted=geo_weighted, eps=eps),
-            "nmae_map":          lambda: self.nmae_map(order="2d", geo_weighted=geo_weighted, eps=eps),
-            "nbias_map":         lambda: self.nbias_map(order="2d", geo_weighted=geo_weighted, eps=eps),
-            "abs_nbias_map":     lambda: self.nabsbias_map(order="2d", geo_weighted=geo_weighted, eps=eps),
-            "r2_map":            lambda: self.r2_map(),
-            "corr_map":          lambda: self.corr_map(min_periods=2),
+            "nrmse":             lambda: self.nrmse_map(order="2d", geo_weighted=geo_weighted, eps=eps),
+            "nmae":              lambda: self.nmae_map(order="2d", geo_weighted=geo_weighted, eps=eps),
+            "nbias":             lambda: self.nbias_map(order="2d", geo_weighted=geo_weighted, eps=eps),
+            "abs_nbias":         lambda: self.nabsbias_map(order="2d", geo_weighted=geo_weighted, eps=eps),
+            "r2":                lambda: self.r2_map(),
+            "corr":              lambda: self.corr_map(min_periods=2),
+            "acc":               lambda: self.acc_map(min_periods=2),
             # Ensemble metrics
             "nrmse_ens":         lambda: self.nrmse_ens(order="2d", geo_weighted=geo_weighted),
             "rmse_ens":          lambda: self.rmse_ens(order="2d", geo_weighted=geo_weighted),
             "mae_ens":           lambda: self.mae_ens(order="2d", geo_weighted=geo_weighted),
             "bias_ens":          lambda: self.bias_ens(order="2d", geo_weighted=geo_weighted),
+            "r2_ens":            lambda: self.r2_ens_map(),
+            "corr_ens":          lambda: self.corr_ens_map(min_periods=2),
+            "acc_ens":           lambda: self.acc_ens_map(climatology="month", min_periods=2),
             # Std of data and truth
             "std_data":          lambda: self.std_data(data_type="data", order="2d", geo_weighted=geo_weighted),
             "std_truth":         lambda: self.std_data(data_type="truth", order="2d", geo_weighted=geo_weighted),
