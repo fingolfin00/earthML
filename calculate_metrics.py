@@ -18,7 +18,7 @@ logging.getLogger("distributed.nanny").setLevel(logging.ERROR)
 # from earthml.manager import Launcher
 # from earthml.logging import Logger
 from earthml.utils import Dask, load_exp, add_ke_to_runs, make_exp_folder_path, guess_time_dim, guess_lon_dim, guess_lat_dim
-from earthml.metrics import Metrics #, PowerSpectrum
+from earthml.metrics import get_runs_and_metrics, save_metrics #, PowerSpectrum
 
 if __name__ == "__main__":
 
@@ -79,28 +79,57 @@ if __name__ == "__main__":
         exp_root_folder = exp_root_path+"experiments_earthML_ocean/"
         analysis_folder = exp_root_path+"analysis_earthML_ocean/"
 
-        vars_dict_cmcc = [{'fc': 't14d', 'an': 't14d'},  {'fc': 'sos', 'an': 'sos'}, {'fc': 't17d', 'an': 't17d'}]
-        vars_dict_oras5 = [{'fc': 't14d', 'an': 'so14chgt'}, {'fc': 'sos', 'an': 'sosaline'}]
+        type_data = "test"
+        var_suffix = ("_mseloss", "_maskedmseloss", "_maskedmseloss_rasc", "_variancenormalizedmseloss_spatial", "_variancenormalizedmseloss_geochannel", "_heterobiascorrectionloss")
+        # vars_d = [{"an": "sosaline", "fc": "sos"}, {"an": "so14chgt", "fc": "t14d"}, {"an": "sosstsst", "fc": "sst"}]
+        # vars_d, input_provider = {"an": "sosaline", "fc": "sos"}, "ocean.juno.cmcc.hindcast"
+        # var_plot, var_plot_nicename, var_plot_unit = "sos_mse", "sos ORAS5 target", "psu"
+        # var_cmap, var_limits = "viridis", (33, 37)
+        # vars_d, input_provider = {"an": "so14chgt", "fc": "t14d"}, "ocean.juno.cmcc.hindcast" # ORAS5
+        # var_plot, var_plot_nicename, var_plot_unit = "t14d_mse", "t14d ORAS5 target", "m"
+        # var_cmap, var_limits = "Blues", (0, 400)
+        vars_d, input_provider = {"an": "sosstsst", "fc": "sst"}, "atmo.earthkit.cmcc.hindcast.monthly"
+        # var_plot, var_plot_nicename, var_plot_unit = "sst_maskedmseloss_rasc", "sst maske MSE R as C loss", "K"
+        var_plot, var_plot_nicename, var_plot_unit = tuple("sst"+item for item in var_suffix), ("sst MSE", "sst masked MSE", "sst masked MSE R as C", "sst vMSE spatial", "sst vMSE geochannel", "sst hetMSE"), "K"
+        # var_plot, var_plot_nicename, var_plot_unit = ("sst_maskedmse", "sst_varspatialmse"), ("sst masked MSE loss", "sst masked varCMSE loss"), "K"
+        var_cmap, var_limits_field = "jet", (290, 305)
+        # var_plot, var_plot_nicename = "t14d_mse_taravg", "t14d averaged target"
+        # var_plot, var_plot_nicename = "t14d_mse", "t14d realization target"
+        target_provider = "ocean.earthkit.oras5.reanalysis.monthly"
+        leadtime_plot = 6
+        leadtimes, leadtime_unit = (6,), "months"
+        # leadtimes, leadtime_unit = (1, 2, 3, 4, 5, 6), "months"
+        vars_mse = 'sss_mse'
+        # vars_mse = ['sss_mse', 't14d_mse', 'sss_mse_taravg', 't14d_mse_taravg']
+        vars_het = []
+        center_lon = 180
+        plt_regional_extent = (-20, 60, -30, 30) # referenced to the central longitude
+        # Scoreboard  setup
+        lt_tick_labels_sb = ["1M", "2M", "3M", "4M", "5M"]
+        var_tick_labels_sb = ["sss", 't14d']
+        tp_index_name_sb = "years"
+        tp_value_sb = 27 # max train period in years
+        # vars_dict_cmcc = [{'fc': 't14d', 'an': 't14d'},  {'fc': 'sos', 'an': 'sos'}, {'fc': 't17d', 'an': 't17d'}]
+        # vars_dict_oras5 = [{'fc': 't14d', 'an': 'so14chgt'}, {'fc': 'sos', 'an': 'sosaline'}]
 
         runs, metrics = get_runs_and_metrics(
-            var_names=vars_dict_oras5,
-            var_suffix="_mse",
-            # var_suffix=("_mse_taravg", "_mse"),
-            # var_suffix=("_mse", "_het"),
-            # var_suffix=("_mse", "_gnll", "_het"),
+            var_names=vars_d,
+            # var_suffix="_maskedmseloss_rasc",
+            # var_suffix=("_maskedmseloss", "_maskedmseloss_rasc"),
+            var_suffix=var_suffix,
             region="CentralPacific",
-            exp_suffix_root="32bs_50epoch",
-            exp_name=exp_type,
+            # exp_suffix_root="_32bs_50epoch",
+            exp_suffix_root="",
+            exp_name="ocean",
             exp_root=exp_root_folder,
-            input_provider="ocean.juno.cmcc.hindcast",
-            # input_provider="ocean.earthkit.cmcc.hindcast.monthly",
-            # target_provider="ocean.juno.cmcc.hindcast",
-            target_provider="ocean.earthkit.oras5.reanalysis.monthly",
-            leadtimes=(1, 2, 3, 4, 5, 6),
+            input_provider=input_provider,
+            target_provider=target_provider,
+            leadtimes=leadtimes,
             leadtime_unit="months",
-            train_periods=("19930601-20201231", "20070401-20201231", "20140201-20201231", "20170801-20201231", "20190401-20201231"),
-            # type_data="train",
-            type_data="test",
+            # train_periods=("19930701-20201231", "20070401-20201231", "20140201-20201231", "20170801-20201231", "20190401-20201231"),
+            train_periods=("19930701-20201231",),
+            test_period="20210101-20221231",
+            type_data=type_data,
             models=("an", "fc", "pr"),
         )
     # runs_cmcc, _ = load_exp(
@@ -151,7 +180,7 @@ if __name__ == "__main__":
     # metric_names = ["mae", "bias", "rmse", "mape", "smape", "nrmse_global", "nmae_global", "nbias_global", "abs_nbias_global", "r2_global", "corr_global", "corr_flat"]
     metric_names = None # all available metrics
 
-    metrics_df = m.save(
+    metrics_df = save_metrics(
         metrics=metrics,
         base_folder=analysis_folder,
         vars_list=vars_from_fc,
