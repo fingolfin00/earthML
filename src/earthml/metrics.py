@@ -1389,6 +1389,7 @@ class Metrics:
             "corr_global":       lambda: self.corr_global(geo_weighted=geo_weighted, min_periods=2),
             "corr_flat":         lambda: self.corr_flat(geo_weighted=geo_weighted, min_periods=2),
             # Ensemble metrics
+            "nrmse_ens":         lambda: self.nrmse_ens(order="1d", geo_weighted=geo_weighted),
             "rmse_ens":          lambda: self.rmse_ens(order="1d", geo_weighted=geo_weighted),
             "mae_ens":           lambda: self.mae_ens(order="1d", geo_weighted=geo_weighted),
             "bias_ens":          lambda: self.bias_ens(order="1d", geo_weighted=geo_weighted),
@@ -1414,6 +1415,11 @@ class Metrics:
             "abs_nbias_map":     lambda: self.nabsbias_map(order="2d", geo_weighted=geo_weighted, eps=eps),
             "r2_map":            lambda: self.r2_map(),
             "corr_map":          lambda: self.corr_map(min_periods=2),
+            # Ensemble metrics
+            "nrmse_ens":         lambda: self.nrmse_ens(order="2d", geo_weighted=geo_weighted),
+            "rmse_ens":          lambda: self.rmse_ens(order="2d", geo_weighted=geo_weighted),
+            "mae_ens":           lambda: self.mae_ens(order="2d", geo_weighted=geo_weighted),
+            "bias_ens":          lambda: self.bias_ens(order="2d", geo_weighted=geo_weighted),
             # Std of data and truth
             "std_data":          lambda: self.std_data(data_type="data", order="2d", geo_weighted=geo_weighted),
             "std_truth":         lambda: self.std_data(data_type="truth", order="2d", geo_weighted=geo_weighted),
