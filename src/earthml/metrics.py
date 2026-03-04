@@ -440,6 +440,42 @@ def get_runs_and_metrics (
 
     return runs, metrics # runs not aligned
 
+def save_metrics (
+    metrics: dict,
+    base_folder: str,
+    vars_list: Sequence[str],
+    metric_names: Sequence[str] | None = None, # None -> save all available metrics
+    models_diff: Sequence[str] = ("fc", "pr"), # used only for diff
+    partition_cols: Sequence[str] = ("train_period", "model", "metric", "variable"), # no leadtime
+):
+    """Save metrics in pandas dataframe format to parquet files. Return dict of dataframes and paths."""
+
+    out = {}
+
+    for diff in ("no", "delta", "ratio"):
+        df = metrics_to_df(
+            metrics,
+            variables=vars_list,
+            metric_names=metric_names,
+            diff=diff,
+            models=models_diff if diff in ("delta", "ratio") else None,
+        )
+
+        parquet_path = build_parquet_path(base_folder, vars_list, metric_names, diff)
+
+        # Ensure output directory exists
+        Path(parquet_path).mkdir(parents=True, exist_ok=True)
+
+        df.to_parquet(
+            parquet_path,
+            partition_cols=list(partition_cols),
+            engine="pyarrow",
+        )
+
+        out[diff] = (df, parquet_path)
+
+    return out
+
 # Classes
 
 class Metrics:
@@ -485,43 +521,6 @@ class Metrics:
 
     def _get_and_rename_dim (self):
         return get_and_rename_dim(self.truth, self.data)
-
-    @staticmethod
-    def save (
-        metrics: dict,
-        base_folder: str,
-        vars_list: Sequence[str],
-        metric_names: Sequence[str] | None = None, # None -> save all available metrics
-        models_diff: Sequence[str] = ("fc", "pr"), # used only for diff
-        partition_cols: Sequence[str] = ("train_period", "model", "metric", "variable"), # no leadtime
-    ):
-        """Save metrics in pandas dataframe format to parquet files. Return dict of dataframes and paths."""
-
-        out = {}
-
-        for diff in ("no", "delta", "ratio"):
-            df = metrics_to_df(
-                metrics,
-                variables=vars_list,
-                metric_names=metric_names,
-                diff=diff,
-                models=models_diff if diff in ("delta", "ratio") else None,
-            )
-
-            parquet_path = build_parquet_path(base_folder, vars_list, metric_names, diff)
-
-            # Ensure output directory exists
-            Path(parquet_path).mkdir(parents=True, exist_ok=True)
-
-            df.to_parquet(
-                parquet_path,
-                partition_cols=list(partition_cols),
-                engine="pyarrow",
-            )
-
-            out[diff] = (df, parquet_path)
-
-        return out
 
     # Metrics
     def _generic_metric (
