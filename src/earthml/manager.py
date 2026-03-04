@@ -54,9 +54,12 @@ def build_loss (loss_cfg: dict):
 
     elif loss_sel == "HeteroBiasCorrectionLoss":
         use_first_input = loss_cfg.get("use_first_input", True)
+        lambda_identity = loss_cfg.get("lambda_identity", True)
+        bias_scale      = loss_cfg.get("bias_scale", True)
+        use_first_input = loss_cfg.get("use_first_input", True)
         loss_params = dict(
             net=dict(use_first_input=use_first_input),
-            loss=dict(lambda_identity=0.1, bias_scale=0.5, eps=1e-12),
+            loss=dict(lambda_identity=lambda_identity, bias_scale=bias_scale, eps=1e-12),
         )
         # Encode variant choice in name
         if use_first_input:
