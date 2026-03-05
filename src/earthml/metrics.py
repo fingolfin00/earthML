@@ -1435,6 +1435,64 @@ class Metrics:
     # --- Ensemble metrics --------------------------------- #
     ##########################################################
 
+    def std_ens (
+        self,
+        data_type: Literal["truth", "data"],
+        order: Literal["3d", "2d", "1d"] = "1d",
+        geo_weighted: bool = True,
+    ) -> List[xr.Dataset]:
+        """
+        Ensemble std (spread) computed across the realization dimension.
+
+        Behavior:
+        - '3d': std over realization_dim for each time -> (time, lat, lon)
+        - '2d': time-mean of the above -> (lat, lon)
+        - '1d': spatial average of the time-mean spread -> scalar (per variable)
+        """
+        if self.realization_dim is None:
+            # no ensemble dimension present
+            return []
+
+        if data_type == "data":
+            data_list = self.data
+            replicate = False
+        elif data_type == "truth":
+            data_list = [self.truth]  # compute once, then replicate
+            replicate = True
+        else:
+            raise ValueError(f"Invalid data_type: {data_type}")
+
+        out: List[xr.Dataset] = []
+
+        for d in data_list:
+            # ensemble spread: std across realization dimension
+            spread = d.std(dim=self.realization_dim, skipna=True)
+
+            if order == "3d":
+                val = spread
+
+            elif order == "2d":
+                # time-mean of spread -> map
+                val = spread.mean(dim=self.time_dim, skipna=True)
+
+            elif order == "1d":
+                # time-mean then spatial average -> scalar
+                spread_map = spread.mean(dim=self.time_dim, skipna=True)
+                if geo_weighted:
+                    val = geo_avg(spread_map, self.lat_dim, self.lon_dim)
+                else:
+                    val = spread_map.mean(dim=(self.lat_dim, self.lon_dim), skipna=True)
+
+            else:
+                raise ValueError(f"Invalid order: {order}")
+
+            out.append(val)
+
+        if replicate:
+            out = out * len(self.data)
+
+        return out
+
     def rmse_ens (self, order: Literal["2d", "1d"] = "1d", geo_weighted: bool = True) -> list[xr.Dataset]:
         """
         RMSE of the ensemble mean prediction.
@@ -1834,6 +1892,8 @@ class Metrics:
             "corr":              lambda: self.corr_map(min_periods=2),
             "acc":               lambda: self.acc_map(min_periods=2),
             # Ensemble metrics
+            "std_data_ens":      lambda: self.std_ens(data_type="data", order="2d", geo_weighted=geo_weighted),
+            "std_truth_ens":     lambda: self.std_ens(data_type="truth", order="2d", geo_weighted=geo_weighted),
             "nrmse_ens":         lambda: self.nrmse_ens(order="2d", geo_weighted=geo_weighted),
             "rmse_ens":          lambda: self.rmse_ens(order="2d", geo_weighted=geo_weighted),
             "mae_ens":           lambda: self.mae_ens(order="2d", geo_weighted=geo_weighted),
