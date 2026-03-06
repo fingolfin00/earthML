@@ -46,13 +46,13 @@ def build_loss (loss_cfg: dict):
     loss_params = {}
     loss_suf = loss_sel.lower()
 
-    if loss_sel == "VarianceNormalizedMSELoss":
+    if loss_sel in  ("VarianceNormalizedMSELoss", "HeteroBiasCorrectionLoss"):
         variance_type = loss_cfg.get("variance_type", "spatial")
         latitudes = loss_cfg.get("latitudes", True)
         loss_params = dict(loss=dict(variance_type=variance_type, latitudes=latitudes))
         loss_suf += f"_{variance_type}"
 
-    elif loss_sel == "HeteroBiasCorrectionLoss":
+    if loss_sel == "HeteroBiasCorrectionLoss":
         use_first_input = loss_cfg.get("use_first_input", True)
         lambda_identity = loss_cfg.get("lambda_identity", True)
         bias_scale      = loss_cfg.get("bias_scale", True)
@@ -61,9 +61,8 @@ def build_loss (loss_cfg: dict):
             net=dict(use_first_input=use_first_input),
             loss=dict(lambda_identity=lambda_identity, bias_scale=bias_scale, eps=1e-12),
         )
-        # Encode variant choice in name
         if use_first_input:
-            loss_suf += "_usefirst"
+            loss_suf += "_usefirstinput"
 
     # GaussianNLLFromLogits or others: keep defaults unless you add params
     return loss_name, loss_params, loss_suf
