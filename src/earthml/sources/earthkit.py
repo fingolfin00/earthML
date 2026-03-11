@@ -228,7 +228,6 @@ class EarthkitSource (BaseSource):
                     return obj
                 # datetime-like / timedelta-like
                 try:
-                    import pandas as pd
                     if isinstance(obj, (pd.Timestamp, pd.Timedelta)):
                         return str(obj)
                 except Exception:
@@ -589,9 +588,13 @@ class EarthkitSource (BaseSource):
         # print(f"Datasets after dropping missing samples: {len(ds_all[xarray_concat_dim].values)}")
 
         # Shift time index by lead time to get appropriate time corresponding for both forecast and analysis
-        time_index = pd.DatetimeIndex(ds_all[xarray_concat_dim].values)
-        shifted = time_index.map(lambda t: t + self.lead_time)
-        ds_all = ds_all.assign_coords({xarray_concat_dim: shifted})
+        # time_index = pd.DatetimeIndex(ds_all[xarray_concat_dim].values)
+        # if self.request_type in ("daily", "hourly"):
+        #     shift_delta = relativedelta(days=1)
+        # elif self.request_type == "monthly":
+        #     shift_delta = relativedelta(months=1)
+        # shifted = time_index.map(lambda t: t - self.lead_time + shift_delta) # +1 day/month to compensate for inclusive end in requests (e.g. 2020-01-31 is included in Jan request, but after shifting it becomes 2020-01-30 which is not included in Feb request)
+        ds_all = ds_all.assign_coords({xarray_concat_dim: self.date_range})
 
         print(f"First and last time values in obtained dataset: {pd.to_datetime(ds_all[xarray_concat_dim].values[0])}, {pd.to_datetime(ds_all[xarray_concat_dim].values[-1])}")
 
