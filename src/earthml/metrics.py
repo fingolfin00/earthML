@@ -14,7 +14,9 @@ import xarray as xr
 # import xskillscore as xs
 # from scipy.stats import t as student_t
 
-from .utils import guess_time_dim, guess_lon_dim, guess_lat_dim, guess_realization_dim, guess_leadtime_dim, date_diff, load_exp, add_ke_to_runs, remove_unwanted_dims_and_coords, geo_weights, geo_avg
+from .utils import guess_time_dim, guess_lon_dim, guess_lat_dim, guess_realization_dim, guess_leadtime_dim, \
+    date_diff, load_exp, add_ke_to_runs, remove_unwanted_dims_and_coords, geo_weights, geo_avg, \
+    rename_dim_and_coord, normalize_ds_dims_and_coords, harmonize_leadtime_int
 
 MetricFn = Callable[[xr.Dataset, xr.Dataset], xr.Dataset]
 FinalFn  = Callable[[xr.Dataset], xr.Dataset]
@@ -197,39 +199,16 @@ def rechunk (da, lat_rc, lon_rc, time_rc=1, realization_rc=1):
         chunks[leadtime_dim] = len(da[leadtime_dim]) # keep leadtime together
     return da.chunk(chunks)
 
-def rename_dim_and_coord (ds: xr.Dataset, src: str, target: str) -> xr.Dataset:
-    # Rename dimension
-    if src in ds.dims:
-        ds = ds.rename_dims({src: target})
-    # Rename coordinate or variable with the same name
-    if (src in ds.coords) or (src in ds.data_vars):
-        ds = ds.rename_vars({src: target})
-    return ds
-
-def normalize_reference (reference: xr.Dataset) -> xr.Dataset:
-    # Standardize ensemble + leadtime names on the reference itself
-    r = reference
-
-    src_real = guess_realization_dim(r)
-    if src_real is not None and src_real != "realization":
-        r = rename_dim_and_coord(r, src_real, "realization")
-
-    src_lead = guess_leadtime_dim(r)
-    # print(f"Reference dataset leadtime dimension: {src_lead}")
-    # print(f"Reference dataset right before renaming dims: {r.dims}")
-    if src_lead is not None and src_lead != "leadtime":
-        r = rename_dim_and_coord(r, src_lead, "leadtime")
-
-    return r
-
 def get_and_rename_dim (reference: xr.Dataset, data: List[xr.Dataset]):
     # Normalize reference first
-    r = normalize_reference(reference)
+    norm_r = normalize_ds_dims_and_coords(reference)
+
+    print("Reference dataset after normalization:", norm_r.coords)
 
     # Decide final target names (match reference for time/lat/lon; standard for the others)
-    target_time = guess_time_dim(r)
-    target_lat  = guess_lat_dim(r)
-    target_lon  = guess_lon_dim(r)
+    target_time = guess_time_dim(norm_r)
+    target_lat  = guess_lat_dim(norm_r)
+    target_lon  = guess_lon_dim(norm_r)
 
     target_dims = (target_time, target_lat, target_lon, "realization", "leadtime")
 
@@ -253,63 +232,14 @@ def get_and_rename_dim (reference: xr.Dataset, data: List[xr.Dataset]):
 
         out.append(ds)
 
-    return r, out, target_dims  # (time, lat, lon, realization, leadtime)
-
-def _is_int_leadtime (ds, coord="leadtime"):
-    if coord not in ds.coords:
-        return False
-    return np.issubdtype(ds[coord].dtype, np.integer)
-
-def harmonize_leadtime_int (*datasets, coord="leadtime", fallback="range"):
-    """
-    Make all datasets share the same integer leadtime coordinate.
-    - If any dataset already has int leadtime, that coord is used as the target.
-    - Otherwise fallback:
-        * "range": set leadtime = 1..N based on the first dataset
-        * "days": convert timedelta leadtime to integer days (requires timedelta)
-    Returns: list of datasets in same order as input.
-    """
-    dsets = list(datasets)
-
-    # Pick target integer leadtime if present
-    int_sources = [ds for ds in dsets if _is_int_leadtime(ds, coord)]
-    if int_sources:
-        target = int_sources[0][coord].astype("int64")
-    else:
-        # No integer leadtime anywhere -> choose fallback
-        if coord not in dsets[0].coords:
-            raise ValueError(f"No coord {coord!r} found in the first dataset.")
-        n = dsets[0].sizes.get(coord, dsets[0][coord].size)
-
-        if fallback == "range":
-            target = xr.DataArray(np.arange(1, n + 1), dims=coord, coords={coord: np.arange(1, n + 1)})
-        elif fallback == "days":
-            lt0 = dsets[0][coord]
-            if not np.issubdtype(lt0.dtype, np.timedelta64):
-                raise ValueError("fallback='days' requires timedelta64 leadtime.")
-            days = (lt0 / np.timedelta64(1, "D")).astype("int64")
-            target = xr.DataArray(days.values, dims=coord, coords={coord: days.values})
-        else:
-            raise ValueError("fallback must be 'range' or 'days'.")
-
-    out = []
-    for ds in dsets:
-        if coord not in ds.coords:
-            raise ValueError(f"Dataset missing coord {coord!r}.")
-        if ds.sizes.get(coord, ds[coord].size) != target.size:
-            raise ValueError(f"Leadtime length mismatch: {ds.sizes.get(coord)} vs {target.size}")
-
-        ds2 = ds.assign_coords({coord: target})
-        out.append(ds2)
-
-    return out
+    return norm_r, out, target_dims  # (time, lat, lon, realization, leadtime)
 
 # TODO: allow calculating only some metrics
 def get_runs_and_metrics (
     var_names: str | Sequence[str] | dict | Sequence[dict], var_suffix: str | Sequence[str],
     region: str,
     exp_suffix_root: str | Sequence[str], exp_name: str, exp_root: str | Path,
-    input_provider: str, target_provider: str,
+    input_provider: str | Sequence[str], target_provider: str | Sequence[str], # same dims as var_names
     leadtimes: tuple, leadtime_unit: str,
     train_periods: Sequence[str], test_period: str,
     type_data: str = "test", models: Sequence[str] = ("an", "fc", "pr"),
@@ -327,23 +257,32 @@ def get_runs_and_metrics (
             exp_suffix.append(f"{suf_root}{suf}")
     # print(f"Exp suffix: {exp_suffix}")
 
-    vars_dict = {}
-    for var, (var_suf, exp_suf) in product(var_names, zip(var_suffix, exp_suffix)):
-        if isinstance(var, str):
-            var_fc, var_an = var, var
-        elif isinstance(var, dict):
-            var_fc, var_an = var['fc'], var['an']
+    # Sanity check, providers must align with var_names
+    if not (len(input_provider) == len(target_provider) == len(var_names)):
+        raise ValueError("input_provider, target_provider and var_names must have the same length")
 
-        vars_dict[f"{var_fc}{var_suf}"] = {
+    vars_dict = {}
+
+    # For each variable (paired with its providers), iterate over the paired suffixes
+    for var, ips, tps in zip(var_names, input_provider, target_provider):
+        for var_suf, exp_suf in zip(var_suffix, exp_suffix):
+            if isinstance(var, str) and isinstance(ips, str) and isinstance(tps, str):
+                var_fc, var_an = var, var
+            elif isinstance(var, dict):
+                var_fc, var_an = var['fc'], var['an']
+            else:
+                continue
+
+            vars_dict[f"{var_fc}{var_suf}"] = {
                 "exp_var": {"fc": var_fc, "an": var_an},
                 "region": region,
                 "exp_suffix": exp_suf,
+                "input_provider": ips,
+                "target_provider": tps,
             }
 
     experiments = {
         "name": exp_name,
-        "input_provider": input_provider,
-        "target_provider": target_provider,
         "vars": vars_dict,
         "leadtimes": leadtimes,
         "leadtime_unit": leadtime_unit,
@@ -365,7 +304,10 @@ def get_runs_and_metrics (
     metrics = {}
     for name, run in runs.items():
         an, fc, pr = run[truth_model], run[data_model_a], run[data_model_b] # dict of datasets per leadtime
-        # print(an_lt)
+        print(f"Processing run {name} with dims:")
+        print(f"  an {an.dims if an is not None else 'N/A'}")
+        print(f"  fc {fc.dims if fc is not None else 'N/A'}")
+        print(f"  pr {pr.dims if pr is not None else 'N/A'}")
 
         # Rename all dims using fc as reference
         fc, renamed_ds, dims = get_and_rename_dim(fc, [an, pr] if pr is not None else [an])
@@ -389,11 +331,11 @@ def get_runs_and_metrics (
         # print(f"Before harmonizing and removing extra dims an dims: {an.dims}, fc dims: {fc.dims}, pr dims: {pr.dims if pr is not None else 'N/A'}")
 
         if pr is None:
-            an, fc = harmonize_leadtime_int(an, fc, coord="leadtime", fallback="range")
+            # an, fc = harmonize_leadtime_int(an, fc, coord="leadtime", method="range")
             # print(f"After harmonizing and before removing extra dims an dims: {an.dims}, fc dims: {fc.dims}, pr dims: {pr.dims if pr is not None else 'N/A'}")
             an, fc = remove_unwanted_dims_and_coords(an, allowed_dims), remove_unwanted_dims_and_coords(fc, allowed_dims)
         else:
-            an, fc, pr = harmonize_leadtime_int(an, fc, pr, coord="leadtime", fallback="range")
+            # an, fc, pr = harmonize_leadtime_int(an, fc, pr, coord="leadtime", method="range")
             an, fc, pr = remove_unwanted_dims_and_coords(an, allowed_dims), remove_unwanted_dims_and_coords(fc, allowed_dims), remove_unwanted_dims_and_coords(pr, allowed_dims)
         # print(f"Before aligning an dims: {an.dims}, fc dims: {fc.dims}, pr dims: {pr.dims if pr is not None else 'N/A'}")
         # print(an, fc, pr)
