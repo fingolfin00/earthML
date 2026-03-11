@@ -48,7 +48,7 @@ if __name__ == "__main__":
         {"loss_sel": "VarianceNormalizedMSELoss", "variance_type": "spatial", "latitudes": False}, # channel, geochannel, spatial, temporal, geotemporal
         {"loss_sel": "VarianceNormalizedMSELoss", "variance_type": "geochannel", "latitudes": True},
         {"loss_sel": "HeteroBiasCorrectionLoss", "use_first_input": True, "variance_type": "spatial", "latitudes": False, "lambda_identity": 0.1, "bias_scale": 0.5},
-        {"loss_sel": "GaussianNLLFromLogits"},
+        # {"loss_sel": "GaussianNLLFromLogits"}, # TODO fix
     ]
 
     # ----------------------------------------------------------------------------------
