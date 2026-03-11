@@ -58,11 +58,12 @@ def make_var (
 
 def make_region ():
     return SimpleNamespace(
-    north_atl=Region(name="NorthAtlantic", lon=(-80, -20), lat=(60, 20)),
     conus=Region(name="ConUS", lon=(-130, -90), lat=(45, 30)),
     europe=Region(name="Europe", lon=(-10, 36), lat=(55, 35)),
     italy=Region(name="ItalianPeninsula", lon=(5, 23.5), lat=(49, 25.5)),
     pacific=Region(name="CentralPacific", lon=(-200, -120), lat=(30, -30)),
+    atlantic=Region(name="Atlantic", lon=(-80, -20), lat=(60, -60)),
+    indian=Region(name="Indian", lon=(20, 140), lat=(30, -60)),
 )
 
 def make_catalog (
