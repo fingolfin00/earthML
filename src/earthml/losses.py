@@ -80,7 +80,7 @@ class MaskedMSELoss(nn.Module):
 
         # valid_count as float on same device/dtype as sq_err to avoid dtype/device surprises
         valid_count = mask_b.to(dtype=sq_err.dtype, device=sq_err.device).sum()
-        if valid_count.item() == 0:
+        if valid_count.item() == 0: # sync to CPU to check if zero
             raise ValueError("No valid pixels in mask")
         valid_count = valid_count.clamp_min(self.eps)
         return sq_err.sum() / valid_count
