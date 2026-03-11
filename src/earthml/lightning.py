@@ -754,7 +754,7 @@ class XarrayDataset (Dataset):
         transform_x_args: dict = None,
         transform_y_args: dict = None,
         realization_as_channel: bool = False,
-        output_realizations: Literal["deterministic", "ensemble", "nochange"] = "deterministic", # deterministic -> output R = 1, ensemble -> output R = input R
+        output_realizations: Literal["deterministic", "ensemble"] = "deterministic", # deterministic -> output R = 1, ensemble -> output R = input R
     ):
         """
         input_ds: xarray.Dataset
@@ -763,6 +763,11 @@ class XarrayDataset (Dataset):
         transform_y: callable with signature (y, **kwargs) -> y (for target)
         transform_x_args: dict of keyword args to pass to transform_x
         transform_y_args: dict of keyword args to pass to transform_y
+        realization_as_channel: if True, treat the realization dimension R as channels (C), so output shape is (C=R,T,H,W).
+                                If False, treat realization as independent samples andmerge R with T and output shape is (C,T*R,H,W).
+        output_realizations: if "deterministic", the target will be averaged across R (if it has R) to produce a deterministic target (C,T,H,W).
+                             If "ensemble", the target will be repeated across R_in (the number of input realizations) and merged into channels.
+                             Only relevant if realization_as_channel is True. If False, target R dimension is merged with T and this setting is ignored.
         """
 
         self.target_ds = target_ds # .load(scheduler="synchronous")
