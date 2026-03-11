@@ -410,6 +410,9 @@ class ExperimentMLFC:
         assert "input" in exp_roles and "target" in exp_roles
         input_ds, target_ds = ds_d['input'], ds_d['target']
 
+        # Align
+        input_ds, target_ds = xr.align(input_ds, target_ds, join="inner")
+
         # Hook preprocessing function
         if self.config.torch_preprocess_fn is not None:
             input_ds, target_ds = self.config.torch_preprocess_fn(input_ds, target_ds)
@@ -658,13 +661,7 @@ class ExperimentMLFC:
 
     def _infer_RT_from_source (self, dataset: XarrayDataset) -> tuple[int, int]:
         """
-        Infer (R_out, T_out) from the ORIGINAL xarray datasets attached to the torch dataset,
-        never from meta_ds.
-
-        Assumptions (per your XarrayDataset docstring):
-        - output_realizations="deterministic" -> R_out = 1
-        - output_realizations="ensemble"      -> R_out = input R (or 1 if none)
-        - output_realizations="nochange"      -> R_out = target R (or input R, fallback 1)
+        Infer (R_out, T_out) from the original xarray datasets attached to the torch dataset.
         """
         input_ds = dataset.input_ds
         target_ds = dataset.target_ds
@@ -686,7 +683,6 @@ class ExperimentMLFC:
             raise ValueError(f"Inferred invalid T_out={T_out}")
 
         return R_out, T_out
-
 
     def _reconstruct_pred_tensor (
         self,
