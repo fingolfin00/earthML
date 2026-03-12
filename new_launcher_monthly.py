@@ -20,6 +20,7 @@ if __name__ == "__main__":
     only_longest_train_period   = True              # only train on the largest train period (if False, train on all periods, which can be much slower but allows to see variability across train periods)
     add_hyper_exp_name_suffix   = False             # if True use also batch_size, max_epochs, initial_learning_rate in exp name (and resulting folder) automatically extending exp_suffix
     inpaint_nan                 = True              # if True, inpaint NaN values in input and target data with bilinear interpolation
+    extra_exp_suffix            = ""                # additional custom suffix to add to exp name (and resulting folder), e.g. "_debug" or "_try1"
 
     exp_root_folder             = "/Users/jacopodallaglio/ML/experiments_earthML_ocean/"
     earthkit_cache_dir          = "/Users/jacopodallaglio/ML/.earthkit-cache"   # if using earthkit datasource
@@ -215,6 +216,7 @@ if __name__ == "__main__":
                     else:
                         exp_suffix = f"_{loss_suf}"
                     exp_suffix += ("_taravg" if target_realization_avg else "") + ("_rasc" if realization_as_channel else "")
+                    exp_suffix += extra_exp_suffix
 
                     runner = MLFCRunner(
                         scenario=ocean_scenario,
