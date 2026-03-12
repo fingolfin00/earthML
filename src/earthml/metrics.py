@@ -1756,6 +1756,518 @@ class Metrics:
         return out
 
     ##########################################################
+    # --- Helpers for new metrics -------------------------- #
+    ##########################################################
+
+    def _reduce_metric_order(
+        self,
+        metric: xr.Dataset,
+        order: Literal["3d", "2d", "1d"] = "1d",
+        geo_weighted: bool = True,
+    ) -> xr.Dataset:
+        """
+        Reduce a metric field with dims including time/lat/lon following the
+        same conventions as _generic_metric.
+        """
+        if order == "3d":
+            return metric
+        elif order == "2d":
+            return metric.mean(dim=self.time_dim, skipna=True)
+        elif order == "1d":
+            if geo_weighted:
+                return geo_avg(metric, self.lat_dim, self.lon_dim).mean(dim=self.time_dim, skipna=True)
+            return metric.mean(dim=(self.time_dim, self.lat_dim, self.lon_dim), skipna=True)
+        else:
+            raise ValueError(f"Invalid order: {order}")
+
+    def _reduce_map_order(
+        self,
+        metric_map: xr.Dataset,
+        order: Literal["2d", "1d"] = "2d",
+        geo_weighted: bool = True,
+    ) -> xr.Dataset:
+        """
+        Reduce a time-collapsed lat/lon map to either 2d map or 1d scalar.
+        """
+        if order == "2d":
+            return metric_map
+        elif order == "1d":
+            if geo_weighted:
+                return geo_avg(metric_map, self.lat_dim, self.lon_dim)
+            return metric_map.mean(dim=(self.lat_dim, self.lon_dim), skipna=True)
+        else:
+            raise ValueError(f"Invalid order: {order}")
+
+    def _gradient_sqerr_field(self, truth: xr.Dataset, pred: xr.Dataset) -> xr.Dataset:
+        """
+        Squared gradient error field:
+            0.5 * [ (d/dlat err)^2 + (d/dlon err)^2 ]
+        computed per variable.
+        """
+        out = {}
+        common = [v for v in truth.data_vars if v in pred.data_vars]
+
+        for v in common:
+            t = truth[v]
+            p = pred[v]
+
+            gt_lat = t.differentiate(self.lat_dim)
+            gp_lat = p.differentiate(self.lat_dim)
+
+            gt_lon = t.differentiate(self.lon_dim)
+            gp_lon = p.differentiate(self.lon_dim)
+
+            out[v] = 0.5 * ((gp_lat - gt_lat) ** 2 + (gp_lon - gt_lon) ** 2)
+
+        return xr.Dataset(out, attrs=truth.attrs)
+
+    def _ssim_field(
+        self,
+        truth: xr.Dataset,
+        pred: xr.Dataset,
+        window_size: int = 5,
+        k1: float = 0.01,
+        k2: float = 0.03,
+        eps: float = 1e-12,
+    ) -> xr.Dataset:
+        """
+        Local SSIM field over rolling lat/lon windows.
+        Output keeps the original dims (time, lat, lon, ...).
+
+        SSIM per variable:
+            ((2 mu_x mu_y + C1) (2 cov_xy + C2)) /
+            ((mu_x^2 + mu_y^2 + C1) (var_x + var_y + C2))
+        """
+        if window_size < 1:
+            raise ValueError("window_size must be >= 1")
+
+        rolling_kwargs = {
+            self.lat_dim: window_size,
+            self.lon_dim: window_size,
+        }
+
+        out = {}
+        common = [v for v in truth.data_vars if v in pred.data_vars]
+
+        for v in common:
+            x = truth[v]
+            y = pred[v]
+
+            spatial_dims = [d for d in x.dims if d in (self.time_dim, self.lat_dim, self.lon_dim)]
+            reduce_dims = [d for d in spatial_dims if d in (self.time_dim, self.lat_dim, self.lon_dim)]
+
+            # dynamic range from truth
+            x_max = x.max(dim=reduce_dims, skipna=True)
+            x_min = x.min(dim=reduce_dims, skipna=True)
+            L = xr.where((x_max - x_min) > eps, x_max - x_min, 1.0)
+
+            C1 = (k1 * L) ** 2
+            C2 = (k2 * L) ** 2
+
+            mu_x = x.rolling(rolling_kwargs, center=True, min_periods=1).mean()
+            mu_y = y.rolling(rolling_kwargs, center=True, min_periods=1).mean()
+
+            ex2 = (x * x).rolling(rolling_kwargs, center=True, min_periods=1).mean()
+            ey2 = (y * y).rolling(rolling_kwargs, center=True, min_periods=1).mean()
+            exy = (x * y).rolling(rolling_kwargs, center=True, min_periods=1).mean()
+
+            var_x = ex2 - mu_x ** 2
+            var_y = ey2 - mu_y ** 2
+            cov_xy = exy - mu_x * mu_y
+
+            num = (2 * mu_x * mu_y + C1) * (2 * cov_xy + C2)
+            den = (mu_x ** 2 + mu_y ** 2 + C1) * (var_x + var_y + C2)
+
+            out[v] = xr.where(np.abs(den) > eps, num / den, np.nan)
+
+        return xr.Dataset(out, attrs=truth.attrs)
+
+    def _fss_components(
+        self,
+        truth: xr.Dataset,
+        pred: xr.Dataset,
+        threshold: float,
+        window_size: int = 5,
+    ) -> tuple[xr.Dataset, xr.Dataset]:
+        """
+        Return numerator and denominator fields used by FSS.
+
+        Event fields:
+            I_t = 1(truth > threshold), I_p = 1(pred > threshold)
+
+        Neighborhood fractions are computed with rolling means over lat/lon.
+        """
+        if window_size < 1:
+            raise ValueError("window_size must be >= 1")
+
+        rolling_kwargs = {
+            self.lat_dim: window_size,
+            self.lon_dim: window_size,
+        }
+
+        truth_bin = (truth > threshold).astype(float)
+        pred_bin = (pred > threshold).astype(float)
+
+        frac_t = truth_bin.rolling(rolling_kwargs, center=True, min_periods=1).mean()
+        frac_p = pred_bin.rolling(rolling_kwargs, center=True, min_periods=1).mean()
+
+        num = (frac_p - frac_t) ** 2
+        den = frac_p ** 2 + frac_t ** 2
+
+        return num, den
+
+    def _ensemble_crps_field(
+        self,
+        truth_obs: xr.Dataset,
+        pred_ens: xr.Dataset,
+    ) -> xr.Dataset:
+        """
+        Ensemble CRPS:
+            mean_i |x_i - y| - 0.5 mean_{i,j} |x_i - x_j|
+
+        Assumes:
+        - truth_obs has no realization dimension
+        - pred_ens has realization dimension
+        """
+        if self.realization_dim is None:
+            raise ValueError("No realization dimension available for ensemble CRPS")
+
+        term1 = np.abs(pred_ens - truth_obs).mean(dim=self.realization_dim, skipna=True)
+
+        ens_a = pred_ens.rename({self.realization_dim: "realization_a"})
+        ens_b = pred_ens.rename({self.realization_dim: "realization_b"})
+        term2 = 0.5 * np.abs(ens_a - ens_b).mean(dim=("realization_a", "realization_b"), skipna=True)
+
+        return term1 - term2
+
+    ##########################################################
+    # --- New deterministic metrics ------------------------ #
+    ##########################################################
+
+    def variance_ratio(
+        self,
+        order: Literal["2d", "1d"] = "2d",
+        geo_weighted: bool = True,
+        eps: float = 0.0,
+    ) -> list[xr.Dataset]:
+        """
+        Temporal variance ratio:
+            var_t(pred) / var_t(truth)
+
+        - order="2d": map of variance ratios
+        - order="1d": spatial average of the map
+        """
+        truth_var = self.truth.var(dim=self.time_dim, skipna=True)
+        truth_var = xr.where(truth_var > eps, truth_var, np.nan)
+
+        out: list[xr.Dataset] = []
+        for d in self.data:
+            pred_var = d.var(dim=self.time_dim, skipna=True)
+            ratio = pred_var / truth_var
+            out.append(self._reduce_map_order(ratio, order=order, geo_weighted=geo_weighted))
+
+        return out
+
+    def rmse_gradients(
+        self,
+        order: Literal["3d", "2d", "1d"] = "1d",
+        geo_weighted: bool = True,
+    ) -> list[xr.Dataset]:
+        """
+        RMSE of spatial gradients, using derivatives along lat/lon.
+
+        Per grid point:
+            sqrt( mean_t( 0.5 * [ (dlat pred - dlat truth)^2 + (dlon pred - dlon truth)^2 ] ) )
+
+        - order="3d": instantaneous gradient-error magnitude field
+        - order="2d": time-mean gradient RMSE map
+        - order="1d": scalar spatial average
+        """
+        return self._generic_metric(
+            self.truth,
+            self.data,
+            self._gradient_sqerr_field,
+            final_metric_fn=np.sqrt,
+            order=order,
+            geo_weighted=geo_weighted,
+        )
+
+    def crps(
+        self,
+        order: Literal["3d", "2d", "1d"] = "1d",
+        geo_weighted: bool = True,
+    ) -> list[xr.Dataset]:
+        """
+        Deterministic CRPS.
+
+        For a deterministic forecast, CRPS reduces exactly to absolute error:
+            CRPS(F=delta_x, y) = |x - y|
+
+        So this is equivalent to MAE under the usual reductions.
+        """
+        return self._generic_metric(
+            self.truth,
+            self.data,
+            lambda truth, pred: np.abs(pred - truth),
+            order=order,
+            geo_weighted=geo_weighted,
+        )
+
+    def ssim(
+        self,
+        order: Literal["3d", "2d", "1d"] = "1d",
+        geo_weighted: bool = True,
+        window_size: int = 5,
+        k1: float = 0.01,
+        k2: float = 0.03,
+        eps: float = 1e-12,
+    ) -> list[xr.Dataset]:
+        """
+        Structural Similarity Index (local rolling-window SSIM).
+
+        - order="3d": local SSIM field per time
+        - order="2d": time-mean SSIM map
+        - order="1d": scalar spatial+time average of local SSIM
+        """
+        out: list[xr.Dataset] = []
+
+        for d in self.data:
+            field = self._ssim_field(
+                self.truth,
+                d,
+                window_size=window_size,
+                k1=k1,
+                k2=k2,
+                eps=eps,
+            )
+            out.append(self._reduce_metric_order(field, order=order, geo_weighted=geo_weighted))
+
+        return out
+
+    def fss(
+        self,
+        threshold: float,
+        order: Literal["3d", "2d", "1d"] = "1d",
+        geo_weighted: bool = True,
+        window_size: int = 5,
+        eps: float = 1e-12,
+    ) -> list[xr.Dataset]:
+        """
+        Fraction Skill Score using rolling neighborhood fractions.
+
+        For each neighborhood:
+            FSS = 1 - MSE(frac_pred, frac_truth) / (frac_pred^2 + frac_truth^2)
+
+        Definitions used here:
+        - order="3d": local FSS field at each time
+        - order="2d": 1 - mean_t(num) / mean_t(den)
+        - order="1d": 1 - mean_space(mean_t(num)) / mean_space(mean_t(den))
+                      with geo weighting if requested
+        """
+        out: list[xr.Dataset] = []
+
+        for d in self.data:
+            num, den = self._fss_components(
+                self.truth,
+                d,
+                threshold=threshold,
+                window_size=window_size,
+            )
+
+            if order == "3d":
+                val = 1.0 - num / (den + eps)
+
+            elif order == "2d":
+                num_t = num.mean(dim=self.time_dim, skipna=True)
+                den_t = den.mean(dim=self.time_dim, skipna=True)
+                val = 1.0 - num_t / (den_t + eps)
+
+            elif order == "1d":
+                num_t = num.mean(dim=self.time_dim, skipna=True)
+                den_t = den.mean(dim=self.time_dim, skipna=True)
+
+                if geo_weighted:
+                    num_s = geo_avg(num_t, self.lat_dim, self.lon_dim)
+                    den_s = geo_avg(den_t, self.lat_dim, self.lon_dim)
+                else:
+                    num_s = num_t.mean(dim=(self.lat_dim, self.lon_dim), skipna=True)
+                    den_s = den_t.mean(dim=(self.lat_dim, self.lon_dim), skipna=True)
+
+                val = 1.0 - num_s / (den_s + eps)
+
+            else:
+                raise ValueError(f"Invalid order: {order}")
+
+            out.append(val)
+
+        return out
+
+    ##########################################################
+    # --- New ensemble metrics ----------------------------- #
+    ##########################################################
+
+    def variance_ratio_ens(
+        self,
+        order: Literal["2d", "1d"] = "2d",
+        geo_weighted: bool = True,
+        eps: float = 0.0,
+    ) -> list[xr.Dataset]:
+        """
+        Temporal variance ratio for ensemble means:
+            var_t(mean_r(pred)) / var_t(mean_r(truth))
+        """
+        if self.realization_dim is None:
+            return []
+
+        truth_ens_mean = self.truth.mean(dim=self.realization_dim, skipna=True)
+        data_ens_mean = [d.mean(dim=self.realization_dim, skipna=True) for d in self.data]
+
+        truth_var = truth_ens_mean.var(dim=self.time_dim, skipna=True)
+        truth_var = xr.where(truth_var > eps, truth_var, np.nan)
+
+        out: list[xr.Dataset] = []
+        for pred in data_ens_mean:
+            pred_var = pred.var(dim=self.time_dim, skipna=True)
+            ratio = pred_var / truth_var
+            out.append(self._reduce_map_order(ratio, order=order, geo_weighted=geo_weighted))
+
+        return out
+
+    def rmse_gradients_ens(
+        self,
+        order: Literal["3d", "2d", "1d"] = "1d",
+        geo_weighted: bool = True,
+    ) -> list[xr.Dataset]:
+        """
+        RMSE of spatial gradients for ensemble-mean fields.
+        """
+        if self.realization_dim is None:
+            return []
+
+        truth_ens_mean = self.truth.mean(dim=self.realization_dim, skipna=True)
+        data_ens_mean = [d.mean(dim=self.realization_dim, skipna=True) for d in self.data]
+
+        return self._generic_metric(
+            truth_ens_mean,
+            data_ens_mean,
+            self._gradient_sqerr_field,
+            final_metric_fn=np.sqrt,
+            order=order,
+            geo_weighted=geo_weighted,
+        )
+
+    def crps_ens(
+        self,
+        order: Literal["3d", "2d", "1d"] = "1d",
+        geo_weighted: bool = True,
+    ) -> list[xr.Dataset]:
+        """
+        Ensemble CRPS.
+
+        Assumption:
+        - verification target is deterministic; if truth has a realization dimension,
+          its ensemble mean is used as the verifying observation.
+        """
+        if self.realization_dim is None:
+            return []
+
+        truth_obs = self.truth.mean(dim=self.realization_dim, skipna=True)
+
+        out: list[xr.Dataset] = []
+        for d in self.data:
+            field = self._ensemble_crps_field(truth_obs=truth_obs, pred_ens=d)
+            out.append(self._reduce_metric_order(field, order=order, geo_weighted=geo_weighted))
+
+        return out
+
+    def ssim_ens(
+        self,
+        order: Literal["3d", "2d", "1d"] = "1d",
+        geo_weighted: bool = True,
+        window_size: int = 5,
+        k1: float = 0.01,
+        k2: float = 0.03,
+        eps: float = 1e-12,
+    ) -> list[xr.Dataset]:
+        """
+        SSIM for ensemble-mean fields.
+        """
+        if self.realization_dim is None:
+            return []
+
+        truth_ens_mean = self.truth.mean(dim=self.realization_dim, skipna=True)
+        out: list[xr.Dataset] = []
+
+        for d in self.data:
+            pred_ens_mean = d.mean(dim=self.realization_dim, skipna=True)
+            field = self._ssim_field(
+                truth_ens_mean,
+                pred_ens_mean,
+                window_size=window_size,
+                k1=k1,
+                k2=k2,
+                eps=eps,
+            )
+            out.append(self._reduce_metric_order(field, order=order, geo_weighted=geo_weighted))
+
+        return out
+
+    def fss_ens(
+        self,
+        threshold: float,
+        order: Literal["3d", "2d", "1d"] = "1d",
+        geo_weighted: bool = True,
+        window_size: int = 5,
+        eps: float = 1e-12,
+    ) -> list[xr.Dataset]:
+        """
+        FSS for ensemble-mean fields.
+        """
+        if self.realization_dim is None:
+            return []
+
+        truth_ens_mean = self.truth.mean(dim=self.realization_dim, skipna=True)
+        out: list[xr.Dataset] = []
+
+        for d in self.data:
+            pred_ens_mean = d.mean(dim=self.realization_dim, skipna=True)
+
+            num, den = self._fss_components(
+                truth_ens_mean,
+                pred_ens_mean,
+                threshold=threshold,
+                window_size=window_size,
+            )
+
+            if order == "3d":
+                val = 1.0 - num / (den + eps)
+
+            elif order == "2d":
+                num_t = num.mean(dim=self.time_dim, skipna=True)
+                den_t = den.mean(dim=self.time_dim, skipna=True)
+                val = 1.0 - num_t / (den_t + eps)
+
+            elif order == "1d":
+                num_t = num.mean(dim=self.time_dim, skipna=True)
+                den_t = den.mean(dim=self.time_dim, skipna=True)
+
+                if geo_weighted:
+                    num_s = geo_avg(num_t, self.lat_dim, self.lon_dim)
+                    den_s = geo_avg(den_t, self.lat_dim, self.lon_dim)
+                else:
+                    num_s = num_t.mean(dim=(self.lat_dim, self.lon_dim), skipna=True)
+                    den_s = den_t.mean(dim=(self.lat_dim, self.lon_dim), skipna=True)
+
+                val = 1.0 - num_s / (den_s + eps)
+
+            else:
+                raise ValueError(f"Invalid order: {order}")
+
+            out.append(val)
+
+        return out
+
+    ##########################################################
     # --- Computation -------------------------------------- #
     ##########################################################
 
@@ -1776,76 +2288,98 @@ class Metrics:
         # metric name -> callables producing list[xr.Dataset] aligned with self.data
         scalar_fns = {
             # Basic metrics, become member metrics if realization dim present
-            "mae":               lambda: self.mae(order="1d", geo_weighted=geo_weighted),
-            "bias":              lambda: self.err(order="1d", geo_weighted=geo_weighted),
-            "abs_bias":          lambda: self.abs_bias(order="1d", geo_weighted=geo_weighted),
-            "rmse":              lambda: self.rmse(order="1d", geo_weighted=geo_weighted),
-            "stderr":            lambda: self.stderr(order="1d", geo_weighted=geo_weighted),
-            "std_of_errs":       lambda: self.std_of_errs(order="1d", geo_weighted=geo_weighted),
-            "mape":              lambda: self.mape(order="1d", geo_weighted=geo_weighted, eps=eps),
-            "smape":             lambda: self.smape(order="1d", geo_weighted=geo_weighted),
+            "mae":                lambda: self.mae(order="1d", geo_weighted=geo_weighted),
+            "bias":               lambda: self.err(order="1d", geo_weighted=geo_weighted),
+            "abs_bias":           lambda: self.abs_bias(order="1d", geo_weighted=geo_weighted),
+            "rmse":               lambda: self.rmse(order="1d", geo_weighted=geo_weighted),
+            "stderr":             lambda: self.stderr(order="1d", geo_weighted=geo_weighted),
+            "std_of_errs":        lambda: self.std_of_errs(order="1d", geo_weighted=geo_weighted),
+            "mape":               lambda: self.mape(order="1d", geo_weighted=geo_weighted, eps=eps),
+            "smape":              lambda: self.smape(order="1d", geo_weighted=geo_weighted),
             # Normalized metrics
-            "nrmse_global":      lambda: self.nrmse_global(geo_weighted=geo_weighted, eps=eps),
-            "nrmse_map_mean":    lambda: self.nrmse_map(order="1d", geo_weighted=geo_weighted, eps=eps),
-            "nmae_global":       lambda: self.nmae_global(geo_weighted=geo_weighted, eps=eps),
-            "nbias_global":      lambda: self.nbias_global(geo_weighted=geo_weighted, eps=eps),
-            "abs_nbias_global":  lambda: self.nabsbias_global(geo_weighted=geo_weighted, eps=eps),
-            "nmae_map_mean":     lambda: self.nmae_map(order="1d", geo_weighted=geo_weighted, eps=eps),
-            "nbias_map_mean":    lambda: self.nbias_map(order="1d", geo_weighted=geo_weighted, eps=eps),
+            "nrmse_global":       lambda: self.nrmse_global(geo_weighted=geo_weighted, eps=eps),
+            "nrmse_map_mean":     lambda: self.nrmse_map(order="1d", geo_weighted=geo_weighted, eps=eps),
+            "nmae_global":        lambda: self.nmae_global(geo_weighted=geo_weighted, eps=eps),
+            "nbias_global":       lambda: self.nbias_global(geo_weighted=geo_weighted, eps=eps),
+            "abs_nbias_global":   lambda: self.nabsbias_global(geo_weighted=geo_weighted, eps=eps),
+            "nmae_map_mean":      lambda: self.nmae_map(order="1d", geo_weighted=geo_weighted, eps=eps),
+            "nbias_map_mean":     lambda: self.nbias_map(order="1d", geo_weighted=geo_weighted, eps=eps),
             # Skill metrics
-            "r2_global":         lambda: self.r2_global(geo_weighted=geo_weighted),
-            "r2_flat":           lambda: self.r2_flat(geo_weighted=geo_weighted),
-            "corr_global":       lambda: self.corr_global(geo_weighted=geo_weighted, min_periods=2),
-            "corr_flat":         lambda: self.corr_flat(geo_weighted=geo_weighted, min_periods=2),
-            "acc_global":        lambda: self.acc_global(geo_weighted=geo_weighted, min_periods=2),
-            "acc_flat":          lambda: self.acc_flat(geo_weighted=geo_weighted, min_periods=2),
+            "r2_global":          lambda: self.r2_global(geo_weighted=geo_weighted),
+            "r2_flat":            lambda: self.r2_flat(geo_weighted=geo_weighted),
+            "corr_global":        lambda: self.corr_global(geo_weighted=geo_weighted, min_periods=2),
+            "corr_flat":          lambda: self.corr_flat(geo_weighted=geo_weighted, min_periods=2),
+            "acc_global":         lambda: self.acc_global(geo_weighted=geo_weighted, min_periods=2),
+            "acc_flat":           lambda: self.acc_flat(geo_weighted=geo_weighted, min_periods=2),
+            # New scalar metrics
+            "variance_ratio":     lambda: self.variance_ratio(order="1d", geo_weighted=geo_weighted, eps=eps),
+            "rmse_gradients":     lambda: self.rmse_gradients(order="1d", geo_weighted=geo_weighted),
+            # "crps":               lambda: self.crps(order="1d", geo_weighted=geo_weighted), # same as MAE
+            "ssim":               lambda: self.ssim(order="1d", geo_weighted=geo_weighted, window_size=5, eps=max(eps, 1e-12)),
+            "fss":                lambda: self.fss(threshold=0.0, order="1d", geo_weighted=geo_weighted, window_size=5, eps=max(eps, 1e-12)), # check threshold
             # Ensemble metrics
-            "nrmse_ens":         lambda: self.nrmse_ens(order="1d", geo_weighted=geo_weighted),
-            "rmse_ens":          lambda: self.rmse_ens(order="1d", geo_weighted=geo_weighted),
-            "mae_ens":           lambda: self.mae_ens(order="1d", geo_weighted=geo_weighted),
-            "bias_ens":          lambda: self.bias_ens(order="1d", geo_weighted=geo_weighted),
-            "r2_ens_global":     lambda: self.r2_ens_global(geo_weighted=geo_weighted),
-            "r2_ens_flat":       lambda: self.r2_ens_flat(geo_weighted=geo_weighted),
-            "corr_ens_global":   lambda: self.corr_ens_global(geo_weighted=geo_weighted, min_periods=2),
-            "corr_ens_flat":     lambda: self.corr_ens_flat(geo_weighted=geo_weighted, min_periods=2),
-            "acc_ens_global":    lambda: self.acc_ens_global(climatology="month", geo_weighted=geo_weighted, min_periods=2),
-            "acc_ens_flat":      lambda: self.acc_ens_flat(climatology="month", geo_weighted=geo_weighted, min_periods=2),
+            "nrmse_ens":          lambda: self.nrmse_ens(order="1d", geo_weighted=geo_weighted),
+            "rmse_ens":           lambda: self.rmse_ens(order="1d", geo_weighted=geo_weighted),
+            "mae_ens":            lambda: self.mae_ens(order="1d", geo_weighted=geo_weighted),
+            "bias_ens":           lambda: self.bias_ens(order="1d", geo_weighted=geo_weighted),
+            "r2_ens_global":      lambda: self.r2_ens_global(geo_weighted=geo_weighted),
+            "r2_ens_flat":        lambda: self.r2_ens_flat(geo_weighted=geo_weighted),
+            "corr_ens_global":    lambda: self.corr_ens_global(geo_weighted=geo_weighted, min_periods=2),
+            "corr_ens_flat":      lambda: self.corr_ens_flat(geo_weighted=geo_weighted, min_periods=2),
+            "acc_ens_global":     lambda: self.acc_ens_global(climatology="month", geo_weighted=geo_weighted, min_periods=2),
+            "acc_ens_flat":       lambda: self.acc_ens_flat(climatology="month", geo_weighted=geo_weighted, min_periods=2),
+            # New ensemble metrics
+            "variance_ratio_ens": lambda: self.variance_ratio_ens(order="1d", geo_weighted=geo_weighted, eps=eps),
+            "rmse_gradients_ens": lambda: self.rmse_gradients_ens(order="1d", geo_weighted=geo_weighted),
+            "crps_ens":           lambda: self.crps_ens(order="1d", geo_weighted=geo_weighted),
+            "ssim_ens":           lambda: self.ssim_ens(order="1d", geo_weighted=geo_weighted, window_size=5, eps=max(eps, 1e-12)),
+            "fss_ens":            lambda: self.fss_ens(threshold=0.0, order="1d", geo_weighted=geo_weighted, window_size=5, eps=max(eps, 1e-12)), # check threshold
             # Std of data and truth
-            "std_avg_data":      lambda: self.std_data(data_type="data", order="1d", geo_weighted=geo_weighted),
-            "std_avg_truth":     lambda: self.std_data(data_type="truth", order="1d", geo_weighted=geo_weighted),
-            "avg_std_data":      lambda: self.avg_of_std(data_type="data", order="1d", geo_weighted=geo_weighted),
-            "avg_std_truth":     lambda: self.avg_of_std(data_type="truth", order="1d", geo_weighted=geo_weighted),
+            "std_avg_data":       lambda: self.std_data(data_type="data", order="1d", geo_weighted=geo_weighted),
+            "std_avg_truth":      lambda: self.std_data(data_type="truth", order="1d", geo_weighted=geo_weighted),
+            "avg_std_data":       lambda: self.avg_of_std(data_type="data", order="1d", geo_weighted=geo_weighted),
+            "avg_std_truth":      lambda: self.avg_of_std(data_type="truth", order="1d", geo_weighted=geo_weighted),
         }
 
         map_fns = {
-            "mae":               lambda: self.mae(order="2d", geo_weighted=geo_weighted),
-            "bias":              lambda: self.err(order="2d", geo_weighted=geo_weighted),
-            "abs_bias":          lambda: self.abs_bias(order="2d", geo_weighted=geo_weighted),
-            "rmse":              lambda: self.rmse(order="2d", geo_weighted=geo_weighted),
-            "stderr":            lambda: self.stderr(order="2d", geo_weighted=geo_weighted),
-            "std_of_errs":       lambda: self.std_of_errs(order="2d", geo_weighted=geo_weighted),
-            "mape":              lambda: self.mape(order="2d", geo_weighted=geo_weighted, eps=eps),
-            "smape":             lambda: self.smape(order="2d", geo_weighted=geo_weighted),
-            "nrmse":             lambda: self.nrmse_map(order="2d", geo_weighted=geo_weighted, eps=eps),
-            "nmae":              lambda: self.nmae_map(order="2d", geo_weighted=geo_weighted, eps=eps),
-            "nbias":             lambda: self.nbias_map(order="2d", geo_weighted=geo_weighted, eps=eps),
-            "abs_nbias":         lambda: self.nabsbias_map(order="2d", geo_weighted=geo_weighted, eps=eps),
-            "r2":                lambda: self.r2_map(),
-            "corr":              lambda: self.corr_map(min_periods=2),
-            "acc":               lambda: self.acc_map(min_periods=2),
+            "mae":                lambda: self.mae(order="2d", geo_weighted=geo_weighted),
+            "bias":               lambda: self.err(order="2d", geo_weighted=geo_weighted),
+            "abs_bias":           lambda: self.abs_bias(order="2d", geo_weighted=geo_weighted),
+            "rmse":               lambda: self.rmse(order="2d", geo_weighted=geo_weighted),
+            "stderr":             lambda: self.stderr(order="2d", geo_weighted=geo_weighted),
+            "std_of_errs":        lambda: self.std_of_errs(order="2d", geo_weighted=geo_weighted),
+            "mape":               lambda: self.mape(order="2d", geo_weighted=geo_weighted, eps=eps),
+            "smape":              lambda: self.smape(order="2d", geo_weighted=geo_weighted),
+            "nrmse":              lambda: self.nrmse_map(order="2d", geo_weighted=geo_weighted, eps=eps),
+            "nmae":               lambda: self.nmae_map(order="2d", geo_weighted=geo_weighted, eps=eps),
+            "nbias":              lambda: self.nbias_map(order="2d", geo_weighted=geo_weighted, eps=eps),
+            "abs_nbias":          lambda: self.nabsbias_map(order="2d", geo_weighted=geo_weighted, eps=eps),
+            "r2":                 lambda: self.r2_map(),
+            "corr":               lambda: self.corr_map(min_periods=2),
+            "acc":                lambda: self.acc_map(min_periods=2),
+            # New metrics maps
+            "variance_ratio":     lambda: self.variance_ratio(order="2d", geo_weighted=geo_weighted, eps=eps),
+            "rmse_gradients":     lambda: self.rmse_gradients(order="2d", geo_weighted=geo_weighted),
+            # "crps":               lambda: self.crps(order="2d", geo_weighted=geo_weighted), # same as MAE
+            "ssim":               lambda: self.ssim(order="2d", geo_weighted=geo_weighted, window_size=5, eps=max(eps, 1e-12)),
             # Ensemble metrics
-            "std_data_ens":      lambda: self.std_ens(data_type="data", order="2d", geo_weighted=geo_weighted),
-            "std_truth_ens":     lambda: self.std_ens(data_type="truth", order="2d", geo_weighted=geo_weighted),
-            "nrmse_ens":         lambda: self.nrmse_ens(order="2d", geo_weighted=geo_weighted),
-            "rmse_ens":          lambda: self.rmse_ens(order="2d", geo_weighted=geo_weighted),
-            "mae_ens":           lambda: self.mae_ens(order="2d", geo_weighted=geo_weighted),
-            "bias_ens":          lambda: self.bias_ens(order="2d", geo_weighted=geo_weighted),
-            "r2_ens":            lambda: self.r2_ens_map(),
-            "corr_ens":          lambda: self.corr_ens_map(min_periods=2),
-            "acc_ens":           lambda: self.acc_ens_map(climatology="month", min_periods=2),
+            "std_data_ens":       lambda: self.std_ens(data_type="data", order="2d", geo_weighted=geo_weighted),
+            "std_truth_ens":      lambda: self.std_ens(data_type="truth", order="2d", geo_weighted=geo_weighted),
+            "nrmse_ens":          lambda: self.nrmse_ens(order="2d", geo_weighted=geo_weighted),
+            "rmse_ens":           lambda: self.rmse_ens(order="2d", geo_weighted=geo_weighted),
+            "mae_ens":            lambda: self.mae_ens(order="2d", geo_weighted=geo_weighted),
+            "bias_ens":           lambda: self.bias_ens(order="2d", geo_weighted=geo_weighted),
+            "r2_ens":             lambda: self.r2_ens_map(),
+            "corr_ens":           lambda: self.corr_ens_map(min_periods=2),
+            "acc_ens":            lambda: self.acc_ens_map(climatology="month", min_periods=2),
+            # New ensemble metrics maps
+            "variance_ratio_ens": lambda: self.variance_ratio_ens(order="2d", geo_weighted=geo_weighted, eps=eps),
+            "rmse_gradients_ens": lambda: self.rmse_gradients_ens(order="2d", geo_weighted=geo_weighted),
+            "crps_ens":           lambda: self.crps_ens(order="2d", geo_weighted=geo_weighted),
+            "ssim_ens":           lambda: self.ssim_ens(order="2d", geo_weighted=geo_weighted, window_size=5, eps=max(eps, 1e-12)),
             # Std of data and truth
-            "std_data":          lambda: self.std_data(data_type="data", order="2d", geo_weighted=geo_weighted),
-            "std_truth":         lambda: self.std_data(data_type="truth", order="2d", geo_weighted=geo_weighted),
+            "std_data":           lambda: self.std_data(data_type="data", order="2d", geo_weighted=geo_weighted),
+            "std_truth":          lambda: self.std_data(data_type="truth", order="2d", geo_weighted=geo_weighted),
         }
 
         # init models
