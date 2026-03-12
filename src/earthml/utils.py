@@ -1097,6 +1097,7 @@ def regrid_to_rectilinear (
     region,
     resolution,
     vars_to_regrid=None,
+    inpaint_nan=True,
 ) -> xr.Dataset:
     """
     Regrid src_ds from its native grid (rectilinear or curvilinear) to a new
@@ -1180,12 +1181,13 @@ def regrid_to_rectilinear (
             method="linear",
         )
 
-        # Bilinear inpainting on the rectilinear grid using index positions
-        regridded = (
-            regridded
-            .interpolate_na(dim=lat_name, method="linear", use_coordinate=False)
-            .interpolate_na(dim=lon_name, method="linear", use_coordinate=False)
-        )
+        if inpaint_nan:
+            # Bilinear inpainting on the rectilinear grid using index positions
+            regridded = (
+                regridded
+                .interpolate_na(dim=lat_name, method="linear", use_coordinate=False)
+                .interpolate_na(dim=lon_name, method="linear", use_coordinate=False)
+            )
 
         # Force coords exactly to our target (avoid tiny FP diffs)
         regridded = regridded.assign_coords(
@@ -1283,12 +1285,13 @@ def regrid_to_rectilinear (
             attrs=da.attrs,
         )
 
-        # Bilinear inpainting on the rectilinear grid using index positions
-        da_out = (
-            da_out
-            .interpolate_na(dim=lat_name, method="linear", use_coordinate=False)
-            .interpolate_na(dim=lon_name, method="linear", use_coordinate=False)
-        )
+        if inpaint_nan:
+            # Bilinear inpainting on the rectilinear grid using index positions
+            da_out = (
+                da_out
+                .interpolate_na(dim=lat_name, method="linear", use_coordinate=False)
+                .interpolate_na(dim=lon_name, method="linear", use_coordinate=False)
+            )
 
         data_vars_out[name] = da_out
 

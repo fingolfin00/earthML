@@ -38,6 +38,7 @@ class EarthkitSource (BaseSource):
         xarray_concat_extra_args: dict = None,
         regrid_resolution: float | tuple[float, float] = None,  # float or (lat_res, lon_res) in degrees
         regrid_vars: list[str] = None,
+        inpaint_nan: bool = False, # default to not inpaint
         convert_unit: dict = None, # dict of var_name: (func, target_unit) to convert variable unit (e.g. {"temperature": (lambda x: x - 273.15, "C")})
         earthkit_cache_dir: str = Path("/tmp/earthkit-cache/"),
     ):
@@ -70,6 +71,7 @@ class EarthkitSource (BaseSource):
         self.regrid_resolution = regrid_resolution
         self.var_name_list = [v.name for v in self.data_selection.variable] if isinstance(self.data_selection.variable, list) else [self.data_selection.variable.name]
         self.regrid_vars = regrid_vars if regrid_vars is not None else self.var_name_list
+        self.inpaint_nan = inpaint_nan
         self.convert_unit = convert_unit
         self.ekd_version = ekd.__version__
 
@@ -623,6 +625,7 @@ class EarthkitSource (BaseSource):
                 region=self.data_selection.region,
                 resolution=self.regrid_resolution,
                 vars_to_regrid=self.regrid_vars,
+                inpaint_nan=self.inpaint_nan,
             )
             lat_res_regrid, lon_res_regrid = get_ds_resolution(ds_all)
             print(f"Target rectilinear resolutions: lat {lat_res_regrid:.2f}, lon {lon_res_regrid:.2f}")
