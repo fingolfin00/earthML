@@ -19,6 +19,7 @@ if __name__ == "__main__":
     experiment_mode             = "full"            # full, short, debug
     only_longest_train_period   = True              # only train on the largest train period (if False, train on all periods, which can be much slower but allows to see variability across train periods)
     add_hyper_exp_name_suffix   = False             # if True use also batch_size, max_epochs, initial_learning_rate in exp name (and resulting folder) automatically extending exp_suffix
+    inpaint_nan                 = True              # if True, inpaint NaN values in input and target data with bilinear interpolation
 
     exp_root_folder             = "/Users/jacopodallaglio/ML/experiments_earthML_ocean/"
     earthkit_cache_dir          = "/Users/jacopodallaglio/ML/.earthkit-cache"   # if using earthkit datasource
@@ -98,6 +99,7 @@ if __name__ == "__main__":
                 var_exp=var_exp,
                 host_machine=host_machine,
                 only_longest_train_period=only_longest_train_period,
+                inpaint_nan=inpaint_nan,
                 train_period=train_period,
                 months_train=months_train,
                 cutoff_oras5_consolidated=cutoff_oras5_consolidated,

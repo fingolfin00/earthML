@@ -89,6 +89,7 @@ def build_monthly_experiment_spec (
     var_exp: str,
     host_machine: str,
     only_longest_train_period: bool,
+    inpaint_nan: bool,
     train_period: TimeRange,
     months_train: int,
     cutoff_oras5_consolidated: datetime,
@@ -163,7 +164,7 @@ def build_monthly_experiment_spec (
         raise ValueError(f"Experiment type {experiment_type} not supported.")
 
     # 5) common provider kwargs
-    provider_kwargs_common = dict(regrid_resolution=regrid_resolution)
+    provider_kwargs_common = dict(regrid_resolution=regrid_resolution, inpaint_nan=inpaint_nan)
 
     # 6) leadtime conventions + target provider kwargs common
     # if experiment_type == "juno-cmcc_juno-cmcc":
