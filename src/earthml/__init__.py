@@ -3,6 +3,7 @@ from importlib.metadata import version as _version
 __version__ = _version("earthml")
 
 from .dataclasses import DataSource, DataSelection, ExperimentConfig, ExperimentDataset
+from .accessors.geo import EarthAccessor as _EarthAccessor
 
 __all__ = [
     "__version__",

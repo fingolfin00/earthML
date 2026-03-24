@@ -770,21 +770,6 @@ def convert_unit (ds, convert_unit_d):
 
     return ds
 
-def geo_weights (obj: xr.Dataset | xr.DataArray, lat_dim: str) -> xr.DataArray:
-    """Cos(lat) weights aligned to obj's latitude coordinate."""
-    return xr.DataArray(
-        np.cos(np.deg2rad(obj[lat_dim])),
-        coords={lat_dim: obj[lat_dim]},
-        dims=(lat_dim,),
-    )
-
-def geo_avg (data: xr.Dataset | xr.DataArray, lat_dim: str, lon_dim: str) -> xr.Dataset | xr.DataArray:
-    """Geographically weighted mean over lat/lon using cos(lat)."""
-    # Weights must be an xarray DataArray aligned to the latitude dimension
-    w = geo_weights(data, lat_dim)
-    # Weighted mean over spatial dims; keep time (and any other non-spatial dims)
-    return data.weighted(w).mean(dim=(lat_dim, lon_dim), skipna=True)
-
 #--------
 # Regrid
 #--------
