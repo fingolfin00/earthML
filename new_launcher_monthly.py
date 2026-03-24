@@ -13,14 +13,13 @@ if __name__ == "__main__":
     # ----------------------------------------------------------------------------------
     # User params
     # ----------------------------------------------------------------------------------
-    max_retries                 = 10                # n attempts in case of errors in inner loop
-    run_mode                    = "train_test"      # train_test, dryrun, train, test
-    host_machine                = "local"           # local, juno
-    experiment_mode             = "full"            # full, short, debug
-    only_longest_train_period   = True              # only train on the largest train period (if False, train on all periods, which can be much slower but allows to see variability across train periods)
-    add_hyper_exp_name_suffix   = False             # if True use also batch_size, max_epochs, initial_learning_rate in exp name (and resulting folder) automatically extending exp_suffix
-    inpaint_nan                 = True              # if True, inpaint NaN values in input and target data with bilinear interpolation
-    extra_exp_suffix            = ""                # additional custom suffix to add to exp name (and resulting folder), e.g. "_debug" or "_try1"
+    max_retries                 = 10                        # n attempts in case of errors in inner loop
+    run_mode                    = "train_test_on_train"     # train_test_on_train, train_test, dryrun, train, test
+    host_machine                = "local"                   # local, juno
+    experiment_mode             = "short"                   # full, short, debug
+    only_longest_train_period   = True                      # only train on the largest train period (if False, train on all periods, which can be much slower but allows to see variability across train periods)
+    add_hyper_exp_name_suffix   = False                     # if True use also batch_size, max_epochs, initial_learning_rate in exp name (and resulting folder) automatically extending exp_suffix
+    extra_exp_suffix            = ""                        # additional custom suffix to add to exp name (and resulting folder), e.g. "_debug" or "_try1"
 
     exp_root_folder             = "/Users/jacopodallaglio/ML/experiments_earthML_ocean/"
     earthkit_cache_dir          = "/Users/jacopodallaglio/ML/.earthkit-cache"   # if using earthkit datasource
@@ -36,9 +35,9 @@ if __name__ == "__main__":
     start_test_date             = datetime(2021, 1, 1)
     end_test_date               = datetime(2022, 12, 31)
 
-    target_realization_avg      = False             # average over realizations for target variable (if True, add _taravg suffix to exp_suffix)
-    realization_as_channel      = False             # use realization a channel dim (if True, add _rasc suffix to exp_suffix)
-    n_input_realizations        = 30                # used only if realization_as_channel = True
+    target_realization_avg      = False                     # average over realizations for target variable (if True, add _taravg suffix to exp_suffix)
+    realization_as_channel      = False                     # use realization a channel dim (if True, add _rasc suffix to exp_suffix)
+    n_input_realizations        = 30                        # used only if realization_as_channel = True
 
     # Hyperparams
     batch_size                  = 32
