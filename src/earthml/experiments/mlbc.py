@@ -328,10 +328,12 @@ class ExperimentMLBC:
 
         # Remove climatology if requested
         if self.config.anomaly:
+            print("Calculate target and input climatologies...")
+            time_dim = dims[0]
             target_clim_ts = calculate_climatology(sources["target"].ds, groupby="month") # always monthly climatology
-            sources["target"].ds = sources["target"].ds.groupby("month") - target_clim_ts
+            sources["target"].ds = sources["target"].ds.groupby(f"{time_dim}.month") - target_clim_ts
             input_clim_ts = calculate_climatology(sources["input"].ds, groupby="month")
-            sources["input"].ds = sources["input"].ds.groupby("month") - input_clim_ts
+            sources["input"].ds = sources["input"].ds.groupby(f"{time_dim}.month") - input_clim_ts
 
         # Save datasets if requested
         for e in exp_ds:
