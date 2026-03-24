@@ -35,7 +35,6 @@ class JunoLocalSource (MFXarrayLocalSource):
         plus_timedelta: timedelta = None,
         regrid_resolution=None,  # float or (lat_res, lon_res) in degrees
         regrid_vars=None,
-        inpaint_nan=False, # default to not inpaint
     ):
         super().__init__ (datasource, root_path)
         self.engine = engine
@@ -52,7 +51,6 @@ class JunoLocalSource (MFXarrayLocalSource):
         )
         self.regrid_resolution = regrid_resolution
         self.regrid_vars = regrid_vars
-        self.inpaint_nan = inpaint_nan
 
     def _get_data_filenames(
         self,
@@ -312,7 +310,6 @@ class JunoLocalSource (MFXarrayLocalSource):
                 region=self.data_selection.region,
                 resolution=self.regrid_resolution,
                 vars_to_regrid=self.regrid_vars,
-                inpaint_nan=self.inpaint_nan,
             )
 
             lat_res_regrid, lon_res_regrid = get_ds_resolution(ds)

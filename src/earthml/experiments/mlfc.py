@@ -417,6 +417,13 @@ class ExperimentMLFC:
         if self.config.torch_preprocess_fn is not None:
             input_ds, target_ds = self.config.torch_preprocess_fn(input_ds, target_ds)
 
+        # Inpaint nan if requested
+        if self.config.inpaint_nan:
+            print(f"Inpainting NaN values in {data_type} datasets with bilinear interpolation...")
+            input_ds = inpaint_nan_bilinear(input_ds)
+            target_ds = inpaint_nan_bilinear(target_ds)
+
+        # Create torch dataset
         torch_dataset = XarrayDataset(
             input_ds, target_ds,
             target_realization_avg=self.config.target_realization_avg,

@@ -28,6 +28,8 @@ if __name__ == "__main__":
     vars_sweep                  = ["sst", "ssh", "sss", "t14d", "t17d"] # e.g. ["sst", "ssh", "sss", "t14d", "t17d"]
     regions_sweep               = ["pacific"]                           # e.g. ["pacific", "atlantic", "indian"]
 
+    inpaint_nan                 = False                     # whether to inpaint nan values in input and target datasets (after loading, before torch dataset generation)
+
     start_train_date            = datetime(1993, 7, 1)
     end_train_date              = datetime(2020, 12, 31)
     start_test_date             = datetime(2021, 1, 1)
@@ -100,7 +102,6 @@ if __name__ == "__main__":
                 var_exp=var_exp,
                 host_machine=host_machine,
                 only_longest_train_period=only_longest_train_period,
-                inpaint_nan=inpaint_nan,
                 train_period=train_period,
                 months_train=months_train,
                 cutoff_oras5_consolidated=cutoff_oras5_consolidated,
@@ -205,6 +206,7 @@ if __name__ == "__main__":
                         target_provider_kwargs=target_provider_kwargs,
                         save_train=True,
                         save_test=True,
+                        inpaint_nan=inpaint_nan,
                         torch_preprocess_fn=None,
                         target_realization_avg=target_realization_avg,
                         realization_as_channel=realization_as_channel,
