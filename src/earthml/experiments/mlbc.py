@@ -926,8 +926,16 @@ class ExperimentMLBC:
         )
 
         # Restore with target climatology if trained on anomalies
+        # print("PREDS vars:", ds.data_vars)
         if self.config.anomaly:
-            ds = ds.groupby(f"{tdim}.month") + self.target_clim_ts
+            # print("TARGET CLIM vars:", self.target_clim_ts.data_vars)
+            # Rename clim vars
+            assert len(self.target_clim_ts.data_vars) == len(ds.data_vars)
+            clim_ds = self.target_clim_ts.rename({
+                var_clim: var
+                for var_clim, var in zip(self.target_clim_ts.data_vars, ds.data_vars)
+            })
+            ds = ds.groupby(f"{tdim}.month") + clim_ds
 
         compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
         encoding_zarr = {v.name: {"compressors": compressor} for v in self.test_var_list}
