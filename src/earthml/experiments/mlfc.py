@@ -1,6 +1,6 @@
 import time, multiprocessing, joblib
 from pathlib import Path
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Literal
 from rich import print
 from rich.console import Console
 import numpy as np
@@ -32,14 +32,8 @@ class ExperimentMLFC:
         self.per_channel_masked_mean = False if self.config.output_realizations else True # TODO not sure it's super general
 
         # Get test variable list,
-        # TODO I have doubts on this implementation cause we are picking the first test datasource and it may not be representative of the others,
-        # but for now we assume all test datasources have the same variable and region selection
-        if isinstance(self.config.test, list):
-            test_config_datasource = self.config.test[0].datasource[0] if isinstance(self.config.test[0].datasource, list) else self.config.test[0].datasource
-            test_config_datasel = test_config_datasource.data_selection
-        else:
-            test_config_datasel = self.config.test.datasource.data_selection
-        self.test_var_list = test_config_datasel.variable if isinstance(test_config_datasel.variable, list) else [test_config_datasel.variable]
+        self.test_var_list = self._get_var_list(self.config.test)
+        self.train_var_list = self._get_var_list(self.config.train)
 
         # Setup paths and make dirs if necessary
         self._path_setup()
@@ -57,26 +51,29 @@ class ExperimentMLFC:
         self.normalize = None
         self.train_datamodule = None
 
-        # Init predictions
-        preds_filename = "test_preds"
         self.consolidated_zarr = False
-        self.preds_store = self.config.work_path.joinpath(Path(preds_filename).with_suffix(".zarr"))
-        preds_exp = ExperimentDataset(
-            role='prediction',
-            datasource=DataSource(
-                "xarray-local",
-                self.config.test[0].datasource[0].data_selection if isinstance(self.config.test[0].datasource, list) else self.config.test[0].datasource.data_selection,
-            ),
-            source_params={
-                'root_path': self.preds_store,
-                'xarray_args': {'consolidated': self.consolidated_zarr}
-            }
-        )
-        self.config.test.append(preds_exp)
+
+        # Init predictions
+        self.test_preds_store = self.config.work_path / Path("test_preds").with_suffix(".zarr")
+        test_preds_exp = self._init_experiment(self.test_preds_store, self.config.test)
+        self.config.test.append(test_preds_exp)
+
+        self.train_preds_store = self.config.work_path / Path("train_preds").with_suffix(".zarr")
+        train_preds_exp = self._init_experiment(self.train_preds_store, self.config.train)
+        self.config.train.append(train_preds_exp)
 
         # Init source data objects
         self.source_train_data = self._init_source_data(self.config.train, "train")
         self.source_test_data  = self._init_source_data(self.config.test,  "test")
+
+        # Init mask dataset
+        mask_filename = "mask"
+
+        self.test_mask_store = self.mask_folder_path.joinpath(Path("test_"+mask_filename).with_suffix(".zarr"))
+        self.test_mask_exp = self._init_experiment(self.test_mask_store, self.config.test)
+
+        self.train_mask_store = self.mask_folder_path.joinpath(Path("train_"+mask_filename).with_suffix(".zarr"))
+        self.train_mask_exp = self._init_experiment(self.train_mask_store, self.config.train)
 
         # Handle latitudes for optional spatial weighting
         self.latitudes = None
@@ -141,19 +138,21 @@ class ExperimentMLFC:
                 # 'model': self.model,
                 'test_data': self.source_test_data,
                 'train_data': self.source_train_data,
+                'test_mask_data': self.test_mask_exp,
+                'train_mask_data': self.train_mask_exp,
             }, f)
 
-    def _configure_torch_env (self):
+    def _configure_torch_env(self):
         import os
         os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-    def _configure_torch_runtime (self):
+    def _configure_torch_runtime(self):
         torch.set_float32_matmul_precision('medium')  # or 'high'
         # Ensure deterministic behavior
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False 
 
-    def _path_setup (self):
+    def _path_setup(self):
         self.work_path = Path(self.config.work_path)
         # Weights location
         self.weights_folder_path = self.work_path.joinpath("./weights")
@@ -166,6 +165,9 @@ class ExperimentMLFC:
         norm_data_folder_path.mkdir(parents=True, exist_ok=True)
         self.normdata_input_path = norm_data_folder_path.joinpath(normdata_input_filename)
         self.normdata_target_path = norm_data_folder_path.joinpath(normdata_target_filename)
+        # Mask location
+        self.mask_folder_path = self.work_path.joinpath("./mask")
+        self.mask_folder_path.mkdir(parents=True, exist_ok=True)
         # Lightning checkpoints location
         self.ckpt_filename = "checkpoint"
         self.ckpt_folder_path = self.work_path.joinpath("./checkpoints")
@@ -177,11 +179,22 @@ class ExperimentMLFC:
             self.ckpt_path = self.ckpt_folder_path.joinpath(f"{self.ckpt_filename}.ckpt")
 
     @staticmethod
-    def _get_latitudes (ds: xr.Dataset) -> np.ndarray:
+    def _get_latitudes(ds: xr.Dataset) -> np.ndarray:
         print("Getting latitudes from dataset for loss function...")
         return ds[guess_lat_dim(ds)].values
 
-    def _remove_corrupted_ts (self, ds: xr.Dataset) -> Tuple[xr.Dataset, set]:
+    @staticmethod
+    def _get_var_list(exp: ExperimentDataset | List[ExperimentDataset]):
+        # TODO I have doubts on this implementation cause we are picking the first test datasource and it may not be representative of the others,
+        # but for now we assume all test datasources have the same variable and region selection
+        if isinstance(exp, list):
+            test_config_datasource = exp[0].datasource[0] if isinstance(exp[0].datasource, list) else exp[0].datasource
+            test_config_datasel = test_config_datasource.data_selection
+        else:
+            test_config_datasel = exp.datasource.data_selection
+        return test_config_datasel.variable if isinstance(test_config_datasel.variable, list) else [test_config_datasel.variable]
+
+    def _remove_corrupted_ts(self, ds: xr.Dataset) -> Tuple[xr.Dataset, set]:
         time_dim = guess_time_dim(ds)
         if time_dim is None:
             return ds, set()
@@ -223,7 +236,27 @@ class ExperimentMLFC:
 
         return ds, missed
 
-    def _create_xarray_local_source (self, save_path: str | Path, datasource_list: list[DataSource]):
+    def _init_experiment(self, exp_store: Path, exp_datasets: List[ExperimentDataset]):
+        base_dataset = exp_datasets[0]
+        datasource = base_dataset.datasource
+        data_selection = (
+            datasource[0].data_selection
+            if isinstance(datasource, list)
+            else datasource.data_selection
+        )
+
+        exp = ExperimentDataset(
+            role="prediction",
+            datasource=DataSource("xarray-local", data_selection),
+            source_params={
+                "root_path": exp_store,
+                "xarray_args": {"consolidated": self.consolidated_zarr},
+            },
+        )
+
+        return exp
+
+    def _create_xarray_local_source(self, save_path: str | Path, datasource_list: list[DataSource]):
         source_params = dict(
             root_path=save_path,
             xarray_args={
@@ -242,7 +275,7 @@ class ExperimentMLFC:
         )
         return source_params, src
 
-    def _init_source_data (self, exp_ds: ExperimentDataset | List[ExperimentDataset], source_type: str):
+    def _init_source_data(self, exp_ds: ExperimentDataset | List[ExperimentDataset], source_type: str):
         """Returns populated Source instances"""
 
         # Normalize to list
@@ -322,7 +355,7 @@ class ExperimentMLFC:
         #         print(f"Number of {source_type} {role}: {len(source.elements.samples)}")
         return sources
 
-    def _init_callbacks (self):
+    def _init_callbacks(self):
         # Initialize trainer callbacks
         callbacks = []
         # Early stopping
@@ -352,7 +385,7 @@ class ExperimentMLFC:
         callbacks.append(best_weights_callback)
         return callbacks
 
-    def _init_train_trainer (self):
+    def _init_train_trainer(self):
         self._configure_torch_runtime()
         # Initialize Lightning trainer
         return L.Trainer(
@@ -367,7 +400,7 @@ class ExperimentMLFC:
             # deterministic=True
         )
 
-    def _init_test_trainer (self):
+    def _init_test_trainer(self):
         self._configure_torch_runtime()
         return L.Trainer(
             max_epochs=self.config.epochs,
@@ -378,7 +411,7 @@ class ExperimentMLFC:
             # deterministic=True
         )
 
-    def _generate_torch_dataset (self, source_data: Dict[str, BaseSource], experiments: ExperimentDataset | List[ExperimentDataset], data_type: str):
+    def _generate_torch_dataset(self, source_data: Dict[str, BaseSource], experiments: ExperimentDataset | List[ExperimentDataset], data_type: str):
         if not isinstance(experiments, list):
             experiments = [experiments]
         exp_roles = [e.role for e in experiments if e.role != 'prediction']
@@ -417,6 +450,36 @@ class ExperimentMLFC:
         if self.config.torch_preprocess_fn is not None:
             input_ds, target_ds = self.config.torch_preprocess_fn(input_ds, target_ds)
 
+        # Create common mask and save
+        input_valid_mask = create_valid_mask_ds(input_ds)
+        target_valid_mask = create_valid_mask_ds(target_ds)
+
+        common_mask = (input_valid_mask & target_valid_mask).rename("common_mask")
+
+        mask_ds = xr.Dataset(
+            {
+                "common_mask": common_mask.astype("uint8"),  # smaller than bool
+            }
+        )
+        mask_ds["common_mask"].attrs.update(
+            {
+                "description": "Common validity mask for aligned input and target datasets",
+                "values": "1=valid, 0=masked",
+            }
+        )
+
+        compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
+        encoding_zarr = {"common_mask": {"compressors": compressor}}
+
+        if data_type == "Train":
+            print(f"Save mask to {self.train_mask_store}")
+            mask_ds.to_zarr(self.train_mask_store, encoding=encoding_zarr, mode="w", consolidated=self.consolidated_zarr)
+        elif data_type == "Test":
+            print(f"Save mask to {self.test_mask_store}")
+            mask_ds.to_zarr(self.test_mask_store, encoding=encoding_zarr, mode="w", consolidated=self.consolidated_zarr)
+        else:
+            raise ValueError(f"Unknown data_type {data_type} for mask saving")
+
         # Inpaint nan if requested
         if self.config.inpaint_nan:
             print(f"Inpainting NaN values in {data_type} datasets with bilinear interpolation...")
@@ -431,6 +494,7 @@ class ExperimentMLFC:
             output_realizations=self.config.output_realizations,
         )
 
+        # Compute stats
         x_stats = Normalize._masked_metrics(
             pred=torch_dataset.x,
             target=torch_dataset.x,
@@ -452,32 +516,49 @@ class ExperimentMLFC:
         x_mean, x_std = x_stats["target_mean"], x_stats["target_std"]
         y_mean, y_std = y_stats["target_mean"], y_stats["target_std"]
 
+        # Count masked elements
+        x_masked = (~torch_dataset.x_mask).sum().item()
+        y_masked = (~torch_dataset.y_mask).sum().item()
+
+        x_total = torch_dataset.x_mask.numel()
+        y_total = torch_dataset.y_mask.numel()
+
         self.rich_console.print(Table({f'{data_type} dataset': {
             'input': {
                 'shape': torch_dataset.x.shape,
                 'mean': x_mean,
                 'std': x_std,
+                'masked_elements': x_masked,
+                'masked_fraction': x_masked / x_total,
                 'source': source_data['input'].datasource.source
             },
             'target': {
                 'shape': torch_dataset.y.shape,
                 'mean': y_mean,
                 'std': y_std,
+                'masked_elements': y_masked,
+                'masked_fraction': y_masked / y_total,
                 'source': source_data['target'].datasource.source
             },
-            # 'loading_time': loading_time
         }}).table)
 
         return torch_dataset
 
     @staticmethod
-    def _to_float (x):
+    def _to_float(x):
         try:
             return float(x.item()) if hasattr(x, "item") else float(x)
         except Exception:
             return x
 
-    def _make_test_info_table (self, test_dataset, preds_norm, preds_rescaled):
+    def _make_test_info_table(
+        self,
+        test_dataset,
+        source_test_data,
+        preds_norm,
+        preds_rescaled,
+        test_var_list: List,
+    ):
         """
         Returns:
         meta: dict (run metadata)
@@ -490,10 +571,12 @@ class ExperimentMLFC:
         """
         var_cols = {}
 
-        def _pack (name: str,
-                x: torch.Tensor, x_mask: torch.Tensor,
-                y: torch.Tensor, y_mask: torch.Tensor,
-                pn: torch.Tensor, pr: torch.Tensor):
+        def _pack(
+                name: str,
+            x: torch.Tensor, x_mask: torch.Tensor,
+            y: torch.Tensor, y_mask: torch.Tensor,
+            pn: torch.Tensor, pr: torch.Tensor
+        ):
             # Masked stats (means/stds) for x and y (computed on their own masks)
             x_stats = Normalize._masked_metrics(
                 pred=x, target=x,
@@ -552,7 +635,7 @@ class ExperimentMLFC:
 
         if self.config.realization_as_channel:
             # only 1 var support for R as C
-            name = getattr(next(iter(self.test_var_list)), "name", str(next(iter(self.test_var_list))))
+            name = getattr(next(iter(test_var_list)), "name", str(next(iter(test_var_list))))
             _pack(
                 name=name,
                 x=test_dataset.x, x_mask=test_dataset.x_mask,
@@ -560,7 +643,7 @@ class ExperimentMLFC:
                 pn=preds_norm, pr=preds_rescaled,
             )
         else:
-            for i, var in enumerate(self.test_var_list):
+            for i, var in enumerate(test_var_list):
                 name = getattr(var, "name", str(var))
                 _pack(
                     name=name,
@@ -572,15 +655,15 @@ class ExperimentMLFC:
         meta = {
             "device": str(self.device),
             "torch_workers": self.torch_workers,
-            "input source": getattr(self.source_test_data["input"].datasource, "source", ""),
-            "target source": getattr(self.source_test_data["target"].datasource, "source", ""),
+            "input source": getattr(source_test_data["input"].datasource, "source", ""),
+            "target source": getattr(source_test_data["target"].datasource, "source", ""),
             "ckpt_path": str(getattr(self, "ckpt_path", "")),
             "weights_path": str(getattr(self, "weights_path", "")),
         }
 
         return meta, var_cols
 
-    def train (self):
+    def train(self):
         # Generate torch train dataset
         train_dataset = self._generate_torch_dataset(self.source_train_data, self.config.train, 'Train')
 
@@ -612,23 +695,31 @@ class ExperimentMLFC:
             ckpt_path=ckpt_path,
         )
 
-    def test (self, weights_filename=None):
-        test_dataset = self._generate_torch_dataset(self.source_test_data, self.config.test, 'Test')
+    def _test(
+        self,
+        test_data_type: Literal['Test', 'Train'],
+        test_data: Dict, # dict of sources
+        test_exps: ExperimentDataset | List[ExperimentDataset],
+        preds_store: Path,
+        var_list: List,
+        weights_filename: str | Path | None = None,
+    ):
+        dataset = self._generate_torch_dataset(test_data, test_exps, test_data_type)
 
         # Normalize input
         if not self.normalize_input:
             print(f"Load normalization data from {self.normdata_input_path}")
             self.normalize_input = Normalize().load(self.normdata_input_path)
-        test_dataset.transform_x = self.normalize_input
+        dataset.transform_x = self.normalize_input
 
         # Normalize target
         if not self.normalize_target:
             print(f"Load normalization data from {self.normdata_target_path}")
             self.normalize_target = Normalize().load(self.normdata_target_path)
-        test_dataset.transform_y = self.normalize_target
+        dataset.transform_y = self.normalize_target
 
         # Create test dataloader
-        self.test_dataloader = DataLoader(test_dataset, batch_size=1, num_workers=self.torch_workers, shuffle=False)
+        dataloader = DataLoader(dataset, batch_size=1, num_workers=self.torch_workers, shuffle=False)
         if not weights_filename:
             # Load checkpoint file
             print(f"Load checkpoints from {self.ckpt_path}")
@@ -653,20 +744,28 @@ class ExperimentMLFC:
         self.model.load_state_dict(weights['state_dict'])
 
         # Test
-        self._init_test_trainer().test(self.model, dataloaders=self.test_dataloader)
+        self._init_test_trainer().test(self.model, dataloaders=dataloader)
         # print(f"Available attributes in model: {dir(self.model)}")
 
         # Rescale preds with target normalization
-        self.preds = self.normalize_target.inverse_tensor(self.model.test_preds, self.normdata_target_path) # .squeeze()
+        preds = self.normalize_target.inverse_tensor(self.model.test_preds, self.normdata_target_path) # .squeeze()
 
         # Print info
-        meta, var_cols = self._make_test_info_table(test_dataset, self.model.test_preds, self.preds)
-        self.rich_console.print(Table({"Test run info": meta}, twocols=True).table)
-        self.rich_console.print(Table({"Test metrics (per variable)": var_cols}).table)
+        meta, var_cols = self._make_test_info_table(dataset, test_data, self.model.test_preds, preds, var_list)
+        self.rich_console.print(Table({f"Test on {test_data_type} dataset run info": meta}, twocols=True).table)
+        self.rich_console.print(Table({f"Test on {test_data_type} dataset metrics (per variable)": var_cols}).table)
 
-        self.save(self.preds, test_dataset, 'input')
+        self.save(preds, dataset, test_data, 'input', preds_store)
 
-    def _infer_RT_from_source (self, dataset: XarrayDataset) -> tuple[int, int]:
+        return dataloader
+
+    def test(self, weights_filename=None):
+        self.test_dataloader  = self._test('Test', self.source_test_data, self.config.test, self.test_preds_store, self.test_var_list, weights_filename)
+
+    def test_on_train(self, weights_filename=None):
+        self.test_dataloader  = self._test('Train', self.source_train_data, self.config.train, self.train_preds_store, self.train_var_list, weights_filename)
+
+    def _infer_RT_from_source(self, dataset: XarrayDataset) -> tuple[int, int]:
         """
         Infer (R_out, T_out) from the original xarray datasets attached to the torch dataset.
         """
@@ -691,7 +790,7 @@ class ExperimentMLFC:
 
         return R_out, T_out
 
-    def _reconstruct_pred_tensor (
+    def _reconstruct_pred_tensor(
         self,
         data: torch.Tensor,     # (N,C,H,W)
         meta_ds: xr.Dataset,    # ONLY for slicing/copying coords/attrs
@@ -756,8 +855,15 @@ class ExperimentMLFC:
 
         return x, meta_ds
 
-    def save (self, data: torch.Tensor, dataset: XarrayDataset, metadata_source: str):
-        meta_ds = self.source_test_data[metadata_source].load()
+    def save(
+        self,
+        data: torch.Tensor,
+        dataset: XarrayDataset,
+        source_data: dict,
+        metadata_source: str,
+        preds_store: Path
+    ):
+        meta_ds = source_data[metadata_source].load()
 
         rdim = guess_realization_dim(meta_ds)
         tdim = guess_time_dim(meta_ds)
@@ -797,6 +903,6 @@ class ExperimentMLFC:
         compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
         encoding_zarr = {v.name: {"compressors": compressor} for v in self.test_var_list}
 
-        print(f"Save preds to {self.preds_store}")
-        ds.to_zarr(self.preds_store, encoding=encoding_zarr, mode="w", consolidated=self.consolidated_zarr)
+        print(f"Save preds to {preds_store}")
+        ds.to_zarr(preds_store, encoding=encoding_zarr, mode="w", consolidated=self.consolidated_zarr)
         return ds

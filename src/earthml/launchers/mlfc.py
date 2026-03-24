@@ -312,11 +312,13 @@ class MLFCRunner:
     def run (self, mode: RunMode = "train_test"):
         rt = Runtime(dask_workers=self.dask_workers, needs_ca_bundle=self.scenario.needs_ca_bundle())
         d = rt.start()
-        if mode in ("dryrun", "train", "test", "train_test"):
+        if mode in ("dryrun", "train", "test", "train_test", "train_test_on_train"):
             exp = self.build()
-        if mode in ("train", "train_test"):
+        if mode in ("train", "train_test", "train_test_on_train"):
             exp.train()
-        if mode in ("test", "train_test"):
+        if mode in ("test", "train_test", "train_test_on_train"):
             exp.test()
+        if mode in ("train_test_on_train"):
+            exp.test_on_train() # inference on train dataset
         d.close()
         return exp
