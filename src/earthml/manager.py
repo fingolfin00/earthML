@@ -35,7 +35,7 @@ class ExperimentMonthlySpec:
 # ----------------------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------------------
-def build_loss (loss_cfg: dict):
+def build_loss(loss_cfg: dict):
     """Return (loss_name, loss_params, loss_suffix) given a loss config."""
     loss_sel = loss_cfg["loss_sel"]
 
@@ -73,13 +73,13 @@ def build_loss (loss_cfg: dict):
     # Others: keep defaults unless you add params
     return loss_name, loss_params, loss_suf
 
-def period_bounds (p):
+def period_bounds(p):
     # p can be TimeRange or list[TimeRange]
     if isinstance(p, list):
         return p[0].start, p[-1].end
     return p.start, p.end
 
-def oras5_train_kwargs (train_p_tar, cutoff, kw_consol, kw_oper):
+def oras5_train_kwargs(train_p_tar, cutoff, kw_consol, kw_oper):
     start, end = period_bounds(train_p_tar)
     # spans cutoff => use both (consolidated then operational)
     if start <= cutoff < end:
@@ -90,7 +90,7 @@ def oras5_train_kwargs (train_p_tar, cutoff, kw_consol, kw_oper):
     # fully after cutoff => operational
     return kw_oper
 
-def build_monthly_experiment_spec (
+def build_monthly_experiment_spec(
     *,
     var_exp: str,
     host_machine: str,
