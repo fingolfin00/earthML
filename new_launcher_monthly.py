@@ -4,7 +4,7 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
 from earthml.dataclasses import TimeRange
-from earthml.launchers.mlfc import MLFCScenario, MLFCRunner
+from earthml.launchers.mlbc import MLBCScenario, MLBCRunner
 from earthml.manager import build_loss, period_bounds, oras5_train_kwargs, build_monthly_experiment_spec
 from earthml.logging import RunKey, log_event
 
@@ -189,7 +189,7 @@ if __name__ == "__main__":
                             test=spec.target_provider_kwargs_common,
                         )
 
-                    ocean_scenario = MLFCScenario(
+                    ocean_scenario = MLBCScenario(
                         name="ocean",
                         leadtime_var_fc_name="step" if (spec.experiment_type=="cds-cmcc_oras5" and var_exp in vars_cloud_cds_atmo) else "leadtime", # CDS monthly season forecast leadtime variable is "step" instead of "leadtime"
                         leadtime_var_an_name="leadtime",
@@ -230,7 +230,7 @@ if __name__ == "__main__":
                     exp_suffix += ("_taravg" if target_realization_avg else "") + ("_rasc" if realization_as_channel else "")
                     exp_suffix += extra_exp_suffix
 
-                    runner = MLFCRunner(
+                    runner = MLBCRunner(
                         scenario=ocean_scenario,
                         exp_root_folder=exp_root_folder,
                         exp_suffix=exp_suffix,

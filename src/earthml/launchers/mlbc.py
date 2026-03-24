@@ -1,5 +1,5 @@
 """
-ML Forecast Correction (MLFC) launcher
+ML Forecast Correction (MLBC) launcher
 """
 
 from pathlib import Path
@@ -35,34 +35,34 @@ RunMode = Literal["train", "test", "train_test", "dryrun"]
 # Interface (contract)
 # -------------------------
 
-class MLFCDomainScenario (Protocol):
+class MLBCDomainScenario(Protocol):
     name: str
 
-    def needs_ca_bundle (self) -> bool: ...
-    def net_channels (self) -> tuple[int, int]: ...
-    def build_train_datasets (self) -> list[ExperimentDataset]: ...
-    def build_test_datasets (self) -> list[ExperimentDataset]: ...
-    def make_experiment_name (self) -> str: ...
+    def needs_ca_bundle(self) -> bool: ...
+    def net_channels(self) -> tuple[int, int]: ...
+    def build_train_datasets(self) -> list[ExperimentDataset]: ...
+    def build_test_datasets(self) -> list[ExperimentDataset]: ...
+    def make_experiment_name(self) -> str: ...
     @property
-    def torch_preprocess_fun (self) -> Callable | None: ...
+    def torch_preprocess_fun(self) -> Callable | None: ...
 
 
 # -------------------------
 # Common base scenario
 # -------------------------
 
-def _as_list (x):
+def _as_list(x):
     return x if isinstance(x, list) else [x]
 
-def _n_channels (var_or_list) -> int:
+def _n_channels(var_or_list) -> int:
     return len(var_or_list) if isinstance(var_or_list, list) else 1
 
-def _var_names (var_or_list) -> str:
+def _var_names(var_or_list) -> str:
     return "".join(v.name for v in _as_list(var_or_list))
 
 
 @dataclass
-class MLFCScenario:
+class MLBCScenario:
     """
     Shared scenario logic:
     - catalog creation
@@ -111,7 +111,7 @@ class MLFCScenario:
     target_realization_avg: bool = False  # whether to average over target realizations when loading target data to torch
     realization_as_channel: bool = False  # whether to use realization a channel dimension
 
-    def _cat (self) -> SimpleNamespace:
+    def _cat(self) -> SimpleNamespace:
         return catalog.make_catalog(
             leadtime_fc_var=self.leadtime_var_fc_name,
             leadtime_an_var=self.leadtime_var_an_name,
@@ -120,30 +120,30 @@ class MLFCScenario:
             leadtime_unit=self.leadtime_var_unit,
         )
 
-    def var_fc (self) -> Variable:
+    def var_fc(self) -> Variable:
         return getattr(self._cat().var, self.var_fc_key)
 
-    def var_an (self) -> Variable:
+    def var_an(self) -> Variable:
         # if analysis in same dataset as forecast, analysis leadtime (e.g 15 days for monthly forecasts) is specified in catalog
         return getattr(self._cat().var, self.var_an_key)
 
-    def region (self) -> Region:
+    def region(self) -> Region:
         return getattr(self._cat().region, self.region_key)
 
-    def needs_ca_bundle (self) -> bool:
+    def needs_ca_bundle(self) -> bool:
         # Heuristic to decide if setting SSL certificate env variable. See runtime.py.
         return ("earthkit" in self.input_provider) or ("earthkit" in self.target_provider)
 
-    def net_channels (self) -> tuple[int, int]:
+    def net_channels(self) -> tuple[int, int]:
         c = _n_channels(self.var_fc())
         return c, c
 
     @property
-    def torch_preprocess_fun (self) -> Callable | None:
+    def torch_preprocess_fun(self) -> Callable | None:
         return self.torch_preprocess_fn
 
     @staticmethod
-    def _get_period_extrema (period: TimeRange | dict[str, TimeRange | list[TimeRange]], default_type: str = "input") -> tuple[datetime]:
+    def _get_period_extrema(period: TimeRange | dict[str, TimeRange | list[TimeRange]], default_type: str = "input") -> tuple[datetime]:
         if isinstance(period, dict):
             return (
                 period[default_type][0].start if isinstance(period[default_type], list) else period[default_type].start,
@@ -152,7 +152,7 @@ class MLFCScenario:
         else:
             return period.start, period.end
 
-    def make_experiment_name (self) -> str:
+    def make_experiment_name(self) -> str:
         train_start, train_end = self._get_period_extrema(self.train_period)
         test_start, test_end = self._get_period_extrema(self.test_period)
         return (
@@ -164,7 +164,7 @@ class MLFCScenario:
         )
 
     @staticmethod
-    def _generate_datasources_and_params_lists (
+    def _generate_datasources_and_params_lists(
             var: Variable, region: Region, leadtime: Leadtime,
             period_type: str, periods: TimeRange | list[TimeRange],
             provider_names: str | dict[str, str | list[str]],
@@ -199,7 +199,7 @@ class MLFCScenario:
         # print(f"Built datasources: {datasources} with params: {params}")
         return datasources, params
 
-    def _build_datasets (self, period_type: str, period: TimeRange | dict[str, TimeRange | list[TimeRange]]) -> list[ExperimentDataset]:
+    def _build_datasets(self, period_type: str, period: TimeRange | dict[str, TimeRange | list[TimeRange]]) -> list[ExperimentDataset]:
         # Input: either single period or segmented periods
         periods_input = period["input"] if isinstance(period, dict) else period
         input_datasources, input_params = self._generate_datasources_and_params_lists(self.var_fc(), self.region(), Leadtime("leadtime", self.leadtime_unit, self.leadtime_value), period_type, periods_input, self.input_provider, self.input_provider_kwargs)
@@ -213,25 +213,25 @@ class MLFCScenario:
             ExperimentDataset(role="target", save=self.save_train, datasource=target_datasources, source_params=target_params),
         ]
 
-    def build_train_datasets (self) -> list[ExperimentDataset]:
+    def build_train_datasets(self) -> list[ExperimentDataset]:
         return self._build_datasets("train", self.train_period)
 
-    def build_test_datasets (self) -> list[ExperimentDataset]:
+    def build_test_datasets(self) -> list[ExperimentDataset]:
         return self._build_datasets("test", self.test_period)
 
 # -------------------------
-# MLFC launcher (common ML setup)
+# MLBC launcher (common ML setup)
 # -------------------------
 
 @dataclass
-class MLFCRunner:
+class MLBCRunner:
     """
     Common runner for ML-forecast-correction experiments.
 
     - scenario provides datasets + naming + net channels + optional preprocess hook
     - runner provides hparams, net/loss, runtime, experiment build/run
     """
-    scenario: MLFCDomainScenario
+    scenario: MLBCDomainScenario
 
     # output
     exp_root_folder: str
@@ -258,7 +258,7 @@ class MLFCRunner:
     # runtime
     dask_workers: int | None = None
 
-    def build_config (self) -> ExperimentConfig:
+    def build_config(self) -> ExperimentConfig:
         exp_name = self.scenario.make_experiment_name()
         exp_path = Path(self.exp_root_folder) / f"{exp_name}{self.exp_suffix}"
         print(f"Experiment path: {exp_path}")
@@ -306,12 +306,12 @@ class MLFCRunner:
         )
         return cfg
 
-    def build (self):
+    def build(self):
         cfg = self.build_config()
         # TODO make experiment id configurable in the future
-        return build_experiment("ML-forecast-correction", config=cfg)
+        return build_experiment("ML-bias-correction", config=cfg)
 
-    def run (self, mode: RunMode = "train_test"):
+    def run(self, mode: RunMode = "train_test"):
         rt = Runtime(dask_workers=self.dask_workers, needs_ca_bundle=self.scenario.needs_ca_bundle())
         d = rt.start()
         if mode in ("dryrun", "train", "test", "train_test", "train_test_on_train"):

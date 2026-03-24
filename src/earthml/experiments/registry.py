@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Type, Any
 
 _EXPERIMENTS: dict[str, str] = {
-    "ML-forecast-correction": "earthml.experiments.mlfc:ExperimentMLFC",
+    "ML-bias-correction": "earthml.experiments.mlbc:ExperimentMLBC",
 }
 
 def get_experiment_class(name: str) -> Type[Any]:

@@ -21,7 +21,7 @@ from ..utils import Table, print_ds_info, guess_time_dim, guess_lon_dim, guess_l
 from ..lightning import XarrayDataset, Normalize, EpochRandomSplitDataModule
 from ..nets.registry import build_net
 
-class ExperimentMLFC:
+class ExperimentMLBC:
     def __init__(
         self,
         config: ExperimentConfig,
