@@ -25,6 +25,7 @@ import lightning as L
 from scipy.interpolate import griddata
 # Local imports
 from .dataclasses import DataSelection, TimeRange
+from .sources.registry import build_source
 
 #---------------
 # Helper classes
@@ -1744,9 +1745,9 @@ def load_exp(
     out, n_valid_samples = {}, {}
     for tp in train_periods:
         n_valid_samples[tp] = {}
-        fc_lt, an_lt, pr_lt = [], [], []
+        fc_lt, an_lt, pr_lt, mask_lt = [], [], [], []
         for lt in leadtimes:
-            pr_list, fc_list, an_list = [], [], []
+            pr_list, fc_list, an_list, mask_list = [], [], [], []
             n_valid_samples[tp][lt] = {}
 
             for v, v_d in var_specs.items():
@@ -1759,23 +1760,39 @@ def load_exp(
                 experiment = joblib.load(exp_path)
                 source = experiment[f"{type_data}_data"]  # e.g. "test_data"
 
+                # Create mask data source
+                mask_exp = experiment[f"{type_data}_mask_data"]
+                mask_source = build_source(
+                    name=mask_exp.datasource.source,
+                    datasource=mask_exp.datasource,
+                    **mask_exp.source_params,
+                )
+
                 n_valid_samples[tp][lt][v] = {
                     "input": (len(source["input"].elements.samples)),
                     "target": (len(source["target"].elements.samples)),
                 }
-                if type_data == "test":
+                if type_data == "test" or load_train_preds:
                     n_valid_samples[tp][lt][v]["prediction"] = (len(source["prediction"].elements.samples))
 
                 if only_sizes:
                     continue
 
-                if type_data == "test":
-                    source["prediction"].__init__(source["prediction"].datasource, exp_folder_path / "test_preds.zarr")
+                if type_data == "test" or load_train_preds:
+                    source["prediction"] = type(source["prediction"])(
+                        source["prediction"].datasource,
+                        exp_folder_path / f"{type_data}_preds.zarr"
+                    )
+                    # source["prediction"].__init__(source["prediction"].datasource, exp_folder_path / "test_preds.zarr")
                     pr = source["prediction"].reload() # reload? YES!
                     pr = normalize_ds_dims_and_coords(pr)
                     pr_list.append(pr.rename_vars({v_d["exp_var"]["fc"]: v}))
 
-                source["input"].__init__(source["input"].datasource, exp_folder_path / f"{type_data}_input.zarr")
+                source["input"] = type(source["input"])(
+                    source["input"].datasource,
+                    exp_folder_path / f"{type_data}_input.zarr"
+                )
+                # source["input"].__init__(source["input"].datasource, exp_folder_path / f"{type_data}_input.zarr")
                 fc = source["input"].reload()
                 # print(f"Loaded fc for var {v}, leadtime {lt}")
                 # print(f"   shape: {fc.dims}")
@@ -1783,7 +1800,11 @@ def load_exp(
                 # print(f"   coords: {fc.coords}")
                 # print(f"   time values: {fc['time'].values if 'time' in fc.coords else 'N/A'}")
 
-                source["target"].__init__(source["target"].datasource, exp_folder_path / f"{type_data}_target.zarr")
+                source["target"] = type(source["target"])(
+                    source["target"].datasource,
+                    exp_folder_path / f"{type_data}_target.zarr"
+                )
+                # source["target"].__init__(source["target"].datasource, exp_folder_path / f"{type_data}_target.zarr")
                 an = source["target"].reload()
                 # print(f"Loaded an for var {v}, leadtime {lt}")
                 # print(f"   shape: {an.dims}")
@@ -1791,13 +1812,21 @@ def load_exp(
                 # print(f"   coords: {an}")
                 # print(f"   time values: {an['time'].values if 'time' in an.coords else 'N/A'}")
 
+                mask = type(mask_source)(
+                    mask_source.datasource,
+                    exp_folder_path / f"mask/{type_data}_mask.zarr"
+                ).reload()
+
                 fc, an = normalize_ds_dims_and_coords(fc), normalize_ds_dims_and_coords(an)
+                mask = normalize_ds_dims_and_coords(mask)
 
                 # print(f"After norm mean fc: {float(fc.to_array().mean().values)}")
                 # print(f"After norm mean an: {float(an.to_array().mean().values)}")
                 # print(f"After norm mean pr: {float(pr.to_array().mean().values)}")
                 fc_list.append(fc.rename_vars({v_d["exp_var"]["fc"]: v}))
                 an_list.append(an.rename_vars({v_d["exp_var"]["an"]: v}))
+
+                mask_list.append(mask.rename_vars({"common_mask": v}))
 
             if only_sizes:
                 continue
@@ -1807,7 +1836,7 @@ def load_exp(
 
             ds_lt = []
 
-            for ds_list in [fc_list, an_list, pr_list]:
+            for ds_list in [fc_list, an_list, pr_list, mask_list]:
                 if ds_list:
                     if "leadtime" in ds_list[0].dims:
                         ds_list_harm = harmonize_leadtime_int(
@@ -1828,15 +1857,17 @@ def load_exp(
                 ds_lt.append(ds)
 
             # Rename dims to standard names
-            fc_single_lt, an_single_lt, pr_single_lt = ds_lt
+            fc_single_lt, an_single_lt, pr_single_lt, mask_single_lt = ds_lt
             # print(f"load_exp, leadtime={lt}, merged vars ds's:")
             # print(f"   fc_single_lt.dims: {fc_single_lt.dims if fc_single_lt is not None else 'None'}, {fc_single_lt["leadtime"].values if fc_single_lt is not None and "leadtime" in fc_single_lt.dims else 'N/A'}")
             # print(f"   an_single_lt.dims: {an_single_lt.dims if an_single_lt is not None else 'None'}, {an_single_lt["leadtime"].values if an_single_lt is not None and "leadtime" in an_single_lt.dims else 'N/A'}")
             # print(f"   pr_single_lt.dims: {pr_single_lt.dims if pr_single_lt is not None else 'None'}, {pr_single_lt["leadtime"].values if pr_single_lt is not None and "leadtime" in pr_single_lt.dims else 'N/A'}")
+            # print(f"   mask_single_lt.dims: {mask_single_lt.dims if mask_single_lt is not None else 'None'}, {mask_single_lt["leadtime"].values if mask_single_lt is not None and "leadtime" in mask_single_lt.dims else 'N/A'}")
 
             fc_lt.append(fc_single_lt)
             an_lt.append(an_single_lt)
-            if type_data == "test":
+            mask_lt.append(mask_single_lt)
+            if type_data == "test" or load_train_preds:
                 pr_lt.append(pr_single_lt)
 
         if only_sizes:
@@ -1844,10 +1875,15 @@ def load_exp(
             continue
 
         ds_tp = []
-        leadtime_fc_dim, leadtime_an_dim, leadtime_pr_dim = guess_leadtime_dim(fc_lt[0]), guess_leadtime_dim(an_lt[0]), guess_leadtime_dim(pr_lt[0]) if pr_lt else None
+        leadtime_fc_dim, leadtime_an_dim, leadtime_pr_dim, leadtime_mask_dim = (
+            guess_leadtime_dim(fc_lt[0]),
+            guess_leadtime_dim(an_lt[0]),
+            guess_leadtime_dim(pr_lt[0]) if pr_lt else None,
+            guess_leadtime_dim(mask_lt[0]),
+        )
         for leadtime_dim, ds_list in zip(
-            [leadtime_fc_dim, leadtime_an_dim, leadtime_pr_dim],
-            [fc_lt, an_lt, pr_lt]
+            [leadtime_fc_dim, leadtime_an_dim, leadtime_pr_dim, leadtime_mask_dim],
+            [fc_lt, an_lt, pr_lt, mask_lt]
         ):
             if ds_list:
                 if leadtime_dim is None:
@@ -1859,9 +1895,9 @@ def load_exp(
                 ds = None
             # print(ds)
             ds_tp.append(ds)
-        fc_tp, an_tp, pr_tp = ds_tp
+        fc_tp, an_tp, pr_tp, mask_tp = ds_tp
 
-        out[tp] = {"fc": fc_tp, "an": an_tp, "pr": pr_tp}
+        out[tp] = {"fc": fc_tp, "an": an_tp, "pr": pr_tp, "mask": mask_tp}
 
     return out, n_valid_samples
 
