@@ -336,7 +336,7 @@ class ExperimentMLBC:
             datasource = e.datasource
             if not isinstance(datasource, list):
                 datasource = [datasource]
-            if e.save: # and not save_path.exists():
+            if e.save and not save_path.exists():
                 sources[e.role].save(save_path)
                 # Regenerate as xarray-local source type
                 xr_loc_source_params, sources[e.role] = self._create_xarray_local_source(save_path, datasource)
