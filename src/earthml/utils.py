@@ -348,29 +348,6 @@ def retry_fetch_after_hdf_err (
     _set_ekd_cache_dir(orig_ekd_cache_dir)
     raise RuntimeError(f"Failed after {tries} attempts; last error: {last_e!r}") from last_e
 
-def generate_date_range (period: TimeRange):
-    freq = period.freq
-    start = period.start
-    end = period.end
-    shifted = period.shifted
-    # Try to interpret freq as a Timedelta (works for H, D, etc., but not M/Y)
-    try:
-        freq_td = pd.to_timedelta(freq)
-    except (TypeError, ValueError):
-        freq_td = None
-    # Only shift `end` forward for sub-daily frequencies
-    if freq_td is not None and freq_td < pd.to_timedelta('24h'):
-        end = end + freq_td
-    dr = xr.date_range(
-        start=start,
-        end=end,
-        freq=freq, # original string
-        inclusive='both'
-    )
-    if shifted:
-        dr = [d + relativedelta(**shifted) for d in dr]
-    return dr
-
 def _normalize_bounds (bounds):
     if bounds is None:
         return slice(None)

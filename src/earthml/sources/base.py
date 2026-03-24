@@ -1,13 +1,14 @@
 from abc import ABC, abstractmethod
 import time
+from dateutil.relativedelta import relativedelta
 from pathlib import Path
+import pandas as pd
 import xarray as xr
 from dask.distributed import wait
 from zarr.codecs import BloscCodec
 from rich import print
 
-from ..dataclasses import DataSource, DataSelection, Sample
-from ..utils import generate_date_range
+from ..dataclasses import DataSource, Sample, TimeRange
 
 class BaseSource (ABC):
     def __init__ (
@@ -17,7 +18,7 @@ class BaseSource (ABC):
         self.datasource = datasource
         self.data_selection = datasource.data_selection
         self.source_name = datasource.source
-        self.date_range = generate_date_range(self.data_selection.period)
+        self.date_range = self.generate_date_range(self.data_selection.period)
         self.data_selection.period.start = self.date_range[0] # this may change the periods generated in the launcher script!
         # self.data_selection.period.end = self.date_range[-1]
         print(f"Date range: length {len(self.date_range)}, {self.date_range[0]} to {self.date_range[-1]}")
@@ -36,6 +37,30 @@ class BaseSource (ABC):
         if other == 0:
             return self
         return self.__add__(other)
+
+    @staticmethod
+    def generate_date_range (period: TimeRange):
+        freq = period.freq
+        start = period.start
+        end = period.end
+        shifted = period.shifted
+        # Try to interpret freq as a Timedelta (works for H, D, etc., but not M/Y)
+        try:
+            freq_td = pd.to_timedelta(freq)
+        except (TypeError, ValueError):
+            freq_td = None
+        # Only shift `end` forward for sub-daily frequencies
+        if freq_td is not None and freq_td < pd.to_timedelta('24h'):
+            end = end + freq_td
+        dr = xr.date_range(
+            start=start,
+            end=end,
+            freq=freq, # original string
+            inclusive='both'
+        )
+        if shifted:
+            dr = [d + relativedelta(**shifted) for d in dr]
+        return dr
 
     @abstractmethod
     def _get_data (self) -> xr.Dataset:
