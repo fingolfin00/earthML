@@ -1846,3 +1846,46 @@ def add_ke_to_runs (runs, suffixes=("_mse",), dataset_keys=("fc", "an", "pr"),
                     ds[kvar] = ke.rename(kvar)
 
     return runs
+
+def calculate_climatology (
+    ds: xr.Dataset,
+    groupby: str = "month",
+    time_dim: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    keep_attrs: bool = True,
+) -> xr.Dataset:
+    if time_dim is None:
+        time_dim = guess_time_dim(ds)
+
+    if start is not None or end is not None:
+        ds = ds.sel({time_dim: slice(start, end)})
+
+    time = ds[time_dim]
+    if not hasattr(time, "dt"):
+        raise TypeError(f"{time_dim!r} must be datetime-like")
+
+    group = getattr(time.dt, groupby)
+    ds = ds.assign_coords({groupby: (time_dim, group.data)})
+
+    return ds.groupby(groupby).mean(dim=time_dim, keep_attrs=keep_attrs)
+
+def create_valid_mask_ds (ds: xr.Dataset) -> xr.DataArray:
+    """
+    Returns a boolean mask that is True where all variables in the dataset
+    are non-null, after broadcasting across shared dims.
+    """
+    if not ds.data_vars:
+        raise ValueError("Cannot build mask from an empty dataset.")
+
+    masks = []
+    for var_name, da in ds.data_vars.items():
+        # True where this variable is valid
+        masks.append(da.notnull())
+
+    valid_mask = masks[0]
+    for m in masks[1:]:
+        valid_mask = valid_mask & m
+
+    valid_mask.name = "valid_mask"
+    return valid_mask
