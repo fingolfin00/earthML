@@ -105,6 +105,7 @@ class MLFCScenario:
     save_test: bool = True
 
     inpaint_nan: bool = False
+    anomaly: bool = False
 
     torch_preprocess_fn: Callable | None = None
     target_realization_avg: bool = False  # whether to average over target realizations when loading target data to torch
@@ -297,6 +298,7 @@ class MLFCRunner:
             test=self.scenario.build_test_datasets(),
 
             inpaint_nan=self.scenario.inpaint_nan,
+            anomaly=self.scenario.anomaly,
             torch_preprocess_fn=self.scenario.torch_preprocess_fun,
             target_realization_avg=self.scenario.target_realization_avg,
             realization_as_channel=self.scenario.realization_as_channel,

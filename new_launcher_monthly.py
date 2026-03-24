@@ -29,6 +29,7 @@ if __name__ == "__main__":
     regions_sweep               = ["pacific"]                           # e.g. ["pacific", "atlantic", "indian"]
 
     inpaint_nan                 = False                     # whether to inpaint nan values in input and target datasets (after loading, before torch dataset generation)
+    anomaly                     = False                     # TODO: if True, predict anomaly (i.e. remove climatology from target variable), otherwise predict absolute values
 
     start_train_date            = datetime(1993, 7, 1)
     end_train_date              = datetime(2020, 12, 31)
@@ -206,6 +207,7 @@ if __name__ == "__main__":
                         target_provider_kwargs=target_provider_kwargs,
                         save_train=True,
                         save_test=True,
+                        anomaly=anomaly,
                         inpaint_nan=inpaint_nan,
                         torch_preprocess_fn=None,
                         target_realization_avg=target_realization_avg,

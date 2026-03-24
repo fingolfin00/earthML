@@ -146,6 +146,7 @@ class ExperimentConfig:
     train                       : ExperimentDataset | List[ExperimentDataset]
     test                        : ExperimentDataset | List[ExperimentDataset]
     # Optional
+    anomaly                     : Optional[bool]                    = False             # train on anomaly wrt input and target climatologies
     inpaint_nan                 : Optional[bool]                    = False             # whether to inpaint nan values in input and target datasets (after loading, before torch dataset generation)
     torch_preprocess_fn         : Optional[PreprocessFn]            = None              # called after Xarray dataset loading, before torch dataset generation
     target_realization_avg      : Optional[bool]                    = False             # whether to average over target realizations when loading target data

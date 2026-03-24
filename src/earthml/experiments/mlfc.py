@@ -16,7 +16,8 @@ from lightning.pytorch.loggers import TensorBoardLogger
 from ..sources.registry import build_source
 from ..sources.base import BaseSource
 from ..dataclasses import ExperimentDataset, ExperimentConfig, DataSource
-from ..utils import Table, print_ds_info, guess_time_dim, guess_lon_dim, guess_lat_dim, guess_realization_dim, guess_leadtime_dim, remove_unwanted_dims_and_coords
+from ..utils import Table, print_ds_info, guess_time_dim, guess_lon_dim, guess_lat_dim, guess_realization_dim, guess_leadtime_dim,\
+                    remove_unwanted_dims_and_coords, create_valid_mask_ds, inpaint_nan_bilinear, get_and_rename_dim, calculate_climatology
 from ..lightning import XarrayDataset, Normalize, EpochRandomSplitDataModule
 from ..nets.registry import build_net
 
@@ -319,12 +320,30 @@ class ExperimentMLFC:
                         source.elements.missed |= corrupted
 
                 sources[e.role] = source
-                # Save datasets if requested
-                if e.save: # and not save_path.exists():
-                    sources[e.role].save(save_path)
-                    # Regenerate as xarray-local source type
-                    xr_loc_source_params, sources[e.role] = self._create_xarray_local_source(save_path, datasource)
-                    self.rich_console.print(Table({f"Source '{sources[e.role].datasource.source}' {source_type} {e.role} params": xr_loc_source_params}, twocols=True).table)
+
+        # Normalize dim names
+        input_ds_renamed, target_ds_renamed_list, dims = get_and_rename_dim(sources["input"].load(), [sources["target"].load()])
+        sources["input"].ds, sources["target"].ds = input_ds_renamed, target_ds_renamed_list[0]
+        print(f"Normalized {source_type} dataset dimensions: {dims}")
+
+        # Remove climatology if requested
+        if self.config.anomaly:
+            target_clim_ts = calculate_climatology(sources["target"].ds, groupby="month") # always monthly climatology
+            sources["target"].ds = sources["target"].ds.groupby("month") - target_clim_ts
+            input_clim_ts = calculate_climatology(sources["input"].ds, groupby="month")
+            sources["input"].ds = sources["input"].ds.groupby("month") - input_clim_ts
+
+        # Save datasets if requested
+        for e in exp_ds:
+            save_path = self.config.work_path.joinpath(Path(f"{source_type}_{e.role}")).with_suffix(".zarr")
+            datasource = e.datasource
+            if not isinstance(datasource, list):
+                datasource = [datasource]
+            if e.save: # and not save_path.exists():
+                sources[e.role].save(save_path)
+                # Regenerate as xarray-local source type
+                xr_loc_source_params, sources[e.role] = self._create_xarray_local_source(save_path, datasource)
+                self.rich_console.print(Table({f"Source '{sources[e.role].datasource.source}' {source_type} {e.role} params": xr_loc_source_params}, twocols=True).table)
 
         # Detect missing samples
         missed = set()
