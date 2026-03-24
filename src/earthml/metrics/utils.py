@@ -1,0 +1,562 @@
+from typing import Any, Sequence
+from pathlib import Path
+
+from rich import print
+
+import numpy as np
+import pandas as pd
+from scipy.signal import get_window
+import cf_xarray
+import xarray as xr
+# import xskillscore as xs
+# from scipy.stats import t as student_t
+
+from .deterministic import DeterministicMetrics
+from .correlation import CorrelationMetrics
+from .probabilistic import ProbabilisticMetrics
+from .bundles import build_standard_metric_bundle
+
+from ..utils import guess_time_dim, guess_lon_dim, guess_lat_dim, guess_realization_dim, guess_leadtime_dim, \
+    date_diff, load_exp, add_ke_to_runs, remove_unwanted_dims_and_coords, \
+    get_and_rename_dim, calculate_climatology
+
+# ==========================================
+# Standalone helper methods
+# ==========================================
+
+def _get_ds_from_metrics(
+    metrics: dict,
+    tp: str, model: str,
+    kind: str,
+    metric_name: str
+) -> xr.Dataset:
+    return metrics[tp]["models"][model][kind].get(metric_name, None)
+
+def _get_da_from_metrics(
+    metrics: dict,
+    tp: str,
+    model: str,
+    kind: str,
+    metric_name: str,
+    model_a: str | None,
+    model_b: str | None,
+    variable: str,
+    diff: str = "no", # diff options: no, delta, ratio
+) -> xr.DataArray | None:
+    if diff in ("delta", "ratio"):
+        ds_a = _get_ds_from_metrics(metrics, tp, model_a, kind, metric_name)
+        ds_b = _get_ds_from_metrics(metrics, tp, model_b, kind, metric_name)
+        if ds_a is None or ds_b is None or variable not in ds_a or variable not in ds_b:
+            return None
+        ds_a, ds_b = xr.align(ds_a, ds_b, join="inner")
+        if diff == "delta":
+            da = ds_b[variable] - ds_a[variable]
+        elif diff == "ratio":
+            da = ( ds_b[variable] - ds_a[variable] ) / np.abs(ds_a[variable])
+    else:
+        ds = _get_ds_from_metrics(metrics, tp, model, kind, metric_name)
+        if ds is None or variable not in ds:
+            return None
+        da = ds[variable]
+
+    # print(list(da.coords))
+    # keep leadtime
+    for dim in list(da.dims):
+        if dim != "leadtime" and da.sizes.get(dim, 1) == 1:
+            da = da.squeeze(dim, drop=True)
+
+    if hasattr(da.data, "persist"):
+        da = da.persist() # make it work if Dask-based
+
+    return da
+
+def build_parquet_path(
+    base_folder: str,
+    vars_list: Sequence[str],
+    metric_names: Sequence[str] | None = None,
+    diff: str = "no", # no, delta, ratio
+) -> str:
+    vars_tag = "_".join(sorted(map(str, vars_list))) if vars_list else "allvars"
+    metrics_tag = "_".join(sorted(map(str, metric_names))) if metric_names else "allmetrics"
+
+    return str(Path(base_folder) / f"metrics_{diff}_{vars_tag}_{metrics_tag}_parquet")
+
+def infer_metric_names(metrics_dict: dict, kind: str) -> list[str]:
+    # grab first tp/model/kind and return keys there
+    for _, res in metrics_dict.items():
+        for _, md in res["models"].items():
+            if kind in md:
+                return list(md[kind].keys())
+    return []
+
+def infer_variables(metrics_dict: dict, kind: str, metric_name: str | None = None) -> list[str]:
+    for tp, res in metrics_dict.items():
+        for model, md in res.get("models", {}).items():
+            kind_dict = md.get(kind, {})
+            if not isinstance(kind_dict, dict) or not kind_dict:
+                continue
+
+            # Infer from first metric dataset if metric_name is not provided
+            m = metric_name or next(iter(kind_dict.keys()))
+            ds = kind_dict.get(m)
+            if ds is None:
+                continue
+
+            return list(ds.data_vars)
+    return []
+
+def metrics_to_df(
+    metrics_dict: dict,
+    variables: list[str] | str | None = None,
+    metric_names: list[str] | str | None = None,
+    kind: str = "scalar",
+    diff: str = "no", # no, delta, ratio
+    models: Sequence[str] | None = None, # list/tuple
+):
+    """Convert metrics dict to a pandas DataFrame."""
+
+    if metric_names is None:
+        metric_names = infer_metric_names(metrics_dict, kind)
+    elif isinstance(metric_names, str):
+        metric_names = [metric_names]
+    else:
+        metric_names = list(metric_names)
+
+    if variables is None:
+        variables = infer_variables(metrics_dict, kind, metric_names[0] if metric_names else None)
+    elif isinstance(variables, str):
+        variables = [variables]
+    else:
+        variables = list(variables)
+
+    if not metric_names:
+        raise ValueError(f"No metric_names found under kind='{kind}'. Check metrics_dict structure.")
+    if not variables:
+        raise ValueError("No variables inferred. Check metrics_dict structure.")
+
+    rows = []
+    for tp, res in metrics_dict.items():
+        models_tp = list(res["models"].keys()) if models is None else list(models)
+
+        if diff in ("delta", "ratio"):
+            if len(models_tp) != 2:
+                raise ValueError("When diff=True, models must contain exactly two model names")
+            model_a, model_b = models_tp
+            model_iter = [f"{model_b}-{model_a}"]
+        else:
+            model_iter = models_tp
+            model_a = model_b = None  # not used
+
+        for model_name in model_iter:
+            for m in metric_names:
+                for var in variables:
+                    da = _get_da_from_metrics(metrics_dict, tp, model_name, kind, m, model_a, model_b, var, diff)
+                    if da is None:
+                        continue
+
+                    if da.ndim == 0:
+                        rows.append({
+                            "train_period": tp,
+                            "model": model_name,
+                            "metric": m,
+                            "variable": var,
+                            "leadtime": np.nan,
+                            "value": float(da.values) if np.isfinite(da.values) else np.nan,
+                        })
+                    else:
+                        df_da = da.to_dataframe(name="value").reset_index()
+
+                        if "leadtime" not in df_da.columns:
+                            df_da["leadtime"] = np.nan
+
+                        df_da["train_period"] = tp
+                        df_da["model"] = model_name
+                        df_da["metric"] = m
+                        df_da["variable"] = var
+
+                        rows.extend(
+                            df_da[["train_period", "model", "metric", "variable", "leadtime", "value"]]
+                            .to_dict("records")
+                        )
+
+    df = pd.DataFrame(rows)
+
+    # Add diff date
+    df[["years", "months", "days", "total_days", "total_months"]] = (
+        df["train_period"].astype(str)
+            .apply(date_diff)
+            .apply(pd.Series)
+    )
+
+    return df
+
+def rechunk(da, lat_rc=None, lon_rc=None, time_rc=None, realization_rc=None):
+    chunks = {}
+    if time_rc is not None:
+        chunks[guess_time_dim(da)] = time_rc
+    if lat_rc is not None:
+        chunks[guess_lat_dim(da)] = lat_rc
+    if lon_rc is not None:
+        chunks[guess_lon_dim(da)] = lon_rc
+
+    realization_dim = guess_realization_dim(da)
+    if realization_dim in da.dims and realization_rc is not None:
+        chunks[realization_dim] = realization_rc
+
+    leadtime_dim = guess_leadtime_dim(da)
+    if leadtime_dim in da.dims:
+        chunks[leadtime_dim] = -1  # keep together
+
+    return da.chunk(chunks)
+
+def preprocess_datasets_for_metric(
+    datasets: Sequence[xr.Dataset | None],
+    *,
+    name: str = "",
+    leadtimes: Sequence[Any] | None = None,
+    reference_index: int = 0,
+    align_join_strategy: str = "inner",
+    rechunk_factor: int = 1,
+    allowed_extra_dims: Sequence[str] = ("missed_time",),
+) -> tuple[list[xr.Dataset | None], dict[str, Any]]:
+    """
+    Generic preprocessing for metric calculation.
+
+    Parameters
+    ----------
+    datasets
+        Sequence of xr.Dataset or None. Output order matches input order.
+    name
+        Run name for logging/debugging.
+    leadtimes
+        Optional expected leadtime sequence; only its length is checked.
+    reference_index
+        Index of the non-None dataset used as the dimension naming reference.
+    align_join_strategy
+        Join strategy passed to xr.align.
+    rechunk_factor
+        If > 1, rechunk lat/lon to about 1 / rechunk_factor of the reference size.
+    allowed_extra_dims
+        Additional dims/coords to preserve beyond canonical dims.
+
+    Returns
+    -------
+    processed, meta
+        processed: list[xr.Dataset | None]
+        meta: dict with canonical dim names and chunk info
+    """
+    if not datasets:
+        raise ValueError("datasets must not be empty")
+
+    ds_list = list(datasets)
+
+    if not (0 <= reference_index < len(ds_list)):
+        raise ValueError(f"reference_index {reference_index} out of range")
+
+    ref = ds_list[reference_index]
+    if ref is None:
+        raise ValueError("reference_index must point to a non-None dataset")
+
+    # Rename all dims using selected reference dataset
+    other_non_null_indices = [
+        i for i, ds in enumerate(ds_list) if i != reference_index and ds is not None
+    ]
+    others = [ds_list[i] for i in other_non_null_indices]
+
+    ref, renamed_others, dims = get_and_rename_dim(ref, others)
+
+    renamed = list(ds_list)
+    renamed[reference_index] = ref
+    for i, ds in zip(other_non_null_indices, renamed_others):
+        renamed[i] = ds
+    ds_list = renamed
+
+    time_dim, lat_dim, lon_dim, realization_dim, leadtime_dim = dims
+
+    # Optional leadtime length check
+    if leadtimes is not None:
+        expected_n = len(leadtimes)
+        actual = {}
+        for i, ds in enumerate(ds_list):
+            if ds is None:
+                continue
+            if leadtime_dim not in ds.sizes:
+                raise ValueError(
+                    f"Dataset at index {i} does not contain leadtime dim {leadtime_dim!r}"
+                )
+            actual[i] = ds.sizes[leadtime_dim]
+
+        bad = {i: n for i, n in actual.items() if n != expected_n}
+        if bad:
+            raise ValueError(
+                f"Leadtime length mismatch for run {name!r}: "
+                f"{bad}, expected {expected_n}"
+            )
+
+    leadtime_info = {
+        i: (
+            ds[leadtime_dim].values
+            if ds is not None and leadtime_dim in ds.coords
+            else "N/A"
+        )
+        for i, ds in enumerate(ds_list)
+    }
+    print(f"Calculate metrics for run {name}; leadtimes: {leadtime_info}")
+
+    allowed_dims = {
+        time_dim,
+        lat_dim,
+        lon_dim,
+        realization_dim,
+        leadtime_dim,
+        *allowed_extra_dims,
+    }
+    print(f"Allowed dims: {allowed_dims}")
+
+    # Remove unwanted dims/coords
+    ds_list = [
+        remove_unwanted_dims_and_coords(ds, allowed_dims) if ds is not None else None
+        for ds in ds_list
+    ]
+
+    # Align only when necessary
+    non_null = [ds for ds in ds_list if ds is not None]
+    if len(non_null) > 1:
+        aligned = xr.align(*non_null, join=align_join_strategy)
+        it = iter(aligned)
+        ds_list = [next(it) if ds is not None else None for ds in ds_list]
+
+        # Apply shared valid mask only when there is more than one dataset
+        non_null = [ds for ds in ds_list if ds is not None]
+        valid_mask = np.isfinite(non_null[0].to_array()).all("variable")
+        for ds in non_null[1:]:
+            valid_mask = valid_mask & np.isfinite(ds.to_array()).all("variable")
+        ds_list = [ds.where(valid_mask) if ds is not None else None for ds in ds_list]
+
+    # Rechunk only when requested
+    lat_rc = lon_rc = None
+    if rechunk_factor > 1:
+        ref = ds_list[reference_index]
+        if ref is None:
+            raise RuntimeError("Reference dataset became None unexpectedly")
+
+        lat_rc = max(1, ref.sizes[lat_dim] // rechunk_factor)
+        lon_rc = max(1, ref.sizes[lon_dim] // rechunk_factor)
+
+        print("Rechunking...")
+        ds_list = [
+            rechunk(ds, lat_rc=lat_rc, lon_rc=lon_rc) if ds is not None else None
+            for ds in ds_list
+        ]
+
+    meta = {
+        "dims": {
+            "time": time_dim,
+            "lat": lat_dim,
+            "lon": lon_dim,
+            "realization": realization_dim,
+            "leadtime": leadtime_dim,
+        },
+        "reference_index": reference_index,
+        "allowed_dims": allowed_dims,
+        "lat_rc": lat_rc,
+        "lon_rc": lon_rc,
+    }
+
+    return ds_list, meta
+
+# TODO: allow calculating only some metrics
+def get_runs_and_metrics(
+    var_names: str | Sequence[str] | dict | Sequence[dict], var_suffix: str | Sequence[str],
+    region: str,
+    exp_suffix_root: str | Sequence[str], exp_name: str, exp_root: str | Path,
+    input_provider: str | Sequence[str], target_provider: str | Sequence[str], # same dims as var_names
+    leadtimes: tuple, leadtime_unit: str,
+    train_periods: Sequence[str], test_period: str,
+    type_data: str = "test", models: Sequence[str] = ("an", "fc", "pr"),
+    calculate_clim_from_train_period: bool = False,
+    use_train_prediction_clim: bool = False, # only used if calculate_clim_from_train_period is True, if True requires train_preds available
+    use_saved_mask: bool = True,
+    align_join_strategy: str = "inner",
+    rechunk_factor: int = 1, # default no lat/lon rechunking, set to e.g. 4 to reduce memory usage by rechunking to 1/4 of original lat/lon chunk size
+) -> Sequence[dict]:
+
+    var_names = [var_names] if isinstance(var_names, (str, dict)) else list(var_names)
+    var_suffix = [var_suffix] if isinstance(var_suffix, str) else list(var_suffix)
+    exp_suffix_root = [exp_suffix_root] if isinstance(exp_suffix_root, str) else list(exp_suffix_root)
+    input_provider = [input_provider] if isinstance(input_provider, str) else list(input_provider)
+    target_provider = [target_provider] if isinstance(target_provider, str) else list(target_provider)
+
+    exp_suffix = []
+    for suf in var_suffix:
+        for suf_root in exp_suffix_root:
+            exp_suffix.append(f"{suf}{suf_root}")
+    # print(f"Exp suffix: {exp_suffix}")
+
+    # Sanity check, providers must align with var_names
+    if not (len(input_provider) == len(target_provider) == len(var_names)):
+        raise ValueError("input_provider, target_provider and var_names must have the same length")
+
+    vars_dict = {}
+
+    # For each variable (paired with its providers), iterate over the paired suffixes
+    for var, ips, tps in zip(var_names, input_provider, target_provider):
+        for exp_suf in exp_suffix:
+            if isinstance(var, str) and isinstance(ips, str) and isinstance(tps, str):
+                var_fc, var_an = var, var
+            elif isinstance(var, dict):
+                var_fc, var_an = var['fc'], var['an']
+            else:
+                continue
+
+            vars_dict[f"{var_fc}{exp_suf}"] = {
+                "exp_var": {"fc": var_fc, "an": var_an},
+                "region": region,
+                "exp_suffix": exp_suf,
+                "input_provider": ips,
+                "target_provider": tps,
+            }
+
+    experiments = {
+        "name": exp_name,
+        "vars": vars_dict,
+        "leadtimes": leadtimes,
+        "leadtime_unit": leadtime_unit,
+        "train_periods": train_periods,
+        "test_period": test_period,
+        "root": exp_root,
+    }
+
+    runs, _ = load_exp(
+        exp_cfg=experiments,
+        type_data=type_data,
+        load_train_preds=True if type_data=="train" else False,
+    )
+
+    if calculate_clim_from_train_period:
+        train_runs, _ = load_exp(
+            exp_cfg=experiments,
+            type_data="train",
+            load_train_preds=use_train_prediction_clim,
+        )
+
+    truth_model = models[0] # an
+    data_model_a, data_model_b = models[1], models[2] # fc, pr
+
+    runs = add_ke_to_runs(runs, suffixes=var_suffix)
+
+    metrics = {}
+
+    for name, run in runs.items():
+        an = run[truth_model]
+        fc = run[data_model_a]
+        pr = run[data_model_b]
+        mask = run["mask"] if use_saved_mask else None
+
+        processed, _ = preprocess_datasets_for_metric(
+            datasets=[an, fc, pr, mask],
+            name=name,
+            leadtimes=leadtimes,
+            reference_index=1,  # fc as reference
+            align_join_strategy=align_join_strategy,
+            rechunk_factor=rechunk_factor,
+        )
+
+        an_m, fc_m, pr_m, mask_m = processed
+
+        candidate_data = [(fc_m, data_model_a), (pr_m, data_model_b)]
+        data_models = [ds for ds, _ in candidate_data if ds is not None]
+        data_model_names = [nm for ds, nm in candidate_data if ds is not None]
+
+        an_clim_ts, fc_clim_ts, pr_clim_ts = None, None, None
+        if calculate_clim_from_train_period:
+            an_train = train_runs[name][truth_model]
+            fc_train = train_runs[name][data_model_a]
+            if use_train_prediction_clim:
+                pr_train = train_runs[name][data_model_b]
+
+            processed_train, _ = preprocess_datasets_for_metric(
+                datasets=[an_train, fc_train, pr_train] if use_train_prediction_clim else [an_train, fc_train],
+                name=f"{name}_train",
+                leadtimes=leadtimes,
+                reference_index=1, # forecast as reference (index in datasets)
+                align_join_strategy=align_join_strategy,
+                rechunk_factor=rechunk_factor,
+            )
+            if use_train_prediction_clim:
+                an_train_m, fc_train_m, pr_train_m = processed_train
+            else:
+                an_train_m, fc_train_m = processed_train
+            an_clim_ts = calculate_climatology(an_train_m, groupby="month") # always monthly climatology
+            fc_clim_ts = calculate_climatology(fc_train_m, groupby="month")
+            pr_clim_ts = calculate_climatology(pr_train_m, groupby="month") if use_train_prediction_clim else an_clim_ts
+
+        runs[name][truth_model] = an_m
+        runs[name][data_model_a] = fc_m
+        runs[name][data_model_b] = pr_m
+        runs[name]["mask"] = mask_m
+
+        dm = DeterministicMetrics(
+            truth_data=an_m,
+            model_data=data_models,
+            truth_name=truth_model,
+            model_names=data_model_names,
+            clim_data=[an_clim_ts, fc_clim_ts, pr_clim_ts],
+            mask_data=mask_m,
+        )
+        cm = CorrelationMetrics(
+            truth_data=an_m,
+            model_data=data_models,
+            truth_name=truth_model,
+            model_names=data_model_names,
+            clim_data=[an_clim_ts, fc_clim_ts, pr_clim_ts],
+            mask_data=mask_m,
+        )
+        pm = ProbabilisticMetrics(
+            truth_data=an_m,
+            model_data=data_models,
+            truth_name=truth_model,
+            model_names=data_model_names,
+            clim_data=[an_clim_ts, fc_clim_ts, pr_clim_ts],
+            mask_data=mask_m,
+        )
+
+        metrics[name] = build_standard_metric_bundle(dm, cm, pm, norm="std", clim_period="month")
+
+    return runs, metrics, (an_clim_ts, fc_clim_ts, pr_clim_ts)
+
+def save_metrics (
+    metrics: dict,
+    base_folder: str,
+    vars_list: Sequence[str],
+    metric_names: Sequence[str] | None = None, # None -> save all available metrics
+    models_diff: Sequence[str] = ("fc", "pr"), # used only for diff
+    partition_cols: Sequence[str] = ("train_period", "model", "metric", "variable"), # no leadtime
+):
+    """Save metrics in pandas dataframe format to parquet files. Return dict of dataframes and paths."""
+
+    out = {}
+
+    for diff in ("no", "delta", "ratio"):
+        df = metrics_to_df(
+            metrics,
+            variables=vars_list,
+            metric_names=metric_names,
+            diff=diff,
+            models=models_diff if diff in ("delta", "ratio") else None,
+        )
+
+        parquet_path = build_parquet_path(base_folder, vars_list, metric_names, diff)
+
+        # Ensure output directory exists
+        Path(parquet_path).mkdir(parents=True, exist_ok=True)
+
+        df.to_parquet(
+            parquet_path,
+            partition_cols=list(partition_cols),
+            engine="pyarrow",
+        )
+
+        out[diff] = (df, parquet_path)
+
+    return out
