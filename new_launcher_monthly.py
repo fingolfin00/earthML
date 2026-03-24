@@ -28,7 +28,8 @@ if __name__ == "__main__":
     regions_sweep               = ["pacific"]                           # e.g. ["pacific", "atlantic", "indian"]
 
     inpaint_nan                 = False                     # whether to inpaint nan values in input and target datasets (after loading, before torch dataset generation)
-    anomaly                     = False                     # TODO: if True, predict anomaly (i.e. remove climatology from target variable), otherwise predict absolute values
+    anomaly                     = True                      # if True, predict anomaly (i.e. remove climatology from target variable), otherwise predict absolute values
+    per_epoch_resplit           = False                     # if True, split test and validation randomly per epoch with a different seed, if False only one initial split for all epochs (fixed seed)
 
     start_train_date            = datetime(1993, 7, 1)
     end_train_date              = datetime(2020, 12, 31)
@@ -217,6 +218,7 @@ if __name__ == "__main__":
                         save_test=True,
                         anomaly=anomaly,
                         inpaint_nan=inpaint_nan,
+                        per_epoch_resplit=per_epoch_resplit,
                         torch_preprocess_fn=None,
                         target_realization_avg=target_realization_avg,
                         realization_as_channel=realization_as_channel,

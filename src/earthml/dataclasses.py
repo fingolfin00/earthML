@@ -148,6 +148,7 @@ class ExperimentConfig:
     # Optional
     anomaly                     : Optional[bool]                    = False             # train on anomaly wrt input and target climatologies
     inpaint_nan                 : Optional[bool]                    = False             # whether to inpaint nan values in input and target datasets (after loading, before torch dataset generation)
+    per_epoch_resplit           : Optional[bool]                    = False             # resplit train and validation sets per epoch with different seed
     torch_preprocess_fn         : Optional[PreprocessFn]            = None              # called after Xarray dataset loading, before torch dataset generation
     target_realization_avg      : Optional[bool]                    = False             # whether to average over target realizations when loading target data
     realization_as_channel      : Optional[bool]                    = False             # whether to use realization a channel dimension

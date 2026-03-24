@@ -131,7 +131,7 @@ class MaskedSpatialCorr(Metric):
     def compute(self):
         return self.sum_corr / self.num # NaN if count is zero
 
-class EarthMLLightningModule (L.LightningModule):
+class EarthMLLightningModule(L.LightningModule):
     def __init__(self, use_first_input=False):
         super().__init__()
         # self.extra_logger = extra_logger
@@ -493,14 +493,14 @@ class EarthMLLightningModule (L.LightningModule):
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
 
 class EpochRandomSplitDataModule(L.LightningDataModule):
-    def __init__ (self, dataset, train_fraction=0.9, batch_size=32, seed=42, num_workers=0, per_epoch_replit=False):
+    def __init__ (self, dataset, train_fraction=0.9, batch_size=32, seed=42, num_workers=0, per_epoch_resplit=False):
         super().__init__()
         self.dataset = dataset
         self.train_fraction = train_fraction
         self.batch_size = batch_size
         self.seed = seed
         self.num_workers = num_workers
-        self.per_epoch_replit = per_epoch_replit
+        self.per_epoch_resplit = per_epoch_resplit
 
     def setup(self, stage=None):
         # initial split
@@ -541,9 +541,11 @@ class EpochRandomSplitDataModule(L.LightningDataModule):
         return self._val_dl
 
     def on_train_epoch_start(self):
-        if self.per_epoch_replit:
+        if self.per_epoch_resplit:
+            torch.manual_seed(self.seed + self.trainer.current_epoch)
             # re-split at every epoch
             self._resplit()
+
 
 # Normalizer
 class Normalize:

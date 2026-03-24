@@ -104,8 +104,10 @@ class MLBCScenario:
     save_train: bool = True
     save_test: bool = True
 
+    # other settings
     inpaint_nan: bool = False
     anomaly: bool = False
+    per_epoch_resplit: bool = False
 
     torch_preprocess_fn: Callable | None = None
     target_realization_avg: bool = False  # whether to average over target realizations when loading target data to torch
@@ -299,6 +301,7 @@ class MLBCRunner:
 
             inpaint_nan=self.scenario.inpaint_nan,
             anomaly=self.scenario.anomaly,
+            per_epoch_resplit=self.scenario.per_epoch_resplit,
             torch_preprocess_fn=self.scenario.torch_preprocess_fun,
             target_realization_avg=self.scenario.target_realization_avg,
             realization_as_channel=self.scenario.realization_as_channel,

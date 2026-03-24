@@ -702,7 +702,7 @@ class ExperimentMLBC:
             batch_size=self.config.batch_size,
             seed=self.config.seed,
             num_workers=self.torch_workers,
-            per_epoch_replit=False
+            per_epoch_resplit=self.config.per_epoch_resplit,
         )
 
         # Train
