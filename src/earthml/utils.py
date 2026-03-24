@@ -1682,7 +1682,48 @@ def normalize_ds_dims_and_coords (ds: xr.Dataset) -> xr.Dataset:
 
     return ds
 
-def load_exp (exp_cfg, type_data: str, only_sizes: bool = False, merge_compat: str = "override") -> dict:
+def get_and_rename_dim (reference: xr.Dataset, data: List[xr.Dataset]):
+    # Normalize reference first
+    norm_r = normalize_ds_dims_and_coords(reference)
+
+    print("Reference dataset after normalization:", norm_r.coords)
+
+    # Decide final target names (match reference for time/lat/lon; standard for the others)
+    target_time = guess_time_dim(norm_r)
+    target_lat  = guess_lat_dim(norm_r)
+    target_lon  = guess_lon_dim(norm_r)
+
+    target_dims = (target_time, target_lat, target_lon, "realization", "leadtime")
+
+    out: List[xr.Dataset] = []
+    for d in data:
+        ds = d
+
+        # Guess source names on the current ds
+        src_time = guess_time_dim(ds)
+        src_lat  = guess_lat_dim(ds)
+        src_lon  = guess_lon_dim(ds)
+        src_real = guess_realization_dim(ds)
+        src_lead = guess_leadtime_dim(ds)
+
+        src_dims = (src_time, src_lat, src_lon, src_real, src_lead)
+
+        for target, src in zip(target_dims, src_dims):
+            if target is None or src is None or src == target:
+                continue
+            ds = rename_dim_and_coord(ds, src, target)
+
+        out.append(ds)
+
+    return norm_r, out, target_dims  # (time, lat, lon, realization, leadtime)
+
+def load_exp(
+    exp_cfg,
+    type_data: str,
+    load_train_preds: bool = False,
+    only_sizes: bool = False,
+    merge_compat: str = "override"
+) -> dict:
     """
     Return dict keyed by train_period and number of valid samples.
 
