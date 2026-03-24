@@ -46,14 +46,23 @@ if __name__ == "__main__":
     accumulate_grad_batches     = 2
     earlystopping_patience      = 30
 
-    loss_sweep = [
-        {"loss_sel": "MSELoss"},
-        {"loss_sel": "MaskedMSELoss"},
-        {"loss_sel": "VarianceNormalizedMSELoss", "variance_type": "spatial", "latitudes": False}, # channel, geochannel, spatial, temporal, geotemporal
-        {"loss_sel": "VarianceNormalizedMSELoss", "variance_type": "geochannel", "latitudes": True},
-        {"loss_sel": "HeteroBiasCorrectionLoss", "use_first_input": True, "variance_type": "spatial", "latitudes": False, "lambda_identity": 0.1, "bias_scale": 0.5},
-        # {"loss_sel": "GaussianNLLFromLogits"}, # TODO fix
-    ]
+    if realization_as_channel:
+        loss_sweep = [
+            {"loss_sel": "MSELoss"},
+            {"loss_sel": "MaskedMSELoss"},
+            {"loss_sel": "VarianceNormalizedMSELoss", "variance_type": "spatial", "latitudes": False}, # channel, geochannel, spatial, temporal, geotemporal
+            {"loss_sel": "HeteroBiasCorrectionLoss", "use_first_input": True, "variance_type": "spatial", "latitudes": False, "lambda_identity": 0.1, "bias_scale": 0.5},
+            {"loss_sel": "EmpiricalCRPSLoss", "num_realizations": n_input_realizations, "fair": True, "packed_dim": 1, "variance_type": "spatial", "latitudes": False}
+        ]
+    else:
+        loss_sweep = [
+            {"loss_sel": "MSELoss"},
+            # {"loss_sel": "MaskedMSELoss"},
+            # {"loss_sel": "VarianceNormalizedMSELoss", "variance_type": "spatial", "latitudes": False}, # channel, geochannel, spatial, temporal, geotemporal
+            # {"loss_sel": "VarianceNormalizedMSELoss", "variance_type": "geochannel", "latitudes": True},
+            # {"loss_sel": "HeteroBiasCorrectionLoss", "use_first_input": True, "variance_type": "spatial", "latitudes": False, "lambda_identity": 0.1, "bias_scale": 0.5},
+            # {"loss_sel": "GaussianNLLFromLogits"}, # TODO fix
+        ]
 
     # ----------------------------------------------------------------------------------
     # Deeper settings
