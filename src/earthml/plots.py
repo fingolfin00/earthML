@@ -1,6 +1,7 @@
 from typing import List, Optional, Sequence
 from numbers import Number
 from pathlib import Path
+from itertools import product
 
 from rich import print
 
@@ -18,132 +19,310 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 import cartopy.crs as ccrs
 from cartopy.mpl.gridliner import LONGITUDE_FORMATTER, LATITUDE_FORMATTER
 
-from .utils import guess_lon_dim, guess_lat_dim
+from .utils import guess_lon_dim, guess_lat_dim, get_lonlat_coords
 
 # Standalone plotting functions
 
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from matplotlib.colors import TwoSlopeNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+import numpy as np
+import pandas as pd
+
+
+def metrics_to_dataframe (metrics, agg="mean"):
+    """
+    Flatten nested metrics dict into a tidy dataframe.
+
+    Expected structure:
+        metrics[train_period]["models"][model]["scalar"][metric] -> xarray.Dataset
+
+    Output columns include at least:
+        train_period, model, metric, variable, value
+    plus any dataset dimensions (e.g. leadtime, realization) that survive aggregation.
+
+    Parameters
+    ----------
+    metrics : dict
+        Nested metrics dictionary.
+    agg : str, callable, or None
+        Reduction to apply over remaining dimensions.
+        - None: keep all dataset dimensions expanded into dataframe columns
+        - str/callable: reduce all non-coordinate dimensions to a scalar per
+          (train_period, model, metric, variable, coordinate selection)
+    """
+    rows = []
+
+    for train_period, period_block in metrics.items():
+        for model, model_block in period_block.get("models", {}).items():
+            for metric, ds in model_block.get("scalar", {}).items():
+                for variable in ds.data_vars:
+                    da = ds[variable]
+
+                    if agg is None:
+                        df = da.to_dataframe(name="value").reset_index()
+                    else:
+                        if callable(agg):
+                            reduced = agg(da)
+                        else:
+                            reduced = getattr(da, agg)()
+
+                        if hasattr(reduced, "compute"):
+                            reduced = reduced.compute()
+
+                        if np.ndim(reduced.values) == 0:
+                            df = pd.DataFrame({"value": [float(reduced.values)]})
+                        else:
+                            df = reduced.to_dataframe(name="value").reset_index()
+
+                    df["train_period"] = train_period
+                    df["model"] = model
+                    df["metric"] = metric
+                    df["variable"] = variable
+
+                    rows.append(df)
+
+    if not rows:
+        return pd.DataFrame(
+            columns=["train_period", "model", "metric", "variable", "value"]
+        )
+
+    df = pd.concat(rows, ignore_index=True)
+
+    # put metadata columns first
+    preferred = ["train_period", "model", "metric", "variable"]
+    other_cols = [c for c in df.columns if c not in preferred + ["value"]]
+    df = df[preferred + other_cols + ["value"]]
+
+    return df
+
 def plot_scoreboard (
     df,
-    # metrics,
-    # variables,
-    outer_y: dict, # {"index": index_name, "values": values} metrics
-    outer_x: dict, # variables
-    inner_y: dict, # train_periods
-    inner_x: dict, # leadtimes
+    outer_y: dict,   # {"index": "metric", "values": [...]}
+    outer_x: dict,   # {"index": "model", "values": [...]}
+    inner_y: dict,   # {"index": "train_period", "values": [...]}
+    inner_x: dict,   # {"index": "leadtime", "values": [...]}
     agg="mean",
+    filters=None,
     metric_cmaps=None,
     metric_vlims=None,
     metric_names=None,
     metric_factor=1,
-    figsize=(24, 12),
+    figsize=None,
+    cell_size=(0.8, 0.5),   # (width_per_score, height_per_score) in inches
+    wspace=0.15,
+    hspace=0.15,
     title=None,
     plt_title_fontsize=20,
     plt_outer_fontsize=14,
     plt_inner_fontsize=10,
-    cbar_show: bool = True,
+    cbar_show=True,
+    cbar_width=0.18,
     annotate=False,
     annotate_fmt="{:.2f}",
-    annotate_color="auto",   # "auto", or e.g. "black"/"white"
+    annotate_color="auto",
     save_path=None,
+    panel_select=None,
 ):
     """
-    Heatmap grid with metric-specific color scales (one colorbar per row).
+    Generic heatmap grid from a tidy dataframe.
+
+    The dataframe must contain a 'value' column and any columns referenced by:
+        outer_y["index"], outer_x["index"], inner_y["index"], inner_x["index"]
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Tidy dataframe.
+    filters : dict, optional
+        Fixed filters applied before plotting, e.g.
+            {"train_period": "19930701-20201231"}
+            {"variable": ["sst_mseloss", "sst_maskedmseloss"]}
+    panel_select : dict, optional
+        Per-subplot selector. Lets you collapse inner_x or inner_y only for
+        specific outer panels, without aggregating across that dimension.
+
+        Supported forms:
+            {
+                ("metric1", "model1"): {"inner_x": 3},
+                ("metric1", "model2"): {"inner_x": None},
+                "model1": {"inner_x": 3},
+                "metric2": {"inner_y": "19930701-20201231"},
+            }
+
+        Rules:
+        - "inner_x": value   -> keep only that one inner_x value
+        - "inner_y": value   -> keep only that one inner_y value
+        - None means keep all
+        - if both inner_x and inner_y are given, both are reduced
     """
-    # Defaults
     metric_cmaps = metric_cmaps or {}
     metric_vlims = metric_vlims or {}
+    metric_names = metric_names or {}
+    filters = filters or {}
+    panel_select = panel_select or {}
 
-    # Precompute pivots
-    pivots = {m: {} for m in outer_y["values"]}
-    metric_values = {m: [] for m in outer_y["values"]}
+    data = df.copy()
 
-    for m in outer_y["values"]: # metrics
-        for v in outer_x["values"]: # variables
-            d = df[(df[outer_y["index"]] == m) & (df[outer_x["index"]] == v)].copy()
+    for col, val in filters.items():
+        if isinstance(val, (list, tuple, set, pd.Index, np.ndarray)):
+            data = data[data[col].isin(val)]
+        else:
+            data = data[data[col] == val]
+
+    def _axis_values(axis, source_df):
+        if axis.get("values") is not None:
+            return list(axis["values"])
+        return list(pd.unique(source_df[axis["index"]]))
+
+    outer_y_vals = _axis_values(outer_y, data)
+    outer_x_vals = _axis_values(outer_x, data)
+    full_inner_y_vals = _axis_values(inner_y, data)
+    full_inner_x_vals = _axis_values(inner_x, data)
+
+    def _get_panel_selector(m, v):
+        sel = panel_select.get((m, v))
+        if sel is None:
+            sel = panel_select.get(v)
+        if sel is None:
+            sel = panel_select.get(m)
+        return sel or {}
+
+    pivots = {m: {} for m in outer_y_vals}
+    metric_values = {m: [] for m in outer_y_vals}
+    panel_shapes = {}  # (m, v) -> (nrows, ncols)
+
+    for m in outer_y_vals:
+        for v in outer_x_vals:
+            d = data[
+                (data[outer_y["index"]] == m) &
+                (data[outer_x["index"]] == v)
+            ].copy()
+
             if d.empty:
                 pivots[m][v] = None
+                panel_shapes[(m, v)] = (1, 1)
                 continue
 
-            d_filtered = d.copy()
+            sel = _get_panel_selector(m, v)
 
-            if inner_x.get("values") is not None:
-                d_filtered = d_filtered[
-                    d_filtered[inner_x["index"]].isin(inner_x["values"])
-                ]
+            panel_inner_x_vals = full_inner_x_vals
+            panel_inner_y_vals = full_inner_y_vals
 
-            if inner_y.get("values") is not None:
-                d_filtered = d_filtered[
-                    d_filtered[inner_y["index"]].isin(inner_y["values"])
-                ]
+            if sel.get("inner_x") is not None:
+                panel_inner_x_vals = [sel["inner_x"]]
 
-            p = (d_filtered.pivot_table(
-                    index=inner_y["index"], # train periods (total_months)
-                    columns=inner_x["index"], # leadtimes
-                    values="value",
-                    aggfunc=agg
-                )
-                .sort_index())
+            if sel.get("inner_y") is not None:
+                panel_inner_y_vals = [sel["inner_y"]]
 
+            d = d[
+                d[inner_y["index"]].isin(panel_inner_y_vals) &
+                d[inner_x["index"]].isin(panel_inner_x_vals)
+            ]
+
+            if d.empty:
+                pivots[m][v] = None
+                panel_shapes[(m, v)] = (len(panel_inner_y_vals), len(panel_inner_x_vals))
+                continue
+
+            p = d.pivot_table(
+                index=inner_y["index"],
+                columns=inner_x["index"],
+                values="value",
+                aggfunc=agg,
+            )
+
+            p = p.reindex(index=panel_inner_y_vals, columns=panel_inner_x_vals)
             p = p * metric_factor
-
-            idx = pd.Index(p.index)
-            as_num = pd.to_numeric(idx, errors="coerce")
-            # If index is not numeric, try converting
-            if as_num.notna().all():
-                p = p.set_index(as_num)
-                p.index.name = idx.name
-                # Ensure descending order
-                p = p.sort_index(ascending=False)
 
             pivots[m][v] = p
             metric_values[m].append(p.values)
+            panel_shapes[(m, v)] = p.shape
 
-    nrows, ncols = len(outer_y["values"]), len(outer_x["values"])
-    fig, axes = plt.subplots(
-        nrows, ncols,
-        figsize=figsize,
-        squeeze=False,
-        constrained_layout=True
+    # Compute physical column widths and row heights from panel sizes
+    col_units = []
+    for v in outer_x_vals:
+        max_cols_for_this_outer_x = max(panel_shapes[(m, v)][1] for m in outer_y_vals)
+        col_units.append(max(1, max_cols_for_this_outer_x))
+
+    row_units = []
+    for m in outer_y_vals:
+        max_rows_for_this_outer_y = max(panel_shapes[(m, v)][0] for v in outer_x_vals)
+        row_units.append(max(1, max_rows_for_this_outer_y))
+
+    # Optional colorbar column for each row
+    width_ratios = col_units + ([cbar_width] if cbar_show else [])
+    height_ratios = row_units
+
+    if figsize is None:
+        fig_w = sum(col_units) * cell_size[0] + (len(col_units) - 1) * wspace
+        if cbar_show:
+            fig_w += cbar_width * cell_size[0]
+        fig_h = sum(row_units) * cell_size[1] + (len(row_units) - 1) * hspace
+        if title:
+            fig_h += 0.6
+        figsize = (fig_w, fig_h)
+
+    fig = plt.figure(figsize=figsize, constrained_layout=False)
+    gs = fig.add_gridspec(
+        nrows=len(outer_y_vals),
+        ncols=len(width_ratios),
+        width_ratios=width_ratios,
+        height_ratios=height_ratios,
+        wspace=wspace,
+        hspace=hspace,
     )
 
-    for i, m in enumerate(outer_y["values"]): # metrics
-        # Metric-specific limits
+    axes = {}
+
+    for i, m in enumerate(outer_y_vals):
+        for j, v in enumerate(outer_x_vals):
+            axes[(i, j)] = fig.add_subplot(gs[i, j])
+
+    for i, m in enumerate(outer_y_vals):
+        valid_arrays = [
+            arr for arr in metric_values[m]
+            if arr is not None and np.size(arr) and not np.isnan(arr).all()
+        ]
+
         if m in metric_vlims:
             vmin, vmax = metric_vlims[m]
-        else:
-            vals = np.concatenate(metric_values[m])
+        elif valid_arrays:
+            vals = np.concatenate([a.ravel() for a in valid_arrays])
+            vals = vals[~np.isnan(vals)]
             vmin, vmax = np.nanmin(vals), np.nanmax(vals)
+        else:
+            vmin, vmax = 0.0, 1.0
 
         cmap = metric_cmaps.get(m, "viridis")
-
         im_row = None
 
-        for j, v in enumerate(outer_x["values"]): # variables
-            ax = axes[i, j]
+        for j, v in enumerate(outer_x_vals):
+            ax = axes[(i, j)]
             p = pivots[m][v]
 
-            if p is None:
+            if p is None or p.empty:
                 ax.text(0.5, 0.5, "NO DATA", ha="center", va="center")
                 ax.set_xticks([])
                 ax.set_yticks([])
                 continue
 
-            # Decide normalization
-            if vmin < 0 < vmax:
-                norm = TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax)
-            else:
-                norm = None
-            
+            norm = TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax) if vmin < 0 < vmax else None
+
             im = ax.imshow(
                 p.values,
-                aspect="auto",
+                aspect="equal",
                 cmap=cmap,
                 norm=norm,
                 vmin=None if norm else vmin,
                 vmax=None if norm else vmax,
+                interpolation="none",
             )
 
-            # Annotate value
             if annotate:
                 for y in range(p.shape[0]):
                     for x in range(p.shape[1]):
@@ -152,18 +331,15 @@ def plot_scoreboard (
                             continue
 
                         if annotate_color == "auto":
-                            # Convert the cell value to RGBA using the same norm/cmap as the image
                             rgba = im.cmap(im.norm(val))
                             r, g, b, _ = rgba
-                            # Perceived luminance (sRGB)
                             luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
                             txt_color = "black" if luminance > 0.5 else "white"
                         else:
                             txt_color = annotate_color
 
                         ax.text(
-                            x, y,
-                            annotate_fmt.format(val),
+                            x, y, annotate_fmt.format(val),
                             ha="center", va="center",
                             fontsize=plt_inner_fontsize,
                             color=txt_color,
@@ -172,63 +348,38 @@ def plot_scoreboard (
             im_row = im
 
             if i == 0:
-                outer_x_title = v if "label" not in outer_x else outer_x["label"][i]
-                ax.set_title(outer_x_title, fontsize=plt_outer_fontsize)
-            # X ticks
-            if i == nrows - 1:
-                ax.set_xticks(range(len(p.columns)))
-                p_col_ticks = p.columns if "tick_label" not in inner_x else inner_x["tick_label"]
-                ax.set_xticklabels(p_col_ticks)
-                ax.tick_params(axis='x', which='major', labelsize=plt_inner_fontsize)
-            else:
-                ax.set_xticks([])
-            # Y ticks
-            if j == 0:
-                ax.set_yticks(range(len(p.index)))
-                p_idx_ticks = p.index if "tick_label" not in inner_y else inner_y["tick_label"]
-                ax.set_yticklabels(p_idx_ticks)
-                ax.tick_params(axis='y', which='major', labelsize=plt_inner_fontsize)
-            else:
-                ax.set_yticks([])
+                labels = outer_x.get("label")
+                ax.set_title(labels[j] if labels is not None else v, fontsize=plt_outer_fontsize)
 
-        # One colorbar per metric row
-        if im_row is not None:
-            last_ax = axes[i, ncols - 1]
-            divider = make_axes_locatable(last_ax)
-            cax = divider.append_axes(
-                "right",
-                size="2.5%",
-                pad=0.04,
-                axes_class=plt.Axes,
-            )
-            cbar = fig.colorbar(im_row, cax=cax, orientation="vertical")
-            cbar.ax.tick_params(labelsize=plt_outer_fontsize)
-            # cbar_label = metric_names[m] if m in metric_names else m
-            if cbar_show:
-                cbar_label = metric_names.get(m, m) if metric_names else m
+            ax.set_xticks(range(len(p.columns)))
+            if i == len(outer_y_vals) - 1:
+                ax.set_xticklabels(list(p.columns), fontsize=plt_inner_fontsize)
             else:
-                cbar_label=""
-            cbar.set_label(cbar_label, fontsize=plt_inner_fontsize)
+                ax.set_xticklabels([])
+
+            ax.set_yticks(range(len(p.index)))
+            if j == 0:
+                ax.set_yticklabels(list(p.index), fontsize=plt_inner_fontsize)
+            else:
+                ax.set_yticklabels([])
+
+        if cbar_show and im_row is not None:
+            divider = make_axes_locatable(axes[(i, len(outer_x_vals)-1)])
+            cax = divider.append_axes("right", size="2%", pad=0.03)
+            cbar = fig.colorbar(im_row, cax=cax)
+            cbar.set_label(metric_names.get(m, m), fontsize=plt_inner_fontsize)
             cbar.ax.tick_params(labelsize=plt_inner_fontsize)
 
     if title:
         fig.suptitle(title, fontsize=plt_title_fontsize)
 
-    # Global labels
-    fig.supxlabel(
-        f"{inner_x["index"]}" if "label" not in inner_x else inner_x["label"],
-        fontsize=plt_outer_fontsize,
-    )
-    fig.supylabel(
-        f"{inner_y["index"]}" if "label" not in inner_y else inner_y["label"],
-        fontsize=plt_outer_fontsize,
-    )
+    fig.supxlabel(inner_x.get("label", inner_x["index"]), fontsize=plt_outer_fontsize)
+    fig.supylabel(inner_y.get("label", inner_y["index"]), fontsize=plt_outer_fontsize)
 
     if save_path:
         fig.savefig(save_path, bbox_inches="tight", dpi=150)
 
     plt.close(fig)
-
     return fig
 
 def plot_metric_vs_diff (
@@ -619,15 +770,21 @@ def _extent_from_da (da: xr.DataArray, lon_name="lon", lat_name="lat", pad_deg=2
     return (lon_min, lon_max, lat_min, lat_max)
 
 def _create_plot_grid (
-    nrows: int, ncols: int,
+    nrows: int,
+    ncols: int,
     figsize_per_cell=(10, 4),
-    data_projection = ccrs.PlateCarree(),
+    data_projection=ccrs.PlateCarree(),
     plt_fontsize: int = 12,
-    plt_projection = ccrs.PlateCarree(), # Robinson()
+    plt_projection=ccrs.PlateCarree(),  # Robinson()
     plt_coastlines: bool = True,
     plt_global_extent: bool = False,
-    plt_reg_extent: Sequence[float] | None = None # lon_min, lon_max, lat_min, lat_max
+    plt_reg_extent: Sequence[float] | None = None,  # lon_min, lon_max, lat_min, lat_max
+    gridlabel_mode: str = "outer",  # "outer" or "all"
 ) -> dict:
+    if gridlabel_mode not in {"outer", "all"}:
+        raise ValueError(
+            f"Invalid gridlabel_mode={gridlabel_mode!r}. Use 'outer' or 'all'."
+        )
 
     fig_w = figsize_per_cell[0] * ncols
     fig_h = figsize_per_cell[1] * nrows
@@ -639,7 +796,6 @@ def _create_plot_grid (
         squeeze=False,
     )
 
-    # cbar_axes = []
     for r in range(nrows):
         for c in range(ncols):
             ax = axes[r, c]
@@ -663,7 +819,13 @@ def _create_plot_grid (
             gl.xformatter = LONGITUDE_FORMATTER
             gl.yformatter = LATITUDE_FORMATTER
 
-            if (c == 0) or (r == nrows - 1):
+            show_labels = (
+                gridlabel_mode == "all"
+                or c == 0
+                or r == nrows - 1
+            )
+
+            if show_labels:
                 gl2 = ax.gridlines(
                     crs=data_projection,
                     draw_labels=True,
@@ -673,24 +835,20 @@ def _create_plot_grid (
                 gl2.yformatter = LATITUDE_FORMATTER
                 gl2.top_labels = False
                 gl2.right_labels = False
-                gl2.left_labels = (c == 0)
-                gl2.bottom_labels = (r == nrows - 1)
+
+                if gridlabel_mode == "all":
+                    gl2.left_labels = True
+                    gl2.bottom_labels = True
+                else:
+                    gl2.left_labels = (c == 0)
+                    gl2.bottom_labels = (r == nrows - 1)
+
                 gl2.xlabel_style = {"size": plt_fontsize}
                 gl2.ylabel_style = {"size": plt_fontsize}
 
-        # One colorbar per row (use the last axis in the row)
-        # last_ax = axes[r, ncols - 1]
-        # divider = make_axes_locatable(last_ax)
-        # cbar_axes.append(divider.append_axes(
-        #     "right",
-        #     size="2.5%",
-        #     pad=0.04,
-        #     axes_class=plt.Axes,
-        # ))
-
     plt.close(fig)
 
-    return fig, axes #, cbar_axes
+    return fig, axes
 
 def _create_data_panel (
     ds: xr.Dataset | xr.DataArray | List[xr.Dataset] | List[xr.DataArray],
@@ -798,41 +956,19 @@ def _create_data_panel (
 
     return panels, rows, cols
 
-def _detect_limits_from_panels (
+def _detect_limits_from_panels(
     panels: Sequence | np.ndarray,
-    limits: Optional[str | Sequence] = "quantile",  # "quantile" or "minmax" or explicit limits
+    mode: Optional[str | Sequence] = "quantile",  # "quantile" or "minmax"
     quantile: float = 0.02,
 ) -> tuple[float, float]:
-
-    if isinstance(panels, np.ndarray):
-        flat_panels = panels.ravel()
-    elif isinstance(panels, Sequence) and not isinstance(panels, (str, bytes)):
-        flat_panels = panels
-    else:
-        raise ValueError("Panels must be a sequence or numpy array.")
+    panels = np.array(panels)
+    flat_panels = panels.ravel()
 
     mins: list[float] = []
     maxs: list[float] = []
 
-    # Normalize limits mode once
     per_panel_limits = None
     global_limits = None
-    mode = None
-
-    if limits is None:
-        mode = "quantile"
-    elif isinstance(limits, str):
-        mode = limits
-    elif isinstance(limits, Sequence) and not isinstance(limits, (str, bytes)):
-        # Could be (vmin, vmax) or list of (vmin, vmax)
-        if len(limits) == 2 and not (isinstance(limits[0], Sequence) and isinstance(limits[1], Sequence)):
-            global_limits = (limits[0], limits[1])
-        elif len(limits) == len(flat_panels):
-            per_panel_limits = limits
-        else:
-            raise ValueError("limits must be a string ('minmax'/'quantile'), a (vmin, vmax) pair, or a list of (vmin, vmax) per panel.")
-    else:
-        raise ValueError("Unsupported limits type.")
 
     for i, v in enumerate(flat_panels):
         vv = v
@@ -863,38 +999,77 @@ def _detect_limits_from_panels (
     if not mins or not maxs:
         raise ValueError("All selected panels contain only NaNs/non-finite values.")
 
-    vmin = float(np.min(mins))
-    vmax = float(np.max(maxs))
+    mins, maxs = np.array(mins), np.array(maxs)
+    mins, maxs = np.array(mins), np.array(maxs)
+    return mins.reshape(panels.shape()), maxs.reshape(panels.shape())
 
-    return vmin, vmax
+def _create_nparray_with_compatible_data(data, inner_data_type, rows, cols):
+    if isinstance(data, Sequence) and not isinstance(data, str):
+        if len(data)==len(rows):
+            data_np = []
+            for data_per_col in data:
+                if isinstance(data_per_col, Sequence):
+                    data_col = []
+                    if len(data_per_col)==len(cols):
+                        for data_per_row in data_per_col:
+                            data_col.append(data_per_row)
+                        data_np.append(data_col)
+                    else:
+                        raise ValueError(f"Num of data per row {len(data_per_col)} != num panel cols {len(cols)}")
+                else:
+                    data_np.append(len(rows)*[data_per_col])
+        else:
+            raise ValueError(f"Num of data per col {len(data)} != num panel rows {len(rows)}")
+    elif isinstance(data, inner_data_type):
+        data_np = len(rows)*[len(cols)*[data]]
+    else:
+        raise ValueError(f"Unsupported type {inner_data_type}")
+
+    return np.array(data_np)
+
+def _make_growing_norm(limits: Sequence[Number] | None):
+    if limits is None:
+        return None
+
+    if len(limits) != 2:
+        raise ValueError(f"Limits length must be 2.")
+
+    vmin, vmax = list(limits)
+    if vmin < 0 < vmax:
+        return TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax)
+    else:
+        return Normalize(vmin=vmin, vmax=vmax)
 
 def create_panel_from_data (
     ds: xr.Dataset | xr.DataArray | List[xr.Dataset] | List[xr.DataArray],
-    col_index: str | Sequence[str], # if str, look in Dataset, can't be both Sequences
+    col_index: str | Sequence[str],  # if str, look in Dataset, can't be both Sequences
     row_index: str | Sequence[str],
-    var_sel: Optional[str] = None, # ignored for xr.DataArray
-    extra_dim_sequence: Optional[Sequence[str]] = None, # optional sequence of names for the extra dimension (useful if ds is list)
-    limits: Optional[str | Sequence | dict | None] = None,  # "quantile" or "minmax" or explicit limits
+    var_sel: Optional[str] = None,  # ignored for xr.DataArray
+    extra_dim_sequence: Optional[Sequence[str]] = None,  # optional sequence of names for the extra dimension (useful if ds is list)
+    limits: Optional[str | dict | Sequence | Sequence[Sequence] | None] = None,  # "quantile" or "minmax" or dict with "rows" or "cols" keys or explicit limits
     limits_quantile: float = 0.02,
     save_path: str | Path | None = None,
     figsize_per_cell=(10, 4),
-    cmap: str = "RdBu_r",
+    cmap: str | Sequence[str] | Sequence[Sequence[str]] = "RdBu_r", # index 1: cols, index 2: rows
     cbar_orientation: str = "vertical",
     cbar_label: str = "",
-    data_projection = ccrs.PlateCarree(),
+    cbar_mode: str = "row",  # "row" or "subplot"
+    gridlabel_mode: str = "outer",  # "outer" or "all"
+    data_projection=ccrs.PlateCarree(),
     plt_ax_title_pre: str = "",
     plt_ax_title_suf: str = "",
     plt_fontsize: int = 12,
-    plt_projection = ccrs.PlateCarree(), # Robinson()
+    plt_projection=ccrs.PlateCarree(),  # Robinson()
     plt_coastlines: bool = True,
     plt_global_extent: bool = False,
-    plt_regional_extent: Sequence[float] | None = None, # lon_min, lon_max, lat_min, lat_max
+    plt_regional_extent: Sequence[float] | None = None,  # lon_min, lon_max, lat_min, lat_max
     plt_pad_extent_deg: int = 0,
 ):
+    if cbar_mode not in {"row", "subplot"}:
+        raise ValueError(f"Invalid cbar_mode={cbar_mode!r}. Use 'row' or 'subplot'.")
 
     panels, rows, cols = _create_data_panel(ds, col_index, row_index, var_sel, extra_dim_sequence)
     nrows, ncols = len(rows), len(cols)
-    # print(nrows, ncols)
 
     if plt_regional_extent is None:
         ds_ref = panels[0]
@@ -904,7 +1079,7 @@ def create_panel_from_data (
             if len(vars_ref) != 0:
                 da_ref = ds_ref[vars_ref[0]]
             else:
-                raise ValueError(f"Cannote select valid reference DataArray. Check input")
+                raise ValueError("Cannot select valid reference DataArray. Check input")
         elif isinstance(ds_ref, xr.DataArray):
             da_ref = ds_ref
         else:
@@ -915,82 +1090,121 @@ def create_panel_from_data (
         extent = None
 
     fig, axes = _create_plot_grid(
-        nrows, ncols,
+        nrows,
+        ncols,
         figsize_per_cell,
         data_projection,
-        plt_fontsize, plt_projection, plt_coastlines,
-        plt_global_extent, extent,
+        plt_fontsize,
+        plt_projection,
+        plt_coastlines,
+        plt_global_extent,
+        extent,
+        gridlabel_mode=gridlabel_mode,
     )
 
-    # Global limits
-    if (
-        limits == "quantile"
-        or
-        limits == "minmax"
-        or (
-            isinstance(limits, Sequence)
-            and not isinstance(limits, (str, bytes))
-            and len(limits) == 2
-            and all(isinstance(x, Number) for x in limits)
-        )
-    ):
-        vmin, vmax = _detect_limits_from_panels(panels, limits, limits_quantile)
-        if vmin < 0 < vmax:
-            norm = TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax)
+    # Cmaps
+    cmaps = _create_nparray_with_compatible_data(cmap, str, rows, cols)
+
+    # Limits
+    norms = np.array(len(rows)*[len(cols)*[None]]) # default auto limits
+    if isinstance(limits, str): # quantile or maxmin
+        norm_flatten = norms.ravel()
+        mins, maxs = _detect_limits_from_panels(panels, limits, limits_quantile)
+        for i,_ in enumerate(norm_flatten):
+            norm_flatten[i] = _make_growing_norm((mins[i], maxs[i]))
+        norms = norm_flatten.reshape(norms.shape())
+
+    elif isinstance(limits, Sequence):
+        # Could be (vmin, vmax) or list of (vmin, vmax) of length = num of cols or list of lists of length = num of rows
+        if len(limits) == 2 and isinstance(limits[0], Number) and isinstance(limits[1], Number):
+            norm = _make_growing_norm(limits)
+            norms = np.array(len(rows)*[len(cols)*[norm]])
         else:
-            norm = Normalize(vmin=vmin, vmax=vmax)
+            norms = _create_nparray_with_compatible_data(limits, tuple, rows, cols)
+
+    elif isinstance(limits, dict): # dict with rows or cols
+        if (
+            "cols" in limits
+            and isinstance(limits["cols"], Sequence)
+            and len(limits["cols"]) == ncols
+        ):
+            for r,c in product(range(nrows), range(ncols)):
+                norms[r,c] = _make_growing_norm(limits["cols"][c])
+
+        elif (
+            "rows" in limits
+            and isinstance(limits["rows"], Sequence)
+            and len(limits["rows"]) == nrows
+        ):
+            for r,c in product(range(nrows), range(ncols)):
+                norms[r,c] = _make_growing_norm(limits["rows"][r]) 
+
+    elif limits is None:
+        pass
+
     else:
-        norm = None
+        raise ValueError("Unsupported limit type: limits must be a string ('minmax'/'quantile'), a (vmin, vmax) pair, or a list (of lists) of (vmin, vmax), same dims as panel.")
 
     mappables, cbar_axes = [], []
+
+    print("cmaps", cmaps)
+    print("limits", norms)
+
     for r in range(nrows):
-        # Guess row title from sequence
         if extra_dim_sequence and len(extra_dim_sequence) == len(rows):
             row_title = f"{plt_ax_title_pre}{extra_dim_sequence[r]}{plt_ax_title_suf}"
         else:
             row_title = f"{plt_ax_title_pre}{plt_ax_title_suf}"
-        if isinstance(limits, dict) and "rows" in limits.keys() and isinstance(limits["rows"], Sequence) and len(limits["rows"]) == nrows:
-            vmin, vmax = limits["rows"][r]
-            if vmin < 0 < vmax:
-                norm = TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax)
-            else:
-                norm = Normalize(vmin=vmin, vmax=vmax)
+
+        row_mappable = None
+
         for c in range(ncols):
-            if isinstance(limits, dict) and "cols" in limits.keys() and isinstance(limits["cols"], Sequence) and len(limits["cols"]) == nrows:
-                vmin, vmax = limits["cols"][c]
-                if vmin < 0 < vmax:
-                    norm = TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax)
-                else:
-                    norm = Normalize(vmin=vmin, vmax=vmax)
-            ax = axes[r,c]
+            ax = axes[r, c]
             p_idx = r * ncols + c
-            # print(p_idx)
             data = panels[p_idx]
-            # print(data)
+
             try:
                 im = data.plot.pcolormesh(
                     ax=ax,
                     add_colorbar=False,
-                    cmap=cmap,
+                    cmap=cmaps[r,c],
                     transform=ccrs.PlateCarree(),
-                    norm=norm,
+                    norm=norms[r,c],
                 )
             except Exception as e:
-                ax.set_title(f"ERROR")
+                ax.set_title("ERROR")
                 ax.text(0.5, 0.5, str(e), ha="center", va="center", transform=ax.transAxes, fontsize=8)
                 ax.axis("off")
                 im = None
+
             mappables.append(im)
 
             col_val = data.coords[col_index].values if isinstance(col_index, str) else col_index[c]
-            col_title = f" {col_index}: {col_val}" 
-            ax.set_title(row_title+col_title, fontsize=plt_fontsize)
-        
-        row_mappable = im  # keep last for row colorbar
+            col_title = f" {col_index}: {col_val}"
+            ax.set_title(row_title + col_title, fontsize=plt_fontsize)
 
-        # One colorbar per row / col
-        if row_mappable is not None:
-            # print("Create cbar")
+            if im is not None:
+                row_mappable = im
+
+            # One colorbar per subplot
+            if cbar_mode == "subplot" and im is not None:
+                divider = make_axes_locatable(ax)
+                if cbar_orientation == "horizontal":
+                    print("Colorbar horizontal orientation not yet supported")
+                else:
+                    cax = divider.append_axes(
+                        "right",
+                        size="2.5%",
+                        pad=0.04,
+                        axes_class=plt.Axes,
+                    )
+                    cbar = fig.colorbar(im, cax=cax, orientation="vertical")
+                    cbar.ax.tick_params(labelsize=plt_fontsize)
+                    cbar.set_label(cbar_label, fontsize=plt_fontsize)
+                    cbar_axes.append(cax)
+
+        # One colorbar per row
+        if cbar_mode == "row" and row_mappable is not None:
             last_ax = axes[r, ncols - 1]
             divider = make_axes_locatable(last_ax)
             if cbar_orientation == "horizontal":
@@ -1012,7 +1226,13 @@ def create_panel_from_data (
 
     plt.close(fig)
 
-    return {"fig": fig, "axes": axes, "cbar_axes": cbar_axes, "mappable": mappables, "data": panels}
+    return {
+        "fig": fig,
+        "axes": axes,
+        "cbar_axes": cbar_axes,
+        "mappable": mappables,
+        "data": panels,
+    }
 
 def plot_ensemble_leadtime (
     members,
@@ -1116,3 +1336,27 @@ def plot_ensemble_leadtime (
     ax.grid(True, alpha=0.3)
 
     return ax
+
+def quickplot (ds, varname="", folder="./", filename="rolled.png", t_idx=0):
+    """Quick diagnostic plot of a 2D field in ds."""
+    da = ds[varname] if isinstance(ds, xr.Dataset) else ds
+
+    # Select time slice
+    while da.ndim > 2:
+        da = da.isel({da.dims[0]: t_idx})
+
+    # Get lon/lat
+    lon_coord, lat_coord = get_lonlat_coords(ds)
+    lon = ds[lon_coord]
+    lat = ds[lat_coord]
+
+    plt.figure(figsize=(10,5))
+    plt.pcolormesh(lon, lat, da, shading="auto")
+    plt.colorbar(label=varname)
+    plt.title(f"{varname}")
+    plt.xlabel("Longitude")
+    plt.ylabel("Latitude")
+    plt.tight_layout()
+    name, _, ext = filename.rpartition('.')
+    plt.savefig(f"{folder}/{name}_{t_idx}.{ext}", dpi=150)
+    plt.close()
