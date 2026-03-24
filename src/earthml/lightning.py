@@ -17,11 +17,11 @@ from .utils import guess_realization_dim, guess_time_dim, guess_lon_dim, guess_l
 
 # Module level functions
 
-def call_loss (
-        loss_fn, y_pred: torch.Tensor, y_true: torch.Tensor,
-        x0: Optional[torch.Tensor] = None,
-        mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
+def call_loss(
+    loss_fn, y_pred: torch.Tensor, y_true: torch.Tensor,
+    x0: Optional[torch.Tensor] = None,
+    mask: Optional[torch.Tensor] = None
+) -> torch.Tensor:
     """
     Calls loss_fn with supported kwargs only.
     Supports losses with signatures:
@@ -132,7 +132,7 @@ class MaskedSpatialCorr(Metric):
         return self.sum_corr / self.num # NaN if count is zero
 
 class EarthMLLightningModule (L.LightningModule):
-    def __init__ (self, use_first_input=False):
+    def __init__(self, use_first_input=False):
         super().__init__()
         # self.extra_logger = extra_logger
 
@@ -161,7 +161,7 @@ class EarthMLLightningModule (L.LightningModule):
         self.last_val_target = None
 
     @staticmethod
-    def resolve_loss (name, params):
+    def resolve_loss(name, params):
         # simple name -> try torch.nn
         if "." not in name:
             if hasattr(nn, name):
@@ -173,13 +173,13 @@ class EarthMLLightningModule (L.LightningModule):
         return getattr(module, class_name)(**params)
 
     @staticmethod
-    def center_crop_to (x, target_h, target_w):
+    def center_crop_to(x, target_h, target_w):
         _, _, h, w = x.shape
         off_y = max((h - target_h) // 2, 0)
         off_x = max((w - target_w) // 2, 0)
         return x[:, :, off_y:off_y + target_h, off_x:off_x + target_w]
 
-    def match_spatial (self, x, H, W):
+    def match_spatial(self, x, H, W):
         """Match tensor x to ref's HxW by center-cropping or padding (replicate) without interpolation."""
         _, _, h, w = x.shape
         dy, dx = H - h, W - w
@@ -201,7 +201,7 @@ class EarthMLLightningModule (L.LightningModule):
             x = F.pad(x, (pad_left, pad_right, pad_top, pad_bottom), mode="replicate")
         return x
 
-    def _squeeze_and_add_log_img (self, img_tensor, name_tag, logger_instance, colormap=None, vmin=None, vmax=None):
+    def _squeeze_and_add_log_img(self, img_tensor, name_tag, logger_instance, colormap=None, vmin=None, vmax=None):
         """
         Logs a single 2D image to the logger, with optional colormap.
         img_tensor: A 2D tensor (H, W) for grayscale, or 3D tensor (C, H, W) for RGB/RGBA.
@@ -263,7 +263,7 @@ class EarthMLLightningModule (L.LightningModule):
         # print(f"Logged image '{name_tag}' at step {self.global_step}")
 
 
-    def _log_prediction (self, pred_tensor, target_tensor, tag_prefix, logger_instance, colormap='bwr'):
+    def _log_prediction(self, pred_tensor, target_tensor, tag_prefix, logger_instance, colormap='bwr'):
         """
         Logs a sample prediction and its corresponding target.
         pred_tensor: The prediction tensor (e.g., from self.last_val_pred). Expected 4D (N, C, H, W).
@@ -310,7 +310,7 @@ class EarthMLLightningModule (L.LightningModule):
             vmin=vmin, vmax=vmax
         )
 
-    def training_step (self, batch, batch_idx):
+    def training_step(self, batch, batch_idx):
         if self.supervised:
             x, y, mask = batch
         else:
@@ -354,7 +354,7 @@ class EarthMLLightningModule (L.LightningModule):
         # self.log("train_acc", self.train_acc, on_step=False, on_epoch=True)
         return loss
 
-    def validation_step (self, batch, batch_idx):
+    def validation_step(self, batch, batch_idx):
         if self.supervised:
             x, y, mask = batch
         else:
@@ -402,7 +402,7 @@ class EarthMLLightningModule (L.LightningModule):
         self.last_val_pred = mu.detach().cpu()
         self.last_val_target = y.detach().cpu()
 
-    def test_step (self, batch, batch_idx):
+    def test_step(self, batch, batch_idx):
         if self.supervised:
             x, y, mask = batch
         else:
@@ -442,7 +442,7 @@ class EarthMLLightningModule (L.LightningModule):
 
         self.test_step_outputs.append({"preds": mu.detach().cpu(), "targets": y.detach().cpu()})
 
-    def on_train_epoch_start (self):
+    def on_train_epoch_start(self):
         # Access the optimizer's learning rate
         scheduler = self.lr_schedulers()
         current_lr = scheduler.get_last_lr()[0]  # list of LRs, usually one
@@ -460,7 +460,7 @@ class EarthMLLightningModule (L.LightningModule):
     #     self.last_val_pred = None
     #     self.last_val_target = None
 
-    def on_test_epoch_end (self):
+    def on_test_epoch_end(self):
         """Process test results and store for external access"""
         # If you need to access the final aggregated metric values from the Test stage
         # *after* trainer.test() has completed, you can get them from the logger or from trainer.callback_metrics.
@@ -482,7 +482,7 @@ class EarthMLLightningModule (L.LightningModule):
             self.test_targets = torch.cat([out["targets"] for out in self.test_step_outputs], dim=0)
         self.test_step_outputs.clear()
 
-    def configure_optimizers (self):
+    def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
         scheduler = {
             'scheduler': torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=4),
@@ -492,7 +492,7 @@ class EarthMLLightningModule (L.LightningModule):
         }
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
 
-class EpochRandomSplitDataModule (L.LightningDataModule):
+class EpochRandomSplitDataModule(L.LightningDataModule):
     def __init__ (self, dataset, train_fraction=0.9, batch_size=32, seed=42, num_workers=0, per_epoch_replit=False):
         super().__init__()
         self.dataset = dataset
@@ -502,11 +502,11 @@ class EpochRandomSplitDataModule (L.LightningDataModule):
         self.num_workers = num_workers
         self.per_epoch_replit = per_epoch_replit
 
-    def setup (self, stage=None):
+    def setup(self, stage=None):
         # initial split
         self._resplit()
 
-    def _resplit (self):
+    def _resplit(self):
         torch.manual_seed(self.seed)
 
         num_samples = len(self.dataset)
@@ -534,20 +534,20 @@ class EpochRandomSplitDataModule (L.LightningDataModule):
             pin_memory=True,
         )
 
-    def train_dataloader (self):
+    def train_dataloader(self):
         return self._train_dl
 
-    def val_dataloader (self):
+    def val_dataloader(self):
         return self._val_dl
 
-    def on_train_epoch_start (self):
+    def on_train_epoch_start(self):
         if self.per_epoch_replit:
             # re-split at every epoch
             self._resplit()
 
 # Normalizer
 class Normalize:
-    def __init__ (self, mean=None, std=None):
+    def __init__(self, mean=None, std=None):
         """
         mean/std expected shapes after fit: (1, C, 1, 1)
         """
@@ -555,7 +555,7 @@ class Normalize:
         self.std = std
 
     @staticmethod
-    def _masked_metrics (
+    def _masked_metrics(
         pred: torch.Tensor,
         target: torch.Tensor,
         pred_mask: Optional[torch.Tensor] = None,
@@ -592,7 +592,7 @@ class Normalize:
         device = pred.device
         dtype = pred.dtype
 
-        def _as_bool_mask (m: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+        def _as_bool_mask(m: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
             if m is None:
                 return None
             if m.shape != pred.shape:
@@ -620,7 +620,7 @@ class Normalize:
 
         reduce_dims = (0, 2, 3) if per_channel_mean else (0, 1, 2, 3)
 
-        def _masked_mean_std (x: torch.Tensor, m: torch.Tensor) -> (torch.Tensor, torch.Tensor):
+        def _masked_mean_std(x: torch.Tensor, m: torch.Tensor) -> (torch.Tensor, torch.Tensor):
             m = m.bool()
             count = m.sum(dim=reduce_dims, keepdim=True).clamp_min(1).to(dtype=dtype)
             s = (x * m).sum(dim=reduce_dims, keepdim=True)
@@ -668,17 +668,17 @@ class Normalize:
             "corr": corr,
         }
 
-    def fitted (self) -> bool:
+    def fitted(self) -> bool:
         return self.mean is not None and self.std is not None
 
-    def save (self, filepath: str):
+    def save(self, filepath: str):
         joblib.dump(self, filepath)
 
     @classmethod
-    def load (cls, filepath: str) -> "Normalize":
+    def load(cls, filepath: str) -> "Normalize":
         return joblib.load(filepath)
 
-    def fit (self, dataset, filepath: str | None = None, dim: str = "x", eps: float = 1e-12):
+    def fit(self, dataset, filepath: str | None = None, dim: str = "x", eps: float = 1e-12):
         """
         dataset.<dim>      : (N,C,H,W)
         dataset.<dim>_mask : (N,C,H,W)
@@ -703,7 +703,7 @@ class Normalize:
             self.save(filepath)
         return self
 
-    def _check_filepath (self, filepath: str):
+    def _check_filepath(self, filepath: str):
         if self.mean is None or self.std is None:
             try:
                 self = self.load(filepath)
@@ -711,7 +711,7 @@ class Normalize:
                 print(e)
                 raise ValueError("Transform not fitted.")
 
-    def _broadcast_params (self, t: torch.Tensor):
+    def _broadcast_params(self, t: torch.Tensor):
         """
         Return mean/std broadcastable to t without mutating state.
         """
@@ -733,18 +733,18 @@ class Normalize:
 
         return mean.to(device=t.device, dtype=t.dtype), std.to(device=t.device, dtype=t.dtype)
 
-    def __call__ (self, t: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    def __call__(self, t: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
         mean, std = self._broadcast_params(t)
         return (t - mean) / (std + eps)
 
-    def inverse_tensor (self, t: torch.Tensor, filepath: str) -> torch.Tensor:
+    def inverse_tensor(self, t: torch.Tensor, filepath: str) -> torch.Tensor:
         self._check_filepath(filepath)
         mean, std = self._broadcast_params(t)
         return t * std + mean
 
 # Torch dataset
-class XarrayDataset (Dataset):
-    def __init__ (
+class XarrayDataset(Dataset):
+    def __init__(
         self,
         input_ds: xr.Dataset,
         target_ds: xr.Dataset,
@@ -906,7 +906,10 @@ class XarrayDataset (Dataset):
             assert self.x.shape == self.y.shape, (f"Mismatched dataset shape: x={self.x.shape}, y={self.y.shape}")
 
     @staticmethod
-    def _transpose_dims_ds_to_da (ds: xr.Dataset, excluded_vars: str | List[str] | None = "_has_var") -> xr.DataArray:
+    def _transpose_dims_ds_to_da(
+        ds: xr.Dataset,
+        excluded_vars: str | List[str] | None = "_has_var"
+    ) -> xr.DataArray:
         excluded_vars = excluded_vars or []
         vars = [v for v in ds.data_vars if v not in excluded_vars]
         da = ds[vars].to_array()
@@ -938,7 +941,7 @@ class XarrayDataset (Dataset):
         else:
             return da
 
-    def __len__ (self):
+    def __len__(self):
         return len(self.x)
 
     def __getitem__(self, idx):
