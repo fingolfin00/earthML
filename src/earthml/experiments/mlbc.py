@@ -52,6 +52,10 @@ class ExperimentMLBC:
         self.normalize = None
         self.train_datamodule = None
 
+        # Init climatologies
+        self.input_clim_ts = None
+        self.target_clim_ts = None
+
         self.consolidated_zarr = False
 
         # Init predictions
@@ -326,15 +330,6 @@ class ExperimentMLBC:
         sources["input"].ds, sources["target"].ds = input_ds_renamed, target_ds_renamed_list[0]
         print(f"Normalized {source_type} dataset dimensions: {dims}")
 
-        # Remove climatology if requested
-        if self.config.anomaly:
-            print("Calculate target and input climatologies...")
-            time_dim = dims[0]
-            target_clim_ts = calculate_climatology(sources["target"].ds, groupby="month") # always monthly climatology
-            sources["target"].ds = sources["target"].ds.groupby(f"{time_dim}.month") - target_clim_ts
-            input_clim_ts = calculate_climatology(sources["input"].ds, groupby="month")
-            sources["input"].ds = sources["input"].ds.groupby(f"{time_dim}.month") - input_clim_ts
-
         # Save datasets if requested
         for e in exp_ds:
             save_path = self.config.work_path.joinpath(Path(f"{source_type}_{e.role}")).with_suffix(".zarr")
@@ -438,6 +433,7 @@ class ExperimentMLBC:
         exp_roles = [e.role for e in experiments if e.role != 'prediction']
         ds_d = {}
         s = time.time()
+
         for role in exp_roles:
             # print(role)
             ds = source_data[role].load()
@@ -500,6 +496,14 @@ class ExperimentMLBC:
             mask_ds.to_zarr(self.test_mask_store, encoding=encoding_zarr, mode="w", consolidated=self.consolidated_zarr)
         else:
             raise ValueError(f"Unknown data_type {data_type} for mask saving")
+
+        # Remove climatology (monthly) if requested
+        if self.config.anomaly:
+            print("Calculate target and input climatologies...")
+            self.target_clim_ts = calculate_climatology(target_ds, groupby="month")
+            target_ds = target_ds.groupby(f"{guess_time_dim(target_ds)}.month") - self.target_clim_ts
+            self.input_clim_ts = calculate_climatology(input_ds, groupby="month")
+            input_ds = input_ds.groupby(f"{guess_time_dim(input_ds)}.month") - self.input_clim_ts
 
         # Inpaint nan if requested
         if self.config.inpaint_nan:
@@ -920,6 +924,10 @@ class ExperimentMLBC:
             coords={c: meta_ds.coords[c] for c in meta_ds.coords},
             attrs=meta_ds.attrs,
         )
+
+        # Restore with target climatology if trained on anomalies
+        if self.config.anomaly:
+            ds = ds.groupby(f"{tdim}.month") + self.target_clim_ts
 
         compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
         encoding_zarr = {v.name: {"compressors": compressor} for v in self.test_var_list}
