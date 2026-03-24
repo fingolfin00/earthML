@@ -46,7 +46,7 @@ def build_loss (loss_cfg: dict):
     loss_params = {}
     loss_suf = loss_sel.lower()
 
-    if loss_sel in  ("VarianceNormalizedMSELoss", "HeteroBiasCorrectionLoss"):
+    if loss_sel in  ("VarianceNormalizedMSELoss", "HeteroBiasCorrectionLoss", "EmpiricalCRPSLoss"):
         variance_type = loss_cfg.get("variance_type", "spatial")
         latitudes = loss_cfg.get("latitudes", True)
         loss_params = dict(loss=dict(variance_type=variance_type, latitudes=latitudes))
@@ -64,7 +64,13 @@ def build_loss (loss_cfg: dict):
         if use_first_input:
             loss_suf += "_usefirstinput"
 
-    # GaussianNLLFromLogits or others: keep defaults unless you add params
+    if loss_sel == "EmpiricalCRPSLoss":
+        num_realizations = loss_cfg["num_realizations"]
+        fair = loss_cfg["fair"]
+        packed_dim = loss_cfg.get("packed_dim", 1)
+        loss_params = dict(loss=dict(num_realizations=num_realizations, fair=fair, packed_dim=packed_dim))
+
+    # Others: keep defaults unless you add params
     return loss_name, loss_params, loss_suf
 
 def period_bounds (p):
