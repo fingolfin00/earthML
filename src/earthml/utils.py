@@ -1722,6 +1722,7 @@ def load_exp(
     exp_cfg,
     type_data: str,
     load_train_preds: bool = False,
+    load_models: Sequence[str] | None = None,
     only_sizes: bool = False,
     merge_compat: str = "override"
 ) -> dict:
@@ -1741,6 +1742,11 @@ def load_exp(
     test_period   = exp_cfg["test_period"]
 
     # print(exp_cfg)
+
+    load_models = {"fc", "an", "pr"} if load_models is None else set(load_models)
+    need_fc = "fc" in load_models
+    need_an = "an" in load_models
+    need_pr = "pr" in load_models
 
     out, n_valid_samples = {}, {}
     for tp in train_periods:
@@ -1772,13 +1778,13 @@ def load_exp(
                     "input": (len(source["input"].elements.samples)),
                     "target": (len(source["target"].elements.samples)),
                 }
-                if type_data == "test" or load_train_preds:
+                if need_pr and (type_data == "test" or load_train_preds):
                     n_valid_samples[tp][lt][v]["prediction"] = (len(source["prediction"].elements.samples))
 
                 if only_sizes:
                     continue
 
-                if type_data == "test" or load_train_preds:
+                if need_pr and (type_data == "test" or load_train_preds):
                     source["prediction"] = type(source["prediction"])(
                         source["prediction"].datasource,
                         exp_folder_path / f"{type_data}_preds.zarr"
@@ -1788,43 +1794,39 @@ def load_exp(
                     pr = normalize_ds_dims_and_coords(pr)
                     pr_list.append(pr.rename_vars({v_d["exp_var"]["fc"]: v}))
 
-                source["input"] = type(source["input"])(
-                    source["input"].datasource,
-                    exp_folder_path / f"{type_data}_input.zarr"
-                )
-                # source["input"].__init__(source["input"].datasource, exp_folder_path / f"{type_data}_input.zarr")
-                fc = source["input"].reload()
-                # print(f"Loaded fc for var {v}, leadtime {lt}")
-                # print(f"   shape: {fc.dims}")
-                # print(f"   mean: {float(fc.to_array().mean().values)}")
-                # print(f"   coords: {fc.coords}")
-                # print(f"   time values: {fc['time'].values if 'time' in fc.coords else 'N/A'}")
+                fc = an = None
+                if need_fc:
+                    source["input"] = type(source["input"])(
+                        source["input"].datasource,
+                        exp_folder_path / f"{type_data}_input.zarr"
+                    )
+                    fc = source["input"].reload()
 
-                source["target"] = type(source["target"])(
-                    source["target"].datasource,
-                    exp_folder_path / f"{type_data}_target.zarr"
-                )
-                # source["target"].__init__(source["target"].datasource, exp_folder_path / f"{type_data}_target.zarr")
-                an = source["target"].reload()
-                # print(f"Loaded an for var {v}, leadtime {lt}")
-                # print(f"   shape: {an.dims}")
-                # print(f"   mean: {float(an.to_array().mean().values)}")
-                # print(f"   coords: {an}")
-                # print(f"   time values: {an['time'].values if 'time' in an.coords else 'N/A'}")
+                if need_an:
+                    source["target"] = type(source["target"])(
+                        source["target"].datasource,
+                        exp_folder_path / f"{type_data}_target.zarr"
+                    )
+                    an = source["target"].reload()
 
                 mask = type(mask_source)(
                     mask_source.datasource,
                     exp_folder_path / f"mask/{type_data}_mask.zarr"
                 ).reload()
 
-                fc, an = normalize_ds_dims_and_coords(fc), normalize_ds_dims_and_coords(an)
+                if fc is not None:
+                    fc = normalize_ds_dims_and_coords(fc)
+                if an is not None:
+                    an = normalize_ds_dims_and_coords(an)
                 mask = normalize_ds_dims_and_coords(mask)
 
                 # print(f"After norm mean fc: {float(fc.to_array().mean().values)}")
                 # print(f"After norm mean an: {float(an.to_array().mean().values)}")
                 # print(f"After norm mean pr: {float(pr.to_array().mean().values)}")
-                fc_list.append(fc.rename_vars({v_d["exp_var"]["fc"]: v}))
-                an_list.append(an.rename_vars({v_d["exp_var"]["an"]: v}))
+                if fc is not None:
+                    fc_list.append(fc.rename_vars({v_d["exp_var"]["fc"]: v}))
+                if an is not None:
+                    an_list.append(an.rename_vars({v_d["exp_var"]["an"]: v}))
 
                 mask_list.append(mask.rename_vars({"common_mask": v}))
 
@@ -1867,7 +1869,7 @@ def load_exp(
             fc_lt.append(fc_single_lt)
             an_lt.append(an_single_lt)
             mask_lt.append(mask_single_lt)
-            if type_data == "test" or load_train_preds:
+            if need_pr and (type_data == "test" or load_train_preds):
                 pr_lt.append(pr_single_lt)
 
         if only_sizes:

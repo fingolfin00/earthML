@@ -393,6 +393,10 @@ def get_runs_and_metrics(
     rechunk_factor: int = 1, # default no lat/lon rechunking, set to e.g. 4 to reduce memory usage by rechunking to 1/4 of original lat/lon chunk size
 ) -> Sequence[dict]:
 
+    models = list(models)
+    if len(models) < 2:
+        raise ValueError("models must contain at least two entries: truth first, then at least one model")
+
     var_names = [var_names] if isinstance(var_names, (str, dict)) else list(var_names)
     var_suffix = [var_suffix] if isinstance(var_suffix, str) else list(var_suffix)
     exp_suffix_root = [exp_suffix_root] if isinstance(exp_suffix_root, str) else list(exp_suffix_root)
@@ -443,6 +447,7 @@ def get_runs_and_metrics(
         exp_cfg=experiments,
         type_data=type_data,
         load_train_preds=True if type_data=="train" else False,
+        load_models=models,
     )
 
     if calculate_clim_from_train_period:
@@ -450,70 +455,75 @@ def get_runs_and_metrics(
             exp_cfg=experiments,
             type_data="train",
             load_train_preds=use_train_prediction_clim,
+            load_models=models,
         )
 
-    truth_model = models[0] # an
-    data_model_a, data_model_b = models[1], models[2] # fc, pr
+    truth_model = models[0]
+    selected_model_names = models[1:]
 
     runs = add_ke_to_runs(runs, suffixes=var_suffix)
 
     metrics = {}
+    clim_by_model = {truth_model: None, **{model_name: None for model_name in selected_model_names}}
 
     for name, run in runs.items():
         an = run[truth_model]
-        fc = run[data_model_a]
-        pr = run[data_model_b]
+        selected_models = [run[model_name] for model_name in selected_model_names]
         mask = run["mask"] if use_saved_mask else None
 
         processed, _ = preprocess_datasets_for_metric(
-            datasets=[an, fc, pr, mask],
+            datasets=[an, *selected_models, mask],
             name=name,
             leadtimes=leadtimes,
-            reference_index=1,  # fc as reference
+            reference_index=1,
             align_join_strategy=align_join_strategy,
             rechunk_factor=rechunk_factor,
         )
 
-        an_m, fc_m, pr_m, mask_m = processed
+        an_m = processed[0]
+        processed_models = processed[1:-1]
+        mask_m = processed[-1]
 
-        candidate_data = [(fc_m, data_model_a), (pr_m, data_model_b)]
+        candidate_data = list(zip(processed_models, selected_model_names))
         data_models = [ds for ds, _ in candidate_data if ds is not None]
         data_model_names = [nm for ds, nm in candidate_data if ds is not None]
 
-        an_clim_ts, fc_clim_ts, pr_clim_ts = None, None, None
         if calculate_clim_from_train_period:
             an_train = train_runs[name][truth_model]
-            fc_train = train_runs[name][data_model_a]
-            if use_train_prediction_clim:
-                pr_train = train_runs[name][data_model_b]
+            train_model_names = list(selected_model_names)
+            if not use_train_prediction_clim:
+                train_model_names = [model_name for model_name in train_model_names if model_name != "pr"]
+            train_model_data = [train_runs[name][model_name] for model_name in train_model_names]
 
             processed_train, _ = preprocess_datasets_for_metric(
-                datasets=[an_train, fc_train, pr_train] if use_train_prediction_clim else [an_train, fc_train],
+                datasets=[an_train, *train_model_data],
                 name=f"{name}_train",
                 leadtimes=leadtimes,
-                reference_index=1, # forecast as reference (index in datasets)
+                reference_index=1,
                 align_join_strategy=align_join_strategy,
                 rechunk_factor=rechunk_factor,
             )
-            if use_train_prediction_clim:
-                an_train_m, fc_train_m, pr_train_m = processed_train
-            else:
-                an_train_m, fc_train_m = processed_train
-            an_clim_ts = calculate_climatology(an_train_m, groupby="month") # always monthly climatology
-            fc_clim_ts = calculate_climatology(fc_train_m, groupby="month")
-            pr_clim_ts = calculate_climatology(pr_train_m, groupby="month") if use_train_prediction_clim else an_clim_ts
+            an_train_m = processed_train[0]
+            an_clim_ts = calculate_climatology(an_train_m, groupby="month")
+            clim_by_model[truth_model] = an_clim_ts
+            for model_name, train_ds in zip(train_model_names, processed_train[1:]):
+                clim_by_model[model_name] = calculate_climatology(train_ds, groupby="month")
+            if "pr" in clim_by_model and clim_by_model["pr"] is None:
+                clim_by_model["pr"] = an_clim_ts
 
         runs[name][truth_model] = an_m
-        runs[name][data_model_a] = fc_m
-        runs[name][data_model_b] = pr_m
+        for model_name, model_ds in zip(selected_model_names, processed_models):
+            runs[name][model_name] = model_ds
         runs[name]["mask"] = mask_m
+
+        clim_data = [clim_by_model[truth_model], *[clim_by_model[model_name] for model_name in data_model_names]]
 
         dm = DeterministicMetrics(
             truth_data=an_m,
             model_data=data_models,
             truth_name=truth_model,
             model_names=data_model_names,
-            clim_data=[an_clim_ts, fc_clim_ts, pr_clim_ts],
+            clim_data=clim_data,
             mask_data=mask_m,
         )
         cm = CorrelationMetrics(
@@ -521,7 +531,7 @@ def get_runs_and_metrics(
             model_data=data_models,
             truth_name=truth_model,
             model_names=data_model_names,
-            clim_data=[an_clim_ts, fc_clim_ts, pr_clim_ts],
+            clim_data=clim_data,
             mask_data=mask_m,
         )
         pm = ProbabilisticMetrics(
@@ -529,13 +539,13 @@ def get_runs_and_metrics(
             model_data=data_models,
             truth_name=truth_model,
             model_names=data_model_names,
-            clim_data=[an_clim_ts, fc_clim_ts, pr_clim_ts],
+            clim_data=clim_data,
             mask_data=mask_m,
         )
 
         metrics[name] = build_standard_metric_bundle(dm, cm, pm, norm="std", clim_period="month")
 
-    return runs, metrics, (an_clim_ts, fc_clim_ts, pr_clim_ts)
+    return runs, metrics, tuple(clim_by_model.get(model_name) for model_name in models)
 
 def save_metrics (
     metrics: dict,
