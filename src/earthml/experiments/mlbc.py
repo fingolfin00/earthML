@@ -67,18 +67,13 @@ class ExperimentMLBC:
         train_preds_exp = self._init_experiment(self.train_preds_store, self.config.train)
         self.config.train.append(train_preds_exp)
 
-        # Init source data objects
+        # Init source data objects and save original datasets
         self.source_train_data = self._init_source_data(self.config.train, "train")
         self.source_test_data  = self._init_source_data(self.config.test,  "test")
 
-        # Init mask dataset
-        mask_filename = "mask"
-
-        self.test_mask_store = self.mask_folder_path.joinpath(Path("test_"+mask_filename).with_suffix(".zarr"))
-        self.test_mask_exp = self._init_experiment(self.test_mask_store, self.config.test)
-
-        self.train_mask_store = self.mask_folder_path.joinpath(Path("train_"+mask_filename).with_suffix(".zarr"))
-        self.train_mask_exp = self._init_experiment(self.train_mask_store, self.config.train)
+        # Generate xarray datsets
+        self.train_input_ds, self.train_target_ds = self._generate_xarray_ds(self.source_train_data, self.config.train, 'Train') # capital T just for logging
+        self.test_input_ds, self.test_target_ds = self._generate_xarray_ds(self.source_test_data, self.config.test, 'Test')
 
         # Handle latitudes for optional spatial weighting
         self.latitudes = None
@@ -107,6 +102,38 @@ class ExperimentMLBC:
         #     expected_H = ...  # compute or fetch from a sample input shape
         #     if self.latitudes.numel() != expected_H:
         #         raise ValueError(f"latitudes length {self.latitudes.numel()} != H {expected_H}")
+
+        # Remove climatology (monthly) if requested
+        if self.config.anomaly:
+            self._init_anomaly_climatologies()
+            self.train_input_ds, self.train_target_ds = self._calculate_anomaly(self.train_input_ds, self.train_target_ds)
+            self.test_input_ds, self.test_target_ds = self._calculate_anomaly(self.test_input_ds, self.test_target_ds)
+            self._save_anomaly_datasets(self.train_input_ds, self.train_target_ds, "train")
+            self._save_anomaly_datasets(self.test_input_ds, self.test_target_ds, "test")
+
+        # Inpaint nan if requested
+        if self.config.inpaint_nan:
+            print(f"Inpainting NaN values in datasets with bilinear interpolation...")
+            self.train_input_ds, self.train_target_ds = inpaint_nan_bilinear(self.train_input_ds), inpaint_nan_bilinear(self.train_target_ds)
+            self.test_input_ds, self.test_target_ds = inpaint_nan_bilinear(self.test_input_ds), inpaint_nan_bilinear(self.test_target_ds)
+
+        # Hook preprocessing function
+        if self.config.torch_preprocess_fn is not None:
+            print("Apply preprocessing custom function...")
+            self.train_input_ds, self.train_target_ds = self.config.torch_preprocess_fn(self.train_input_ds, self.train_target_ds)
+            self.test_input_ds, self.test_target_ds = self.config.torch_preprocess_fn(self.test_input_ds, self.test_target_ds)
+
+        # Init mask dataset
+        mask_filename = "mask"
+
+        self.test_mask_store = self.mask_folder_path.joinpath(Path("test_"+mask_filename).with_suffix(".zarr"))
+        self.test_mask_exp = self._init_experiment(self.test_mask_store, self.config.test)
+
+        self.train_mask_store = self.mask_folder_path.joinpath(Path("train_"+mask_filename).with_suffix(".zarr"))
+        self.train_mask_exp = self._init_experiment(self.train_mask_store, self.config.train)
+
+        self.train_mask_ds = self._create_and_save_common_mask(self.train_input_ds, self.train_target_ds, 'train')
+        self.test_mask_ds = self._create_and_save_common_mask(self.test_input_ds, self.test_target_ds, 'test')
 
         # Build merged loss_params
         base_loss_params = dict(self.config.loss_params)  # shallow copy
@@ -173,6 +200,10 @@ class ExperimentMLBC:
         # Mask location
         self.mask_folder_path = self.work_path.joinpath("./mask")
         self.mask_folder_path.mkdir(parents=True, exist_ok=True)
+        # Anomaly location
+        self.anomaly_folder_path = self.work_path.joinpath("./anomaly")
+        if self.config.anomaly:
+            self.anomaly_folder_path.mkdir(parents=True, exist_ok=True)
         # Lightning checkpoints location
         self.ckpt_filename = "checkpoint"
         self.ckpt_folder_path = self.work_path.joinpath("./checkpoints")
@@ -280,6 +311,87 @@ class ExperimentMLBC:
         )
         return source_params, src
 
+    def _generate_xarray_ds(
+        self,
+        source_data: Dict[str, BaseSource],
+        experiments: ExperimentDataset | List[ExperimentDataset],
+        data_type: str
+    ) -> Tuple[xr.Dataset]:
+        if not isinstance(experiments, list):
+            experiments = [experiments]
+        exp_roles = [e.role for e in experiments if e.role != 'prediction']
+        ds_d = {}
+        s = time.time()
+
+        for role in exp_roles:
+            # print(role)
+            ds = source_data[role].load()
+
+            # Keep only allowed dims and coords
+            allowed_dims = {
+                guess_time_dim(ds),
+                guess_lat_dim(ds),
+                guess_lon_dim(ds),
+                guess_realization_dim(ds),
+                # guess_leadtime_dim(ds), # leadtime dim must be removed (should be 1D at most)
+                "missed_time",
+            }
+            ds = remove_unwanted_dims_and_coords(ds, allowed_dims)
+
+            # Remove missed_times from the dataset to avoid interference with later torch code
+            ds = ds.drop_dims("missed_time")
+            ds_d[role] = ds
+
+        loading_time = time.time() - s
+        print(f"{data_type} loading time: {loading_time:.1f}s")
+
+        # For now only support input and target roles
+        assert "input" in exp_roles and "target" in exp_roles
+        input_ds, target_ds = ds_d['input'], ds_d['target']
+
+        # Align
+        input_ds, target_ds = xr.align(input_ds, target_ds, join="inner")
+
+        return input_ds, target_ds
+
+    def _create_and_save_common_mask(
+        self,
+        input_ds: xr.Dataset,
+        target_ds: xr.Dataset,
+        data_type: str,
+    ):
+        # Create common mask and save
+        input_valid_mask = create_valid_mask_ds(input_ds)
+        target_valid_mask = create_valid_mask_ds(target_ds)
+
+        common_mask = (input_valid_mask & target_valid_mask).rename("common_mask")
+
+        mask_ds = xr.Dataset(
+            {
+                "common_mask": common_mask.astype("uint8"),  # smaller than bool
+            }
+        )
+        mask_ds["common_mask"].attrs.update(
+            {
+                "description": "Common validity mask for aligned input and target datasets",
+                "values": "1=valid, 0=masked",
+            }
+        )
+
+        compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
+        encoding_zarr = {"common_mask": {"compressors": compressor}}
+
+        if data_type == "train":
+            print(f"Save mask to {self.train_mask_store}")
+            mask_ds.to_zarr(self.train_mask_store, encoding=encoding_zarr, mode="w", consolidated=self.consolidated_zarr)
+        elif data_type == "test":
+            print(f"Save mask to {self.test_mask_store}")
+            mask_ds.to_zarr(self.test_mask_store, encoding=encoding_zarr, mode="w", consolidated=self.consolidated_zarr)
+        else:
+            raise ValueError(f"Unknown data_type {data_type} for mask saving")
+
+        return mask_ds
+
     def _init_source_data(self, exp_ds: ExperimentDataset | List[ExperimentDataset], source_type: str):
         """Returns populated Source instances"""
 
@@ -371,6 +483,40 @@ class ExperimentMLBC:
         #         print(f"Number of {source_type} {role}: {len(source.elements.samples)}")
         return sources
 
+
+    # Anomaly helpers
+    def _init_anomaly_climatologies(self):
+        print("Calculate target and input climatologies from Train dataset...")
+
+        input_ds = self.train_input_ds
+        target_ds = self.train_target_ds
+
+        self.target_clim_ts = calculate_climatology(target_ds, groupby="month")
+        self.input_clim_ts = calculate_climatology(input_ds, groupby="month")
+
+    def _calculate_anomaly(
+        self,
+        input_ds: xr.Dataset,
+        target_ds: xr.Dataset,
+    ) -> Tuple[xr.Dataset, xr.Dataset]:
+        if self.target_clim_ts is None or self.input_clim_ts is None:
+            raise RuntimeError("Anomaly climatologies were not initialized from the Train dataset.")
+
+        target_ds = target_ds.groupby(f"{guess_time_dim(target_ds)}.month") - self.target_clim_ts
+        input_ds = input_ds.groupby(f"{guess_time_dim(input_ds)}.month") - self.input_clim_ts
+        return input_ds, target_ds
+
+    def _save_anomaly_datasets(
+        self,
+        input_anom_ds: xr.Dataset,
+        target_anom_ds: xr.Dataset,
+        data_type: str,
+    ):
+        for role, ds in (("input", input_anom_ds), ("target", target_anom_ds)):
+            anomaly_store = self.anomaly_folder_path.joinpath(f"{data_type.lower()}_{role}.zarr")
+            ds.to_zarr(anomaly_store, mode="w", consolidated=self.consolidated_zarr)
+
+
     def _init_callbacks(self):
         # Initialize trainer callbacks
         callbacks = []
@@ -427,90 +573,14 @@ class ExperimentMLBC:
             # deterministic=True
         )
 
-    def _generate_torch_dataset(self, source_data: Dict[str, BaseSource], experiments: ExperimentDataset | List[ExperimentDataset], data_type: str):
-        if not isinstance(experiments, list):
-            experiments = [experiments]
-        exp_roles = [e.role for e in experiments if e.role != 'prediction']
-        ds_d = {}
-        s = time.time()
 
-        for role in exp_roles:
-            # print(role)
-            ds = source_data[role].load()
-
-            # Keep only allowed dims and coords
-            allowed_dims = {
-                guess_time_dim(ds),
-                guess_lat_dim(ds),
-                guess_lon_dim(ds),
-                guess_realization_dim(ds),
-                # guess_leadtime_dim(ds), # leadtime dim must be removed (should be 1D at most)
-                "missed_time",
-            }
-            ds = remove_unwanted_dims_and_coords(ds, allowed_dims)
-
-            # Remove missed_times from the dataset to avoid interference with later torch code
-            ds = ds.drop_dims("missed_time")
-            ds_d[role] = ds
-
-        loading_time = time.time() - s
-        print(f"{data_type} loading time: {loading_time:.1f}s")
-
-        # For now only support input and target roles
-        assert "input" in exp_roles and "target" in exp_roles
-        input_ds, target_ds = ds_d['input'], ds_d['target']
-
-        # Align
-        input_ds, target_ds = xr.align(input_ds, target_ds, join="inner")
-
-        # Hook preprocessing function
-        if self.config.torch_preprocess_fn is not None:
-            input_ds, target_ds = self.config.torch_preprocess_fn(input_ds, target_ds)
-
-        # Create common mask and save
-        input_valid_mask = create_valid_mask_ds(input_ds)
-        target_valid_mask = create_valid_mask_ds(target_ds)
-
-        common_mask = (input_valid_mask & target_valid_mask).rename("common_mask")
-
-        mask_ds = xr.Dataset(
-            {
-                "common_mask": common_mask.astype("uint8"),  # smaller than bool
-            }
-        )
-        mask_ds["common_mask"].attrs.update(
-            {
-                "description": "Common validity mask for aligned input and target datasets",
-                "values": "1=valid, 0=masked",
-            }
-        )
-
-        compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
-        encoding_zarr = {"common_mask": {"compressors": compressor}}
-
-        if data_type == "Train":
-            print(f"Save mask to {self.train_mask_store}")
-            mask_ds.to_zarr(self.train_mask_store, encoding=encoding_zarr, mode="w", consolidated=self.consolidated_zarr)
-        elif data_type == "Test":
-            print(f"Save mask to {self.test_mask_store}")
-            mask_ds.to_zarr(self.test_mask_store, encoding=encoding_zarr, mode="w", consolidated=self.consolidated_zarr)
-        else:
-            raise ValueError(f"Unknown data_type {data_type} for mask saving")
-
-        # Remove climatology (monthly) if requested
-        if self.config.anomaly:
-            print("Calculate target and input climatologies...")
-            self.target_clim_ts = calculate_climatology(target_ds, groupby="month")
-            target_ds = target_ds.groupby(f"{guess_time_dim(target_ds)}.month") - self.target_clim_ts
-            self.input_clim_ts = calculate_climatology(input_ds, groupby="month")
-            input_ds = input_ds.groupby(f"{guess_time_dim(input_ds)}.month") - self.input_clim_ts
-
-        # Inpaint nan if requested
-        if self.config.inpaint_nan:
-            print(f"Inpainting NaN values in {data_type} datasets with bilinear interpolation...")
-            input_ds = inpaint_nan_bilinear(input_ds)
-            target_ds = inpaint_nan_bilinear(target_ds)
-
+    def _generate_torch_dataset(
+        self,
+        input_ds: xr.Dataset,
+        target_ds: xr.Dataset,
+        source_data: Dict[str, BaseSource],
+        data_type: str
+    ):
         # Create torch dataset
         torch_dataset = XarrayDataset(
             input_ds, target_ds,
@@ -690,7 +760,7 @@ class ExperimentMLBC:
 
     def train(self):
         # Generate torch train dataset
-        train_dataset = self._generate_torch_dataset(self.source_train_data, self.config.train, 'Train')
+        train_dataset = self._generate_torch_dataset(self.train_input_ds, self.train_target_ds, self.source_train_data, 'Train')
 
         # Normalize
         self.normalize_input  = Normalize().fit(train_dataset, filepath=self.normdata_input_path, dim='x')  # mean and std of train input (x) data
@@ -724,12 +794,13 @@ class ExperimentMLBC:
         self,
         test_data_type: Literal['Test', 'Train'],
         test_data: Dict, # dict of sources
-        test_exps: ExperimentDataset | List[ExperimentDataset],
+        test_input_ds: xr.Dataset,
+        test_target_ds: xr.Dataset,
         preds_store: Path,
         var_list: List,
         weights_filename: str | Path | None = None,
     ):
-        dataset = self._generate_torch_dataset(test_data, test_exps, test_data_type)
+        dataset = self._generate_torch_dataset(test_input_ds, test_target_ds, test_data, test_data_type)
 
         # Normalize input
         if not self.normalize_input:
@@ -762,6 +833,8 @@ class ExperimentMLBC:
             weights_file = Path(last_callback["best_model_path"])
             if not weights_file.is_file(): # fallback to config weights filename
                 weights_file = Path(self.weights_path)
+        else:
+            weights_file = Path(weights_filename)
 
         # Load weights
         print(f"Load weights from file: {weights_file}")
@@ -785,10 +858,10 @@ class ExperimentMLBC:
         return dataloader
 
     def test(self, weights_filename=None):
-        self.test_dataloader  = self._test('Test', self.source_test_data, self.config.test, self.test_preds_store, self.test_var_list, weights_filename)
+        self.test_dataloader  = self._test('Test', self.source_test_data, self.test_input_ds, self.test_target_ds, self.test_preds_store, self.test_var_list, weights_filename)
 
     def test_on_train(self, weights_filename=None):
-        self.test_dataloader  = self._test('Train', self.source_train_data, self.config.train, self.train_preds_store, self.train_var_list, weights_filename)
+        self.test_dataloader  = self._test('Train', self.source_train_data, self.train_input_ds, self.train_target_ds, self.train_preds_store, self.train_var_list, weights_filename)
 
     def _infer_RT_from_source(self, dataset: XarrayDataset) -> tuple[int, int]:
         """
