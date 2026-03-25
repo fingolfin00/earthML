@@ -186,7 +186,11 @@ class ProbabilisticMetrics(BaseMetrics):
             for var in common_vars:
                 model = model_ds[var]
                 truth = self.truth_data[var]
-                clim = clim_ds[var]
+
+                if clim_ds is None:
+                    clim = truth[var].groupby(f"{self.dims.time}.month").mean(dim=self.dims.time, skipna=True)
+                else:
+                    clim = clim_ds[var]
 
                 crps_model = self._crps_ensemble_da(model, truth)
                 crps_model = crps_model.earthml.geo_mean(metric_mean_dims)
