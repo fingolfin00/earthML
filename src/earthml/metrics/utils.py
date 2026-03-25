@@ -150,11 +150,28 @@ def metrics_to_df(
                 if len(models) != 2:
                     raise ValueError("When diff is 'delta' or 'ratio', models must contain exactly two model names")
                 model_a, model_b = models
+
             ds_a = ds.sel(model=model_a)
             ds_b = ds.sel(model=model_b)
-            arr = ds_b.to_array(dim="variable") - ds_a.to_array(dim="variable")
+
+            a = ds_a.to_array(dim="variable")
+            b = ds_b.to_array(dim="variable")
+
+            # print("A:", a)
+            # print("A dtype:", a.dtype)
+            # print("B:", b)
+            # print("B dtype:", b.dtype)
+
+            # print("Computing A...")
+            a_loaded = a.compute()
+
+            # print("Computing B...")
+            b_loaded = b.compute()
+
+            arr = b_loaded - a_loaded
             if diff == "ratio":
-                arr = arr / np.abs(ds_a.to_array(dim="variable"))
+                arr = arr / np.abs(a_loaded)
+
             df_tp = arr.to_dataframe(name="value").reset_index()
             df_tp["model"] = f"{model_b}-{model_a}"
         else:
@@ -163,6 +180,7 @@ def metrics_to_df(
                 if not selected_models:
                     continue
                 ds = ds.sel(model=selected_models)
+
             df_tp = ds.to_array(dim="variable").to_dataframe(name="value").reset_index()
 
         if "leadtime" not in df_tp.columns:
