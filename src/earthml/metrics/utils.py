@@ -81,105 +81,99 @@ def build_parquet_path(
 
     return str(Path(base_folder) / f"metrics_{diff}_{vars_tag}_{metrics_tag}_parquet")
 
-def infer_metric_names(metrics_dict: dict, kind: str) -> list[str]:
-    # grab first tp/model/kind and return keys there
-    for _, res in metrics_dict.items():
-        for _, md in res["models"].items():
-            if kind in md:
-                return list(md[kind].keys())
-    return []
-
-def infer_variables(metrics_dict: dict, kind: str, metric_name: str | None = None) -> list[str]:
-    for tp, res in metrics_dict.items():
-        for model, md in res.get("models", {}).items():
-            kind_dict = md.get(kind, {})
-            if not isinstance(kind_dict, dict) or not kind_dict:
-                continue
-
-            # Infer from first metric dataset if metric_name is not provided
-            m = metric_name or next(iter(kind_dict.keys()))
-            ds = kind_dict.get(m)
-            if ds is None:
-                continue
-
-            return list(ds.data_vars)
-    return []
 
 def metrics_to_df(
     metrics_dict: dict,
     variables: list[str] | str | None = None,
     metric_names: list[str] | str | None = None,
     kind: str = "scalar",
+    metric_type: str = "deterministic",
     diff: str = "no", # no, delta, ratio
     models: Sequence[str] | None = None, # list/tuple
 ):
     """Convert metrics dict to a pandas DataFrame."""
 
-    if metric_names is None:
-        metric_names = infer_metric_names(metrics_dict, kind)
-    elif isinstance(metric_names, str):
+    if isinstance(metric_names, str):
         metric_names = [metric_names]
-    else:
+    elif metric_names is not None:
         metric_names = list(metric_names)
 
-    if variables is None:
-        variables = infer_variables(metrics_dict, kind, metric_names[0] if metric_names else None)
-    elif isinstance(variables, str):
+    if isinstance(variables, str):
         variables = [variables]
-    else:
+    elif variables is not None:
         variables = list(variables)
+
+    section_key = f"{kind}_{metric_type}"
+
+    first_ds = None
+    for res in metrics_dict.values():
+        ds = res.get(section_key)
+        if isinstance(ds, xr.Dataset) and ds:
+            first_ds = ds
+            break
+
+    if first_ds is None:
+        raise ValueError(
+            f"No metrics dataset found for section='{section_key}'. Check metrics_dict structure."
+        )
+
+    if metric_names is None:
+        metric_names = list(first_ds.coords["metric"].values) if "metric" in first_ds.coords else []
+    if variables is None:
+        variables = list(first_ds.data_vars)
 
     if not metric_names:
         raise ValueError(f"No metric_names found under kind='{kind}'. Check metrics_dict structure.")
     if not variables:
         raise ValueError("No variables inferred. Check metrics_dict structure.")
 
-    rows = []
+    frames = []
     for tp, res in metrics_dict.items():
-        models_tp = list(res["models"].keys()) if models is None else list(models)
+        ds = res.get(section_key)
+        if ds is None or not ds.data_vars:
+            continue
+
+        available_metrics = set(ds.coords["metric"].values.tolist()) if "metric" in ds.coords else set()
+        available_vars = [var for var in variables if var in ds.data_vars]
+        selected_metrics = [metric for metric in metric_names if metric in available_metrics]
+        if not available_vars or not selected_metrics:
+            continue
+
+        ds = ds[available_vars].sel(metric=selected_metrics)
 
         if diff in ("delta", "ratio"):
-            if len(models_tp) != 2:
-                raise ValueError("When diff=True, models must contain exactly two model names")
-            model_a, model_b = models_tp
-            model_iter = [f"{model_b}-{model_a}"]
+            if models is None:
+                if "model" not in ds.coords or ds.sizes.get("model", 0) != 2:
+                    raise ValueError("When diff is 'delta' or 'ratio', exactly two models are required")
+                model_a, model_b = ds.coords["model"].values.tolist()
+            else:
+                if len(models) != 2:
+                    raise ValueError("When diff is 'delta' or 'ratio', models must contain exactly two model names")
+                model_a, model_b = models
+            ds_a = ds.sel(model=model_a)
+            ds_b = ds.sel(model=model_b)
+            arr = ds_b.to_array(dim="variable") - ds_a.to_array(dim="variable")
+            if diff == "ratio":
+                arr = arr / np.abs(ds_a.to_array(dim="variable"))
+            df_tp = arr.to_dataframe(name="value").reset_index()
+            df_tp["model"] = f"{model_b}-{model_a}"
         else:
-            model_iter = models_tp
-            model_a = model_b = None  # not used
+            if "model" in ds.coords:
+                selected_models = ds.coords["model"].values.tolist() if models is None else [m for m in models if m in ds.coords["model"].values]
+                if not selected_models:
+                    continue
+                ds = ds.sel(model=selected_models)
+            df_tp = ds.to_array(dim="variable").to_dataframe(name="value").reset_index()
 
-        for model_name in model_iter:
-            for m in metric_names:
-                for var in variables:
-                    da = _get_da_from_metrics(metrics_dict, tp, model_name, kind, m, model_a, model_b, var, diff)
-                    if da is None:
-                        continue
+        if "leadtime" not in df_tp.columns:
+            df_tp["leadtime"] = np.nan
 
-                    if da.ndim == 0:
-                        rows.append({
-                            "train_period": tp,
-                            "model": model_name,
-                            "metric": m,
-                            "variable": var,
-                            "leadtime": np.nan,
-                            "value": float(da.values) if np.isfinite(da.values) else np.nan,
-                        })
-                    else:
-                        df_da = da.to_dataframe(name="value").reset_index()
+        df_tp["train_period"] = tp
+        frames.append(df_tp[["train_period", "model", "metric", "variable", "leadtime", "value"]])
 
-                        if "leadtime" not in df_da.columns:
-                            df_da["leadtime"] = np.nan
-
-                        df_da["train_period"] = tp
-                        df_da["model"] = model_name
-                        df_da["metric"] = m
-                        df_da["variable"] = var
-
-                        rows.extend(
-                            df_da[["train_period", "model", "metric", "variable", "leadtime", "value"]]
-                            .to_dict("records")
-                        )
-
-    df = pd.DataFrame(rows)
+    df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(
+        columns=["train_period", "model", "metric", "variable", "leadtime", "value"]
+    )
 
     # Add diff date
     df[["years", "months", "days", "total_days", "total_months"]] = (
