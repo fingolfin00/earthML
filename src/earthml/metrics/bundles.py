@@ -36,7 +36,7 @@ def _stack_metric_section(section_metrics: dict[str, xr.Dataset]) -> xr.Dataset:
     if not stacked:
         return xr.Dataset()
 
-    return xr.concat(stacked, dim="metric")
+    return xr.concat(stacked, dim="metric", coords='minimal', compat='override')
 
 
 def build_standard_metric_bundle(
