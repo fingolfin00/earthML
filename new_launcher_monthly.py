@@ -144,7 +144,7 @@ if __name__ == "__main__":
 
         # Inner loop
         for var_fc_key, var_an_key in spec.var_keys:
-            for leadtime_var_fc_value, leadtime_mult in zip(spec.full_leadtimes, spec.full_leadtime_multiple):
+            for leadtime_var_fc_value, leadtime_mult in zip(spec.full_leadtimes, spec.full_leadtime_multiple): # days, months
                 for train_p_in, train_p_tar in zip(spec.train_periods_input, spec.train_periods_target):
 
                     # Create unique run key
@@ -158,9 +158,9 @@ if __name__ == "__main__":
                         var_fc_key=var_fc_key,
                         var_an_key=var_an_key,
                         loss_suf=loss_suf,
-                        lt_fc_value=leadtime_var_fc_value,
+                        lt_fc_value=leadtime_var_fc_value,  # days
                         lt_fc_unit=spec.leadtime_var_unit,
-                        lt_value=leadtime_mult,
+                        lt_value=leadtime_mult,             # months
                         lt_unit=spec.leadtime_unit,
                         train_in_start=train_in_s,
                         train_in_end=train_in_e,
@@ -194,11 +194,11 @@ if __name__ == "__main__":
                         name="ocean",
                         leadtime_var_fc_name="step" if (spec.experiment_type=="cds-cmcc_oras5" and var_exp in vars_cloud_cds_atmo) else "leadtime", # CDS monthly season forecast leadtime variable is "step" instead of "leadtime"
                         leadtime_var_an_name="leadtime",
-                        leadtime_var_fc_value=leadtime_var_fc_value,
-                        leadtime_var_an_value=spec.leadtime_var_an_value, # fixed leadtime for analysis, ignored if no leadtime in analysis dataset
-                        leadtime_var_unit=spec.leadtime_var_unit, # SST -> hours, other vars -> days
-                        leadtime_value=leadtime_mult,
-                        leadtime_unit=spec.leadtime_unit, # SST -> hours, other vars -> months
+                        leadtime_var_fc_value=leadtime_var_fc_value,        # days
+                        leadtime_var_an_value=spec.leadtime_var_an_value,   # fixed leadtime for analysis, ignored if no leadtime in analysis dataset
+                        leadtime_var_unit=spec.leadtime_var_unit,
+                        leadtime_value=leadtime_mult,                       # months
+                        leadtime_unit=spec.leadtime_unit,
                         var_fc_key=var_fc_key,
                         var_an_key=var_an_key,
                         region_key=region_sel,
