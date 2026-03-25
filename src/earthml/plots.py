@@ -426,6 +426,7 @@ def plot_metric_vs_diff (
     title=None,
     # Legend
     legend=True,
+    legend_labels: Sequence = None,
     legend_loc="upper left",
     legend_fontsize=9,
     leadtime_unit="",
@@ -648,7 +649,7 @@ def plot_metric_vs_diff (
                 markersize=7,
                 markerfacecolor=cmap(vi % cmap.N),
                 markeredgecolor=edgecolor,
-                label=str(var).replace("_mse", ""),
+                label=legend_labels[vi] if legend_labels else str(var),
                 # label=str(var), # TODO fix this is too custom
             )
             for vi, var in enumerate(variables)
@@ -738,9 +739,6 @@ def plot_metric_vs_diff (
 
     plt.tight_layout()
     return fig, ax, df
-
-
-
 
 
 def _extent_from_da (da: xr.DataArray, lon_name="lon", lat_name="lat", pad_deg=2.0):
