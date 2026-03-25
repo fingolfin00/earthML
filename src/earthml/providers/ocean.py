@@ -40,7 +40,7 @@ def juno_monthly_hindcast_ocean_netcdf (
 @register_provider("ocean.earthkit.cmcc.hindcast.monthly")
 def earthkit_cmcc_monthly_hindcast_ocean_netcdf (
     var_name: str,
-    leadtime_value: int,
+    leadtime_value: int,    # months
     leadtime_unit: str,
     originating_centre: str = "cmcc",
     system: str = "4",

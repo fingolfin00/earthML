@@ -26,8 +26,8 @@ class ExperimentMonthlySpec:
     target_provider_kwargs_oras5_consolidated: dict[str, Any]
     target_provider_kwargs_oras5_operational: dict[str, Any]
 
-    full_leadtimes: tuple
-    full_leadtime_multiple: tuple
+    full_leadtimes: tuple           # days
+    full_leadtime_multiple: tuple   # months
     leadtime_var_an_value: int
     leadtime_var_unit: str
     leadtime_unit: str

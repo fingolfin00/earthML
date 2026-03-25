@@ -74,14 +74,14 @@ class MLBCScenario:
     """
     name: str
 
-    # leadtime variable in dataset
+    # leadtime variable in dataset (days in seasonal)
     leadtime_var_fc_name: str
     leadtime_var_an_name: str
     leadtime_var_fc_value: int
     leadtime_var_an_value: int
     leadtime_var_unit: Literal["hours", "days", "months"]
 
-    # actual leadtime
+    # actual leadtime (months for seasonal)
     leadtime_value: int
     leadtime_unit: Literal["hours", "days", "months"]
 
