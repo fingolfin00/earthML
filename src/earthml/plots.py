@@ -1118,7 +1118,9 @@ def create_panel_from_data (
             norm = _make_growing_norm(limits)
             norms = np.array(len(rows)*[len(cols)*[norm]])
         else:
-            norms = _create_nparray_with_compatible_data(limits, tuple, rows, cols)
+            limits_array = _create_nparray_with_compatible_data(limits, tuple, rows, cols)
+            for r,c in product(range(nrows), range(ncols)):
+                norms[r,c] = _make_growing_norm(limits_array[r,c])
 
     elif isinstance(limits, dict): # dict with rows or cols
         if (
