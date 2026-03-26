@@ -46,9 +46,12 @@ def build_loss(loss_cfg: dict):
     loss_params = {}
     loss_suf = loss_sel.lower()
 
-    if loss_sel in  ("VarianceNormalizedMSELoss", "HeteroBiasCorrectionLoss", "EmpiricalCRPSLoss"):
-        variance_type = loss_cfg.get("variance_type", "spatial")
+    if loss_sel in  ("GeoMSELoss", "GeoMaskedMSELoss", "VarNormMaskMSELoss", "HeteroBiasCorrectionLoss", "EmpiricalCRPSLoss"):
         latitudes = loss_cfg.get("latitudes", True)
+        loss_params = dict(loss=dict(latitudes=latitudes))
+
+    if loss_sel in  ("VarNormMaskMSELoss", "HeteroBiasCorrectionLoss", "EmpiricalCRPSLoss"):
+        variance_type = loss_cfg.get("variance_type", "spatial")
         loss_params = dict(loss=dict(variance_type=variance_type, latitudes=latitudes))
         loss_suf += f"_{variance_type}"
 
@@ -59,7 +62,7 @@ def build_loss(loss_cfg: dict):
         use_first_input = loss_cfg.get("use_first_input", True)
         loss_params = dict(
             net=dict(use_first_input=use_first_input),
-            loss=dict(lambda_identity=lambda_identity, bias_scale=bias_scale, eps=1e-12),
+            loss=dict(variance_type=variance_type, latitudes=latitudes,lambda_identity=lambda_identity, bias_scale=bias_scale, eps=1e-12),
         )
         if use_first_input:
             loss_suf += "_usefirstinput"

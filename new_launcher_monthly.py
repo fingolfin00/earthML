@@ -45,22 +45,24 @@ if __name__ == "__main__":
     max_epochs                  = 50*n_input_realizations if realization_as_channel else 50
     init_learning_rate          = 1e-3
     accumulate_grad_batches     = 2
-    earlystopping_patience      = 30
+    earlystopping_patience      = 100 if realization_as_channel else 30
 
     if realization_as_channel:
         loss_sweep = [
             {"loss_sel": "MSELoss"},
-            {"loss_sel": "MaskedMSELoss"},
-            {"loss_sel": "VarianceNormalizedMSELoss", "variance_type": "spatial", "latitudes": False}, # channel, geochannel, spatial, temporal, geotemporal
-            {"loss_sel": "HeteroBiasCorrectionLoss", "use_first_input": True, "variance_type": "spatial", "latitudes": False, "lambda_identity": 0.1, "bias_scale": 0.5},
+            # {"loss_sel": "MaskedMSELoss"},
+            # {"loss_sel": "VarianceNormalizedMSELoss", "variance_type": "spatial", "latitudes": False}, # channel, geochannel, spatial, temporal, geotemporal
+            # {"loss_sel": "HeteroBiasCorrectionLoss", "use_first_input": True, "variance_type": "spatial", "latitudes": False, "lambda_identity": 0.1, "bias_scale": 0.5},
             {"loss_sel": "EmpiricalCRPSLoss", "num_realizations": n_input_realizations, "fair": True, "packed_dim": 1, "variance_type": "spatial", "latitudes": False}
         ]
     else:
         loss_sweep = [
             {"loss_sel": "MSELoss"},
+            # {"loss_sel": "GeoMSELoss", "latitudes": True},
             # {"loss_sel": "MaskedMSELoss"},
-            # {"loss_sel": "VarianceNormalizedMSELoss", "variance_type": "spatial", "latitudes": False}, # channel, geochannel, spatial, temporal, geotemporal
-            # {"loss_sel": "VarianceNormalizedMSELoss", "variance_type": "geochannel", "latitudes": True},
+            # {"loss_sel": "GeoMaskedMSELoss", "latitudes": True},
+            # {"loss_sel": "VarNormMaskMSELoss", "variance_type": "spatial", "latitudes": False}, # channel, geochannel, spatial, temporal, geotemporal
+            # {"loss_sel": "VarNormMaskMSELoss", "variance_type": "geochannel", "latitudes": True},
             # {"loss_sel": "HeteroBiasCorrectionLoss", "use_first_input": True, "variance_type": "spatial", "latitudes": False, "lambda_identity": 0.1, "bias_scale": 0.5},
             # {"loss_sel": "GaussianNLLFromLogits"}, # TODO fix
         ]

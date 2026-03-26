@@ -10,16 +10,55 @@ import torch.nn.functional as F
 # helpers (module-level)
 # -------------------------
 def _expand_mask_to(x: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
-    """Return boolean mask broadcasted to x.shape. True = valid."""
+    """
+    Return a boolean mask broadcasted to x.shape. True = valid.
+
+    Supported behavior:
+    - mask=None -> all True
+    - exact/broadcastable masks are accepted directly
+    - lower-rank masks are aligned to trailing dims by default
+    - special handling for common layouts like:
+        x:    (N,C,H,W), mask: (N,H,W)    -> (N,1,H,W)
+        x:    (N,C,T,H,W), mask: (N,T,H,W)-> (N,1,T,H,W)
+
+    Raises:
+        ValueError if the mask cannot be broadcast to x.shape.
+    """
     if mask is None:
         return torch.ones_like(x, dtype=torch.bool)
+
+    mask = mask.to(device=x.device)
     if mask.dtype != torch.bool:
         mask = mask != 0
-    # add leading dims until mask.ndim == x.ndim then expand
-    while mask.ndim < x.ndim:
-        mask = mask.unsqueeze(0)
-    return mask.expand_as(x)
 
+    # Fast path: already broadcastable as-is
+    try:
+        return torch.broadcast_to(mask, x.shape)
+    except RuntimeError:
+        pass
+
+    # Common case:
+    # x=(N,C,H,W), mask=(N,H,W) -> insert singleton channel dim
+    # x=(N,C,T,H,W), mask=(N,T,H,W) -> insert singleton channel dim
+    if x.ndim >= 3 and mask.ndim == x.ndim - 1 and mask.shape[0] == x.shape[0]:
+        candidate = mask.unsqueeze(1)
+        try:
+            return torch.broadcast_to(candidate, x.shape)
+        except RuntimeError:
+            pass
+
+    # General fallback: align mask to trailing dimensions
+    # e.g. (H,W) -> (1,1,H,W), (T,H,W) -> (1,1,T,H,W)
+    if mask.ndim < x.ndim:
+        candidate = mask.reshape((1,) * (x.ndim - mask.ndim) + tuple(mask.shape))
+        try:
+            return torch.broadcast_to(candidate, x.shape)
+        except RuntimeError:
+            pass
+
+    raise ValueError(
+        f"mask with shape {tuple(mask.shape)} is not broadcastable to target shape {tuple(x.shape)}"
+    )
 
 def _masked_stats(x: torch.Tensor, mask: torch.Tensor, reduce_dims: Tuple[int, ...], keepdim: bool = True):
     """
@@ -33,15 +72,14 @@ def _masked_stats(x: torch.Tensor, mask: torch.Tensor, reduce_dims: Tuple[int, .
     count = m.sum(dim=reduce_dims, keepdim=keepdim)
     return s, ssq, count
 
-
 def _masked_mean_var(
-        x: torch.Tensor,
-        mask: torch.Tensor,
-        reduce_dims: Tuple[int, ...],
-        unbiased: bool = False,
-        keepdim: bool = True,
-        eps: float = 1e-12,
-    ):
+    x: torch.Tensor,
+    mask: torch.Tensor,
+    reduce_dims: Tuple[int, ...],
+    unbiased: bool = False,
+    keepdim: bool = True,
+    eps: float = 1e-12,
+):
     """
     Return (mean, var, count) computed with mask applied.
     Population variance by default (unbiased=False). var >= 0.
@@ -56,6 +94,7 @@ def _masked_mean_var(
         corr = torch.where(safe_count > 1.0, safe_count / (safe_count - 1.0), torch.ones_like(safe_count))
         var = var * corr
     return mean, var, count
+
 
 # -------------------------
 # MaskedMSELoss
@@ -85,10 +124,52 @@ class MaskedMSELoss(nn.Module):
         valid_count = valid_count.clamp_min(self.eps)
         return sq_err.sum() / valid_count
 
+
 # -------------------------
-# GeoWeightedMSELoss
+# GeoMSELoss
 # -------------------------
-class GeoWeightedMSELoss(nn.Module):
+class GeoMSELoss(nn.Module):
+    """
+    Spatially weighted MSE loss that ignores boolean mask.
+    latitudes: 1D tensor length H (degrees)
+    """
+    def __init__(self, latitudes: torch.Tensor, eps: float = 1e-12):
+        super().__init__()
+        weights = torch.cos(torch.deg2rad(latitudes))
+        self.register_buffer("weights", weights)  # 1D tensor length H
+        self.eps = float(eps)
+
+    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor, mask: Optional[torch.Tensor] = None):
+        """
+        y_pred / y_true: (N,C,H,W)
+        mask: ignored, kept to respect signature of custom losses
+        """
+        if y_pred.shape != y_true.shape:
+            raise ValueError("y_pred and y_true must have the same shape")
+
+        sq_err = (y_pred - y_true) ** 2
+
+        # build latitude weight shape and broadcast
+        lat = self.weights.to(dtype=y_true.dtype, device=y_true.device)
+        # assume 4D (N,C,H,W)
+        H = y_true.shape[2]
+        if lat.numel() != H:
+            raise ValueError(f"latitudes length {lat.numel()} != H {H}")
+        w = lat.view(1, 1, H, 1).expand_as(y_true).to(dtype=sq_err.dtype)
+
+        # compute weighted mean over all pixels
+        numerator = (sq_err * w).sum()
+        denom = w.sum()
+        if denom.item() == 0:
+            raise ValueError("GeoMSELoss: zero valid weighted elements")
+        denom = denom.clamp_min(self.eps)
+        return numerator / denom
+
+
+# -------------------------
+# GeoMaskedMSELoss
+# -------------------------
+class GeoMaskedMSELoss(nn.Module):
     """
     Spatially weighted MSE loss that respects a boolean mask.
     latitudes: 1D tensor length H (degrees)
@@ -109,7 +190,7 @@ class GeoWeightedMSELoss(nn.Module):
 
         mask_b = _expand_mask_to(y_true, mask).to(device=y_true.device, dtype=torch.bool)  # boolean same shape as y_true
         sq_err = (y_pred - y_true) ** 2
-        sq_err = sq_err * mask_b.to(dtype=sq_err.dtype, device=sq_err.device)  # zero invalid
+        # sq_err = sq_err * mask_b.to(dtype=sq_err.dtype, device=sq_err.device)  # redundant
 
         # build latitude weight shape and broadcast
         lat = self.weights.to(dtype=y_true.dtype, device=y_true.device)
@@ -123,16 +204,16 @@ class GeoWeightedMSELoss(nn.Module):
         w_masked = w * mask_b.to(dtype=w.dtype, device=w.device)
         numerator = (sq_err * w_masked).sum()
         denom = w_masked.sum()
-        if denom == 0:
-            raise ValueError("GeoWeightedMSELoss: mask has zero valid (weighted) elements")
+        if denom.item() == 0:
+            raise ValueError("GeoMaskedMSELoss: mask has zero valid (weighted) elements")
         denom = denom.clamp_min(self.eps)
         return numerator / denom
 
 
 # -------------------------
-# VarianceNormalizedMSELoss
+# VarNormMaskMSELoss
 # -------------------------
-class VarianceNormalizedMSELoss(nn.Module):
+class VarNormMaskMSELoss(nn.Module):
     """
     MSE normalized by variance with mask support.
     - spatial: variance at each spatial cell across (N,C) -> shape (1,1,H,W)
@@ -162,13 +243,6 @@ class VarianceNormalizedMSELoss(nn.Module):
         else:
             self.register_buffer("latitudes", None)
 
-    def _check_var_field_broadcastable(self, var_field: torch.Tensor, target: torch.Tensor):
-        # quick broadcastability check
-        try:
-            _ = (var_field + target).shape
-        except Exception:
-            raise ValueError("var_field must be broadcastable to y_true/target shape")
-
     def forward(
         self,
         y_pred: torch.Tensor,
@@ -192,7 +266,11 @@ class VarianceNormalizedMSELoss(nn.Module):
 
         # If var_field provided, trust it (but clamp) — validate broadcastability
         if var_field is not None:
-            self._check_var_field_broadcastable(var_field, sq_err)
+            var_field = var_field.to(device=y_true.device, dtype=y_true.dtype)
+            try:
+                torch.broadcast_shapes(var_field.shape, sq_err.shape)
+            except RuntimeError as e:
+                raise ValueError("var_field must be broadcastable to y_true/target shape") from e
             denom = var_field.clamp_min(self.eps)
         else:
             # choose reduction dims common to many types:
@@ -293,7 +371,7 @@ class VarianceNormalizedMSELoss(nn.Module):
         # count valid pixels overall:
         valid_count = mask_b.to(dtype=sq_err.dtype, device=sq_err.device).sum()
         if valid_count.item() == 0:
-            raise ValueError("VarianceNormalizedMSELoss: mask has zero valid elements")
+            raise ValueError("VarNormMaskMSELoss: mask has zero valid elements")
         valid_count = valid_count.clamp_min(self.eps)
         loss = (sq_err / denom).sum() / valid_count
         return loss
@@ -314,7 +392,7 @@ class HeteroBiasCorrectionLoss(nn.Module):
         lambda_identity: float = 0.1,
         bias_scale: float = 0.5,
         eps: float = 1e-6,
-        # pass-through knobs for VarianceNormalizedMSELoss behavior
+        # pass-through knobs for VarNormMaskMSELoss behavior
         variance_type: Literal["channel", "geochannel", "spatial", "temporal", "geotemporal"] = "channel",
         latitudes: Optional[torch.Tensor] = None,
         relative_floor_frac: float = 1e-3,
@@ -325,7 +403,7 @@ class HeteroBiasCorrectionLoss(nn.Module):
         self.bias_scale = float(bias_scale)
         self.eps = float(eps)
 
-        self.var_mse = VarianceNormalizedMSELoss(
+        self.var_mse = VarNormMaskMSELoss(
             eps=eps,
             variance_type=variance_type,
             latitudes=latitudes,
@@ -583,4 +661,3 @@ class EmpiricalCRPSLoss(nn.Module):
         denom = denom.clamp_min(self.eps)
 
         return (crps_pointwise * w_masked).sum() / denom
-
