@@ -149,6 +149,16 @@ def build_standard_metric_bundle(
             sm["nbias"] = deterministic.nbias_of_mean(rdim, dims, norm=norm)
 
     # ------------------
+    # Probabilistic
+    # ------------------
+    if probabilistic is not None and has_realization:
+        for section, dims in reduce_dims.items():
+            sm = section_metrics["probabilistic"][section]
+
+            sm["crps"] = probabilistic.crps(full_dims)
+            # sm["crps_skill_clim"] = probabilistic.crps_skill_clim(full_dims)
+
+    # ------------------
     # Correlation
     # ------------------
     if correlation is not None:
@@ -168,16 +178,6 @@ def build_standard_metric_bundle(
                 sm["corr"] = correlation.corr_of_mean(rdim, dims)
                 sm["clim_acc"] = correlation.clim_anom_corr_of_mean(rdim, dims, period=clim_period)
                 sm["spatial_acc"] = correlation.spatial_anom_corr_of_mean(rdim, dims)
-
-    # ------------------
-    # Probabilistic
-    # ------------------
-    if probabilistic is not None and has_realization:
-        for section, dims in reduce_dims.items():
-            sm = section_metrics["probabilistic"][section]
-
-            sm["crps"] = probabilistic.crps(full_dims)
-            sm["crps_skill_clim"] = probabilistic.crps_skill_clim(full_dims)
 
     # ------------------
     # Stack
