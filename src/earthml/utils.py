@@ -96,7 +96,7 @@ class Dask:
 
         return self
 
-    def close (self):
+    def close(self):
         """
         Gracefully close Dask client and cluster, with retries to handle transient issues.
         """
@@ -119,10 +119,10 @@ class Dask:
                 pass
             self.cluster = None
 
-    def __enter__ (self):
+    def __enter__(self):
         return self.start()
 
-    def __exit__ (self, exc_type, exc, tb):
+    def __exit__(self, exc_type, exc, tb):
         self.close()
         return False  # don't suppress exceptions
 
@@ -130,7 +130,7 @@ class Dask:
 class Table:
     """Helper class to create rich Tables from multinested dicts and configs."""
 
-    def __init__ (
+    def __init__(
         self,
         data: Any,
         title: str = None,
@@ -183,7 +183,7 @@ class Table:
                 self.table.add_row(str(k), highligher(str(v)))
 
     @staticmethod
-    def _callable_label (fn: Any) -> str:
+    def _callable_label(fn: Any) -> str:
         try:
             name = getattr(fn, "__qualname__", None) or getattr(fn, "__name__", None) or repr(fn)
             mod = getattr(fn, "__module__", None)
@@ -192,7 +192,7 @@ class Table:
             return repr(fn)
 
     @classmethod
-    def _to_pretty (cls, obj: Any, *, max_depth: int, _depth: int = 0) -> Any:
+    def _to_pretty(cls, obj: Any, *, max_depth: int, _depth: int = 0) -> Any:
         """Convert arbitrary objects (incl. ExperimentConfig dataclass) into a dict/list structure."""
         if _depth >= max_depth:
             return repr(obj)
@@ -250,13 +250,13 @@ class Table:
 # Module-level functions
 #------------------------
 
-def _extract_nc_path_from_oserror (e: Exception) -> Path | None:
+def _extract_nc_path_from_oserror(e: Exception) -> Path | None:
     # netCDF4 often formats it like: "...: '/path/file.nc'"
     m = re.search(r"(/[^'\"]+\.(?:nc|nc4))", str(e))
     return Path(m.group(1)) if m else None
 
 
-def retry_fetch_after_hdf_err_eks_source (
+def retry_fetch_after_hdf_err_eks_source(
     fetch_fn: Callable,
     *,
     tries: int = 5,
@@ -272,19 +272,19 @@ def retry_fetch_after_hdf_err_eks_source (
             time.sleep(base_sleep * (2 ** (attempt - 1)))
     raise RuntimeError(f"Couldn't fetch requested Earthkit source after {tries} attempts") from last_e
 
-def _set_ekd_cache_dir (cache_dir: str = Path("/tmp/earthkit-cache/")):
+def _set_ekd_cache_dir(cache_dir: str = Path("/tmp/earthkit-cache/")):
     import earthkit.data as ekd
     ekd.config.set("cache-policy", "user")
     ekd.config.set("user-cache-directory", cache_dir)
 
-def _get_ekd_cache_dir ():
+def _get_ekd_cache_dir():
     import earthkit.data as ekd
     return ekd.config.get("user-cache-directory")
 
-def rmdir (directory):
+def rmdir(directory):
     shutil.rmtree(Path(directory), ignore_errors=False)
 
-def retry_fetch_after_hdf_err (
+def retry_fetch_after_hdf_err(
     fetch_fn: Callable[[], xr.Dataset | EmptySource],
     *,
     error_re: str | None = None,
@@ -349,14 +349,14 @@ def retry_fetch_after_hdf_err (
     _set_ekd_cache_dir(orig_ekd_cache_dir)
     raise RuntimeError(f"Failed after {tries} attempts; last error: {last_e!r}") from last_e
 
-def _normalize_bounds (bounds):
+def _normalize_bounds(bounds):
     if bounds is None:
         return slice(None)
     if isinstance(bounds, (int, float, np.timedelta64)):
         return bounds
     return slice(*bounds)
 
-def _guess_dim_or_coord_or_datavar_name (
+def _guess_dim_or_coord_or_datavar_name(
     ds: xr.Dataset,
     cf_name: str,
     name_type: Literal["coord", "dim", "data_var"],
@@ -392,46 +392,46 @@ def _guess_dim_or_coord_or_datavar_name (
     # Nothing found
     return None
 
-def _guess_dim_name (
+def _guess_dim_name(
     ds: xr.Dataset,
     cf_name: str,
     fallback_names: list[str] | None = None,
 ):
     return _guess_dim_or_coord_or_datavar_name(ds, cf_name, 'dim', fallback_names)
 
-def _guess_coord_name (
+def _guess_coord_name(
     ds: xr.Dataset,
     cf_name: str,
     fallback_names: list[str] | None = None,
 ):
     return _guess_dim_or_coord_or_datavar_name(ds, cf_name, 'coord', fallback_names)
 
-def _guess_data_var_name (
+def _guess_data_var_name(
     ds: xr.Dataset,
     cf_name: str,
     fallback_names: list[str] | None = None,
 ):
     return _guess_dim_or_coord_or_datavar_name(ds, cf_name, 'data_var', fallback_names)
 
-def guess_realization_dim (ds: xr.Dataset):
+def guess_realization_dim(ds: xr.Dataset):
     return _guess_dim_name(ds, "realization", ["realization", "number", "ens"])
 
-def guess_leadtime_dim (ds: xr.Dataset):
+def guess_leadtime_dim(ds: xr.Dataset):
     return _guess_dim_name(ds, "leadtime", ["lead_time", "leadtime", "step"])
 
-def guess_time_dim (ds: xr.Dataset):
+def guess_time_dim(ds: xr.Dataset):
     return _guess_dim_name(ds, "time", ["valid_time", "time_counter", "source_time", "t"])
 
-def guess_time_coord (ds: xr.Dataset):
+def guess_time_coord(ds: xr.Dataset):
     return _guess_coord_name(ds, "time", ["valid_time", "time_counter", "source_time", "t"])
 
-def guess_lon_dim (ds: xr.Dataset):
+def guess_lon_dim(ds: xr.Dataset):
     return _guess_dim_name(ds, 'longitude', ['lon', 'x', 'nav_lon'])
 
-def guess_lat_dim (ds: xr.Dataset):
+def guess_lat_dim(ds: xr.Dataset):
     return _guess_dim_name(ds, 'latitude', ['lat', 'y', 'nav_lat'])
 
-def remove_unwanted_dims_and_coords (ds, allowed_dims):
+def remove_unwanted_dims_and_coords(ds, allowed_dims):
     ds_out = ds.copy()
 
     # Remove unwanted dimensions safely (only if size == 1)
@@ -457,7 +457,7 @@ def remove_unwanted_dims_and_coords (ds, allowed_dims):
 
     return ds_out
 
-def _dim_selection (
+def _dim_selection(
     ds: xr.Dataset,
     cf_name: str,
     fallback_names: list[str] | None = None,
@@ -491,7 +491,7 @@ def _normalize_lon_bounds(lon_min, lon_max, grid_min):
 
     return lon_min, lon_max
 
-def _get_grid_extremes (ds: xr.Dataset, lon_coord, lat_coord) -> tuple:
+def _get_grid_extremes(ds: xr.Dataset, lon_coord, lat_coord) -> tuple:
     lon_da = ds[lon_coord]
     lat_da = ds[lat_coord]
 
@@ -507,7 +507,7 @@ def _get_grid_extremes (ds: xr.Dataset, lon_coord, lat_coord) -> tuple:
 
     return (lon_grid_min, lon_grid_max), (lat_grid_min, lat_grid_max)
 
-def subset_ds (
+def subset_ds(
     data_selection: DataSelection,
     ds: xr.Dataset,
 ) -> xr.Dataset:
@@ -561,14 +561,20 @@ def subset_ds (
     (lon_grid_min, lon_grid_max), (lat_grid_min, lat_grid_max) = _get_grid_extremes(ds, lon_coord, lat_coord)
     # Normalize request to ds grid
     lon_min_req, lon_max_req = _normalize_lon_bounds(lon_min_req, lon_max_req, lon_grid_min)
+
     # Rectilinear vs curvilinear detection
     is_rectilinear = (
         lon_da.ndim == 1
         and lat_da.ndim == 1
-        and lon_coord in ds.indexes
-        and lat_coord in ds.indexes
+        and lon_coord in ds.coords
+        and lat_coord in ds.coords
     )
     grid_type = "rectilinear" if is_rectilinear else "curvilinear"
+    print("Grid type:", grid_type)
+
+    # Roll if request crosses longitude cut-line (like dateline or Greenwich)
+    ds = _roll_ds(ds, (lon_min_req, lon_max_req))
+    
     # print(
     #     f"{grid_type} grid, limits: "
     #     f"lon ({lon_grid_min}, {lon_grid_max}), "
@@ -579,8 +585,7 @@ def subset_ds (
     #     f"lat requested: ({lat_min_req}, {lat_max_req})"
     # )
     # print(ds)
-    # Roll if request crosses longitude cut-line (like dateline or Greenwich)
-    ds = _roll_ds(ds, (lon_min_req, lon_max_req))
+
     # if 'sosaline' in ds.data_vars:
     #     quickplot(ds, 'sosaline', "/data/cmcc/jd19424/ML/experiments_earthML/", 'subset_ds_after_roll.png')
     (lon_grid_min, lon_grid_max), (lat_grid_min, lat_grid_max) = _get_grid_extremes(ds, lon_coord, lat_coord)
@@ -607,38 +612,37 @@ def subset_ds (
     sel_lat_max = None
 
     if is_rectilinear:
-        # Respect latitude orientation (south->north or north->south)
-        lat_vals_1d = lat_da.values
-        if lat_vals_1d[0] < lat_vals_1d[-1]:
-            # south -> north
-            lat_slice = (lat_min_req, lat_max_req)
-        else:
-            # north -> south
-            lat_slice = (lat_max_req, lat_min_req)
+        # Rectilinear horizontal selection via masks
+        lon_vals = ds[lon_coord]
+        lat_vals = ds[lat_coord]
 
-        lon_slice = (lon_min_req, lon_max_req)
+        # latitude mask
+        lat_lo = min(lat_min_req, lat_max_req)
+        lat_hi = max(lat_min_req, lat_max_req)
+        lat_mask = (lat_vals >= lat_lo) & (lat_vals <= lat_hi)
+
+        # longitude mask including wrap-around
+        if lon_min_req <= lon_max_req:
+            lon_mask = (lon_vals >= lon_min_req) & (lon_vals <= lon_max_req)
+        else:
+            lon_mask = (lon_vals >= lon_min_req) | (lon_vals <= lon_max_req)
+
+        # select coordinate values that satisfy mask
+        sel_lon = lon_vals.where(lon_mask, drop=True)
+        sel_lat = lat_vals.where(lat_mask, drop=True)
+
+        sel_dict = {lon_coord: sel_lon, lat_coord: sel_lat}
+        ds = ds.sel({lon_coord: sel_lon, lat_coord: sel_lat})
+
+        # apply non-horizontal selections normally
+        selection_d = {} | level_sel_d | leadtime_sel_d
+        if selection_d:
+            ds = ds.sel(**selection_d)
 
         # print(
         #     f"lat requested after reorientation {lon_slice}, "
         #     f"lat requested after reorientation {lat_slice})"
         # )
-
-        selection_d = {
-            lon_coord: _normalize_bounds(lon_slice),
-            lat_coord: _normalize_bounds(lat_slice),
-        } | level_sel_d | leadtime_sel_d
-
-        # Handle longitude wrap-around (e.g., [350, 10])
-        if lon_slice[0] > lon_slice[1]:
-            print("Longitude wrap-around on rectilinear grid...")
-            ds1 = ds.sel({lon_coord: slice(lon_slice[0], lon_grid_max)})
-            ds2 = ds.sel({lon_coord: slice(lon_grid_min, lon_slice[1])})
-            ds = xr.concat([ds1, ds2], dim=lon_coord)
-            selection_d.pop(lon_coord, None)
-
-        # print(f"Selection: {selection_d}")
-        if selection_d:
-            ds = ds.sel(**selection_d)
 
         # Compute selected extents from the rectilinear coords
         sel_lon_min = float(np.nanmin(ds[lon_coord].values))
@@ -697,16 +701,17 @@ def subset_ds (
     #     f"lat: ({sel_lat_min}, {sel_lat_max})"
     # )
 
+    print("Size after subsetting", ds.sizes)
     return ds
 
-def get_lonlat_coords (ds: xr.Dataset):
+def get_lonlat_coords(ds: xr.Dataset):
     lon_coord = _guess_coord_name(ds, "longitude", ["lon", "nav_lon"])
     lat_coord = _guess_coord_name(ds, "latitude", ["lat", "nav_lat"])
     if lon_coord is None: lon_coord = _guess_data_var_name(ds, "longitude", ["lon", "nav_lon"])
     if lat_coord is None: lat_coord = _guess_data_var_name(ds, "latitude", ["lat", "nav_lat"])
     return lon_coord, lat_coord
 
-def generate_hours (freq_str, output_type='string'):
+def generate_hours(freq_str, output_type='string'):
     value = int(freq_str[:-1])
     if freq_str[-1] != 'h':
         raise ValueError("Only 'h' (hours) frequency supported")
@@ -722,7 +727,7 @@ def generate_hours (freq_str, output_type='string'):
             break
     return times
 
-def convert_unit (ds, convert_unit_d):
+def convert_unit(ds, convert_unit_d):
     found_candidate = False
     for var_name, (func, target_unit) in convert_unit_d.items():
         if var_name not in ds.data_vars:
@@ -984,7 +989,7 @@ def get_ds_resolution(ds: xr.Dataset):
 
     return lat_res, lon_res
 
-def _build_target_rect_grid (region, resolution):
+def _build_target_rect_grid(region, resolution):
     """
     region: object with .lat (2 values: [north, south]) and .lon (2 values: [west, east])
     resolution: float or (lat_res, lon_res) in degrees (positive)
@@ -1027,7 +1032,7 @@ def _wrap_longitudes(lon, center):
     """
     return ((lon - center + 180.0) % 360.0) - 180.0 + center
 
-def _get_cutting_lon (lon_da: xr.DataArray, lon_dim: str, req_lon: tuple) -> tuple:
+def _get_cutting_lon(lon_da: xr.DataArray, lon_dim: str, req_lon: tuple) -> tuple:
     if lon_da.ndim == 1: # rectilinear
         lon1d = lon_da.values
     elif lon_da.ndim == 2: # regular curvilinear
@@ -1040,7 +1045,7 @@ def _get_cutting_lon (lon_da: xr.DataArray, lon_dim: str, req_lon: tuple) -> tup
     cutting_lon = lon1d[cutting_lon_idx]
     return cutting_lon_idx, cutting_lon
 
-def _roll_ds (ds: xr.Dataset, req_lon: tuple) -> xr.Dataset:
+def _roll_ds(ds: xr.Dataset, req_lon: tuple) -> xr.Dataset:
     if req_lon[0] < req_lon[1]: # nothing to do
         return ds
 
@@ -1055,85 +1060,64 @@ def _roll_ds (ds: xr.Dataset, req_lon: tuple) -> xr.Dataset:
     ds = ds.assign_coords(**{lon_coord: _wrap_longitudes(ds[lon_coord], cutting_lon)})
     return ds.roll(**{lon_dim: cutting_lon_idx}, roll_coords=True)
 
-def regrid_to_rectilinear (
+def _to_180(lon):
+    return ((lon + 180) % 360) - 180
+
+
+def regrid_to_rectilinear(
     src_ds: xr.Dataset,
     region,
     resolution,
     vars_to_regrid=None,
 ) -> xr.Dataset:
-    """
-    Regrid src_ds from its native grid (rectilinear or curvilinear) to a new
-    rectilinear grid defined only by (region, resolution).
-
-    region: has .lat and .lon with [north, south], [west, east]
-    resolution: float or (lat_res, lon_res)
-    vars_to_regrid: list of variable names, or None to auto-detect.
-    """
-
-    # src_ds = src_ds.load()  # make sure everything is in memory
-
     lon_name = _guess_coord_name(src_ds, "longitude", ["lon", "nav_lon"])
     lat_name = _guess_coord_name(src_ds, "latitude", ["lat", "nav_lat"])
 
     lat_da = src_ds[lat_name]
     lon_da = src_ds[lon_name]
 
-    # --- Normalize region lon bounds to source grid convention -----------
-    lon_grid_min = float(lon_da.min().values)
-    lon_grid_max = float(lon_da.max().values)
-
-    lat0, lat1 = region.lat  # [north, south]
-    lon0, lon1 = region.lon  # [west, east]
-
-    lon0_norm, lon1_norm = _normalize_lon_bounds(lon0, lon1, lon_grid_min)
-
-    # if "sosaline" in src_ds.data_vars:
-    #     quickplot(src_ds, "sosaline", "/data/cmcc/jd19424/ML/experiments_earthML/", "before_regrid.png")
-    # Roll if request crosses longitude cut-line (like dateline or Greenwich)
-    # src_ds = _roll_ds(src_ds, (lon0_norm, lon1_norm))
-    # if "sosaline" in src_ds.data_vars:
-    #     quickplot(src_ds, "sosaline", "/data/cmcc/jd19424/ML/experiments_earthML/", "rolled_sosaline.png")
-
-    # --- Resolution handling ---------------------------------------------
     if isinstance(resolution, (tuple, list)):
         lat_res, lon_res = float(resolution[0]), float(resolution[1])
     else:
         lat_res = lon_res = float(resolution)
 
-    # --- Build target 1D lat/lon in *source* convention ------------------
+    lat0, lat1 = map(float, region.lat)   # [north, south]
+    lon0, lon1 = map(float, region.lon)   # [west, east]
+
     eps = 1e-6
 
-    # Latitude (ECMWF-style area: [north, south])
+    # Build latitude target
     if lat0 > lat1:
-        # descending: north -> south
         lat_target = np.arange(lat0, lat1 - eps, -lat_res)
     else:
-        # ascending
         lat_target = np.arange(lat0, lat1 + eps, lat_res)
-
-    # Longitude
-    if lon0_norm <= lon1_norm:
-        lon_target = np.arange(lon0_norm, lon1_norm + eps, lon_res)
-    else:
-        lon_target = np.arange(lon0_norm, lon1_norm - eps, -lon_res)
-
-    Ny, Nx = lat_target.size, lon_target.size
-
-    # --- Which vars to regrid? ------------------------------------------
-    if vars_to_regrid is None:
-        vars_to_regrid = [
-            name for name, da in src_ds.data_vars.items()
-            if (lat_name in da.coords or lon_name in da.coords or
-                lat_name in da.dims  or lon_name in da.dims)
-        ]
 
     rectilinear_src = (lat_da.ndim == 1 and lon_da.ndim == 1)
 
     print(f"Regrid: available data vars {list(src_ds.data_vars.keys())}, requested vars {vars_to_regrid}")
 
+    # Normalize requested longitude
+    lon0_t = _to_180(lon0)
+    lon1_t = _to_180(lon1)
+
+    # Build geographic target interval in [-180, 180)
+    if lon0_t <= lon1_t:
+        lon_target = np.arange(lon0_t, lon1_t + eps, lon_res)
+    else:
+        # true dateline-crossing request, e.g. 170 -> -170
+        lon_target = np.concatenate([
+            np.arange(lon0_t, 180, lon_res),
+            np.arange(-180, lon1_t + eps, lon_res),
+        ])
+
     # ===== Case 1: rectilinear source (1D lat/lon) =====
     if rectilinear_src:
-        print("Regrid: rectilinear (1D) source → rectilinear (1D) target via xarray.interp.")
+        print("Regrid: rectilinear (1D) source -> rectilinear (1D) target via xarray.interp.")
+
+        # Normalize source longitude to [-180, 180) and sort
+        src_ds = src_ds.assign_coords({
+            lon_name: _to_180(src_ds[lon_name])
+        }).sortby(lon_name)
 
         lat_tgt_da = xr.DataArray(lat_target, dims=(lat_name,), name=lat_name)
         lon_tgt_da = xr.DataArray(lon_target, dims=(lon_name,), name=lon_name)
@@ -1143,14 +1127,13 @@ def regrid_to_rectilinear (
             method="linear",
         )
 
-        # Force coords exactly to our target (avoid tiny FP diffs)
         regridded = regridded.assign_coords(
             {lat_name: lat_tgt_da, lon_name: lon_tgt_da}
         )
         return regridded
 
-    # ===== Case 2: curvilinear (2D) source (lat/lon 2D) → rectilinear (1D) target =====
-    print("Regrid: curvilinear (2D) source → rectilinear (1D) target via scipy.griddata.")
+    # ===== Case 2: curvilinear (2D) source (lat/lon 2D) -> rectilinear (1D) target =====
+    print("Regrid: curvilinear (2D) source -> rectilinear (1D) target via scipy.griddata.")
 
     if lat_da.ndim != 2 or lon_da.ndim != 2:
         raise ValueError(
@@ -1160,15 +1143,17 @@ def regrid_to_rectilinear (
 
     y_dim_src, x_dim_src = lat_da.dims  # e.g. ("y", "x")
 
-    lat_src_2d = lat_da.values  # [Ny_src, Nx_src]
-    lon_src_2d = lon_da.values
+    # Source coords in same lon convention as lon_target
+    lat_src_2d = lat_da.values
+    lon_src_2d = ((lon_da.values + 180) % 360) - 180
 
-    # Ny_src, Nx_src = lat_src_2d.shape
+    # Target grid shape
+    Ny = lat_target.size
+    Nx = lon_target.size
 
     # Flatten source coords
     lat_flat = lat_src_2d.ravel()
     lon_flat = lon_src_2d.ravel()
-
     points = np.column_stack([lon_flat, lat_flat])
 
     # Target grid as flat xi
@@ -1188,7 +1173,7 @@ def regrid_to_rectilinear (
 
         print(f"  Regridding variable '{name}' with griddata...")
 
-        # Move (y,x) to the end
+        # Move (y, x) to the end
         da_spatial = da.transpose(
             *[d for d in da.dims if d not in (y_dim_src, x_dim_src)],
             y_dim_src, x_dim_src,
@@ -1203,12 +1188,21 @@ def regrid_to_rectilinear (
 
         out_slices = []
         for i in range(arr.shape[0]):
-            zi = arr[i, :]          # [Nsrc]
+            zi = arr[i, :]  # [Nsrc]
 
-            zi_interp = griddata(points, zi, xi, method="linear")  # [Ntgt]
+            valid = np.isfinite(lon_flat) & np.isfinite(lat_flat) & np.isfinite(zi)
+
+            if not np.any(valid):
+                zi_interp = np.full(xi.shape[0], np.nan)
+            else:
+                zi_interp = griddata(
+                    points[valid],
+                    zi[valid],
+                    xi,
+                    method="linear",
+                )
 
             zi_interp_2d = zi_interp.reshape(Ny, Nx)
-
             out_slices.append(zi_interp_2d)
 
         out = np.stack(out_slices, axis=0).reshape(
@@ -1218,7 +1212,6 @@ def regrid_to_rectilinear (
         )
 
         out_dims = leading_dims + (lat_name, lon_name)
-
         out_coords = {
             **{d: da_spatial.coords[d] for d in leading_dims if d in da_spatial.coords},
             lat_name: xr.DataArray(lat_target, dims=(lat_name,)),
@@ -1232,15 +1225,6 @@ def regrid_to_rectilinear (
             attrs=da.attrs,
         )
 
-        da_out = xr.DataArray(
-            out,
-            dims=out_dims,
-            coords=out_coords,
-            attrs=da.attrs,
-        )
-
-        data_vars_out[name] = da_out
-
     # Dataset coords: keep non-lat/lon coords from src, override lat/lon
     coord_out = {
         k: v for k, v in src_ds.coords.items()
@@ -1252,7 +1236,7 @@ def regrid_to_rectilinear (
     out_ds = xr.Dataset(data_vars_out, coords=coord_out, attrs=src_ds.attrs)
     return out_ds
 
-def inpaint_nan_bilinear (ds: xr.Dataset) -> xr.Dataset:
+def inpaint_nan_bilinear(ds: xr.Dataset) -> xr.Dataset:
     # Bilinear inpainting on the rectilinear grid using index positions
     return (
         ds
@@ -1260,7 +1244,7 @@ def inpaint_nan_bilinear (ds: xr.Dataset) -> xr.Dataset:
         .interpolate_na(dim=guess_lon_dim(ds), method="linear", use_coordinate=False)
     )
 
-def print_ds_info (
+def print_ds_info(
     ds: xr.Dataset,
     quantiles: Optional[Sequence[float]] = None,
     regimes: Optional[Sequence[float]] = None,
@@ -1302,7 +1286,7 @@ def print_ds_info (
                 r_std = float(r.std().values)
                 print(f"  regime {i} mean/std: {r_mean:.4g} / {r_std:.4g}")
 
-def _floor_to_midnight (dt: datetime) -> datetime:
+def _floor_to_midnight(dt: datetime) -> datetime:
     return datetime.combine(dt.date(), datetime_time.min, tzinfo=dt.tzinfo)
 
 def _month_start(dt):
@@ -1378,7 +1362,7 @@ def half_train_periods_days(
 
     return out
 
-def halved_windows_split_by_cutoff (
+def halved_windows_split_by_cutoff(
     base: "TimeRange",
     cutoff_end: datetime,          # e.g. datetime(2014, 12, 31)
     min_months: int = 3,
@@ -1459,7 +1443,7 @@ def halved_windows_split_by_cutoff (
 
     return out
 
-def make_exp_folder_path (
+def make_exp_folder_path(
         exp_root: Path,
         exp_name: str,
         v_d: dict, # variable dict
@@ -1478,7 +1462,7 @@ def make_exp_folder_path (
     )
     return Path(exp_root) / exp_full_name
 
-def date_diff (ymd_range: str):
+def date_diff(ymd_range: str):
     start_str, end_str = ymd_range.split('-')
     start = datetime.strptime(start_str, '%Y%m%d')
     end = datetime.strptime(end_str, '%Y%m%d')
@@ -1494,12 +1478,12 @@ def date_diff (ymd_range: str):
         "total_months": delta.years * 12 + delta.months
     }
 
-def _is_int_leadtime (ds, coord="leadtime"):
+def _is_int_leadtime(ds, coord="leadtime"):
     if coord not in ds.coords:
         return False
     return np.issubdtype(ds[coord].dtype, np.integer)
 
-# def harmonize_leadtime_int (*datasets, coord="leadtime", fallback="range", force_single_leadtime=False):
+# def harmonize_leadtime_int(*datasets, coord="leadtime", fallback="range", force_single_leadtime=False):
 #     """
 #     Make all datasets share the same integer leadtime coordinate.
 #     - If any dataset already has int leadtime, that coord is used as the target.
@@ -1619,7 +1603,7 @@ def harmonize_leadtime_int(*datasets, coord="leadtime", method="int_source"):
 
     return out
 
-def rename_dim_and_coord (ds: xr.Dataset, src: str, target: str) -> xr.Dataset:
+def rename_dim_and_coord(ds: xr.Dataset, src: str, target: str) -> xr.Dataset:
     """
     Rename a dimension and any coordinate/variable with the same name,
     and clean up leftover old-name coords/vars.
@@ -1666,7 +1650,7 @@ def rename_dim_and_coord (ds: xr.Dataset, src: str, target: str) -> xr.Dataset:
 
     return ds
 
-def normalize_ds_dims_and_coords (ds: xr.Dataset) -> xr.Dataset:
+def normalize_ds_dims_and_coords(ds: xr.Dataset) -> xr.Dataset:
     """
     Normalize the input dataset by renaming guessed dimensions to standard names.
     """
@@ -1683,7 +1667,7 @@ def normalize_ds_dims_and_coords (ds: xr.Dataset) -> xr.Dataset:
 
     return ds
 
-def get_and_rename_dim (reference: xr.Dataset, data: List[xr.Dataset]):
+def get_and_rename_dim(reference: xr.Dataset, data: List[xr.Dataset]):
     # Normalize reference first
     norm_r = normalize_ds_dims_and_coords(reference)
 
@@ -1903,7 +1887,7 @@ def load_exp(
 
     return out, n_valid_samples
 
-def add_ke_to_runs (runs, suffixes=("_mse",), dataset_keys=("fc", "an", "pr"),
+def add_ke_to_runs(runs, suffixes=("_mse",), dataset_keys=("fc", "an", "pr"),
                    u_name="u10", v_name="v10", ke_name="ke"):
     """
     Adds kinetic energy variables ke{suf} to each runs[tp][key] dataset (in place).
@@ -1926,7 +1910,7 @@ def add_ke_to_runs (runs, suffixes=("_mse",), dataset_keys=("fc", "an", "pr"),
 
     return runs
 
-def calculate_climatology (
+def calculate_climatology(
     ds: xr.Dataset,
     groupby: str = "month",
     time_dim: str | None = None,
@@ -1949,7 +1933,7 @@ def calculate_climatology (
 
     return ds.groupby(groupby).mean(dim=time_dim, keep_attrs=keep_attrs)
 
-def create_valid_mask_ds (ds: xr.Dataset) -> xr.DataArray:
+def create_valid_mask_ds(ds: xr.Dataset) -> xr.DataArray:
     """
     Returns a boolean mask that is True where all variables in the dataset
     are non-null, after broadcasting across shared dims.
