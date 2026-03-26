@@ -1054,9 +1054,11 @@ def create_panel_from_data (
     cbar_mode: str = "row",  # "row" or "subplot"
     gridlabel_mode: str = "outer",  # "outer" or "all"
     data_projection=ccrs.PlateCarree(),
+    plt_col_titles: str | Sequence[str] | None = None,
     plt_ax_title_pre: str = "",
     plt_ax_title_suf: str = "",
     plt_fontsize: int = 12,
+    plt_title_fontsize: int = 14,
     plt_projection=ccrs.PlateCarree(),  # Robinson()
     plt_coastlines: bool = True,
     plt_global_extent: bool = False,
@@ -1151,17 +1153,26 @@ def create_panel_from_data (
     print("limits", norms)
 
     for r in range(nrows):
-        if extra_dim_sequence and len(extra_dim_sequence) == len(rows):
-            row_title = f"{plt_ax_title_pre}{extra_dim_sequence[r]}{plt_ax_title_suf}"
-        else:
-            row_title = f"{plt_ax_title_pre}{plt_ax_title_suf}"
-
         row_mappable = None
 
         for c in range(ncols):
             ax = axes[r, c]
             p_idx = r * ncols + c
             data = panels[p_idx]
+
+            # set axis title
+            if plt_col_titles is None:
+                if extra_dim_sequence and len(extra_dim_sequence) == len(rows):
+                    row_title = f"{plt_ax_title_pre}{extra_dim_sequence[r]}{plt_ax_title_suf}"
+                else:
+                    row_title = f"{plt_ax_title_pre}{plt_ax_title_suf}"
+            elif isinstance(plt_col_titles, str):
+                row_title = plt_col_titles
+            elif isinstance(plt_col_titles, list):
+                assert len(plt_col_titles)==ncols
+                row_title = plt_col_titles[c]
+            else:
+                raise ValueError(f"plt_col_titles must be str, list of str or None, not {type(plt_col_titles)}")
 
             try:
                 im = data.plot.pcolormesh(
@@ -1181,7 +1192,9 @@ def create_panel_from_data (
 
             col_val = data.coords[col_index].values if isinstance(col_index, str) else col_index[c]
             col_title = f" {col_index}: {col_val}"
-            ax.set_title(row_title + col_title, fontsize=plt_fontsize)
+            if plt_col_titles is None:
+                row_title += col_title
+            ax.set_title(row_title, fontsize=plt_title_fontsize)
 
             if im is not None:
                 row_mappable = im
