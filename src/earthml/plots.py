@@ -1247,10 +1247,10 @@ def create_panel_from_data (
         "data": panels,
     }
 
-def plot_ensemble_leadtime (
-    members,
+def plot_ensemble_leadtime(
     ens_mean,
-    extra=None, # extra line
+    members=None,
+    extra=None,
     *,
     lead_dim="leadtime",
     ens_dim="realization",
@@ -1270,14 +1270,14 @@ def plot_ensemble_leadtime (
     extra_ls=":",
 ):
     """
-    Plot ensemble members, ensemble mean, and spread vs lead time.
+    Plot ensemble mean, optionally members and spread vs lead time.
 
     Parameters
     ----------
-    members : xarray.DataArray
-        Ensemble realizations with dims (lead_dim, ens_dim)
     ens_mean : xarray.DataArray
         Ensemble mean with dim (lead_dim,)
+    members : xarray.DataArray, optional
+        Ensemble realizations with dims (lead_dim, ens_dim)
     extra : xarray.DataArray, optional
         Extra line with dim (lead_dim,)
     """
@@ -1285,46 +1285,49 @@ def plot_ensemble_leadtime (
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 4))
 
-    # Enforce dimension order
-    members = members.transpose(lead_dim, ens_dim)
+    # Ensure mean has correct dimension order
     ens_mean = ens_mean.transpose(lead_dim)
+    x = ens_mean[lead_dim].values
 
-    x = members[lead_dim].values
+    # Handle members if provided
+    if members is not None:
+        members = members.transpose(lead_dim, ens_dim)
 
-    # Plot individual members
-    if plot_members:
-        y_members = members.values  # (nlead, nens)
-        for i in range(y_members.shape[1]):
-            ax.plot(
-                x,
-                y_members[:, i],
-                linestyle=members_ls,
-                linewidth=members_lw,
-                alpha=members_alpha,
-                color=color,
-            )
+        # Plot individual members
+        if plot_members:
+            y_members = members.values
+            for i in range(y_members.shape[1]):
+                ax.plot(
+                    x,
+                    y_members[:, i],
+                    linestyle=members_ls,
+                    linewidth=members_lw,
+                    alpha=members_alpha,
+                    color=color,
+                )
 
-    # Compute spread
-    if spread == "std":
-        sd = members.std(ens_dim)
-        lower = (ens_mean - nsigma * sd).values
-        upper = (ens_mean + nsigma * sd).values
-    elif spread == "minmax":
-        lower = members.min(ens_dim).values
-        upper = members.max(ens_dim).values
-    else:
-        raise ValueError("spread must be 'std' or 'minmax'")
+        # Compute spread
+        if spread == "std":
+            sd = members.std(ens_dim)
+            lower = (ens_mean - nsigma * sd).values
+            upper = (ens_mean + nsigma * sd).values
+        elif spread == "minmax":
+            lower = members.min(ens_dim).values
+            upper = members.max(ens_dim).values
+        else:
+            raise ValueError("spread must be 'std' or 'minmax'")
 
-    # Plot spread + mean
-    ax.fill_between(
-        x,
-        lower,
-        upper,
-        alpha=spread_alpha,
-        color=color,
-        label=f"{label} spread" if label else "spread",
-    )
+        # Plot spread
+        ax.fill_between(
+            x,
+            lower,
+            upper,
+            alpha=spread_alpha,
+            color=color,
+            label=f"{label} spread" if label else "spread",
+        )
 
+    # Always plot mean
     ax.plot(
         x,
         ens_mean.values,
