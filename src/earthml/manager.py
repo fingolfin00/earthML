@@ -158,6 +158,7 @@ def build_monthly_experiment_spec(
         )
         target_provider = "ocean.earthkit.oras5.reanalysis.monthly"
 
+        #TODO issue if train_period is only one month, check
         train_periods_target = halved_windows_split_by_cutoff(
             train_period,
             cutoff_oras5_consolidated,
@@ -217,6 +218,8 @@ def build_monthly_experiment_spec(
     )
 
     # 9) sanity
+    # print(train_periods_input)
+    # print(train_periods_target)
     if len(train_periods_input) != len(train_periods_target):
         raise ValueError(f"train_periods_input ({len(train_periods_input)}) != train_periods_target ({len(train_periods_target)})")
 
