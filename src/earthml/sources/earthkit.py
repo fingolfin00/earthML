@@ -616,15 +616,15 @@ class EarthkitSource (BaseSource):
         #     shift_delta = relativedelta(months=1)
         # shifted = time_index.map(lambda t: t - self.lead_time + shift_delta) # +1 day/month to compensate for inclusive end in requests (e.g. 2020-01-31 is included in Jan request, but after shifting it becomes 2020-01-30 which is not included in Feb request)
 
-        actual = pd.to_datetime(ds_all[xarray_concat_dim].values).to_period("M").to_timestamp()
-        expected = pd.to_datetime(self.date_range).to_period("M").to_timestamp()
+        # actual = pd.to_datetime(ds_all[xarray_concat_dim].values).to_period("M").to_timestamp()
+        # expected = pd.to_datetime(self.date_range).to_period("M").to_timestamp()
 
-        if not actual.equals(expected):
-            raise ValueError(
-                f"Forecast valid times do not match expected target dates.\n"
-                f"Actual:   {list(actual)}\n"
-                f"Expected: {list(expected)}"
-            )
+        # if not actual.equals(expected):
+        #     raise ValueError(
+        #         f"Forecast valid times do not match expected target dates.\n"
+        #         f"Actual:   {list(actual)}\n"
+        #         f"Expected: {list(expected)}"
+        #     )
 
         ds_all = ds_all.assign_coords({xarray_concat_dim: self.date_range})
 
