@@ -741,25 +741,33 @@ def plot_metric_vs_diff (
     return fig, ax, df
 
 
-def _extent_from_da (da: xr.DataArray, lon_name="lon", lat_name="lat", pad_deg=2.0):
-    lon = da[lon_name].values
-    lat = da[lat_name].values
-
-    # reduce to 1D arrays if needed
-    lon = np.asarray(lon).ravel()
-    lat = np.asarray(lat).ravel()
+def _extent_from_da(da: xr.DataArray, lon_name="lon", lat_name="lat", pad_deg=2.0):
+    lon = np.asarray(da[lon_name].values).ravel()
+    lat = np.asarray(da[lat_name].values).ravel()
 
     lon = lon[np.isfinite(lon)]
     lat = lat[np.isfinite(lat)]
 
-    # handle 0..360 longitudes -> convert to -180..180 for plotting
-    if lon.size and lon.min() >= 0 and lon.max() > 180:
-        lon = ((lon + 180) % 360) - 180
+    if lon.size == 0 or lat.size == 0:
+        raise ValueError("Cannot infer extent from empty lon/lat coordinates.")
 
-    lon_min, lon_max = float(lon.min()), float(lon.max())
+    # Work in 0..360 to detect wrapped regional domains correctly
+    lon360 = np.where(lon < 0, lon + 360, lon)
+    lon360 = np.sort(lon360)
+
+    lon_min = float(lon360.min())
+    lon_max = float(lon360.max())
+
+    # convert back to [-180, 180] if not crossing dateline in a problematic way
+    if lon_max > 180 and lon_min > 180:
+        lon_min -= 360
+        lon_max -= 360
+    elif lon_max > 180 and lon_min < 180:
+        # keep as dateline-crossing geographic extent
+        pass
+
     lat_min, lat_max = float(lat.min()), float(lat.max())
 
-    # padding
     lon_min -= pad_deg
     lon_max += pad_deg
     lat_min -= pad_deg
@@ -767,7 +775,7 @@ def _extent_from_da (da: xr.DataArray, lon_name="lon", lat_name="lat", pad_deg=2
 
     return (lon_min, lon_max, lat_min, lat_max)
 
-def _create_plot_grid (
+def _create_plot_grid(
     nrows: int,
     ncols: int,
     figsize_per_cell=(10, 4),
@@ -803,9 +811,8 @@ def _create_plot_grid (
 
             if plt_global_extent:
                 ax.set_global()
-            else:
-                if plt_reg_extent:
-                    ax.set_extent(plt_reg_extent, crs=data_projection)
+            elif plt_reg_extent is not None:
+                ax.set_extent(plt_reg_extent, crs=data_projection)
 
             gl = ax.gridlines(
                 crs=data_projection,
@@ -848,7 +855,7 @@ def _create_plot_grid (
 
     return fig, axes
 
-def _create_data_panel (
+def _create_data_panel(
     ds: xr.Dataset | xr.DataArray | List[xr.Dataset] | List[xr.DataArray],
     col_index: str | Sequence[str], # if str, look in Dataset, can't be both Sequences
     row_index: str | Sequence[str],
@@ -1048,7 +1055,62 @@ def _make_growing_norm(limits: Sequence[Number] | None):
     else:
         return Normalize(vmin=vmin, vmax=vmax)
 
-def create_panel_from_data (
+def _crop_da_to_extent(da: xr.DataArray, extent, data_projection=None) -> xr.DataArray:
+    lon_name = guess_lon_dim(da)
+    lat_name = guess_lat_dim(da)
+
+    lon_min, lon_max, lat_min, lat_max = extent
+
+    # Convert extent from shifted PlateCarree coords back to regular lon coords
+    lon0 = 0.0
+    if data_projection is not None:
+        try:
+            lon0 = float(data_projection.proj4_params.get("lon_0", 0.0))
+        except Exception:
+            lon0 = 0.0
+
+    # extent is given in the projection coordinates, convert back to real lon
+    lon_min = ((lon_min + lon0 + 180) % 360) - 180
+    lon_max = ((lon_max + lon0 + 180) % 360) - 180
+
+    lon = da[lon_name]
+    lat = da[lat_name]
+
+    # normalize data lon to [-180, 180)
+    lon180 = ((lon + 180) % 360) - 180
+
+    lat_cond = (lat >= min(lat_min, lat_max)) & (lat <= max(lat_min, lat_max))
+
+    if lon_min <= lon_max:
+        lon_cond = (lon180 >= lon_min) & (lon180 <= lon_max)
+    else:
+        # dateline crossing
+        lon_cond = (lon180 >= lon_min) | (lon180 <= lon_max)
+
+    da = da.where(lat_cond, drop=True)
+    da = da.where(lon_cond, drop=True)
+
+    if da.size == 0:
+        raise ValueError(
+            f"Cropping produced empty array. "
+            f"Requested extent={extent}, converted_lon_extent=({lon_min}, {lon_max}), "
+            f"lon range=({float(lon180.min())}, {float(lon180.max())}), "
+            f"lat range=({float(lat.min())}, {float(lat.max())})"
+        )
+
+    return da
+
+def _sort_lon_for_plot(da: xr.DataArray) -> xr.DataArray:
+    lon_name = guess_lon_dim(da)
+    lon = da[lon_name]
+
+    lon_plot = (np.asarray(lon.values) + 360) % 360
+    da = da.assign_coords({lon_name: lon_plot})
+    da = da.sortby(lon_name)
+
+    return da
+
+def create_panel_from_data(
     ds: xr.Dataset | xr.DataArray | List[xr.Dataset] | List[xr.DataArray],
     col_index: str | Sequence[str],  # if str, look in Dataset, can't be both Sequences
     row_index: str | Sequence[str],
@@ -1095,9 +1157,22 @@ def create_panel_from_data (
         else:
             raise ValueError(f"Reference Dataset / DataArray has invalid type {type(ds_ref)}")
 
-        extent = _extent_from_da(da_ref, lon_name=lon_name, lat_name=lat_name, pad_deg=plt_pad_extent_deg)
+        extent = _extent_from_da(
+            da_ref,
+            lon_name=lon_name,
+            lat_name=lat_name,
+            pad_deg=plt_pad_extent_deg,
+        )
     else:
-        extent = None
+        extent = list(plt_regional_extent)
+        # lon_min, lon_max, lat_min, lat_max = plt_regional_extent
+        # if lon_max < lon_min:
+        #     lon_max += 360
+        # if lon_min < 0:
+        #     lon_min += 360
+        # if lon_max < 0:
+        #     lon_max += 360
+        # extent = [lon_min, lon_max, lat_min, lat_max]
 
     fig, axes = _create_plot_grid(
         nrows,
@@ -1168,7 +1243,13 @@ def create_panel_from_data (
         for c in range(ncols):
             ax = axes[r, c]
             p_idx = r * ncols + c
+
             data = panels[p_idx]
+
+            if plt_regional_extent is not None:
+                data = _crop_da_to_extent(data, plt_regional_extent, data_projection=data_projection)
+
+            data = _sort_lon_for_plot(data)
 
             # set axis title
             if plt_col_titles is None:
@@ -1189,7 +1270,7 @@ def create_panel_from_data (
                     ax=ax,
                     add_colorbar=False,
                     cmap=cmaps[r,c],
-                    transform=ccrs.PlateCarree(),
+                    transform=data_projection,
                     norm=norms[r,c],
                 )
             except Exception as e:
