@@ -1931,7 +1931,20 @@ def calculate_climatology(
     group = getattr(time.dt, groupby)
     ds = ds.assign_coords({groupby: (time_dim, group.data)})
 
-    return ds.groupby(groupby).mean(dim=time_dim, keep_attrs=keep_attrs)
+    # Cast before grouped reduction is built to avoid mixed types
+    cast_map = {
+        v: np.float32
+        for v in ds.data_vars
+        if np.issubdtype(ds[v].dtype, np.floating)
+    }
+    if cast_map:
+        ds = ds.astype(cast_map)
+
+    return ds.groupby(groupby).mean(
+        dim=time_dim,
+        keep_attrs=keep_attrs,
+        engine="numpy", # safest option
+    )
 
 def create_valid_mask_ds(ds: xr.Dataset) -> xr.DataArray:
     """

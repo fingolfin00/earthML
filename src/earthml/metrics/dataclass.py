@@ -180,7 +180,18 @@ class MetricData:
             for mask in masks[1:]:
                 valid = valid & mask
 
+        # Cast to avoid mixed types
+        core_aligned = [
+            ds.astype({
+                v: np.float32
+                for v in ds.data_vars
+                if np.issubdtype(ds[v].dtype, np.floating)
+            })
+            for ds in core_aligned
+        ]
+
         masked = [ds.where(valid) for ds in core_aligned]
+
         truth_data = masked[0]
         model_data = masked[1:]
 
