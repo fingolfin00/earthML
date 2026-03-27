@@ -424,12 +424,30 @@ class EarthkitSource (BaseSource):
         # print(f"Earthkit period shifted: {self.data_selection.period.shifted}")
 
         # print(f"Lead time: {self.lead_time}")
+        lead_is_zero = (
+            self.lead_time.years == 0
+            and self.lead_time.months == 0
+            and self.lead_time.days == 0
+            and self.lead_time.hours == 0
+            and self.lead_time.minutes == 0
+            and self.lead_time.seconds == 0
+        )
+        # print(f"Leadtime is zero: {lead_is_zero}")
         # print(f"Data sel start: {self.data_selection.period.start}, end: {self.data_selection.period.end}")
         start = self.data_selection.period.start - self.lead_time #+ relativedelta(**self.data_selection.period.shifted) if self.data_selection.period.shifted is not None else self.data_selection.period.start
         end = self.data_selection.period.end - self.lead_time #+ relativedelta(**self.data_selection.period.shifted) if self.data_selection.period.shifted is not None else self.data_selection.period.end
+
+        # TEMP quick fix for monthly forecast products:
+        # current selected lead lands one month earlier than the target pairing,
+        # so request init dates one month later.
+        if self.request_type == "monthly" and not lead_is_zero:
+            start = start + relativedelta(months=1)
+            end = end + relativedelta(months=1)
+
+        # TODO wrong if months requested are 12 1, it splits wrongly
         dates = f"{start.strftime('%Y-%m-%d')}/{end.strftime('%Y-%m-%d')}"
 
-        all_months = ['01', '02' , '03', '04', '05', '06', '07', '08', '09', '10', '11', '12']
+        all_months = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12']
         months_splitted = [
             [m for m in all_months[i:i+self.split_month] if m not in self.split_month_jump]
             for i in range(0, len(all_months), self.split_month)
@@ -463,11 +481,14 @@ class EarthkitSource (BaseSource):
             if year_first > start:
                 years = xr.date_range(start, start, periods=1).append(years)
             if year_last <= end:
-                # if self.request_type in ("daily", "hourly"):
-                # last date needs to be one day ahead to compensate for inclusive end
-                years = years.append(xr.date_range(end+timedelta(days=1), end+timedelta(days=1), periods=1))
-                # elif self.request_type == "monthly":
-                    # years = years.append(xr.date_range(end, end, periods=1))
+                if self.request_type in ("daily", "hourly"):
+                    years = years.append(
+                        xr.date_range(end + timedelta(days=1), end + timedelta(days=1), periods=1)
+                    )
+                elif self.request_type == "monthly":
+                    years = years.append(
+                        xr.date_range(end + relativedelta(months=1), end + relativedelta(months=1), periods=1)
+                    )
             print(f"Requested split-by-year ranges: {years}")
 
             datasets = []
@@ -594,6 +615,17 @@ class EarthkitSource (BaseSource):
         # elif self.request_type == "monthly":
         #     shift_delta = relativedelta(months=1)
         # shifted = time_index.map(lambda t: t - self.lead_time + shift_delta) # +1 day/month to compensate for inclusive end in requests (e.g. 2020-01-31 is included in Jan request, but after shifting it becomes 2020-01-30 which is not included in Feb request)
+
+        actual = pd.to_datetime(ds_all[xarray_concat_dim].values).to_period("M").to_timestamp()
+        expected = pd.to_datetime(self.date_range).to_period("M").to_timestamp()
+
+        if not actual.equals(expected):
+            raise ValueError(
+                f"Forecast valid times do not match expected target dates.\n"
+                f"Actual:   {list(actual)}\n"
+                f"Expected: {list(expected)}"
+            )
+
         ds_all = ds_all.assign_coords({xarray_concat_dim: self.date_range})
 
         print(f"First and last time values in obtained dataset: {pd.to_datetime(ds_all[xarray_concat_dim].values[0])}, {pd.to_datetime(ds_all[xarray_concat_dim].values[-1])}")
