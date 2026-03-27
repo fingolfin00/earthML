@@ -1010,11 +1010,13 @@ def _create_nparray_with_compatible_data(data, inner_data_type, rows, cols):
                     data_col = []
                     if len(data_per_col)==len(cols):
                         for data_per_row in data_per_col:
+                            data_per_row = (None, None) if data_per_row is None else data_per_row # to avoid inhomogeneous array
                             data_col.append(data_per_row)
                         data_np.append(data_col)
                     else:
                         raise ValueError(f"Num of data per row {len(data_per_col)} != num panel cols {len(cols)}")
                 else:
+                    data_per_col = (None, None) if data_per_col is None else data_per_col # to avoid inhomogeneous array
                     data_np.append(len(rows)*[data_per_col])
         else:
             raise ValueError(f"Num of data per col {len(data)} != num panel rows {len(rows)}")
@@ -1026,7 +1028,15 @@ def _create_nparray_with_compatible_data(data, inner_data_type, rows, cols):
     return np.array(data_np)
 
 def _make_growing_norm(limits: Sequence[Number] | None):
-    if limits is None:
+    if (
+        limits is None
+        or (
+            (isinstance(limits, Sequence) or isinstance(limits, np.ndarray))
+            and len(limits)==2
+            and limits[0] is None
+            and limits[1] is None
+        )
+    ):
         return None
 
     if len(limits) != 2:
