@@ -449,6 +449,7 @@ def get_runs_and_metrics(
         load_train_preds=True if type_data=="train" else False,
         load_models=models,
     )
+    runs = add_ke_to_runs(runs, suffixes=var_suffix)
 
     if calculate_clim_from_train_period:
         train_runs, _ = load_exp(
@@ -457,11 +458,10 @@ def get_runs_and_metrics(
             load_train_preds=use_train_prediction_clim,
             load_models=models,
         )
+        train_runs = add_ke_to_runs(train_runs, suffixes=var_suffix)
 
     truth_model = models[0]
     selected_model_names = models[1:]
-
-    runs = add_ke_to_runs(runs, suffixes=var_suffix)
 
     metrics = {}
     clim_by_model = {truth_model: None, **{model_name: None for model_name in selected_model_names}}
