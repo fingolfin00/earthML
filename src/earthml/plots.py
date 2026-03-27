@@ -1055,28 +1055,37 @@ def _make_growing_norm(limits: Sequence[Number] | None):
     else:
         return Normalize(vmin=vmin, vmax=vmax)
 
-def _crosses_dateline(extent) -> bool:
-    lon_min, lon_max, *_ = extent
-    return lon_max < lon_min
-
 def _crop_da_to_extent(da: xr.DataArray, extent, data_projection=None) -> xr.DataArray:
     lon_name = guess_lon_dim(da)
     lat_name = guess_lat_dim(da)
 
     lon_min, lon_max, lat_min, lat_max = extent
 
+    # Convert extent from shifted PlateCarree coords back to regular lon coords
+    lon0 = 0.0
+    if data_projection is not None:
+        try:
+            lon0 = float(data_projection.proj4_params.get("lon_0", 0.0))
+        except Exception:
+            lon0 = 0.0
+
+    # extent is given in the projection coordinates, convert back to real lon
+    lon_min = ((lon_min + lon0 + 180) % 360) - 180
+    lon_max = ((lon_max + lon0 + 180) % 360) - 180
+
     lon = da[lon_name]
     lat = da[lat_name]
 
-    # Always crop in REAL lon coordinates, not shifted display coordinates
+    # normalize data lon to [-180, 180)
     lon180 = ((lon + 180) % 360) - 180
 
     lat_cond = (lat >= min(lat_min, lat_max)) & (lat <= max(lat_min, lat_max))
 
-    if _crosses_dateline(extent):
-        lon_cond = (lon180 >= lon_min) | (lon180 <= lon_max)
-    else:
+    if lon_min <= lon_max:
         lon_cond = (lon180 >= lon_min) & (lon180 <= lon_max)
+    else:
+        # dateline crossing
+        lon_cond = (lon180 >= lon_min) | (lon180 <= lon_max)
 
     da = da.where(lat_cond, drop=True)
     da = da.where(lon_cond, drop=True)
@@ -1084,20 +1093,20 @@ def _crop_da_to_extent(da: xr.DataArray, extent, data_projection=None) -> xr.Dat
     if da.size == 0:
         raise ValueError(
             f"Cropping produced empty array. "
-            f"Requested extent={extent}, "
+            f"Requested extent={extent}, converted_lon_extent=({lon_min}, {lon_max}), "
             f"lon range=({float(lon180.min())}, {float(lon180.max())}), "
             f"lat range=({float(lat.min())}, {float(lat.max())})"
         )
 
     return da
 
-def _sort_lon_for_plot(da: xr.DataArray, force_wrap: bool = False) -> xr.DataArray:
+def _sort_lon_for_plot(da: xr.DataArray) -> xr.DataArray:
     lon_name = guess_lon_dim(da)
-    lon_vals = np.asarray(da[lon_name].values)
+    lon = da[lon_name]
 
-    if force_wrap:
-        lon_plot = np.where(lon_vals < 0, lon_vals + 360, lon_vals)
-        da = da.assign_coords({lon_name: lon_plot}).sortby(lon_name)
+    lon_plot = (np.asarray(lon.values) + 360) % 360
+    da = da.assign_coords({lon_name: lon_plot})
+    da = da.sortby(lon_name)
 
     return da
 
@@ -1237,15 +1246,10 @@ def create_panel_from_data(
 
             data = panels[p_idx]
 
-            crosses = (
-                plt_regional_extent is not None
-                and _crosses_dateline(plt_regional_extent)
-            )
-
             if plt_regional_extent is not None:
-                data = _crop_da_to_extent(data, plt_regional_extent)
+                data = _crop_da_to_extent(data, plt_regional_extent, data_projection=data_projection)
 
-            data = _sort_lon_for_plot(data, force_wrap=crosses)
+            data = _sort_lon_for_plot(data)
 
             # set axis title
             if plt_col_titles is None:
