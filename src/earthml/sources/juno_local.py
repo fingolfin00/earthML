@@ -1,81 +1,85 @@
+from typing import Literal
+from dataclasses import dataclass
+from functools import partial
+
+import re, time
+from pathlib import Path
+
 from datetime import timedelta
 from dateutil.relativedelta import relativedelta
-from functools import partial
-import re, time
+
 import numpy as np
 import pandas as pd
 import xarray as xr
+
 from dask.utils import SerializableLock
+
 from rich import print
 
-from ..dataclasses import DataSource, Sample
-from ..utils import retry_fetch_after_hdf_err, get_ds_resolution, subset_ds, regrid_to_rectilinear, guess_time_dim, guess_realization_dim
+from .dataclasses import DataSource, Sample, RegridConfig
+from .utils import retry_fetch_after_hdf_err
 from .xarray_local import MFXarrayLocalSource
 from ._preprocess import preprocess_mfdataset
 
-class JunoLocalSource (MFXarrayLocalSource):
+
+@dataclass
+class JunoLocalSourceFileNameConfig:
+    file_path_date_format               : str
+    file_header                         : str
+    file_suffix                         : str
+    file_date_format                    : str
+    both_data_and_previous_date_in_file : bool = True
+    realizations                        : int | Literal["all"] = 1
+    minus_timedelta                     : timedelta | None = None
+    plus_timedelta                      : timedelta | None = None
+
+@dataclass
+class JunoLocalSourceConfig:
+    leadtime           : relativedelta
+    root_path           : str | Path
+    engine              : str
+    file_name_config    : JunoLocalSourceFileNameConfig
+    regrid_config       : RegridConfig
+
+
+class JunoLocalSource(MFXarrayLocalSource):
     """
     Collect Juno local data for the given data selection.
-    We do not need "shifted" in TimeRange because we use lead_time to select
+    We do not need "shifted" in TimeRange because we use leadtime to select
     the correct input relative to the date range.
     """
-    def __init__ (
+    def __init__(
         self,
         datasource: DataSource,
-        root_path: str,
-        engine: str,
-        file_path_date_format: str,
-        file_header: str,
-        file_suffix: str,
-        file_date_format: str,
-        lead_time: relativedelta,
-        both_data_and_previous_date_in_file: bool = True,
-        realizations: int | str = 1,
-        minus_timedelta: timedelta = None,
-        plus_timedelta: timedelta = None,
-        regrid_resolution=None,  # float or (lat_res, lon_res) in degrees
-        regrid_vars=None,
+        config: JunoLocalSourceConfig
     ):
-        super().__init__ (datasource, root_path)
-        self.engine = engine
-        self.elements = self._get_data_filenames(
-            file_path_date_format,
-            file_header,
-            file_suffix,
-            file_date_format,
-            lead_time,
-            both_data_and_previous_date_in_file,
-            realizations,
-            minus_timedelta,
-            plus_timedelta
-        )
-        self.regrid_resolution = regrid_resolution
-        self.regrid_vars = regrid_vars
+        super().__init__(datasource, config)
+        self.config = config
+        self.engine = config.engine
+
+        self.leadtime = config.leadtime
+        self.elements = self._get_data_filenames(self.leadtime, config.file_name_config)
+
+        self.regrid_resolution = config.regrid_config.regrid_resolution
+        self.regrid_vars = config.regrid_config.regrid_vars
+
 
     def _get_data_filenames(
         self,
-        file_path_date_format: str,
-        file_header: str,
-        file_suffix: str,
-        file_date_format: str,
-        lead_time: relativedelta,
-        both_data_and_previous_date_in_file: bool = True,
-        realizations: int | str = 1,
-        minus_timedelta: relativedelta = None,
-        plus_timedelta: relativedelta = None
+        config: JunoLocalSourceFileNameConfig,
     ) -> Sample:
         """Get the data filenames for the given data selection."""
 
         s = Sample(extra={"plus_samples": [], "minus_samples": []})
-        assert realizations == 'all' or realizations > 0
+        assert config.realizations == 'all' or config.realizations > 0
         for date in self.date_range:
-            previous_date = date - lead_time
+            previous_date = date - self.leadtime
             # print("juno-local prev date:", previous_date)
-            data_path = self.path.joinpath(previous_date.strftime(file_path_date_format))
-            if both_data_and_previous_date_in_file:
-                data_glob = f"{file_header}{previous_date.strftime(file_date_format)}{date.strftime(file_date_format)}{file_suffix}"
+            data_path = self.path.joinpath(previous_date.strftime(config.file_path_date_format))
+            if config.both_data_and_previous_date_in_file:
+                data_glob = f"{config.file_header}{previous_date.strftime(config.file_date_format)}{date.strftime(config.file_date_format)}{config.file_suffix}"
             else:
-                data_glob = f"{file_header}{previous_date.strftime(file_date_format)}{file_suffix}"
+                data_glob = f"{config.file_header}{previous_date.strftime(config.file_date_format)}{config.file_suffix}"
             # print(f"{date}, glob:", data_path / data_glob)
 
             # files_exact = [p for p in data_path.glob(data_glob) if p.is_file()]
@@ -86,10 +90,10 @@ class JunoLocalSource (MFXarrayLocalSource):
             )
 
             if len(files_exact) > 1:
-                if realizations == 'all':
+                if config.realizations == 'all':
                     r = len(files_exact)
                 else:
-                    r = realizations
+                    r = config.realizations
                 # print(f"{date}: {len(files_exact)} matches")
                 # print(f"{date}: {len(files_exact)} matches, keeping {files_exact[:r]}")
                 files_exact = files_exact[:r]  # keep latest only, still a list
@@ -102,24 +106,24 @@ class JunoLocalSource (MFXarrayLocalSource):
 
             # Fallback search
             found = False
-            if minus_timedelta and plus_timedelta:
+            if config.minus_timedelta and config.plus_timedelta:
                 # print(minus_timedelta, plus_timedelta)
                 for delta, store in [
-                    (-minus_timedelta, s.extra['minus_samples']),
-                    (plus_timedelta, s.extra['plus_samples']),
+                    (-config.minus_timedelta, s.extra['minus_samples']),
+                    (config.plus_timedelta, s.extra['plus_samples']),
                 ]:
                     test_date = date + delta
-                    if both_data_and_previous_date_in_file:
-                        test_glob = f"{file_header}{previous_date.strftime(file_date_format)}{test_date.strftime(file_date_format)}{file_suffix}"
+                    if config.both_data_and_previous_date_in_file:
+                        test_glob = f"{config.file_header}{previous_date.strftime(config.file_date_format)}{test_date.strftime(config.file_date_format)}{config.file_suffix}"
                     else:
-                        test_glob = f"{file_header}{previous_date.strftime(file_date_format)}{file_suffix}" # TODO look better into this
+                        test_glob = f"{config.file_header}{previous_date.strftime(config.file_date_format)}{config.file_suffix}" # TODO look better into this
                     test_files = [p for p in data_path.glob(test_glob) if p.is_file()]
                     # print(f"New file {delta}: {test_files}")
                     if test_files:
-                        if realizations == 'all':
+                        if config.realizations == 'all':
                             r = len(test_files)
                         else:
-                            r = realizations
+                            r = config.realizations
                         s.samples[date] = test_files[:r]
                         # s.samples.extend(test_files)
                         store.append(date)
@@ -132,7 +136,7 @@ class JunoLocalSource (MFXarrayLocalSource):
 
         return s
 
-    def _get_data (self) -> xr.Dataset:
+    def _get_data(self) -> xr.Dataset:
         # years = [str(date.year) for date in xr.date_range(start=data.period.start, end=data.period.end, freq='YS', inclusive='left')]
         # print(f"{self.source_name} missed dates: {self.elements.missed}")
         # print(self.elements.samples)
@@ -183,7 +187,7 @@ class JunoLocalSource (MFXarrayLocalSource):
             backend_kwargs=probe_backend_kwargs,
             lock=lock,
         ) as ds0:
-            common_args["concat_dim"] = guess_realization_dim(ds0) or "realization"
+            common_args["concat_dim"] = ds0.earthml.guessed_dims.realization or "realization"
 
         realization_concat_dim = common_args["concat_dim"]
 
@@ -248,7 +252,7 @@ class JunoLocalSource (MFXarrayLocalSource):
         # Count valid realizations
         samples_len, missing_samples = [], []
         for date, ds in samples_d.items():
-            time_dim = guess_time_dim(ds)
+            time_dim = ds.earthml.guessed_dims.time
             if ds["_has_var"].any(dim=(realization_concat_dim, time_dim)): # time_dim should always be 1D
                 samples_len.append(ds.sizes.get(realization_concat_dim, 1))
             else:
@@ -297,22 +301,21 @@ class JunoLocalSource (MFXarrayLocalSource):
         #     print("just saved dtype:", ds["missed_time"].dtype)
         #     print("just saved head:", ds["missed_time"].values)
 
-        ds = subset_ds(self.data_selection, ds)
+        ds = ds.subset(self.data_selection)
 
-        lat_res, lon_res = get_ds_resolution(ds)
+        lat_res, lon_res = ds.earthml.resolution()
         print(f"Horizontal resolutions: lat {lat_res:.2f}, lon {lon_res:.2f}")
 
         # Regrid if required
         if self.regrid_resolution is not None:
             print(f"Regridding to rectilinear grid with resolution {self.regrid_resolution}")
-            ds = regrid_to_rectilinear(
-                src_ds=ds,
+            ds = ds.earthml.regrid_to_rectilinear(
                 region=self.data_selection.region,
                 resolution=self.regrid_resolution,
                 vars_to_regrid=self.regrid_vars,
             )
 
-            lat_res_regrid, lon_res_regrid = get_ds_resolution(ds)
+            lat_res_regrid, lon_res_regrid = ds.earthml.resolution()
             print(f"Target rectilinear resolutions: lat {lat_res_regrid:.2f}, lon {lon_res_regrid:.2f}")
 
         return ds

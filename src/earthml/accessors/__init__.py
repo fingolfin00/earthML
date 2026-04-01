@@ -1,1 +1,1 @@
-from .geo import EarthAccessor
+from .earthml import EarthMLAccessor

@@ -19,21 +19,9 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 import cartopy.crs as ccrs
 from cartopy.mpl.gridliner import LONGITUDE_FORMATTER, LATITUDE_FORMATTER
 
-from .utils import guess_lon_dim, guess_lat_dim, get_lonlat_coords
+
 
 # Standalone plotting functions
-
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-
-from matplotlib.colors import TwoSlopeNorm
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-
-import numpy as np
-import pandas as pd
-
-
 def metrics_to_dataframe (metrics, agg="mean"):
     """
     Flatten nested metrics dict into a tidy dataframe.
@@ -100,7 +88,8 @@ def metrics_to_dataframe (metrics, agg="mean"):
 
     return df
 
-def plot_scoreboard (
+
+def plot_scoreboard(
     df,
     outer_y: dict,   # {"index": "metric", "values": [...]}
     outer_x: dict,   # {"index": "model", "values": [...]}
@@ -382,7 +371,8 @@ def plot_scoreboard (
     plt.close(fig)
     return fig
 
-def plot_metric_vs_diff (
+
+def plot_metric_vs_diff(
     fc_metrics_df,
     diff_metrics_df,
     *,
@@ -775,6 +765,7 @@ def _extent_from_da(da: xr.DataArray, lon_name="lon", lat_name="lat", pad_deg=2.
 
     return (lon_min, lon_max, lat_min, lat_max)
 
+
 def _create_plot_grid(
     nrows: int,
     ncols: int,
@@ -854,6 +845,7 @@ def _create_plot_grid(
     plt.close(fig)
 
     return fig, axes
+
 
 def _create_data_panel(
     ds: xr.Dataset | xr.DataArray | List[xr.Dataset] | List[xr.DataArray],
@@ -961,6 +953,7 @@ def _create_data_panel(
 
     return panels, rows, cols
 
+
 def _detect_limits_from_panels(
     panels: Sequence | np.ndarray,
     mode: Optional[str | Sequence] = "quantile",  # "quantile" or "minmax"
@@ -1056,8 +1049,8 @@ def _make_growing_norm(limits: Sequence[Number] | None):
         return Normalize(vmin=vmin, vmax=vmax)
 
 def _crop_da_to_extent(da: xr.DataArray, extent, data_projection=None) -> xr.DataArray:
-    lon_name = guess_lon_dim(da)
-    lat_name = guess_lat_dim(da)
+    lon_name = da.earthml.guessed_dims.longitude
+    lat_name = da.earthml.guessed_dims.latitude
 
     lon_min, lon_max, lat_min, lat_max = extent
 
@@ -1101,7 +1094,7 @@ def _crop_da_to_extent(da: xr.DataArray, extent, data_projection=None) -> xr.Dat
     return da
 
 def _sort_lon_for_plot(da: xr.DataArray) -> xr.DataArray:
-    lon_name = guess_lon_dim(da)
+    lon_name = da.earthml.guessed_dims.longitude
     lon = da[lon_name]
 
     lon_plot = (np.asarray(lon.values) + 360) % 360
@@ -1109,6 +1102,7 @@ def _sort_lon_for_plot(da: xr.DataArray) -> xr.DataArray:
     da = da.sortby(lon_name)
 
     return da
+
 
 def create_panel_from_data(
     ds: xr.Dataset | xr.DataArray | List[xr.Dataset] | List[xr.DataArray],
@@ -1145,7 +1139,7 @@ def create_panel_from_data(
 
     if plt_regional_extent is None:
         ds_ref = panels[0]
-        lon_name, lat_name = guess_lon_dim(ds_ref), guess_lat_dim(ds_ref)
+        lon_name, lat_name = ds_ref.earthml.guessed_dims.longitude, ds_ref.earthml.guessed_dims.latitude
         if isinstance(ds_ref, xr.Dataset):
             vars_ref = [v for v in ds_ref.data_vars if v != "_has_var"]
             if len(vars_ref) != 0:
@@ -1338,6 +1332,7 @@ def create_panel_from_data(
         "data": panels,
     }
 
+
 def plot_ensemble_leadtime(
     ens_mean,
     members=None,
@@ -1444,6 +1439,7 @@ def plot_ensemble_leadtime(
 
     return ax
 
+
 def quickplot (ds, varname="", folder="./", filename="rolled.png", t_idx=0):
     """Quick diagnostic plot of a 2D field in ds."""
     da = ds[varname] if isinstance(ds, xr.Dataset) else ds
@@ -1453,7 +1449,7 @@ def quickplot (ds, varname="", folder="./", filename="rolled.png", t_idx=0):
         da = da.isel({da.dims[0]: t_idx})
 
     # Get lon/lat
-    lon_coord, lat_coord = get_lonlat_coords(ds)
+    lon_coord, lat_coord = ds.earthml.guessed_coords.longitude, ds.earthml.guessed_coords.latitude
     lon = ds[lon_coord]
     lat = ds[lat_coord]
 

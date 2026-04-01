@@ -3,10 +3,10 @@ import xarray as xr
 import pandas as pd
 from rich import print
 
-from ..dataclasses import DataSelection
-from ..utils import guess_time_coord, get_lonlat_coords
+from .dataclasses import DataSelection
 
-def _status_da (ds: xr.Dataset, time_coord: str | None, ok: bool, name: str = "_has_var"):
+
+def _status_da(ds: xr.Dataset, time_coord: str | None, ok: bool, name: str = "_has_var"):
     import xarray as xr
 
     # ensure a length-1 time dim if scalar
@@ -26,7 +26,7 @@ def _status_da (ds: xr.Dataset, time_coord: str | None, ok: bool, name: str = "_
     # fallback: scalar
     return xr.DataArray(ok, name=name)
 
-def ensure_time_dim (
+def ensure_time_dim(
     ds: xr.Dataset,
     time_coord: str | None,
     *,
@@ -87,20 +87,20 @@ def ensure_time_dim (
     print(f"Don't know how to promote {tname!r} with ndim={t.ndim} to a time dimension.")
     return ds, tname
 
-def preprocess_mfdataset (ds: xr.Dataset, data: DataSelection, var_name: str | None = None, date = None) -> xr.Dataset:
+def preprocess_mfdataset(ds: xr.Dataset, data: DataSelection, var_name: str | None = None, date = None) -> xr.Dataset:
     import numpy as np
-    import cf_xarray  # noqa
+    import cf_xarray, earthml  # noqa
     import xarray as xr
     import pandas as pd
 
     var0 = data.variable[0] if isinstance(data.variable, list) else data.variable
     leadtime = var0.leadtime
 
-    time_coord = guess_time_coord(ds)
+    time_coord = ds.earthml.guessed_dims.time
     # Ensure time_coord is a dimension
     ds, time_coord = ensure_time_dim(ds, time_coord)
 
-    lon_coord, lat_coord = get_lonlat_coords(ds)
+    lon_coord, lat_coord = ds.earthml.guessed_coords.longitude, ds.earthml.guessed_coords.latitude
 
     # Decide desired variable name
     var_name = var_name or var0.name

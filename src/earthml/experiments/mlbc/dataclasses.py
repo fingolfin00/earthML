@@ -1,0 +1,78 @@
+from dataclasses import dataclass, field
+from typing import List, Optional, Callable, Tuple, Literal, Any
+
+from pathlib import Path
+
+import xarray as xr
+
+from ...sources.dataclasses import DataSource
+
+
+MLBCRunMode = Literal["train", "test", "train_test", "train_test_on_train", "prepare"]
+MLBCExperimentDatasetRole = Literal["input", "target"]
+MLBCExperimentName = Literal["juno-cmcc_juno-cmcc", "cds-cmcc_oras5", "juno-cmcc_oras5"] # TODO weather missing
+MLBCExperimentType = Literal["weather", "seasonal"]
+
+PreprocessFn = Callable[[xr.Dataset, xr.Dataset], Tuple[xr.Dataset, xr.Dataset]]
+
+@dataclass(frozen=True)
+class MLBCExperimentLauncherConfig:
+    type        : MLBCExperimentType
+    name        : MLBCExperimentName
+    root_path   : str | Path
+    suffix      : str
+
+@dataclass(frozen=True)
+class MLBCExperimentDataset:
+    role            : MLBCExperimentDatasetRole
+    datasource      : DataSource | List[DataSource]
+    source_configs  : Any = None # TODO set correct provider dataclasses
+    save            : bool = False
+
+@dataclass(frozen=True)
+class MLBCNeuralNet:
+    """
+    MLBC neural hyperparameters. Provides common ML knobs
+    """
+    # Reproducibility
+    seed                    : int   = 42
+    # Net name
+    name                    : str   = "SmaAt_UNet"
+    # Net config
+    supervised              : bool  = True
+    n_channels              : int   = 1 # NN input C
+    n_classes               : int   = 1 # NN output C
+    extra_net_args          : dict[str, Any] = field(default_factory=dict)
+    # Net hyperparams
+    learning_rate           : float = 1e-3
+    batch_size              : int   = 32
+    epochs                  : int   = 50
+    # Loss
+    loss                    : str   = "MSELoss"
+    loss_params             : dict[str, dict[str, Any]] = field(default_factory=lambda: {"net": {}, "loss": {}})
+    # Other
+    norm_strategy           : str   = "BatchNorm2d"
+    train_percent           : float = 0.9
+    earlystopping_patience  : int   = 30
+    accumulate_grad_batches : int   = 2
+
+
+@dataclass
+class MLBCExperimentConfig:
+    # Name and folder
+    name                        : str
+    work_path                   : str | Path
+    # NN and hyperparams
+    net                         : MLBCNeuralNet
+    # Dataset
+    train_dataset               : MLBCExperimentDataset | List[MLBCExperimentDataset]
+    test_dataset                : MLBCExperimentDataset | List[MLBCExperimentDataset]
+    # Optional # TODO create a dedicated dataclass
+    anomaly                     : Optional[bool]                    = False             # train on anomaly wrt input and target climatologies
+    inpaint_nan                 : Optional[bool]                    = False             # whether to inpaint nan values in input and target datasets (after loading, before torch dataset generation)
+    per_epoch_resplit           : Optional[bool]                    = False             # resplit train and validation sets per epoch with different seed
+    torch_preprocess_fn         : Optional[PreprocessFn]            = None              # called after Xarray dataset loading, before torch dataset generation
+    target_realization_avg      : Optional[bool]                    = False             # whether to average over target realizations when loading target data
+    realization_as_channel      : Optional[bool]                    = False             # whether to use realization a channel dimension
+    output_realizations         : Optional[Literal[
+                                    "deterministic", "ensemble"]]   = "deterministic"   # deterministic -> output R = 1, ensemble -> output R = input R

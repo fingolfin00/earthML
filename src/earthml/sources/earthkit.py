@@ -1,130 +1,95 @@
+from typing import Literal, Any, Callable
+from dataclasses import dataclass, field
+
 import os, time, random
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
-from contextlib import contextmanager
-import hashlib, json
-import numpy as np
 from pathlib import Path
+import hashlib, json
+
+from contextlib import contextmanager
+
 from datetime import timedelta, datetime, timezone
 from dateutil.relativedelta import relativedelta
 from dateutil.rrule import rrule, MONTHLY
+
 import numpy as np
 import pandas as pd
 import xarray as xr
 import earthkit.data as ekd
+
 from rich import print
 
-from ..dataclasses import DataSource
-from ..utils import retry_fetch_after_hdf_err, generate_hours, get_ds_resolution, subset_ds, regrid_to_rectilinear, guess_time_dim, guess_realization_dim, convert_unit
+from .dataclasses import DataSource, RegridConfig
+from .utils import retry_fetch_after_hdf_err, generate_hours
 from .base import BaseSource
 
-class EarthkitSource (BaseSource):
+
+@dataclass
+class EarthkitSourceConfig:
+    leadtime                    : relativedelta
+    provider                    : str
+    dataset                     : str
+    regrid_config               : RegridConfig
+    split_request               : bool = False
+    split_month                 : int = 12
+    split_month_jump            : list[int] | None = None
+    select_area_after_request   : bool = False
+    request_type                : Literal["hourly", "daily", "monthly"] = "hourly"
+    request_extra_args          : dict[str, Any] = field(default_factory=dict)
+    to_xarray_args              : dict[str, Any] = field(default_factory=dict)
+    xarray_concat_dim           : str | None = None
+    xarray_concat_extra_args    : dict[str, Any] = field(default_factory=dict)
+    convert_unit                : dict[str, tuple[Callable, str]] = field(default_factory=dict)
+    earthkit_cache_dir          : Path = Path("/tmp/earthkit-cache/")
+
+
+class EarthkitSource(BaseSource):
     """
     Collect data using ECMWF new earthkit library.
     """
-    def __init__ (
+    def __init__(
         self,
-        datasource: DataSource,
-        provider: str,
-        lead_time: relativedelta,
-        dataset: str = None,
-        split_request: bool = False,
-        split_month: int = 12,
-        split_month_jump: list = None,
-        select_area_after_request: bool = False,
-        request_type: str = "hourly", # on of hourly, daily, monthly
-        request_extra_args: dict = None,
-        to_xarray_args: dict = None,
-        xarray_concat_dim: str = None,
-        xarray_concat_extra_args: dict = None,
-        regrid_resolution: float | tuple[float, float] = None,  # float or (lat_res, lon_res) in degrees
-        regrid_vars: list[str] = None,
-        convert_unit: dict = None, # dict of var_name: (func, target_unit) to convert variable unit (e.g. {"temperature": (lambda x: x - 273.15, "C")})
-        earthkit_cache_dir: str = Path("/tmp/earthkit-cache/"),
+        datasource  : DataSource,
+        config      : EarthkitSourceConfig
     ):
-        super().__init__ (datasource)
+        super().__init__(datasource)
+        self.config = config
 
+        self.ekd_version = ekd.__version__
         # Shared, persistent cache directory (reused across restarts)
-        base_cache = Path(earthkit_cache_dir)
-        base_cache.mkdir(parents=True, exist_ok=True)
+        ekd_base_cache = Path(config.earthkit_cache_dir)
+        ekd_base_cache.mkdir(parents=True, exist_ok=True)
 
         ekd.config.set("cache-policy", "user")
-        ekd.config.set("user-cache-directory", str(base_cache))
+        ekd.config.set("user-cache-directory", str(ekd_base_cache))
 
         # Locks must be shared across jobs/runs if cache is shared
-        self._lock_dir = base_cache / ".locks"
+        self._lock_dir = ekd_base_cache / ".locks"
         self._lock_dir.mkdir(parents=True, exist_ok=True)
 
         self.elements.samples = self.date_range
-        self.provider = provider
-        self.lead_time = lead_time
-        self.dataset = dataset
-        self.split_request = split_request
-        self.split_month = split_month
-        self.split_month_jump = split_month_jump if split_month_jump else []
-        self.select_area_after_request = select_area_after_request
-        self.request_type = request_type
-        self.request_extra_args = request_extra_args
-        self.to_xarray_args = to_xarray_args
-        self.xarray_concat_dim = xarray_concat_dim
-        self.xarray_concat_extra_args = xarray_concat_extra_args
-        self.regrid_resolution = regrid_resolution
+
+        self.split_month_jump = config.split_month_jump if config.split_month_jump else []
+
         self.var_name_list = [v.name for v in self.data_selection.variable] if isinstance(self.data_selection.variable, list) else [self.data_selection.variable.name]
-        self.regrid_vars = regrid_vars if regrid_vars is not None else self.var_name_list
-        self.convert_unit = convert_unit
-        self.ekd_version = ekd.__version__
+
+        self.regrid_resolution = self.config.regrid_config.regrid_resolution
+        self.regrid_vars = config.regrid_config.regrid_vars if config.regrid_config.regrid_vars is not None else self.var_name_list
 
         self._create_leadtime_dict()
         self._populate_missed()
 
-        # DEBUG
-        # import os, certifi
-        # print("[cyan]SSL_CERT_FILE[/cyan] =", os.environ.get("SSL_CERT_FILE"))
-        # print("[cyan]REQUESTS_CA_BUNDLE[/cyan] =", os.environ.get("REQUESTS_CA_BUNDLE"))
-        # print("[cyan]certifi.where()[/cyan] =", certifi.where())
 
-    @contextmanager
-    def _file_lock(self, lock_path: Path, timeout_s: int = 600, poll_s: float = 0.2, stale_s: int = 6 * 3600):
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        start = time.time()
-
-        while True:
-            try:
-                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                with os.fdopen(fd, "w") as f:
-                    f.write(f"pid={os.getpid()}\ncreated={time.time()}\n")
-                break
-            except FileExistsError:
-                # stale lock cleanup
-                try:
-                    age = time.time() - lock_path.stat().st_mtime
-                    if age > stale_s:
-                        lock_path.unlink()
-                        continue
-                except FileNotFoundError:
-                    continue
-
-                if time.time() - start > timeout_s:
-                    raise TimeoutError(f"Timeout waiting for lock: {lock_path}")
-                time.sleep(poll_s + random.random() * 0.1)
-
-        try:
-            yield
-        finally:
-            try:
-                lock_path.unlink()
-            except FileNotFoundError:
-                pass
-
-    def _populate_missed (self):
+    def _populate_missed(self):
         """Populate missed if some months are skipped for seasonal requests"""
         # TODO we only support monthly seasonal datasets
-        if self.request_type == "monthly":
-            start = self.data_selection.period.start - self.lead_time
-            end = self.data_selection.period.end - self.lead_time
+        if self.config.request_type == "monthly":
+            start = self.data_selection.period.start - self.config.leadtime
+            end = self.data_selection.period.end - self.config.leadtime
             skip_months = set(self.split_month_jump)
 
             missed = [
-                dt + self.lead_time for dt in rrule(MONTHLY, dtstart=start, until=end)
+                dt + self.config.leadtime for dt in rrule(MONTHLY, dtstart=start, until=end)
                 if f"{dt.month:02d}" in skip_months
             ]
             # Snap all timesteps to month-start (00:00 of the 1st)
@@ -132,7 +97,7 @@ class EarthkitSource (BaseSource):
             self.elements.missed = set(t.to_period("M").to_timestamp(how="start"))  # month begin, midnight
 
 
-    def _create_leadtime_dict (self):
+    def _create_leadtime_dict(self):
         vars_ = (
             self.data_selection.variable
             if isinstance(self.data_selection.variable, list)
@@ -170,7 +135,8 @@ class EarthkitSource (BaseSource):
             name, td = leadtime_pairs[0]
             self.leadtime_d = {name: td}
 
-    def _earthkit_source_path (self, src) -> Path | None:
+    # TODO unused, verify if can be removed
+    def _earthkit_source_path(self, src) -> Path | None:
         """
         Try to get a real filesystem path from an earthkit source.
         Works for file-backed sources.
@@ -188,6 +154,41 @@ class EarthkitSource (BaseSource):
                     return Path(p)
         return None
 
+
+    @contextmanager
+    def _file_lock(self, lock_path: Path, timeout_s: int = 600, poll_s: float = 0.2, stale_s: int = 6 * 3600):
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        start = time.time()
+
+        while True:
+            try:
+                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                with os.fdopen(fd, "w") as f:
+                    f.write(f"pid={os.getpid()}\ncreated={time.time()}\n")
+                break
+            except FileExistsError:
+                # stale lock cleanup
+                try:
+                    age = time.time() - lock_path.stat().st_mtime
+                    if age > stale_s:
+                        lock_path.unlink()
+                        continue
+                except FileNotFoundError:
+                    continue
+
+                if time.time() - start > timeout_s:
+                    raise TimeoutError(f"Timeout waiting for lock: {lock_path}")
+                time.sleep(poll_s + random.random() * 0.1)
+
+        try:
+            yield
+        finally:
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
     def _fetch_chunks (self, request_time_args_list, start, end, request_other_args):
         """Helper to fetch chunked datasets using ekd"""
 
@@ -204,11 +205,11 @@ class EarthkitSource (BaseSource):
             )
             # print(request_d)
 
-            if self.dataset:
-                src_ekd_params = {"name": self.provider, "dataset": self.dataset} | request_d
-                # src_ekd = ekd.from_source(self.provider, self.dataset, **request_d)
+            if self.config.dataset:
+                src_ekd_params = {"name": self.config.provider, "dataset": self.config.dataset} | request_d
+                # src_ekd = ekd.from_source(self.config.provider, self.config.dataset, **request_d)
             else:
-                src_ekd_params = {"name": self.provider} | request_d
+                src_ekd_params = {"name": self.config.provider} | request_d
 
             def _freeze(obj):
                 """Convert obj into a JSON-serializable, order-stable structure."""
@@ -259,7 +260,7 @@ class EarthkitSource (BaseSource):
             def _fetch_ekd():
                 with self._file_lock(lock_path):
                     # Open and load dataset
-                    ds_chunk = src_ekd.to_xarray(**(self.to_xarray_args or {}))
+                    ds_chunk = src_ekd.to_xarray(**(self.config.to_xarray_args or {}))
                     ds_chunk = ds_chunk.load()
 
                     # Validate quickly: expected variables present
@@ -276,7 +277,7 @@ class EarthkitSource (BaseSource):
                     return ds_chunk
 
             # print(src_ekd)
-            # print(self.to_xarray_args)
+            # print(self.config.to_xarray_args)
             ds_chunk = retry_fetch_after_hdf_err(
                 _fetch_ekd,
                 error_re=r"NetCDF:.*HDF error",
@@ -297,26 +298,27 @@ class EarthkitSource (BaseSource):
 
             # print(ds_chunk)
 
-            realization_dim = guess_realization_dim(ds_chunk)
-            # realization_dim = "realization" if realization_dim is None else realization_dim
+            realization_dim = ds_chunk.earthml.guessed_dims.realization
+            leadtime_dim = ds_chunk.earthml.guessed_dims.leadtime # actual leadtime in chunk
 
             print(f"   Chunk size: {ds_chunk.sizes}")
             # print(f"   Chunk coords: {ds_chunk.coords}")
             # print(f"   Leadtime: {self.leadtime_d}")
 
+            # TODO Control thoroughly this flow
             if self.leadtime_d:
                 # Get requested leadtime and coord name
                 target_lt_d = next(iter(self.leadtime_d.values()))
-                leadtime_name = next(iter(self.leadtime_d.keys()))
+                leadtime_name = next(iter(self.leadtime_d.keys())) # leadtime dim name we want
 
-                if target_lt_d is not None and leadtime_name in ds_chunk.coords:
+                if target_lt_d is not None and leadtime_dim in ds_chunk.coords:
                     # Normalize requested target to the coordinate dtype
                     if not isinstance(target_lt_d, pd.Timedelta):
                         target_lt_pd = pd.to_timedelta(target_lt_d)
                     else:
                         target_lt_pd = target_lt_d
 
-                    coord_dtype = ds_chunk[leadtime_name].dtype
+                    coord_dtype = ds_chunk[leadtime_dim].dtype
 
                     # For timedelta64 coords: convert via to_timedelta64 then cast to coord dtype
                     # For numeric coords this still works if target_lt_pd is numeric-like
@@ -327,7 +329,7 @@ class EarthkitSource (BaseSource):
                         target_np = np.asarray(target_lt_pd, dtype=coord_dtype)
 
                     # Find nearest available leadtime in this chunk
-                    lt_values = ds_chunk[leadtime_name].values
+                    lt_values = ds_chunk[leadtime_dim].values
 
                     # print(f"    Leadtime values: {lt_values}")
                     unique_lt = np.unique(lt_values)
@@ -351,15 +353,15 @@ class EarthkitSource (BaseSource):
                     if idxs.size == 0:
                         raise ValueError("No leadtimes found in the computed window")
 
-                    ds_chunk = ds_chunk.isel({leadtime_name: idxs})
+                    ds_chunk = ds_chunk.isel({leadtime_dim: idxs})
                     # print(f"   Chunk size after selection: {ds_chunk.sizes}")
 
-                    if leadtime_name in ds_chunk.dims and realization_dim is None:
+                    if leadtime_dim in ds_chunk.dims and realization_dim is None:
                         # In this case leadtime is the time dimension, swap and sort
                         ds_chunk = (
                             ds_chunk
-                            .swap_dims({leadtime_name: "time"})
-                            .drop_vars(leadtime_name)
+                            .swap_dims({leadtime_dim: "time"})
+                            .drop_vars(leadtime_dim)
                             .sortby("time")
                         )
                         # print(f"   Chunk coords after swap: {ds_chunk.coords}")
@@ -390,31 +392,31 @@ class EarthkitSource (BaseSource):
                         ds_chunk = ds_chunk.rename({"valid_time": "time"})
 
                         # Drop variable only if it exists as a data variable (avoid dropping the coord unintentionally)
-                        if leadtime_name in ds_chunk.data_vars:
-                            ds_chunk = ds_chunk.drop_vars(leadtime_name)
+                        if leadtime_dim in ds_chunk.data_vars:
+                            ds_chunk = ds_chunk.drop_vars(leadtime_dim)
 
                         # Reassign the coordinate to the requested target (ensures uniform coord across chunks)
                         ds_chunk = ds_chunk.assign_coords({leadtime_name: (leadtime_name, np.array([target_np], dtype=coord_dtype))})
 
                     else:
                         # if ds_chunk.sizes.get(leadtime_name, 0) > 1:
-                        # Move step first to make bfill deterministic across the step axis
-                        ds_chunk = ds_chunk.transpose(leadtime_name, ...)
+                        # Move leadtime first to make bfill deterministic across the step axis
+                        ds_chunk = ds_chunk.transpose(leadtime_dim, ...)
 
-                        # Since at most one is non-NaN, bfill then take step=0 gives the only valid value
-                        ds_chunk = ds_chunk.bfill(leadtime_name).isel({leadtime_name: 0})
+                        # Since at most one is non-NaN, bfill then take leadtime=0 gives the only valid value
+                        ds_chunk = ds_chunk.bfill(leadtime_dim).isel({leadtime_dim: 0})
 
-                        # Restore a length-1 step dimension with the requested conceptual value
+                        # Restore a length-1 leadtime dimension with the requested conceptual value
                         ds_chunk = ds_chunk.expand_dims({leadtime_name: [target_np]})
 
                     print(f"   Size after all processing: {ds_chunk.sizes}")
 
-            xarray_concat_dim = guess_time_dim(ds_chunk) if not self.xarray_concat_dim else self.xarray_concat_dim
+            xarray_concat_dim = ds_chunk.earthml.guessed_dims.time if not self.config.xarray_concat_dim else self.config.xarray_concat_dim
             # print(xarray_concat_dim)
             ds_chunks.append(ds_chunk)
         return xarray_concat_dim, ds_chunks
 
-    def _get_data (self):
+    def _get_data(self) -> xr.Dataset:
         n_missed = len(self.elements.missed)
         samples = [s for s in self.elements.samples if s not in self.elements.missed] # TODO refactor to BaseSource?
         print(f"Samples: {len(samples)}, missed: {n_missed}")
@@ -423,24 +425,24 @@ class EarthkitSource (BaseSource):
 
         # print(f"Earthkit period shifted: {self.data_selection.period.shifted}")
 
-        # print(f"Lead time: {self.lead_time}")
+        # print(f"Lead time: {self.config.leadtime}")
         lead_is_zero = (
-            self.lead_time.years == 0
-            and self.lead_time.months == 0
-            and self.lead_time.days == 0
-            and self.lead_time.hours == 0
-            and self.lead_time.minutes == 0
-            and self.lead_time.seconds == 0
+            self.config.leadtime.years == 0
+            and self.config.leadtime.months == 0
+            and self.config.leadtime.days == 0
+            and self.config.leadtime.hours == 0
+            and self.config.leadtime.minutes == 0
+            and self.config.leadtime.seconds == 0
         )
         # print(f"Leadtime is zero: {lead_is_zero}")
         # print(f"Data sel start: {self.data_selection.period.start}, end: {self.data_selection.period.end}")
-        start = self.data_selection.period.start - self.lead_time #+ relativedelta(**self.data_selection.period.shifted) if self.data_selection.period.shifted is not None else self.data_selection.period.start
-        end = self.data_selection.period.end - self.lead_time #+ relativedelta(**self.data_selection.period.shifted) if self.data_selection.period.shifted is not None else self.data_selection.period.end
+        start = self.data_selection.period.start - self.config.leadtime #+ relativedelta(**self.data_selection.period.shifted) if self.data_selection.period.shifted is not None else self.data_selection.period.start
+        end = self.data_selection.period.end - self.config.leadtime #+ relativedelta(**self.data_selection.period.shifted) if self.data_selection.period.shifted is not None else self.data_selection.period.end
 
         # TEMP quick fix for monthly forecast products:
         # current selected lead lands one month earlier than the target pairing,
         # so request init dates one month later.
-        if self.request_type == "monthly" and not lead_is_zero:
+        if self.config.request_type == "monthly" and not lead_is_zero:
             start = start + relativedelta(months=1)
             end = end + relativedelta(months=1)
 
@@ -449,8 +451,8 @@ class EarthkitSource (BaseSource):
 
         all_months = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12']
         months_splitted = [
-            [m for m in all_months[i:i+self.split_month] if m not in self.split_month_jump]
-            for i in range(0, len(all_months), self.split_month)
+            [m for m in all_months[i:i+self.config.split_month] if m not in self.split_month_jump]
+            for i in range(0, len(all_months), self.config.split_month)
         ]
         # print(f"Months requested: {months_splitted}")
         # Convert singletons to strings and clean up empty/None elements
@@ -464,28 +466,33 @@ class EarthkitSource (BaseSource):
             self.data_selection.region.lat[1],
             self.data_selection.region.lon[1]
         ]
-        if self.select_area_after_request:
+        if self.config.select_area_after_request:
             request_args = dict(variable=var_longname_list)
         else:
             request_args = dict(variable=var_longname_list, area=area)
 
         years = xr.date_range(start=start, end=end, freq="YS") # from the first year after the start
 
-        print(f"Requesting {var_longname_list} ({dates}, {self.data_selection.period.freq}) in region {area} from {self.provider}:{self.dataset} (ekd_ver={self.ekd_version})")
+        print(f"Requesting {var_longname_list} ({dates}, {self.data_selection.period.freq}) in region {area} from {self.config.provider}:{self.config.dataset} (ekd_ver={self.ekd_version})")
         print(f"Check request status: https://cds.climate.copernicus.eu/requests?tab=all")
 
-        if self.split_request and end - start > pd.to_timedelta('365 days'):
+        if (
+            self.config.split_request and (
+                end - start > pd.to_timedelta('365 days') or
+                end.year == start.year+1
+            )
+        ):
             # print(f"Years before change: {years}")
             # Split into yearly chunks
             year_first, year_last = years[0], years[-1]
             if year_first > start:
                 years = xr.date_range(start, start, periods=1).append(years)
             if year_last <= end:
-                if self.request_type in ("daily", "hourly"):
+                if self.config.request_type in ("daily", "hourly"):
                     years = years.append(
                         xr.date_range(end + timedelta(days=1), end + timedelta(days=1), periods=1)
                     )
-                elif self.request_type == "monthly":
+                elif self.config.request_type == "monthly":
                     years = years.append(
                         xr.date_range(end + relativedelta(months=1), end + relativedelta(months=1), periods=1)
                     )
@@ -495,9 +502,9 @@ class EarthkitSource (BaseSource):
             for y1, y2 in zip(years[:-1], years[1:]):
                 # print(f"y1={y1}, y2={y2}")
                 request_time_args_list = []
-                if self.request_type in ("daily", "hourly"):
+                if self.config.request_type in ("daily", "hourly"):
                     y2 = y2 - timedelta(days=1) # inclusive end
-                    if self.provider == "ecmwf-open-data":
+                    if self.config.provider == "ecmwf-open-data":
                         time_freq = generate_hours(self.data_selection.period.freq, 'int')
                     else:
                         time_freq = generate_hours(self.data_selection.period.freq)
@@ -507,7 +514,7 @@ class EarthkitSource (BaseSource):
                     )
                     request_time_args_list.append(request_time_args)
 
-                elif self.request_type == "monthly":
+                elif self.config.request_type == "monthly":
                     y22 = y2 - relativedelta(months=1) # inclusive end
                     y22 = y22 - relativedelta(years=1) if y22.strftime("%Y") != y1.strftime("%Y") else y22
                     # print(f"y22={y22}")
@@ -516,7 +523,7 @@ class EarthkitSource (BaseSource):
                     for m in months_splitted:
                         # print(f"   m:{m}")
                         request_time_args = dict(year=xr.date_range(start=datetime(y1.year, 1, 1), end=datetime(y22.year, 1, 1), freq="YS").strftime("%Y").tolist())
-                        if "month" not in self.request_extra_args:
+                        if "month" not in self.config.request_extra_args:
                             if isinstance(m, list):
                                 month_req = [x for x in m if x in set(split_req_months)]
                             else:
@@ -528,22 +535,22 @@ class EarthkitSource (BaseSource):
                         request_time_args_list.append(request_time_args)
 
                 else:
-                    raise ValueError(f"Unsupported earthkit request type {self.request_type}")
+                    raise ValueError(f"Unsupported earthkit request type {self.config.request_type}")
 
                 # print(f"   request_time_args_list: {request_time_args_list}")
                 if request_time_args_list:
-                    xarray_concat_dim, ds_chunks = self._fetch_chunks(request_time_args_list, y1, y2, request_args | self.request_extra_args)
+                    xarray_concat_dim, ds_chunks = self._fetch_chunks(request_time_args_list, y1, y2, request_args | self.config.request_extra_args)
                     datasets.extend(ds_chunks)
 
             # Combine all datasets
             # print(f"Combine split-request datasets of length {len(datasets)}")
-            ds_all = xr.concat(datasets, dim=xarray_concat_dim, **self.xarray_concat_extra_args)
+            ds_all = xr.concat(datasets, dim=xarray_concat_dim, **self.config.xarray_concat_extra_args)
             # print(f"Combined datasets: {len(ds_all[xarray_concat_dim].values)}")
 
         else:
             request_time_args_list = []
-            if self.request_type in ("daily", "hourly"):
-                if self.provider == "ecmwf-open-data":
+            if self.config.request_type in ("daily", "hourly"):
+                if self.config.provider == "ecmwf-open-data":
                     time_freq = generate_hours(self.data_selection.period.freq, 'int')
                 else:
                     time_freq = generate_hours(self.data_selection.period.freq)
@@ -552,13 +559,13 @@ class EarthkitSource (BaseSource):
                     time=time_freq,
                 )
                 request_time_args_list.append(request_time_args)
-            elif self.request_type == "monthly":
+            elif self.config.request_type == "monthly":
                 # print(f"start: {start}, end: {end}")
                 split_req_months = [m.strftime("%m") for m in xr.date_range(start=start, end=end, freq="MS")]
                 # print(split_req_months)
                 for m in months_splitted:
                     request_time_args = dict(year=xr.date_range(start=datetime(start.year, 1, 1), end=datetime(end.year, 1, 1), freq="YS").strftime("%Y").tolist())
-                    if "month" not in self.request_extra_args:
+                    if "month" not in self.config.request_extra_args:
                         if isinstance(m, list):
                             month_req = [x for x in m if x in set(split_req_months)]
                         else:
@@ -570,12 +577,12 @@ class EarthkitSource (BaseSource):
                     # print(request_time_args)
                     request_time_args_list.append(request_time_args)
             else:
-                raise ValueError(f"Unsupported earthkit request type {self.request_type}")
+                raise ValueError(f"Unsupported earthkit request type {self.config.request_type}")
             if request_time_args_list:
-                xarray_concat_dim, datasets = self._fetch_chunks(request_time_args_list, start, end, request_args | self.request_extra_args)
+                xarray_concat_dim, datasets = self._fetch_chunks(request_time_args_list, start, end, request_args | self.config.request_extra_args)
 
             # Combine all datasets
-            ds_all = xr.concat(datasets, dim=xarray_concat_dim, **self.xarray_concat_extra_args)
+            ds_all = xr.concat(datasets, dim=xarray_concat_dim, **self.config.xarray_concat_extra_args)
 
         # Drop unused variables
         ds_all = ds_all.drop_vars([v for v in ds_all.data_vars if v not in self.var_name_list])
@@ -585,7 +592,7 @@ class EarthkitSource (BaseSource):
         ds_all = ds_all.assign_coords({xarray_concat_dim: ds_all[xarray_concat_dim].astype("datetime64[ns]")})
         # print(f"Time values before reassignment: {ds_all[xarray_concat_dim].values}")
 
-        if self.request_type == "monthly":
+        if self.config.request_type == "monthly":
             # Snap all timesteps to month-start (00:00 of the 1st)
             t = pd.to_datetime(ds_all[xarray_concat_dim].values)
             t_month_start = t.to_period("M").to_timestamp(how="start")  # month begin, midnight
@@ -602,7 +609,7 @@ class EarthkitSource (BaseSource):
         assert n_missed + n_actual_samples == n_all_samples, f"number of samples obtained + missed is different from number of all samples ({n_actual_samples}+{n_missed} =/= {n_all_samples})"
         # print(f"Missed: {self.elements.missed}")
         # Drop missing samples
-        xarray_concat_dim = guess_time_dim(ds_all) if not self.xarray_concat_dim else self.xarray_concat_dim
+        xarray_concat_dim = ds_all.earthml.guessed_dims.time if not self.config.xarray_concat_dim else self.config.xarray_concat_dim
         if self.elements.missed:
             ds_all = ds_all.drop_sel({xarray_concat_dim: list(self.elements.missed)}, errors='ignore')
 
@@ -610,11 +617,11 @@ class EarthkitSource (BaseSource):
 
         # Shift time index by lead time to get appropriate time corresponding for both forecast and analysis
         # time_index = pd.DatetimeIndex(ds_all[xarray_concat_dim].values)
-        # if self.request_type in ("daily", "hourly"):
+        # if self.config.request_type in ("daily", "hourly"):
         #     shift_delta = relativedelta(days=1)
-        # elif self.request_type == "monthly":
+        # elif self.config.request_type == "monthly":
         #     shift_delta = relativedelta(months=1)
-        # shifted = time_index.map(lambda t: t - self.lead_time + shift_delta) # +1 day/month to compensate for inclusive end in requests (e.g. 2020-01-31 is included in Jan request, but after shifting it becomes 2020-01-30 which is not included in Feb request)
+        # shifted = time_index.map(lambda t: t - self.config.leadtime + shift_delta) # +1 day/month to compensate for inclusive end in requests (e.g. 2020-01-31 is included in Jan request, but after shifting it becomes 2020-01-30 which is not included in Feb request)
 
         # actual = pd.to_datetime(ds_all[xarray_concat_dim].values).to_period("M").to_timestamp()
         # expected = pd.to_datetime(self.date_range).to_period("M").to_timestamp()
@@ -640,28 +647,27 @@ class EarthkitSource (BaseSource):
         })
 
         # Select area if necessary
-        if self.select_area_after_request:
-            ds_all = subset_ds(self.data_selection, ds_all)
+        if self.config.select_area_after_request:
+            ds_all = ds_all.earthml.subset(self.data_selection)
 
         # Grid resolution # TODO maybe refactor to BaseSource
-        lat_res, lon_res = get_ds_resolution(ds_all)
+        lat_res, lon_res = ds_all.earthml.resolution()
         print(f"Native resolutions: lat {lat_res:.2f}, lon {lon_res:.2f}")
 
         # Regrid if required # TODO save weights for efficiency
         if self.regrid_resolution is not None:
             print(f"Regridding {self.regrid_vars} to rectilinear grid with resolution {self.regrid_resolution}")
-            ds_all = regrid_to_rectilinear(
-                src_ds=ds_all,
+            ds_all = ds_all.earthml.regrid_to_rectilinear(
                 region=self.data_selection.region,
                 resolution=self.regrid_resolution,
                 vars_to_regrid=self.regrid_vars,
             )
-            lat_res_regrid, lon_res_regrid = get_ds_resolution(ds_all)
+            lat_res_regrid, lon_res_regrid = ds_all.earthml.resolution()
             print(f"Target rectilinear resolutions: lat {lat_res_regrid:.2f}, lon {lon_res_regrid:.2f}")
 
        # Convert unit of variables if necessary (e.g. from C to K for SST)
-        if self.convert_unit is not None:
-            print(f"Converting variable units according to: {self.convert_unit}")
-            ds_all = convert_unit(ds_all, self.convert_unit)
+        if self.config.convert_unit is not None:
+            print(f"Converting variable units according to: {self.config.convert_unit}")
+            ds_all = ds_all.earthml.convert_unit(self.config.convert_unit)
 
         return ds_all

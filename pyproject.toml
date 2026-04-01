@@ -1,6 +1,6 @@
 [project]
 name = "earthml"
-version = "0.1.0"
+version = "0.2.0"
 description = "A library to train ML models from Earth science datasets"
 readme = "README.md"
 authors = [

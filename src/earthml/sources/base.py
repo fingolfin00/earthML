@@ -8,12 +8,13 @@ from dask.distributed import wait
 from zarr.codecs import BloscCodec
 from rich import print
 
-from ..dataclasses import DataSource, Sample, TimeRange
+from ..base.dataclasses import TimeRange
+from .dataclasses import DataSource, Sample
 
-class BaseSource (ABC):
-    def __init__ (
+class BaseSource(ABC):
+    def __init__(
         self,
-        datasource: DataSource
+        datasource: DataSource,
     ):
         self.datasource = datasource
         self.data_selection = datasource.data_selection
@@ -26,20 +27,20 @@ class BaseSource (ABC):
         self.elements = Sample()
         self.ds = None
 
-    def __add__ (self, other: "BaseSource") -> "BaseSource":
+    def __add__(self, other: "BaseSource") -> "BaseSource":
         if not isinstance(other, BaseSource):
             return NotImplemented
         from .combinators import SumSource
         return SumSource(self, other)
 
-    def __radd__ (self, other: "BaseSource") -> "BaseSource":
+    def __radd__(self, other: "BaseSource") -> "BaseSource":
         # so sum([s1, s2, s3]) works
         if other == 0:
             return self
         return self.__add__(other)
 
     @staticmethod
-    def generate_date_range (period: TimeRange):
+    def generate_date_range(period: TimeRange):
         freq = period.freq
         start = period.start
         end = period.end
@@ -63,13 +64,13 @@ class BaseSource (ABC):
         return dr
 
     @abstractmethod
-    def _get_data (self) -> xr.Dataset:
+    def _get_data(self) -> xr.Dataset:
         """
         Get data for the given data selection. Implement in subclasses.
         """
         pass
 
-    def load (self) -> xr.Dataset:
+    def load(self) -> xr.Dataset:
         """Get data only if it hasn't loaded yet"""
         if self.ds is None:
             print(f"Load data from {self.source_name}...")
@@ -95,12 +96,16 @@ class BaseSource (ABC):
             print(f" → dataset shape: {self.ds.sizes}")
         return self.ds
 
-    def reload (self) -> xr.Dataset:
+    def reload(self) -> xr.Dataset:
         """Force data reload"""
         self.ds = None
         return self.load()
 
-    def save (self, filepath: str | Path, consolidated: bool = False):
+    def save(
+        self,
+        filepath: str | Path,
+        consolidated: bool = False
+    ):
         """Save dataset in Zarr format in filepath"""
         if not self.ds:
             self.ds = self.load()

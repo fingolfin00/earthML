@@ -16,8 +16,7 @@ from .correlation import CorrelationMetrics
 from .probabilistic import ProbabilisticMetrics
 from .bundles import build_standard_metric_bundle
 
-from ..utils import guess_time_dim, guess_lon_dim, guess_lat_dim, guess_realization_dim, guess_leadtime_dim, \
-    date_diff, load_exp, add_ke_to_runs, remove_unwanted_dims_and_coords, \
+from ..utils import date_diff, load_exp, add_ke_to_runs, remove_unwanted_dims_and_coords, \
     get_and_rename_dim, calculate_climatology
 
 # ==========================================
@@ -205,17 +204,17 @@ def metrics_to_df(
 def rechunk(da, lat_rc=None, lon_rc=None, time_rc=None, realization_rc=None):
     chunks = {}
     if time_rc is not None:
-        chunks[guess_time_dim(da)] = time_rc
+        chunks[da.earthml.guessed_dims.time] = time_rc
     if lat_rc is not None:
-        chunks[guess_lat_dim(da)] = lat_rc
+        chunks[da.earthml.guessed_dims.latitude] = lat_rc
     if lon_rc is not None:
-        chunks[guess_lon_dim(da)] = lon_rc
+        chunks[da.earthml.guessed_dims.longitude] = lon_rc
 
-    realization_dim = guess_realization_dim(da)
+    realization_dim = da.earthml.guessed_dims.realization
     if realization_dim in da.dims and realization_rc is not None:
         chunks[realization_dim] = realization_rc
 
-    leadtime_dim = guess_leadtime_dim(da)
+    leadtime_dim = da.earthml.guessed_dims.leadtime
     if leadtime_dim in da.dims:
         chunks[leadtime_dim] = -1  # keep together
 

@@ -1,31 +1,43 @@
+from dataclasses import dataclass, field
 from abc import abstractmethod
-from pathlib import Path
-import numpy as np
-import xarray as xr
-from rich import print
+from typing import Protocol
 
-from ..utils import guess_time_dim
-from ..dataclasses import DataSource, Sample
+from pathlib import Path
+import xarray as xr
+
+from .dataclasses import DataSource, Sample
 from .base import BaseSource
 
-class XarrayLocalSource (BaseSource):
-    def __init__ (
+
+@dataclass
+class XarrayLocalSourceConfig:
+    root_path   : str | Path
+    xarray_args : dict = field(default_factory=dict)
+
+class HasRootPath(Protocol):
+    root_path   : str | Path
+
+
+class XarrayLocalSource(BaseSource):
+    def __init__(
         self,
         datasource: DataSource,
-        root_path: str | Path,
-        xarray_args: dict = None,
+        config: XarrayLocalSourceConfig | None = None,
     ):
-        super().__init__ (datasource)
-        self.path = Path(root_path)
-        self.elements.samples = self.date_range
-        self.xarray_args = {} if xarray_args is None else xarray_args
+        super().__init__(datasource)
 
-    def _get_data (self) -> xr.Dataset:
+        self.config = config
+
+        self.path = Path(config.root_path)
+        self.elements.samples = self.date_range
+        self.xarray_args = {} if config.xarray_args is None else config.xarray_args
+
+    def _get_data(self) -> xr.Dataset:
         self.ds = xr.open_dataset(self.path, **self.xarray_args)
 
         # Select only non-missed samples
         if self.elements.missed:
-            time_dim = guess_time_dim(self.ds)
+            time_dim = self.ds.earthml.guessed_dims.time
             missed = xr.DataArray(list(self.elements.missed), dims="missed_time", name="missed_time")
             keep_mask = ~self.ds[time_dim].isin(missed)
             # print(missed)
@@ -38,17 +50,18 @@ class XarrayLocalSource (BaseSource):
 
         return self.ds
 
-class MFXarrayLocalSource (BaseSource):
-    def __init__ (
+
+class MFXarrayLocalSource(BaseSource):
+    def __init__(
         self,
         datasource: DataSource,
-        root_path: str,
+        config: HasRootPath,
     ):
-        super().__init__ (datasource)
-        self.path = Path(root_path)
+        super().__init__(datasource)
+        self.path = Path(config.root_path)
 
     @abstractmethod
-    def _get_data_filenames (self) -> Sample:
+    def _get_data_filenames(self) -> Sample:
         """
         Get the local data filenames for the given data selection. Implement in subclasses.
         """

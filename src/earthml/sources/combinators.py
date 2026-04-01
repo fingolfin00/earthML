@@ -1,11 +1,15 @@
 import xarray as xr
 from rich import print
 
-from ..utils import guess_time_dim
 from .base import BaseSource
 
-class SumSource (BaseSource):
-    def __init__(self, left: BaseSource, right: BaseSource):
+
+class SumSource(BaseSource):
+    def __init__(
+        self,
+        left: BaseSource,
+        right: BaseSource
+    ):
         # Compatibility checks that don't require loading data
         # TODO add support for concat different regions
         if left.data_selection.region != right.data_selection.region:
@@ -18,13 +22,14 @@ class SumSource (BaseSource):
         self._left = left
         self._right = right
 
+
     def _get_data(self) -> xr.Dataset:
         # This is where we finally touch the underlying data
         ds_left = self._left.load()
         ds_right = self._right.load()
 
         # Decide concat dimension
-        time_dim = guess_time_dim(ds_left)
+        time_dim = ds_left.earthml.guessed_dims.time
         if time_dim is None:
             raise ValueError("Could not infer time dimension for concatenation")
 
