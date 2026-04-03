@@ -110,8 +110,8 @@ if __name__ == "__main__":
             name="SmaAt_UNet",
             # Net config
             supervised=True,
-            n_channels=1, # NN input C
-            n_classes=1, # NN output C
+            n_channels=n_input_realizations if realization_as_channel else 1, # NN input C
+            n_classes=n_input_realizations if realization_as_channel else 1, # NN output C
             extra_net_args={},
             # Net hyperparams
             learning_rate=init_learning_rate,
