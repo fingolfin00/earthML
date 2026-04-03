@@ -65,8 +65,8 @@ def make_region ():
         europe=Region(name="Europe", lon=(-10, 36), lat=(55, 35)),
         italy=Region(name="ItalianPeninsula", lon=(5, 23.5), lat=(49, 25.5)),
         pacific=Region(name="CentralPacific", lon=(-200, -120), lat=(30, -30)),
-        natlantic=Region(name="NorthAtlantic", lon=(-80, 20), lat=(60, 0)),
-        satlantic=Region(name="SouthAtlantic", lon=(-80, 20), lat=(0, -60)),
+        natlantic=Region(name="NorthAtlantic", lon=(-100, 40), lat=(80, 0)),
+        satlantic=Region(name="SouthAtlantic", lon=(-70, 30), lat=(0, -80)),
         indian=Region(name="Indian", lon=(20, 140), lat=(30, -60)),
     )
 
