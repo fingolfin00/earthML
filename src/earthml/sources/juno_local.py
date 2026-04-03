@@ -35,7 +35,7 @@ class JunoLocalSourceFileNameConfig:
 
 @dataclass
 class JunoLocalSourceConfig:
-    leadtime           : relativedelta
+    leadtime            : relativedelta # TODO move to Leadtime?
     root_path           : str | Path
     engine              : str
     file_name_config    : JunoLocalSourceFileNameConfig
@@ -66,6 +66,7 @@ class JunoLocalSource(MFXarrayLocalSource):
 
     def _get_data_filenames(
         self,
+        leadtime: relativedelta,
         config: JunoLocalSourceFileNameConfig,
     ) -> Sample:
         """Get the data filenames for the given data selection."""
@@ -73,7 +74,7 @@ class JunoLocalSource(MFXarrayLocalSource):
         s = Sample(extra={"plus_samples": [], "minus_samples": []})
         assert config.realizations == 'all' or config.realizations > 0
         for date in self.date_range:
-            previous_date = date - self.leadtime
+            previous_date = date - leadtime
             # print("juno-local prev date:", previous_date)
             data_path = self.path.joinpath(previous_date.strftime(config.file_path_date_format))
             if config.both_data_and_previous_date_in_file:
@@ -253,7 +254,13 @@ class JunoLocalSource(MFXarrayLocalSource):
         samples_len, missing_samples = [], []
         for date, ds in samples_d.items():
             time_dim = ds.earthml.guessed_dims.time
-            if ds["_has_var"].any(dim=(realization_concat_dim, time_dim)): # time_dim should always be 1D
+            # print(f"Realization dim: {realization_concat_dim}, time dim: {time_dim}")
+            dims = tuple(
+                d for d in (realization_concat_dim, time_dim)
+                if d is not None and d in ds["_has_var"].dims
+            )
+            # print(f"Sample {date} _has_var dims: {dims}")
+            if ds["_has_var"].any(dim=dims):
                 samples_len.append(ds.sizes.get(realization_concat_dim, 1))
             else:
                 # Store dates with no valid realizations
@@ -280,7 +287,7 @@ class JunoLocalSource(MFXarrayLocalSource):
         # print(objs)
         ds = xr.concat(
             objs=objs,
-            dim=xr.IndexVariable(time_dim, times) if time_dim in ('time', 'valid_time', 'time_counter') else time_dim,
+            dim=xr.IndexVariable("time", times),
             coords='minimal',
             # compat="broadcast_equals",
             compat="override",
@@ -301,7 +308,7 @@ class JunoLocalSource(MFXarrayLocalSource):
         #     print("just saved dtype:", ds["missed_time"].dtype)
         #     print("just saved head:", ds["missed_time"].values)
 
-        ds = ds.subset(self.data_selection)
+        ds = ds.earthml.subset(self.data_selection)
 
         lat_res, lon_res = ds.earthml.resolution()
         print(f"Horizontal resolutions: lat {lat_res:.2f}, lon {lon_res:.2f}")
