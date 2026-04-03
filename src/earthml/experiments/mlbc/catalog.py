@@ -7,15 +7,24 @@ def make_var(
 ):
     return SimpleNamespace(
         # Atmo
-        t2m_juno=Variable(name="t2m", unit="K"),
-        msl_juno=Variable(name="msl", unit="Pa"),
-        u10_juno=Variable(name="u10", unit="m/s"),
-        v10_juno=Variable(name="v10", unit="m/s"),
-        d2m_juno=Variable(name="d2m", unit="K"),
-        tcc_juno=Variable(name="tcc", unit="[0-1]"),
-        gh850_juno=Variable(name="gh", unit="gpm", levhpa=850),
-
-        t2m_era5=Variable(name="2t", unit="K"),
+        # local forecast
+        t2m_juno_fc=Variable(name="t2m", unit="K"),
+        msl_juno_fc=Variable(name="msl", unit="Pa"),
+        u10_juno_fc=Variable(name="u10", unit="m/s"),
+        v10_juno_fc=Variable(name="v10", unit="m/s"),
+        d2m_juno_fc=Variable(name="d2m", unit="K"),
+        tcc_juno_fc=Variable(name="tcc", unit="[0-1]"),
+        gh850_juno_fc=Variable(name="gh", unit="gpm", levhpa=850),
+        # local analysis
+        t2m_juno_an=Variable(name="t2m", unit="K"),
+        msl_juno_an=Variable(name="msl", unit="Pa"),
+        u10_juno_an=Variable(name="u10", unit="m/s"),
+        v10_juno_an=Variable(name="v10", unit="m/s"),
+        d2m_juno_an=Variable(name="d2m", unit="K"),
+        tcc_juno_an=Variable(name="tcc", unit="[0-1]"),
+        gh850_juno_an=Variable(name="gh", unit="gpm", levhpa=850),
+        # ERA5 analysis
+        t2m_era5_an=Variable(name="2t", unit="K"),
 
         # Ocean
         mld00_1=Variable(name="mixed_layer_depth_0_01", unit="m"),
