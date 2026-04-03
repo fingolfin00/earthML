@@ -4,6 +4,6 @@ from ..dataclasses import DataSource, SourceConfig
 
 
 @dataclass
-class ProviderSpec:
-    source: str          # e.g. "earthkit" or "juno-local"
+class Provider:
+    source: str          # e.g. "ocean.juno.cmcc.hindcast"
     params: dict
