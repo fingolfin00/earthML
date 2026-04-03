@@ -6,6 +6,7 @@ from pathlib import Path
 
 import traceback
 
+from numpy import isin
 from rich import print
 
 from dateutil.relativedelta import relativedelta
@@ -156,7 +157,7 @@ class MLBCExperimentLauncher:
                 end = train_periods[-1].end
                 assert any([train_periods[0].freq==tp.freq for tp in train_periods]), fr"All train periods freq must be the same. First freq {train_periods[0].freq}"
                 cutoff = train_periods[0].end
-                full_tp = TimeRange(start, end, freq)
+                full_tp = TimeRange(start, end, train_periods[0].freq)
 
                 return halved_windows_split_by_cutoff(
                     full_tp,
@@ -236,6 +237,7 @@ class MLBCExperimentLauncher:
         var_input: str,
         var_target: str,
         target_period: TimeRange | Sequence[TimeRange],
+        role: MLBCExperimentDatasetRole,
     ) -> dict[MLBCExperimentDatasetRole, dict[Literal["name", "args"]]]:
         """
         Run in mainloop
@@ -335,16 +337,19 @@ class MLBCExperimentLauncher:
             input_provider_args_list.append(input_provider_args)
 
         # Update provider args with user's kwargs
+        # print(self.providers_kwargs)
         if self.providers_kwargs: # TODO generalize to roles in registry (input, target), add checks maybe
-            if self.providers_kwargs["target"] is not None:
-                assert len(target_provider_args_list)==len(self.providers_kwargs["target"]), fr"User provided kwargs {self.providers_kwargs["target"]} for target source provider(s) not compatible"
+            if self.providers_kwargs["target"] is not None and self.providers_kwargs["target"][role] is not None:
+                user_target_kwargs = self.providers_kwargs["target"][role] if isinstance(self.providers_kwargs["target"][role], Sequence) else [self.providers_kwargs["target"][role]]
+                assert len(target_provider_args_list)==len(user_target_kwargs), fr"User provided kwargs {user_target_kwargs} for target [{role}] source provider(s) not compatible"
                 for i,ar in enumerate(target_provider_args_list):
-                    target_provider_args_list[i] = ar | self.providers_kwargs["target"]
+                    target_provider_args_list[i] = ar | user_target_kwargs[i]
 
-            if self.providers_kwargs["input"] is not None:
-                assert len(input_provider_args_list)==len(self.providers_kwargs["input"]), fr"User provided kwargs {self.providers_kwargs["input"]} for input source provider(s) not compatible"
+            if self.providers_kwargs["input"] is not None and self.providers_kwargs["input"][role] is not None:
+                user_input_kwargs = self.providers_kwargs["input"][role] if isinstance(self.providers_kwargs["target"][role], Sequence) else [self.providers_kwargs["target"][role]]
+                assert len(input_provider_args_list)==len(user_input_kwargs), fr"User provided kwargs {user_input_kwargs} for input [{role}] source provider(s) not compatible"
                 for i,ar in enumerate(input_provider_args_list):
-                    input_provider_args_list[i] = ar | self.providers_kwargs["input"]
+                    input_provider_args_list[i] = ar | user_input_kwargs[i]
 
 
         return {
@@ -400,8 +405,8 @@ class MLBCExperimentLauncher:
             leadtime_target = Leadtime(leadtime.name, leadtime.unit, 0) # TODO maybe make it configurable by user?
 
             # TODO absolutely refactor this is insane, or maybe it's not that bad actually
-            train_providers_and_args_d = self._get_source_providers(var_input, var_target, train_period_d["target"])
-            test_providers_and_args_d = self._get_source_providers(var_input, var_target, self.test_periods)
+            train_providers_and_args_d = self._get_source_providers(var_input, var_target, train_period_d["target"], "train")
+            test_providers_and_args_d = self._get_source_providers(var_input, var_target, self.test_periods, "test")
             providers_d = {
                 "input": {
                     "train": train_providers_and_args_d["input"]["name"],
