@@ -89,7 +89,7 @@ def half_train_periods_days(
 
 #TODO issue if train_period is only one month
 def halved_windows_split_by_cutoff(
-    base: "TimeRange",
+    base: TimeRange,
     cutoff_end: datetime,          # e.g. datetime(2014, 12, 31)
     min_months: int = 3,
     anchor: str = "end",           # "end" (default) or "start" for the halved window

@@ -6,15 +6,11 @@ from pathlib import Path
 import xarray as xr
 
 from ...sources.dataclasses import DataSource
-
-
-MLBCRunMode = Literal["train", "test", "train_test", "train_test_on_train", "prepare"]
-MLBCExperimentDatasetRole = Literal["input", "target"]
-MLBCExperimentName = Literal["juno-cmcc_juno-cmcc", "cds-cmcc_oras5", "juno-cmcc_oras5"] # TODO weather missing
-MLBCExperimentType = Literal["weather", "seasonal"]
+from .registry import MLBCExperimentType, MLBCExperimentName, MLBCExperimentDatasetRole, MLBCRunMode
 
 PreprocessFn = Callable[[xr.Dataset, xr.Dataset], Tuple[xr.Dataset, xr.Dataset]]
 
+# Dataclasses
 @dataclass(frozen=True)
 class MLBCExperimentLauncherConfig:
     type        : MLBCExperimentType
