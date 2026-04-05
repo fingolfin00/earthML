@@ -346,7 +346,7 @@ class MLBCExperimentLauncher:
                     target_provider_args_list[i] = ar | user_target_kwargs[i]
 
             if self.providers_kwargs["input"] is not None and self.providers_kwargs["input"][role] is not None:
-                user_input_kwargs = self.providers_kwargs["input"][role] if isinstance(self.providers_kwargs["target"][role], Sequence) else [self.providers_kwargs["target"][role]]
+                user_input_kwargs = self.providers_kwargs["input"][role] if isinstance(self.providers_kwargs["input"][role], Sequence) else [self.providers_kwargs["input"][role]]
                 assert len(input_provider_args_list)==len(user_input_kwargs), fr"User provided kwargs {user_input_kwargs} for input [{role}] source provider(s) not compatible"
                 for i,ar in enumerate(input_provider_args_list):
                     input_provider_args_list[i] = ar | user_input_kwargs[i]
