@@ -7,6 +7,7 @@ from .. import SourceConfig, RegridConfig, JunoLocalSourceConfig, JunoLocalSourc
 from .registry import register_provider
 
 
+# Seasonal ocean
 @register_provider("ocean.juno.cmcc.hindcast") # monthly, 6-hourly
 def juno_monthly_hindcast_ocean_netcdf(
     var_name: str,
@@ -145,4 +146,68 @@ def earthkit_cds_oras5(
             convert_unit=convert_unit,
             earthkit_cache_dir=earthkit_cache_dir,
         ), 
+    )
+
+
+# Weather ocean, copernicusmarine
+@register_provider("ocean.copernicusmarine.gopaf.forecast.hourly")
+def copernicusmarine_global_ocean_physics_forecast_hourly(
+    var_name: str,
+    leadtime_value: int, # hours
+    leadtime_unit: str,
+    username: str,
+    password: str,
+    regrid_resolution: float = 0.25,
+    select_area_after_request: bool = True,
+    # copernicusmarine_cache_dir: str  = Path("/tmp/copernicusmarine-cache/"),
+    convert_unit: dict | None = None, # dict of var_name: (func, target_unit) to convert variable unit (e.g. {"temperature": (lambda x: x - 273.15, "C")})
+) -> SourceConfig:
+    leadtime = relativedelta(**{leadtime_unit: leadtime_value})
+
+    return SourceConfig(
+        source="copernicusmarine",
+        config=CopernicusmarineSourceConfig(
+            leadtime=leadtime,
+            username=username,
+            password=password,
+            dataset="cmems_mod_glo_phy_anfc_0.083deg_PT1H-m", # hourly
+            regrid_config=RegridConfig(
+                regrid_resolution=regrid_resolution,
+                regrid_vars=[var_name],
+            ),
+            select_area_after_request=select_area_after_request,
+            convert_unit=convert_unit,
+            # cache_dir=copernicusmarine_cache_dir,
+        ),
+    )
+
+@register_provider("ocean.copernicusmarine.gopaf.analysis.hourly")
+def copernicusmarine_global_ocean_physics_analysis_hourly(
+    var_name: str,
+    leadtime_value: int, # unused
+    leadtime_unit: str,
+    username: str,
+    password: str,
+    regrid_resolution: float = 0.25,
+    select_area_after_request: bool = True,
+    # copernicusmarine_cache_dir: str  = Path("/tmp/copernicusmarine-cache/"),
+    convert_unit: dict | None = None, # dict of var_name: (func, target_unit) to convert variable unit (e.g. {"temperature": (lambda x: x - 273.15, "C")})
+) -> SourceConfig:
+    leadtime = relativedelta(**{leadtime_unit: 0})
+
+    return SourceConfig(
+        source="copernicusmarine",
+        config=CopernicusmarineSourceConfig(
+            leadtime=leadtime,
+            username=username,
+            password=password,
+            dataset="cmems_mod_glo_phy_anfc_0.083deg_PT1H-m", # hourly
+            regrid_config=RegridConfig(
+                regrid_resolution=regrid_resolution,
+                regrid_vars=[var_name],
+            ),
+            select_area_after_request=select_area_after_request,
+            convert_unit=convert_unit,
+            # cache_dir=copernicusmarine_cache_dir,
+        ),
     )
