@@ -18,8 +18,8 @@ def resolve_loss(
     """
     # if one of our custom losses
     try:
-        return get_loss_class(name)
-    except:
+        return get_loss_class(name)(**params)
+    except KeyError:
         loss_import_name = name
 
     # simple name -> try torch.nn
