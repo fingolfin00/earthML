@@ -4,7 +4,7 @@ import importlib, inspect
 import torch
 from torch import nn
 
-from ..losses.registry import get_loss_class
+from .losses import get_loss_class
 
 def resolve_loss(
     name: str,
