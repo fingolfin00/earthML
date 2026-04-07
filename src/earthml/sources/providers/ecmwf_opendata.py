@@ -1,7 +1,6 @@
 from dateutil.relativedelta import relativedelta
 
-from ..dataclasses import SourceConfig, RegridConfig
-from ..earthkit import EarthkitSourceConfig
+from .. import SourceConfig, RegridConfig, EarthkitSourceConfig
 
 from .registry import register_provider
 

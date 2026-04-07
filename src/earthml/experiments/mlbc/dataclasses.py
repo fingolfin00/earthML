@@ -5,7 +5,7 @@ from pathlib import Path
 
 import xarray as xr
 
-from ...sources.dataclasses import DataSource
+from ...sources import DataSource
 from .registry import MLBCExperimentType, MLBCExperimentName, MLBCExperimentDatasetRole, MLBCRunMode
 
 PreprocessFn = Callable[[xr.Dataset, xr.Dataset], Tuple[xr.Dataset, xr.Dataset]]

@@ -1,5 +1,6 @@
 from typing import Callable, Dict
-from ..dataclasses import SourceConfig
+
+from .. import SourceConfig
 
 
 _PROVIDERS: Dict[str, Callable[..., dict]] = {}

@@ -3,7 +3,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from rich import print
 
-from ...misc.dask import Dask
+from ...misc import Dask
 
 def configure_warnings_and_logging() -> None:
     warnings.filterwarnings("ignore", category=FutureWarning)

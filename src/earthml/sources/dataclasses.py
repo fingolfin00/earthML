@@ -2,7 +2,7 @@ from dataclasses import dataclass, field, is_dataclass
 from typing import Any, Sequence, Set
 from datetime import datetime
 
-from ..base.dataclasses import DataSelection
+from ..base import DataSelection
 
 
 @dataclass
@@ -56,7 +56,7 @@ class Sample:
 
 @dataclass
 class RegridConfig:
-    regrid_resolution   : float | tuple[float, float] | None = None # TODO why to we accept tuple?
+    regrid_resolution   : float | tuple[float, float] | None = None # tuple is for different regrid resolution between lat and lon
     regrid_vars         : list[str] = field(default_factory=list)
 
 @dataclass
@@ -88,4 +88,3 @@ class SourceConfig:
                 f"Config for source '{self.source}' must be an instance of "
                 f"{expected_config_cls.__name__}, got {type(self.config).__name__}"
             )
-    

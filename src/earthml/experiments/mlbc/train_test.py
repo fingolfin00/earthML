@@ -21,11 +21,9 @@ from lightning.pytorch.loggers import TensorBoardLogger
 from .dataclasses import MLBCExperimentDataset, MLBCExperimentConfig
 from .load import get_and_rename_dim
 
-from ...sources.registry import build_source
-from ...sources.base import BaseSource, DataSource
-from ...sources.xarray_local import XarrayLocalSourceConfig
+from ...sources import build_source, BaseSource, DataSource, XarrayLocalSourceConfig
 
-from ...misc.table import Table
+from ...misc import Table
 from ...neural import XarrayDataset, Normalize, EpochRandomSplitDataModule
 from ...neural.nets import build_net
 

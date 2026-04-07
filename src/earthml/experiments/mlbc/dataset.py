@@ -8,16 +8,17 @@ from rich import print
 
 from .utils import _var_names
 from .catalog import make_catalog
-from ...base.dataclasses import (
+from .dataclasses import MLBCExperimentDataset, MLBCExperimentLauncherConfig, MLBCExperimentDatasetRole
+
+from ...base import (
     Leadtime,
     Variable,
     Region,
     TimeRange,
     DataSelection,
 )
-from ...sources.dataclasses import DataSource
-from .dataclasses import MLBCExperimentDataset, MLBCExperimentLauncherConfig, MLBCExperimentDatasetRole
-from ...sources.providers.registry import build_provider
+from ...sources import DataSource
+from ...sources.providers import build_provider
 
 
 @dataclass

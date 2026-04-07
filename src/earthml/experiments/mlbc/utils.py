@@ -3,10 +3,10 @@ from datetime import time as datetime_time
 from dateutil.relativedelta import relativedelta
 from typing import Sequence
 
-from ...base.dataclasses import TimeRange
+from ...base import TimeRange
 
 
-def _var_names(vars: str | Sequence[str]) -> str:
+def _var_names(vars: str | Sequence[str]) -> str: # TODO remove?
     var_list = vars if isinstance(vars, Sequence) else [vars]
     return "".join(v for v in var_list)
 

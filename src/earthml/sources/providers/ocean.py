@@ -2,9 +2,7 @@ from pathlib import Path
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
-from ..dataclasses import SourceConfig, RegridConfig
-from ..juno_local import JunoLocalSourceConfig, JunoLocalSourceFileNameConfig
-from ..earthkit import EarthkitSourceConfig
+from .. import SourceConfig, RegridConfig, JunoLocalSourceConfig, JunoLocalSourceFileNameConfig, EarthkitSourceConfig, CopernicusmarineSourceConfig
 
 from .registry import register_provider
 

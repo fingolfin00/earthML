@@ -1,9 +1,7 @@
 from dateutil.relativedelta import relativedelta
 from pathlib import Path
 
-from ..dataclasses import SourceConfig, RegridConfig
-from ..juno_local import JunoLocalSourceConfig, JunoLocalSourceFileNameConfig
-from ..earthkit import EarthkitSourceConfig
+from .. import SourceConfig, RegridConfig, JunoLocalSourceConfig, JunoLocalSourceFileNameConfig, EarthkitSourceConfig
 
 from .registry import register_provider
 
