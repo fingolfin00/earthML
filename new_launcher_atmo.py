@@ -195,7 +195,7 @@ if __name__ == "__main__":
             only_longest_train_period=only_longest_train_period,
             # Providers args
             earthkit_cache_dir=earthkit_cache_dir,
-            regrid_resolution=1,
+            regrid_resolution=0.1,
             providers_kwargs={
                 "input": input_test_provider_kwargs,
                 "target": target_test_provider_kwargs,
