@@ -84,7 +84,7 @@ class SumSource(BaseSource):
         # print(f"ds_right_sel coords: {ds_right_sel.coords}")
 
         # Concatenate lazily (xarray + dask)
-        ds_combined = xr.merge([ds_left_sel, ds_right_sel])
+        ds_combined = xr.merge([ds_left_sel, ds_right_sel], compat='override')
         # print(f"ds_combined coords: {ds_combined.coords}")
 
         return ds_combined
