@@ -262,16 +262,20 @@ class MLBCExperiment:
 
         # Return a python set of python datetimes
         missed_sel = ds[time_dim].where(~keep, drop=True)
-        missed = set(pd.to_datetime(missed_sel.values).to_pydatetime()) if missed_sel.values.size else set()
+        missed = (
+            set(pd.to_datetime(missed_sel.values).to_pydatetime())
+            if missed_sel.values.size else set()
+        )
 
         # Drop corrupted timesteps
         ds = ds.drop_sel({time_dim: missed_sel})
 
         # Add missed info to dataset
-        if "missed_time" in ds.coords:
-            prev_missed = set(ds["missed_time"].values.tolist())
+        if "missed_time" in ds.coords and ds["missed_time"].values.size:
+            prev_missed = set(pd.to_datetime(ds["missed_time"].values).to_pydatetime())
         else:
             prev_missed = set()
+
         missed_np = np.array(sorted(missed | prev_missed), dtype="datetime64[ns]")
         ds = ds.assign_coords(missed_time=("missed_time", missed_np))
         ds["missed_time"].encoding.update({
