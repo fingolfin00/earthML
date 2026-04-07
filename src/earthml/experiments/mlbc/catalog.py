@@ -33,11 +33,12 @@ def make_var(
         d2m_juno_an=Variable(name="d2m", unit="K"),
         tcc_juno_an=Variable(name="tcc", unit="[0-1]"),
         gh850_juno_an=Variable(name="gh", unit="gpm", levhpa=850),
+
         # ERA5 analysis
         t2m_era5_an=Variable(name="2t", unit="K"),
 
-        # Ocean
-        mld00_1=Variable(name="mixed_layer_depth_0_01", unit="m"),
+        # Ocean seasonal
+        # mld00_1=Variable(name="mixed_layer_depth_0_01", unit="m"),
 
         sss_cds_fc=Variable(longname="sea_surface_salinity", name="sos", leadtime=leadtime_input),
         sss_juno_fc=Variable(name="sos", levm=0, leadtime=leadtime_input), # leadtime in var only if multimple leadtime in same file
@@ -45,7 +46,7 @@ def make_var(
         sss_juno_an=Variable(name="sos", levm=0, leadtime=leadtime_target), # analysis leadtime in dataset is 15 days ??
         # sss_juno_an=Variable(name="sss_m", levm=0),
 
-        sst_cds_fc=Variable(longname="sea_surface_temperature", name="sst", leadtime=leadtime_input),
+        sst_cds_fc=Variable(longname="sea_surface_temperature", name="sst", leadtime=leadtime_input), # in CDS atmo product
         sst_juno_fc=Variable(name="tso", leadtime=leadtime_input), # SST, surface variable
         sst_oras5_an=Variable(longname="sea_surface_temperature", name="sosstsst", unit="K"),
         sst_juno_an=Variable(name="tso", leadtime=leadtime_target),
@@ -67,6 +68,19 @@ def make_var(
 
         ssh_cds_fc=Variable(longname="sea_surface_height_above_geoid", name="zos", unit="m", leadtime=leadtime_input),
         ssh_oras5_an=Variable(longname="sea_surface_height", name="sossheig", unit="m"),
+
+        # Atmo seasonal
+        t2m_cds_fc=Variable(longname="2m_temperature", name="t2m", unit="K", leadtime=leadtime_input),
+        t2m_era5_seasonal_an=Variable(longname="2m_temperature", name="t2m", unit="K"),
+
+        tp_cds_fc=Variable(longname="total_precipitation", name="tprate", unit="", leadtime=leadtime_input),
+        tp_era5_seasonal_an=Variable(longname="total_precipitation", name="tp", unit="m/s"),
+
+        u10_cds_fc=Variable(longname="10m_u_component_of_wind", name="u10", unit="m/s", leadtime=leadtime_input),
+        u10_era5_seasonal_an=Variable(longname="10m_u_component_of_wind", name="u10", unit="m/s"),
+
+        v10_cds_fc=Variable(longname="10m_v_component_of_wind", name="v10", unit="m/s", leadtime=leadtime_input),
+        v10_era5_seasonal_an=Variable(longname="10m_v_component_of_wind", name="v10", unit="m/s"),
     )
 
 def make_region ():
