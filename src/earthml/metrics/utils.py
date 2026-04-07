@@ -18,8 +18,8 @@ from .correlation import CorrelationMetrics
 from .probabilistic import ProbabilisticMetrics
 from .bundles import build_standard_metric_bundle
 
-from ..utils import date_diff, load_exp, add_ke_to_runs, remove_unwanted_dims_and_coords, \
-    get_and_rename_dim, calculate_climatology
+from ..experiments.mlbc.load import load_exp, add_ke_to_runs, get_and_rename_dim
+
 
 # ==========================================
 # Standalone helper methods
@@ -345,7 +345,7 @@ def preprocess_datasets_for_metric(
 
     # Remove unwanted dims/coords
     ds_list = [
-        remove_unwanted_dims_and_coords(ds, allowed_dims) if ds is not None else None
+        ds.earthml.remove_dims_and_coords(allowed_dims) if ds is not None else None
         for ds in ds_list
     ]
 
@@ -522,10 +522,10 @@ def get_runs_and_metrics(
                 rechunk_factor=rechunk_factor,
             )
             an_train_m = processed_train[0]
-            an_clim_ts = calculate_climatology(an_train_m, groupby="month")
+            an_clim_ts = an_train_m.earthml.climatology(groupby="month")
             clim_by_model[truth_model] = an_clim_ts
             for model_name, train_ds in zip(train_model_names, processed_train[1:]):
-                clim_by_model[model_name] = calculate_climatology(train_ds, groupby="month")
+                clim_by_model[model_name] = train_ds.climatology(groupby="month")
             if "pr" in clim_by_model and clim_by_model["pr"] is None:
                 clim_by_model["pr"] = an_clim_ts
 
