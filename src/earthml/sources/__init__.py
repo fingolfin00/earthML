@@ -1,7 +1,13 @@
 from .base import BaseSource
-from .registry import get_source_class
+from .registry import get_source_class, build_source
 
-__all__ = ["BaseSource", "get_source_class"]
+
+__all__ = [
+    "BaseSource",
+    "get_source_class",
+    "build_source",
+]
+
 
 _SOURCES = {
     "SumSource": (".combinators", "SumSource"),
