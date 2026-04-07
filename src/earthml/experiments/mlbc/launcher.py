@@ -64,11 +64,11 @@ class MLBCExperimentLauncher:
         """
         # Check experiment validity
         if self.run_mode not in available_runmodes():
-            raise ValueError(fr"MLBC experiment only supports the following run modes: {available_runmodes()}")
+            raise ValueError(f"MLBC experiment only supports the following run modes: {available_runmodes()}")
         if self.experiment.type not in available_exp_types():
-            raise ValueError(fr"MLBC experiment {self.experiment.type} not supported, choose between {available_exp_types()}")
+            raise ValueError(f"MLBC experiment {self.experiment.type} not supported, choose between {available_exp_types()}")
         if self.experiment.name not in available_exps():
-            raise ValueError(fr"MLBC experiment {self.experiment.name} not supported, choose between {available_exps()}")
+            raise ValueError(f"MLBC experiment {self.experiment.name} not supported, choose between {available_exps()}")
 
         # Init variables as list
         self.leadtimes          = [self.leadtimes] if isinstance(self.leadtimes, Leadtime) else self.leadtimes
@@ -84,10 +84,10 @@ class MLBCExperimentLauncher:
         self.regions            = [self.regions] if isinstance(self.regions, str) else self.regions
 
         # Set var categories
-        self.vars_cloud_oras5        = ("sst", "ssh") # TODO implement or remove, only for juno experiments
+        # self.vars_cloud_oras5        = ("sst", "ssh") # TODO implement or remove, only for juno experiments
         self.vars_cloud_cds          = {
             "ocean": ("ssh", "sss", "t14d", "t17d", "t20d", "t26d", "t28d", "mld01", "mld03", "das300", "dat300", "sit"), # https://cds.climate.copernicus.eu/datasets/seasonal-monthly-ocean
-            "atmo" : ("sst",), # https://cds.climate.copernicus.eu/datasets/seasonal-monthly-single-levels
+            "atmo" : ("sst", "t2m", "tp", "u10", "v10"), # https://cds.climate.copernicus.eu/datasets/seasonal-monthly-single-levels
         }
 
         # Lead time const and experiment type check
@@ -136,7 +136,7 @@ class MLBCExperimentLauncher:
             if n_classes==n_channels:
                 self.output_realizations = "ensemble"
             else:
-                raise ValueError(fr"Unsupported combo input n_channels={n_channels}, output n_classes={n_classes}")
+                raise ValueError(f"Unsupported combo input n_channels={n_channels}, output n_classes={n_classes}")
 
         # TODO print a Table summary
 
@@ -156,7 +156,7 @@ class MLBCExperimentLauncher:
             if isinstance(train_periods, Sequence):
                 start = train_periods[0].start
                 end = train_periods[-1].end
-                assert any([train_periods[0].freq==tp.freq for tp in train_periods]), fr"All train periods freq must be the same. First freq {train_periods[0].freq}"
+                assert any([train_periods[0].freq==tp.freq for tp in train_periods]), f"All train periods freq must be the same. First freq {train_periods[0].freq}"
                 cutoff = train_periods[0].end
                 full_tp = TimeRange(start, end, train_periods[0].freq)
 
@@ -202,7 +202,7 @@ class MLBCExperimentLauncher:
 
         # Periods sanity check # TODO can be removed?
         # if len(train_periods_input) != len(train_periods_target):
-        #     raise ValueError(fr"Number of calculated input train periods ({len(train_periods_input)}) != target train periods ({len(train_periods_target)})")
+        #     raise ValueError(f"Number of calculated input train periods ({len(train_periods_input)}) != target train periods ({len(train_periods_target)})")
         
         return [
             {
@@ -220,16 +220,21 @@ class MLBCExperimentLauncher:
         """
         Run in mainloop
         """
-        if self.experiment.name == "juno-cmcc_oras5":
-            var_catalog_keys = (fr"{var_input}_juno_fc", fr"{var_target}_oras5_an")
+        if self.experiment.name == "juno-cmcc_oras5": # ocean seasonal: local Juno + ORAS5
+            var_catalog_keys = (f"{var_input}_juno_fc", f"{var_target}_oras5_an")
+        if self.experiment.name == "cds-cmcc_oras5": # ocean seasonal: SPS4 + ORAS5
+            var_catalog_keys = (f"{var_input}_cds_fc", f"{var_target}_oras5_an")
+        if self.experiment.name == "cds-cmcc_era5": # atmo seasonal
+            var_catalog_keys = (f"{var_input}_cds_fc", f"{var_target}_era5_seasonal_an")
+
         # Common (weather and seasonal) Juno experiment variable naming convention
-        if self.experiment.name in ("juno-cmcc_juno-cmcc", "juno-ecmwf_juno-ecmwf"):
-            var_catalog_keys = (fr"{var_input}_juno_fc", fr"{var_target}_juno_an")
-        if self.experiment.name == "cds-cmcc_oras5":
-            var_catalog_keys = (fr"{var_input}_cds_fc", fr"{var_target}_oras5_an")
-        # TODO implement atmo seasonal
-        if self.experiment.name == "juno-ecmwf_era5":
-            raise NotImplementedError(fr"Experiment {self.experiment.name} not yet implemented.")
+        if self.experiment.name in ("juno-cmcc_juno-cmcc", "juno-ecmwf_juno-ecmwf"): # local Juno atmo weather or ocean (not really available)
+            var_catalog_keys = (f"{var_input}_juno_fc", f"{var_target}_juno_an")
+
+        if self.experiment.name == "cmems_cmems": # ocean weather: CMEMS global ocean fc and an
+            var_catalog_keys = (f"{var_input}_gopaf_fc", f"{var_target}_gopaf_an")
+        if self.experiment.name == "juno-ecmwf_era5": # atmo weather: local Juno forecasts + ERA5 reanalysis
+            raise NotImplementedError(f"Experiment {self.experiment.name} not yet implemented.")
         return var_catalog_keys
 
 
@@ -264,9 +269,11 @@ class MLBCExperimentLauncher:
                             ]
                         else:
                             target_provider = "ocean.earthkit.oras5.reanalysis.monthly"
+
                     if self.experiment.name == "juno-cmcc_juno-cmcc":
                         input_provider = "ocean.juno.cmcc.hindcast"
                         target_provider = "ocean.juno.cmcc.hindcast"
+
                     if self.experiment.name == "cds-cmcc_oras5":
                         input_provider = (
                             "atmo.earthkit.cmcc.hindcast.monthly"
@@ -281,11 +288,23 @@ class MLBCExperimentLauncher:
                         else:
                             target_provider = "ocean.earthkit.oras5.reanalysis.monthly"
 
+                    if self.experiment.name == "cds-cmcc_era5":
+                        input_provider = ( # TODO refactor with above?
+                            "atmo.earthkit.cmcc.hindcast.monthly"
+                            if var_input in self.vars_cloud_cds["atmo"]
+                            else "ocean.earthkit.cmcc.hindcast.monthly"
+                        )
+                        target_provider = "atmo.earthkit.era5.reanalysis.monthly"
+
                 # Weather
                 if self.experiment.type == "weather":
-                    if self.experiment.name == "juno-ecmwf_juno-ecmwf":
+                    if self.experiment.name == "juno-ecmwf_juno-ecmwf": # local Juno atmo weather
                         input_provider = "atmo.juno.ecmwf.forecast.hourly"
                         target_provider = "atmo.juno.ecmwf.analysis.6hourly"
+
+                    if self.experiment.name == "cmems_cmems": # ocean weather
+                        input_provider = "ocean.copernicusmarine.gopaf.forecast.hourly"
+                        target_provider = "ocean.copernicusmarine.gopaf.analysis.hourly"
 
                 target_provider_list.append(target_provider)
                 input_provider_list.append(input_provider)
@@ -342,13 +361,13 @@ class MLBCExperimentLauncher:
         if self.providers_kwargs: # TODO generalize to roles in registry (input, target), add checks maybe
             if self.providers_kwargs["target"] is not None and self.providers_kwargs["target"][role] is not None:
                 user_target_kwargs = self.providers_kwargs["target"][role] if isinstance(self.providers_kwargs["target"][role], Sequence) else [self.providers_kwargs["target"][role]]
-                assert len(target_provider_args_list)==len(user_target_kwargs), fr"User provided kwargs {user_target_kwargs} for target [{role}] source provider(s) not compatible"
+                assert len(target_provider_args_list)==len(user_target_kwargs), f"User provided kwargs {user_target_kwargs} for target [{role}] source provider(s) not compatible"
                 for i,ar in enumerate(target_provider_args_list):
                     target_provider_args_list[i] = ar | user_target_kwargs[i]
 
             if self.providers_kwargs["input"] is not None and self.providers_kwargs["input"][role] is not None:
                 user_input_kwargs = self.providers_kwargs["input"][role] if isinstance(self.providers_kwargs["input"][role], Sequence) else [self.providers_kwargs["input"][role]]
-                assert len(input_provider_args_list)==len(user_input_kwargs), fr"User provided kwargs {user_input_kwargs} for input [{role}] source provider(s) not compatible"
+                assert len(input_provider_args_list)==len(user_input_kwargs), f"User provided kwargs {user_input_kwargs} for input [{role}] source provider(s) not compatible"
                 for i,ar in enumerate(input_provider_args_list):
                     input_provider_args_list[i] = ar | user_input_kwargs[i]
 
@@ -392,15 +411,19 @@ class MLBCExperimentLauncher:
             var_input, var_target = variable["input"], variable["target"]
             var_input_key, var_target_key = self._get_experiment_vars(var_input, var_target)
 
-            if self.experiment.name == "cds-cmcc_oras5":
+            if self.experiment.name == "cds-cmcc_oras5": # ocean seasonal experiment, except SST for forecasts
                 if var_input in self.vars_cloud_cds["ocean"]:
                     leadtime_var_input = Leadtime(leadtime.name, self.leadtime_var_unit, self.all_leadtimes_vars["ocean"][lt_idx])
                 elif var_input in self.vars_cloud_cds["atmo"]:
                     leadtime_var_input = Leadtime(leadtime.name, self.leadtime_var_unit, self.all_leadtimes_vars["atmo"][lt_idx])
                 else:
-                    raise ValueError(fr"Input variable {var_input} for MLBC experiment {self.experiment.name} not supported")
-            if self.experiment.name == "juno-ecmwf_juno-ecmwf":
+                    raise ValueError(f"Input variable {var_input} for MLBC experiment {self.experiment.name} not supported")
+
+            if self.experiment.name in ("juno-ecmwf_juno-ecmwf", "cds-cmcc_era5"): # atmo experiments
                 leadtime_var_input = Leadtime(leadtime.name, self.leadtime_var_unit, self.all_leadtimes_vars["atmo"][lt_idx])
+
+            if self.experiment.name == "cmems_cmems": # ocean weather experiment
+                leadtime_var_input = Leadtime(leadtime.name, self.leadtime_var_unit, self.all_leadtimes_vars["ocean"][lt_idx])
             # TODO most experiments are not implemented, we need to make this more general maybe?
 
             leadtime_target = Leadtime(leadtime.name, leadtime.unit, 0) # TODO maybe make it configurable by user?
@@ -489,7 +512,7 @@ class MLBCExperimentLauncher:
         if mode in ("prepare", "train", "test", "train_test", "train_test_on_train"):
             run_name, dataset, exp = self.get_exp_data(exp_gen_config)
         else:
-            raise ValueError(fr"Invalid run mode {mode}")
+            raise ValueError(f"Invalid run mode {mode}")
         if mode in ("train", "train_test", "train_test_on_train"):
             exp.train()
         if mode in ("test", "train_test", "train_test_on_train"):
@@ -513,12 +536,12 @@ class MLBCExperimentLauncher:
                 )
                 dask_runtime = runtime.start()
                 try:
-                    print(fr"RUN, ATTEMPT: ({run_idx}, {attempt})")
+                    print(f"RUN, ATTEMPT: ({run_idx}, {attempt})")
                     run_name, dataset, exp = self._run_exp(
                         mode=self.run_mode,
                         exp_gen_config=exp_cfg,
                     )
-                    print(fr"RUN SUCCESSFULL: {run_name}")
+                    print(f"RUN SUCCESSFULL: {run_name}")
                     success = True
                     break
                 except (RuntimeError, OSError) as e:
@@ -537,4 +560,4 @@ class MLBCExperimentLauncher:
 
         for failed_run_name, exc_type, err in failed_runs:
             print("FAIL", failed_run_name)
-            print(fr"{exc_type}: {err}")
+            print(f"{exc_type}: {err}")
