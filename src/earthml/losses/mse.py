@@ -49,9 +49,10 @@ class GeoMSELoss(nn.Module):
         super().__init__()
         weights = torch.cos(torch.deg2rad(latitudes))
         self.register_buffer("weights", weights)  # 1D tensor length H
+        print(eps)
         self.eps = float(eps)
 
-    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor, mask: Optional[torch.Tensor] = None):
+    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor):
         """
         y_pred / y_true: (N,C,H,W)
         mask: ignored, kept to respect signature of custom losses
