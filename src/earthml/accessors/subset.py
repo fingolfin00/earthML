@@ -65,6 +65,7 @@ class EarthMLSubset:
 
         return sel_d
 
+    # TODO this probably deserves its own accessor
     @staticmethod
     def _normalize_lon_bounds(lon_min, lon_max, grid_min):
         """
