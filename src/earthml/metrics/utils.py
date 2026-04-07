@@ -1,5 +1,7 @@
 from typing import Any, Sequence
+
 from pathlib import Path
+from datetime import datetime
 
 from rich import print
 
@@ -69,6 +71,7 @@ def _get_da_from_metrics(
 
     return da
 
+
 def build_parquet_path(
     base_folder: str,
     vars_list: Sequence[str],
@@ -80,6 +83,22 @@ def build_parquet_path(
 
     return str(Path(base_folder) / f"metrics_{diff}_{vars_tag}_{metrics_tag}_parquet")
 
+
+def date_diff(ymd_range: str):
+    start_str, end_str = ymd_range.split('-')
+    start = datetime.strptime(start_str, '%Y%m%d')
+    end = datetime.strptime(end_str, '%Y%m%d')
+
+    delta = relativedelta(end, start)
+    days = (end - start).days
+
+    return {
+        "years": delta.years,
+        "months": delta.months,
+        "days": delta.days,
+        "total_days": days,
+        "total_months": delta.years * 12 + delta.months
+    }
 
 def metrics_to_df(
     metrics_dict: dict,
