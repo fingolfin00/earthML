@@ -19,13 +19,13 @@ from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
 from lightning.pytorch.loggers import TensorBoardLogger
 
 from .dataclasses import MLBCExperimentDataset, MLBCExperimentConfig
+from .load import get_and_rename_dim
 
 from ...sources.registry import build_source
 from ...sources.base import BaseSource, DataSource
 from ...sources.xarray_local import XarrayLocalSourceConfig
 
 from ...misc.table import Table
-from ...utils import remove_unwanted_dims_and_coords, create_valid_mask_ds, inpaint_nan_bilinear, get_and_rename_dim, calculate_climatology
 from ...neural import XarrayDataset, Normalize, EpochRandomSplitDataModule
 from ...neural.nets import build_net
 
@@ -123,8 +123,14 @@ class MLBCExperiment:
         # Inpaint nan if requested
         if self.config.inpaint_nan:
             print(f"Inpainting NaN values in datasets with bilinear interpolation...")
-            self.train_input_ds, self.train_target_ds = inpaint_nan_bilinear(self.train_input_ds), inpaint_nan_bilinear(self.train_target_ds)
-            self.test_input_ds, self.test_target_ds = inpaint_nan_bilinear(self.test_input_ds), inpaint_nan_bilinear(self.test_target_ds)
+            self.train_input_ds, self.train_target_ds = (
+                self.train_input_ds.earthml.inpaint_nan_lonlat_bilinear(),
+                self.train_target_ds.earthml.inpaint_nan_lonlat_bilinear(),
+            )
+            self.test_input_ds, self.test_target_ds = (
+                self.test_input_ds.earthml.inpaint_nan_lonlat_bilinear(),
+                self.test_target_ds.earthml.inpaint_nan_lonlat_bilinear(),
+            )
 
         # Hook preprocessing function
         if self.config.torch_preprocess_fn is not None:
@@ -239,6 +245,7 @@ class MLBCExperiment:
             test_config_datasel = exp.datasource.data_selection
         return test_config_datasel.variable if isinstance(test_config_datasel.variable, list) else [test_config_datasel.variable]
 
+
     def _remove_corrupted_ts(self, ds: xr.Dataset) -> Tuple[xr.Dataset, set]:
         time_dim = ds.earthml.guessed_dims.time
         if time_dim is None:
@@ -351,7 +358,7 @@ class MLBCExperiment:
                 # ds.earthml.guessed_dims.leadtime, # leadtime dim must be removed (should be 1D at most)
                 "missed_time",
             }
-            ds = remove_unwanted_dims_and_coords(ds, allowed_dims)
+            ds = ds.earthml.remove_dims_and_coords(allowed_dims)
 
             # Remove missed_times from the dataset to avoid interference with later torch code
             ds = ds.drop_dims("missed_time")
@@ -376,8 +383,8 @@ class MLBCExperiment:
         data_type: str,
     ):
         # Create common mask and save
-        input_valid_mask = create_valid_mask_ds(input_ds)
-        target_valid_mask = create_valid_mask_ds(target_ds)
+        input_valid_mask = input_ds.earthml.mask()
+        target_valid_mask = target_ds.earthml.mask()
 
         common_mask = (input_valid_mask & target_valid_mask).rename("common_mask")
 
@@ -503,13 +510,10 @@ class MLBCExperiment:
 
     # Anomaly helpers
     def _init_anomaly_climatologies(self):
-        print("Calculate target and input climatologies from Train dataset...")
+        print("Calculate target and input climatologies from train dataset...")
 
-        input_ds = self.train_input_ds
-        target_ds = self.train_target_ds
-
-        self.target_clim_ts = calculate_climatology(target_ds, groupby="month")
-        self.input_clim_ts = calculate_climatology(input_ds, groupby="month")
+        self.target_clim_ts = self.train_target_ds.earthml.climatology(groupby="month")
+        self.input_clim_ts = self.train_input_ds.earthml.climatology(groupby="month")
 
     def _calculate_anomaly(
         self,
@@ -986,7 +990,7 @@ class MLBCExperiment:
         xdim = meta_ds.earthml.guessed_dims.longitude
 
         allowed_dims = {tdim, ydim, xdim, rdim, "missed_time"}
-        meta_ds = remove_unwanted_dims_and_coords(meta_ds, allowed_dims)
+        meta_ds = meta_ds.earthml.remove_dims_and_coords(allowed_dims)
         base_order = [rdim, tdim, ydim, xdim]
         order = [d for d in base_order if d in meta_ds.dims]
         order += [d for d in meta_ds.dims if d not in order]
