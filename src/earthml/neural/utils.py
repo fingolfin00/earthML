@@ -46,7 +46,7 @@ def call_loss(
     Supports losses with signatures:
       - loss(y_pred, y_true)
       - loss(y_pred, y_true, mask=...)
-      - loss(y_pred, y_true, x_input, mask=...)  (your custom)
+      - loss(y_pred, y_true, x_input=..., mask=...)
     """
     sig = inspect.signature(loss_fn.forward if hasattr(loss_fn, "forward") else loss_fn)
     params = sig.parameters
@@ -57,15 +57,8 @@ def call_loss(
     if mask is not None and "mask" in params:
         kwargs["mask"] = mask
 
-    # pass x_input if requested and accepted (you call it x_input in your custom)
-    if x0 is not None:
-        if "x_input" in params:
-            kwargs["x_input"] = x0
-            return loss_fn(y_pred, y_true, **kwargs)
-        # some custom losses might take it positionally, but your code uses positional (mu,y,x0,...)
-        # If forward has 3rd positional param and you want to use it, do it explicitly:
-        positional = [p for p in params.values() if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
-        if len(positional) >= 3:
-            return loss_fn(y_pred, y_true, x0, **kwargs)
+    # Only pass the input tensor when the loss explicitly asks for it.
+    if x0 is not None and "x_input" in params:
+        kwargs["x_input"] = x0
 
     return loss_fn(y_pred, y_true, **kwargs)
