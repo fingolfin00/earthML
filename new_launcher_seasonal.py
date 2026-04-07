@@ -1,7 +1,6 @@
 from datetime import datetime
 
 from rich import print
-from dateutil.relativedelta import relativedelta
 
 from earthml import *
 
@@ -10,31 +9,34 @@ if __name__ == "__main__":
     # ----------------------------------------------------------------------------------
     # User params
     # ----------------------------------------------------------------------------------
-    experiment_type             = "weather"                # seasonal, weather
-    experiment_name             = "juno-ecmwf_juno-ecmwf"  # cds-cmcc_oras5, juno-ecmwf_juno-ecmwf
+    experiment_type             = "seasonal"                # seasonal, weather
+    experiment_name             = "cds-cmcc_era5"          # cds-cmcc_oras5, cds-cmcc_era5
 
     run_mode                    = "prepare"     # train_test_on_train, train_test, prepare, train, test
-    experiment_mode             = "debug"                   # full, short, debug
+    experiment_mode             = "full"                   # full, short, debug
     only_longest_train_period   = True                      # only train on the largest train period (if False, train on all periods, which can be much slower but allows to see variability across train periods)
     # add_hyper_exp_name_suffix   = False                     # if True use also batch_size, max_epochs, initial_learning_rate in exp name (and resulting folder) automatically extending exp_suffix
     extra_exp_suffix            = ""                # additional custom suffix to add to exp name (and resulting folder), e.g. "_debug" or "_try1"
 
-    exp_root_folder             = "/work/cmcc/jd19424/test-ML/experiments_earthML_atmo_test_refactor"
-    earthkit_cache_dir          = "/work/cmcc/jd19424/.earthkit-cache"       # if using earthkit datasource
+    exp_root_folder             = "/Users/jacopodallaglio/ML/experiments_earthML_ocean_refactor_test"
+    earthkit_cache_dir          = "/Users/jacopodallaglio/ML/.earthkit-cache"       # if using earthkit datasource
 
-    variables                   = ["msl"]             # e.g. ["sst", "ssh", "sss", "t14d", "t17d"]
-    regions                     = ["conus"]                               # e.g. ["pacific", "natlantic", "indian"]
-    leadtimes                   = (.5, 1, 2, 3)
+    if experiment_name == "cds-cmcc_oras5":
+        variables               = ["sst", "ssh", "sss", "t14d"]             # ocean seasonal, e.g. ["sst", "ssh", "sss", "t14d", "t17d"]
+        regions                 = ["pacific"]                               # e.g. ["pacific", "natlantic", "satlantic", "indian"]
+    if experiment_name == "cds-cmcc_era5":
+        variables               = ["t2m", "tp", "u10", "v10"]               # atmo seasonal e.g. ["t2m", "tp", "u10", "v10"]
+        regions                 = ["conus"]                                 # e.g. ["conus", "europe"]
+    leadtimes                   = (1, 2, 3, 4, 5, 6)
 
     inpaint_nan                 = True                      # whether to inpaint nan values in input and target datasets (after loading, before torch dataset generation)
     anomaly                     = False                      # if True, predict anomaly (i.e. remove climatology from target variable), otherwise predict absolute values
     per_epoch_resplit           = False                     # if True, split test and validation randomly per epoch with a different seed, if False only one initial split for all epochs (fixed seed)
 
-    start_train_date            = datetime(2019, 10, 11)
-    end_train_date              = datetime(2024, 12, 31)
-    start_test_date             = datetime(2025, 1, 1)
-    end_test_date               = datetime(2025, 12, 31)
-    freq                        = "12h"
+    start_train_date            = datetime(1993, 6, 1)
+    end_train_date              = datetime(2020, 12, 1)
+    start_test_date             = datetime(2021, 1, 1)
+    end_test_date               = datetime(2022, 12, 1)
 
     target_realization_avg      = False                     # average over realizations for target variable (if True, add _taravg suffix to exp_suffix)
     realization_as_channel      = False                     # use realization a channel dim (if True, add _rasc suffix to exp_suffix)
@@ -49,9 +51,9 @@ if __name__ == "__main__":
     train_percent               = 0.9
 
     losses = [
-        {"MSELoss": dict(loss={}, net={})},
-        {"GeoMSELoss": dict(loss={"latitudes": True}, net={})},
-        {"MaskedMSELoss": dict(loss={}, net={})},
+        # {"MSELoss": dict(loss={}, net={})},
+        # {"GeoMSELoss": dict(loss={"latitudes": True}, net={})},
+        # {"MaskedMSELoss": dict(loss={}, net={})},
         {"VarNormMaskMSELoss": {"variance_type": "spatial", "latitudes": False}}, # channel, geochannel, spatial, temporal, geotemporal
         {"GeoMaskedMSELoss": dict(loss={"latitudes": True}, net={})},
         {"VarNormMaskMSELoss": dict( # channel, geochannel, spatial, temporal, geotemporal
@@ -60,7 +62,7 @@ if __name__ == "__main__":
         )},
         {"HeteroBiasCorrectionLoss": dict( # channel, geochannel, spatial, temporal, geotemporal
             loss={"variance_type": "spatial", "latitudes": False, "lambda_identity": 0.1, "bias_scale": 0.5},
-            net={"use_first_input": True},
+            net={"use_full_batch_input_as_baseline": True},
         )},
         # {"GaussianNLLFromLogits": dict(loss={}, net={})},
     ]
@@ -78,64 +80,18 @@ if __name__ == "__main__":
     # ----------------------------------------------------------------------------------
     if experiment_mode in ("short", "debug"):
         # Short exp
-        leadtimes       = (3,)
+        leadtimes       = (6,)
         if experiment_mode == "debug":
             # Very short periods for debug
-            start_train_date        = datetime(2020, 1, 8)
-            # start_train_date        = datetime(2020, 2, 10)
-            end_train_date          = datetime(2020, 2, 20)
-            start_test_date         = datetime(2025, 1, 1)
-            end_test_date           = datetime(2025, 1, 2)        
+            start_train_date        = datetime(1993, 6, 1)
+            # end_train_date          = datetime(1994, 12, 31)
+            end_train_date          = datetime(1994, 12, 31)
+            start_test_date         = datetime(2021, 1, 1)
+            end_test_date           = datetime(2021, 12, 31)        
 
-    # Set test periods and data providers
-    juno_location_cutoff = datetime(2025, 10, 14)
-
-    # Local Juno data paths
-    root_path_forecast          = "/data/inputs/METOCEAN/rolling/model/atmos/ECMWF/IFS_010/1.0forecast/1h/grib/"
-    root_path_forecast_new      = "/data/inputs/METOCEAN/rolling/model/atmos/ECMWF/IFS_010_new/1.0forecast/1h/grib/"
-    root_path_analysis          = "/data/inputs/METOCEAN/historical/model/atmos/ECMWF/IFS_010/analysis/6h/grib/"
-    root_path_analysis_new      = "/data/inputs/METOCEAN/historical/model/atmos/ECMWF/IFS_010_new/analysis/6h/grib/"
-
-    # Default test periods and kwargs
-    test_periods = TimeRange(start=start_test_date, end=end_test_date, freq=freq)
-    input_test_provider_kwargs = None
-    target_test_provider_kwargs = None
-
-    if start_test_date <= juno_location_cutoff and end_test_date > juno_location_cutoff:
-        test_periods = [
-            TimeRange(start=start_test_date, end=juno_location_cutoff, freq=freq),
-            TimeRange(start=juno_location_cutoff + relativedelta(days=1), end=end_test_date, freq=freq),
-        ]
-        input_test_provider_kwargs = dict(
-            train=dict(root_path=root_path_forecast),
-            # test partly in old folder and partly in new folder
-            test=[
-                dict(root_path=root_path_forecast),
-                dict(root_path=root_path_forecast_new, file_header="CMS"),
-            ],
-        )
-        target_test_provider_kwargs=dict(
-            train=dict(root_path=root_path_analysis),
-            test=[
-                dict(root_path=root_path_analysis),
-                dict(root_path=root_path_analysis_new, file_header="CMD"),
-            ],
-        )
-    else:
-        if start_test_date >= juno_location_cutoff and end_test_date > juno_location_cutoff:
-            input_test_provider_kwargs = dict(
-                train=dict(root_path=root_path_forecast),
-                # test fully in new folder
-                test=dict(root_path=root_path_forecast_new, file_header="CMS"),
-            )
-            target_test_provider_kwargs = dict(
-                train=dict(root_path=root_path_analysis),
-                # test fully in new folder
-                test=dict(root_path=root_path_analysis_new, file_header="CMS"),
-            )
-
-    # Train period
-    train_periods = TimeRange(start=start_train_date, end=end_train_date, freq=freq)
+    # Set periods and data providers
+    train_period    = TimeRange(start=start_train_date, end=end_train_date, freq='MS')
+    test_period     = TimeRange(start=start_test_date,  end=end_test_date,  freq='MS')
 
 
     # ----------------------------------------------------------------------------------
@@ -176,7 +132,7 @@ if __name__ == "__main__":
         )
 
         leadtimes_lt = [
-            Leadtime(name="leadtime", unit="days", value=lt)
+            Leadtime(name="leadtime", unit="months", value=lt)
             for lt in leadtimes
         ]
         launcher = MLBCExperimentLauncher(
@@ -187,19 +143,15 @@ if __name__ == "__main__":
             variables_target=variables,
             leadtimes=leadtimes_lt,
             regions=regions,
-            train_periods=train_periods,
-            test_periods=test_periods,
+            train_periods=train_period,
+            test_periods=test_period,
             net=net,
             # Optional
             dask_workers=None,
             only_longest_train_period=only_longest_train_period,
             # Providers args
             earthkit_cache_dir=earthkit_cache_dir,
-            regrid_resolution=0.1,
-            providers_kwargs={
-                "input": input_test_provider_kwargs,
-                "target": target_test_provider_kwargs,
-            },
+            regrid_resolution=1,
             # Experiment
             inpaint_nan=inpaint_nan,
             anomaly=anomaly,
@@ -210,3 +162,4 @@ if __name__ == "__main__":
         )
 
         launcher.run()
+
