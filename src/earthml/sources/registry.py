@@ -7,12 +7,14 @@ _SOURCES = {
     "xarray-local": "earthml.sources.xarray_local:XarrayLocalSource",
     "juno-local": "earthml.sources.juno_local:JunoLocalSource",
     "earthkit": "earthml.sources.earthkit:EarthkitSource",
+    "copernicusmarine": "earthml.sources.copernicusmarine:CopernicusmarineSource",
 }
 
 _SOURCE_CONFIGS = {
     "xarray-local": "earthml.sources.xarray_local:XarrayLocalSourceConfig",
     "juno-local": "earthml.sources.juno_local:JunoLocalSourceConfig",
     "earthkit": "earthml.sources.earthkit:EarthkitSourceConfig",
+    "copernicusmarine": "earthml.sources.copernicusmarine:CopernicusmarineSourceConfig",
 }
 
 
