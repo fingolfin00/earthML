@@ -202,3 +202,46 @@ def earthkit_cmcc_monthly_hindcast_atmo(
             earthkit_cache_dir=earthkit_cache_dir,
         ),
     )
+
+@register_provider("atmo.earthkit.era5.reanalysis.monthly")
+def earthkit_cds_era5_single_levels_monthly(
+    var_name: str,
+    leadtime_value: int, # ignored
+    leadtime_unit: str,
+    product_type: str = "reanalysis",
+    regrid_resolution: float = 0.25,
+    select_area_after_request: bool = True,
+    earthkit_cache_dir: str  = Path("/tmp/earthkit-cache/"),
+    convert_unit: dict | None = None, # dict of var_name: (func, target_unit) to convert variable unit (e.g. {"temperature": (lambda x: x - 273.15, "C")})
+    add_earthkit_attrs: bool = False,
+) -> SourceConfig:
+    leadtime = relativedelta(**{leadtime_unit: 0})
+
+    return SourceConfig(
+        source="earthkit",
+        config=EarthkitSourceConfig(
+            leadtime=leadtime,
+            provider="cds",
+            dataset="reanalysis-era5-single-levels-monthly-means",
+            regrid_config=RegridConfig(
+                regrid_resolution=regrid_resolution,
+                regrid_vars=[var_name],
+            ),
+            split_request=True,
+            select_area_after_request=select_area_after_request,
+            request_type="monthly",
+            request_extra_args=dict(
+                product_type=product_type,
+                vertical_resolution="single_level",
+            ),
+            to_xarray_args=dict(
+                engine="cfgrib", # cfgrib, earthkit
+                decode_timedelta=True,
+                # chunks=None, # disable dask
+            ),
+            xarray_concat_dim=None,
+            xarray_concat_extra_args=dict(coords="minimal", compat="override"),
+            convert_unit=convert_unit,
+            earthkit_cache_dir=earthkit_cache_dir,
+        ),
+    )
