@@ -6,7 +6,17 @@ def make_var(
     leadtime_target: Leadtime | None = None,
 ):
     return SimpleNamespace(
-        # Atmo
+        # Ocean weather
+        sss_gopaf_fc=Variable(longname="sea surface salinity", name="so", levm=0, leadtime=leadtime_input),
+        sss_gopaf_an=Variable(longname="sea surface salinity", name="so", levm=0),
+
+        sst_gopaf_fc=Variable(longname="sea_surface_temperature", name="thetao", levm=0, leadtime=leadtime_input),
+        sst_gopaf_an=Variable(longname="sea_surface_temperature", name="thetao", levm=0),
+
+        ssh_gopaf_fc=Variable(longname="Sea surface height", name="zos", levm=0, leadtime=leadtime_input),
+        ssh_gopaf_an=Variable(longname="Sea surface height", name="zos", levm=0),
+
+        # Atmo weather
         # local forecast
         t2m_juno_fc=Variable(name="t2m", unit="K"),
         msl_juno_fc=Variable(name="msl", unit="Pa"),
