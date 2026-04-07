@@ -285,7 +285,8 @@ class JunoLocalSource(MFXarrayLocalSource):
         times = np.array([d for d in sorted(samples_d.keys()) if d not in self.elements.missed], dtype="datetime64[ns]")
         objs = [samples_d[d] for d in sorted(samples_d) if d not in self.elements.missed]
         # print(objs)
-        ds = xr.concat(
+
+        return xr.concat(
             objs=objs,
             dim=xr.IndexVariable("time", times),
             coords='minimal',
@@ -295,34 +296,3 @@ class JunoLocalSource(MFXarrayLocalSource):
             # join='exact',
             combine_attrs='drop_conflicts'
         )
-
-        # Add missed info to dataset
-        missed_np = np.array(sorted(self.elements.missed), dtype="datetime64[ns]")
-        # print(missed_np)
-        ds = ds.assign_coords(missed_time=("missed_time", missed_np))
-        ds["missed_time"].encoding.update({
-            "units": "nanoseconds since 1970-01-01 00:00:00",
-            "calendar": "proleptic_gregorian",
-        })
-        # if "missed_time" in ds:
-        #     print("just saved dtype:", ds["missed_time"].dtype)
-        #     print("just saved head:", ds["missed_time"].values)
-
-        ds = ds.earthml.subset(self.data_selection)
-
-        lat_res, lon_res = ds.earthml.resolution()
-        print(f"Horizontal resolutions: lat {lat_res:.2f}, lon {lon_res:.2f}")
-
-        # Regrid if required
-        if self.regrid_resolution is not None:
-            print(f"Regridding to rectilinear grid with resolution {self.regrid_resolution}")
-            ds = ds.earthml.regrid_to_rectilinear(
-                region=self.data_selection.region,
-                resolution=self.regrid_resolution,
-                vars_to_regrid=self.regrid_vars,
-            )
-
-            lat_res_regrid, lon_res_regrid = ds.earthml.resolution()
-            print(f"Target rectilinear resolutions: lat {lat_res_regrid:.2f}, lon {lon_res_regrid:.2f}")
-
-        return ds

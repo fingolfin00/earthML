@@ -1,15 +1,24 @@
 from abc import ABC, abstractmethod
+from dataclasses import field
+from typing import Callable
+
+from pathlib import Path
+
 import time
 from dateutil.relativedelta import relativedelta
-from pathlib import Path
+
+import numpy as np
 import pandas as pd
 import xarray as xr
+
 from dask.distributed import wait
 from zarr.codecs import BloscCodec
+
 from rich import print
 
 from ..base.dataclasses import TimeRange
 from .dataclasses import DataSource, Sample
+
 
 class BaseSource(ABC):
     def __init__(
@@ -24,8 +33,13 @@ class BaseSource(ABC):
         # self.data_selection.period.end = self.date_range[-1]
         print(f"Date range: length {len(self.date_range)}, {self.date_range[0]} to {self.date_range[-1]}")
         # print(self.date_range)
+
+        # Init
         self.elements = Sample()
         self.ds = None
+        self.select_area_after_request = False
+        self.regrid_resolution = None
+        self.convert_unit = None
 
     def __add__(self, other: "BaseSource") -> "BaseSource":
         if not isinstance(other, BaseSource):
@@ -38,6 +52,7 @@ class BaseSource(ABC):
         if other == 0:
             return self
         return self.__add__(other)
+
 
     @staticmethod
     def generate_date_range(period: TimeRange):
@@ -63,6 +78,7 @@ class BaseSource(ABC):
             dr = [d + relativedelta(**shifted) for d in dr]
         return dr
 
+
     @abstractmethod
     def _get_data(self) -> xr.Dataset:
         """
@@ -70,12 +86,58 @@ class BaseSource(ABC):
         """
         pass
 
+
+    def _finalize(
+        self,
+        ds: xr.Dataset,
+    ) -> xr.Dataset:
+        """
+        Final operations after _get_data
+        """
+        # Add missed info to dataset
+        missed_np = np.array(sorted(self.elements.missed), dtype="datetime64[ns]")
+        # print(missed_np)
+        ds = ds.assign_coords(missed_time=("missed_time", missed_np))
+        ds["missed_time"].encoding.update({
+            "units": "nanoseconds since 1970-01-01 00:00:00",
+            "calendar": "proleptic_gregorian",
+        })
+
+        # Select area if necessary
+        if self.select_area_after_request:
+            ds = ds.earthml.subset(self.data_selection)
+
+        # Grid resolution
+        lat_res, lon_res = ds.earthml.resolution()
+        print(f"Native resolutions: lat {lat_res:.2f}, lon {lon_res:.2f}")
+
+        # Regrid if required # TODO save weights for efficiency
+        if self.regrid_resolution is not None:
+            print(f"Regridding {self.regrid_vars} to rectilinear grid with resolution {self.regrid_resolution}")
+            ds = ds.earthml.regrid_to_rectilinear(
+                region=self.data_selection.region,
+                resolution=self.regrid_resolution,
+                vars_to_regrid=self.regrid_vars,
+            )
+            lat_res_regrid, lon_res_regrid = ds.earthml.resolution()
+            print(f"Target rectilinear resolutions: lat {lat_res_regrid:.2f}, lon {lon_res_regrid:.2f}")
+
+       # Convert unit of variables if necessary (e.g. from C to K for SST)
+        if self.convert_unit is not None:
+            print(f"Converting variable units according to: {self.convert_unit}")
+            ds = ds.earthml.convert_unit(self.convert_unit)
+
+        return ds
+
+
     def load(self) -> xr.Dataset:
         """Get data only if it hasn't loaded yet"""
         if self.ds is None:
             print(f"Load data from {self.source_name}...")
             t0 = time.time()
             ds = self._get_data()
+
+            ds = self._finalize(ds)
 
             # Persist here to materialise the dataset on the cluster
             # and shrink the graph that lives on the client.
@@ -96,10 +158,12 @@ class BaseSource(ABC):
             print(f" → dataset shape: {self.ds.sizes}")
         return self.ds
 
+
     def reload(self) -> xr.Dataset:
         """Force data reload"""
         self.ds = None
         return self.load()
+
 
     def save(
         self,

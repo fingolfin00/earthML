@@ -637,37 +637,4 @@ class EarthkitSource(BaseSource):
 
         print(f"First and last time values in obtained dataset: {pd.to_datetime(ds_all[xarray_concat_dim].values[0])}, {pd.to_datetime(ds_all[xarray_concat_dim].values[-1])}")
 
-        # Add missed info to dataset
-        missed_np = np.array(sorted(self.elements.missed), dtype="datetime64[ns]")
-        # print(missed_np)
-        ds_all = ds_all.assign_coords(missed_time=("missed_time", missed_np))
-        ds_all["missed_time"].encoding.update({
-            "units": "nanoseconds since 1970-01-01 00:00:00",
-            "calendar": "proleptic_gregorian",
-        })
-
-        # Select area if necessary
-        if self.config.select_area_after_request:
-            ds_all = ds_all.earthml.subset(self.data_selection)
-
-        # Grid resolution # TODO maybe refactor to BaseSource
-        lat_res, lon_res = ds_all.earthml.resolution()
-        print(f"Native resolutions: lat {lat_res:.2f}, lon {lon_res:.2f}")
-
-        # Regrid if required # TODO save weights for efficiency
-        if self.regrid_resolution is not None:
-            print(f"Regridding {self.regrid_vars} to rectilinear grid with resolution {self.regrid_resolution}")
-            ds_all = ds_all.earthml.regrid_to_rectilinear(
-                region=self.data_selection.region,
-                resolution=self.regrid_resolution,
-                vars_to_regrid=self.regrid_vars,
-            )
-            lat_res_regrid, lon_res_regrid = ds_all.earthml.resolution()
-            print(f"Target rectilinear resolutions: lat {lat_res_regrid:.2f}, lon {lon_res_regrid:.2f}")
-
-       # Convert unit of variables if necessary (e.g. from C to K for SST)
-        if self.config.convert_unit is not None:
-            print(f"Converting variable units according to: {self.config.convert_unit}")
-            ds_all = ds_all.earthml.convert_unit(self.config.convert_unit)
-
         return ds_all
