@@ -98,14 +98,15 @@ if __name__ == "__main__":
 
     # Default test periods and kwargs
     test_periods = TimeRange(start=start_test_date, end=end_test_date, freq=freq)
-    test_provider_kwargs = None
+    input_test_provider_kwargs = None
+    target_test_provider_kwargs = None
 
     if start_test_date <= juno_location_cutoff and end_test_date > juno_location_cutoff:
         test_periods = [
             TimeRange(start=start_test_date, end=juno_location_cutoff, freq=freq),
             TimeRange(start=juno_location_cutoff + relativedelta(days=1), end=end_test_date, freq=freq),
         ]
-        test_provider_kwargs = dict(
+        input_test_provider_kwargs = dict(
             train=dict(root_path=root_path_forecast),
             # test partly in old folder and partly in new folder
             test=[
@@ -113,12 +114,24 @@ if __name__ == "__main__":
                 dict(root_path=root_path_forecast_new, file_header="CMS"),
             ],
         )
+        target_test_provider_kwargs=dict(
+            train=dict(root_path=root_path_analysis),
+            test=[
+                dict(root_path=root_path_analysis),
+                dict(root_path=root_path_analysis_new, file_header="CMD"),
+            ],
+        )
     else:
         if start_test_date >= juno_location_cutoff and end_test_date > juno_location_cutoff:
-            test_provider_kwargs = dict(
+            input_test_provider_kwargs = dict(
                 train=dict(root_path=root_path_forecast),
                 # test fully in new folder
                 test=dict(root_path=root_path_forecast_new, file_header="CMS"),
+            )
+            target_test_provider_kwargs = dict(
+                train=dict(root_path=root_path_analysis),
+                # test fully in new folder
+                test=dict(root_path=root_path_analysis_new, file_header="CMS"),
             )
 
     # Train period
@@ -184,8 +197,8 @@ if __name__ == "__main__":
             earthkit_cache_dir=earthkit_cache_dir,
             regrid_resolution=1,
             providers_kwargs={
-                "input": None,
-                "target": test_provider_kwargs,
+                "input": input_test_provider_kwargs,
+                "target": target_test_provider_kwargs,
             },
             # Experiment
             inpaint_nan=inpaint_nan,
@@ -197,4 +210,3 @@ if __name__ == "__main__":
         )
 
         launcher.run()
-
