@@ -135,25 +135,6 @@ class EarthkitSource(BaseSource):
             name, td = leadtime_pairs[0]
             self.leadtime_d = {name: td}
 
-    # TODO unused, verify if can be removed
-    def _earthkit_source_path(self, src) -> Path | None:
-        """
-        Try to get a real filesystem path from an earthkit source.
-        Works for file-backed sources.
-        """
-        for attr in ("path", "path_or_url", "url"):
-            p = getattr(src, attr, None)
-            if isinstance(p, str) and p.startswith("/"):
-                return Path(p)
-        # some earthkit objects expose a list of files/parts
-        parts = getattr(src, "parts", None)
-        if parts:
-            for part in parts:
-                p = getattr(part, "path", None) or getattr(part, "path_or_url", None)
-                if isinstance(p, str) and p.startswith("/"):
-                    return Path(p)
-        return None
-
 
     @contextmanager
     def _file_lock(self, lock_path: Path, timeout_s: int = 600, poll_s: float = 0.2, stale_s: int = 6 * 3600):
