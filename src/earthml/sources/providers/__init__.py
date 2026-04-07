@@ -6,5 +6,5 @@ __all__ = [
     "register_provider",
     "build_provider",
     "available_providers",
-    "Provider"
+    "Provider",
 ]
