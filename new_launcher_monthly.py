@@ -139,8 +139,8 @@ if __name__ == "__main__":
             variables_target=variables,
             leadtimes=leadtimes_lt,
             regions=regions,
-            train_period=train_period,
-            test_period=test_period,
+            train_periods=train_period,
+            test_periods=test_period,
             net=net,
             # Optional
             dask_workers=None,
