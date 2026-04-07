@@ -58,7 +58,7 @@ if __name__ == "__main__":
         )},
         {"HeteroBiasCorrectionLoss": dict( # channel, geochannel, spatial, temporal, geotemporal
             loss={"variance_type": "spatial", "latitudes": False, "lambda_identity": 0.1, "bias_scale": 0.5},
-            net={"use_first_input": True},
+            net={"use_full_batch_input_as_baseline": True},
         )},
         # {"GaussianNLLFromLogits": dict(loss={}, net={})},
     ]

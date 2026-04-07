@@ -16,12 +16,12 @@ from .utils import call_loss
 class EarthMLLightningModule(L.LightningModule):
     def __init__(
         self,
-        use_first_input: bool = False
+        use_full_batch_input_as_baseline: bool = False
     ):
         super().__init__()
         # self.extra_logger = extra_logger
 
-        self.use_first_input = use_first_input
+        self.use_full_batch_input_as_baseline = use_full_batch_input_as_baseline
 
         # Metrics
         self.train_mae = MaskedMAE()
@@ -230,8 +230,8 @@ class EarthMLLightningModule(L.LightningModule):
         else:
             mu = pred
 
-        if self.use_first_input:
-            loss = call_loss(self.loss, mu, y, x0=x[0], mask=mask)
+        if self.use_full_batch_input_as_baseline:
+            loss = call_loss(self.loss, mu, y, x0=x, mask=mask)
         else:
             loss = call_loss(self.loss, mu, y, mask=mask)
 
@@ -280,8 +280,8 @@ class EarthMLLightningModule(L.LightningModule):
         else:
             mu = pred
 
-        if self.use_first_input:
-            loss = call_loss(self.loss, mu, y, x0=x[0], mask=mask)
+        if self.use_full_batch_input_as_baseline:
+            loss = call_loss(self.loss, mu, y, x0=x, mask=mask)
         else:
             loss = call_loss(self.loss, mu, y, mask=mask)
 
@@ -330,8 +330,8 @@ class EarthMLLightningModule(L.LightningModule):
         else:
             mu = pred
 
-        if self.use_first_input:
-            loss = call_loss(self.loss, mu, y, x0=x[0], mask=mask)
+        if self.use_full_batch_input_as_baseline:
+            loss = call_loss(self.loss, mu, y, x0=x, mask=mask)
         else:
             loss = call_loss(self.loss, mu, y, mask=mask)
 
