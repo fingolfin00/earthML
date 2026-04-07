@@ -2,6 +2,7 @@ from .registry import available_exps, available_runmodes, available_exp_types, a
 from .dataclasses import MLBCExperimentConfig, MLBCNeuralNet, MLBCExperimentDataset, MLBCExperimentLauncherConfig
 from .registry import MLBCRunMode, MLBCExperimentDatasetRole, MLBCExperimentType, MLBCExperimentName
 from .catalog import make_catalog
+from .launcher import MLBCExperimentLauncher
 
 __all__ = [
     # methods
@@ -20,4 +21,6 @@ __all__ = [
     "MLBCExperimentDatasetRole",
     "MLBCExperimentType",
     "MLBCExperimentName",
+    # launcher
+    "MLBCExperimentLauncher",
 ]
