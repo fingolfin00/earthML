@@ -112,6 +112,17 @@ class EarthMLRegrid:
                 lon_name: self._to_180(ds[lon_name])
             }).sortby(lon_name)
 
+            # Some source grids include duplicated endpoints after longitude
+            # normalization (for example both 0 and 360 -> 0). interp()
+            # requires unique coordinate indexes.
+            _, lon_index = np.unique(ds[lon_name].values, return_index=True)
+            if len(lon_index) != ds.sizes[lon_name]:
+                ds = ds.isel({lon_name: np.sort(lon_index)})
+
+            _, lat_index = np.unique(ds[lat_name].values, return_index=True)
+            if len(lat_index) != ds.sizes[lat_name]:
+                ds = ds.isel({lat_name: np.sort(lat_index)})
+
             lat_tgt_da = xr.DataArray(lat_target, dims=(lat_name,), name=lat_name)
             lon_tgt_da = xr.DataArray(lon_target, dims=(lon_name,), name=lon_name)
 
