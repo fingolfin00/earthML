@@ -244,52 +244,6 @@ class MLBCExperiment:
         return test_config_datasel.variable if isinstance(test_config_datasel.variable, list) else [test_config_datasel.variable]
 
 
-    def _remove_corrupted_ts(self, ds: xr.Dataset) -> Tuple[xr.Dataset, set]:
-        time_dim = ds.earthml.guessed_dims.time
-        if time_dim is None:
-            return ds, set()
-
-        keep = xr.ones_like(ds[time_dim], dtype=bool)
-
-        for var in [v for v in ds.data_vars if v != "_has_var"]:
-            da = ds[var]
-            if time_dim not in da.dims:
-                continue
-
-            reduce_dims = [d for d in da.dims if d != time_dim]
-
-            # Select corrupted timestep, mean over non-time dims is NaN
-            ts_mean = da.mean(dim=reduce_dims, skipna=True) if reduce_dims else da
-            keep = keep & ts_mean.notnull()
-
-        # Compute only the 1D mask (cheaper)
-        keep = keep.compute() if hasattr(keep.data, "compute") else keep
-
-        # Return a python set of python datetimes
-        missed_sel = ds[time_dim].where(~keep, drop=True)
-        missed = (
-            set(pd.to_datetime(missed_sel.values).to_pydatetime())
-            if missed_sel.values.size else set()
-        )
-
-        # Drop corrupted timesteps
-        ds = ds.drop_sel({time_dim: missed_sel})
-
-        # Add missed info to dataset
-        if "missed_time" in ds.coords and ds["missed_time"].values.size:
-            prev_missed = set(pd.to_datetime(ds["missed_time"].values).to_pydatetime())
-        else:
-            prev_missed = set()
-
-        missed_np = np.array(sorted(missed | prev_missed), dtype="datetime64[ns]")
-        ds = ds.assign_coords(missed_time=("missed_time", missed_np))
-        ds["missed_time"].encoding.update({
-            "units": "nanoseconds since 1970-01-01 00:00:00",
-            "calendar": "proleptic_gregorian",
-        })
-
-        return ds, missed
-
     def _init_experiment(self, exp_store: Path, exp_datasets: Sequence[MLBCExperimentDataset]):
         base_dataset = exp_datasets[0]
         datasource = base_dataset.datasource
@@ -448,15 +402,6 @@ class MLBCExperiment:
                     )
                     self.rich_console.print(Table({f"Source '{d.source}' {source_type} {e.role} [{i}] params": asdict(sc)}, twocols=True).table)
                 source = sum(sources_list)
-
-                # Remove corrupted timesteps only for input and target
-                if e.role != "prediction":
-                    with source.load() as ds:
-                        ds_sel, corrupted = self._remove_corrupted_ts(ds)
-                        print(f"Corrupted timesteps: {corrupted}")
-                        source.ds = ds_sel # drop corrupted timesteps
-                        source.elements.missed |= corrupted
-
                 sources[e.role] = source
 
         # Normalize dim names

@@ -87,6 +87,54 @@ class BaseSource(ABC):
         pass
 
 
+    def _remove_corrupted_timesteps(
+        self,
+        ds: xr.Dataset
+    ) -> xr.Dataset:
+        time_dim = ds.earthml.guessed_dims.time
+        if time_dim is None:
+            return ds
+
+        keep = xr.ones_like(ds[time_dim], dtype=bool)
+
+        for var in [v for v in ds.data_vars if v != "_has_var"]:
+            da = ds[var]
+            if time_dim not in da.dims:
+                continue
+
+            reduce_dims = [d for d in da.dims if d != time_dim]
+
+            # Select corrupted timestep, mean over non-time dims is NaN
+            ts_mean = da.mean(dim=reduce_dims, skipna=True) if reduce_dims else da
+            keep = keep & ts_mean.notnull()
+
+        # Compute only the 1D mask (cheaper)
+        keep = keep.compute() if hasattr(keep.data, "compute") else keep
+
+        # Return a python set of python datetimes
+        corrupted_sel = ds[time_dim].where(~keep, drop=True)
+        corrupted = (
+            set(pd.to_datetime(corrupted_sel.values).to_pydatetime())
+            if corrupted_sel.values.size else set()
+        )
+        print(f"Currupted samples: {len(corrupted)}")
+
+        # Drop corrupted timesteps
+        ds = ds.drop_sel({time_dim: corrupted_sel})
+
+        # Update source class missed
+        self.elements.missed = corrupted | self.elements.missed
+
+        # Assign dataset missed_time coord
+        missed_np = np.array(sorted(self.elements.missed), dtype="datetime64[ns]")
+        ds = ds.assign_coords(missed_time=("missed_time", missed_np))
+        ds["missed_time"].encoding.update({
+            "units": "nanoseconds since 1970-01-01 00:00:00",
+            "calendar": "proleptic_gregorian",
+        })
+
+        return ds
+
     def _finalize(
         self,
         ds: xr.Dataset,
@@ -94,14 +142,8 @@ class BaseSource(ABC):
         """
         Final operations after _get_data
         """
-        # Add missed info to dataset
-        missed_np = np.array(sorted(self.elements.missed), dtype="datetime64[ns]")
-        # print(missed_np)
-        ds = ds.assign_coords(missed_time=("missed_time", missed_np))
-        ds["missed_time"].encoding.update({
-            "units": "nanoseconds since 1970-01-01 00:00:00",
-            "calendar": "proleptic_gregorian",
-        })
+        # Remove corrupted timesteps and update missed (in class and in ds)
+        ds = self._remove_corrupted_timesteps(ds)
 
         # Select area if necessary
         if self.select_area_after_request:
