@@ -308,12 +308,10 @@ class MLBCExperiment:
                 ds.earthml.guessed_dims.longitude,
                 ds.earthml.guessed_dims.realization,
                 # ds.earthml.guessed_dims.leadtime, # leadtime dim must be removed (should be 1D at most)
-                "missed_time",
+                # "missed_time", # remove missed_times from the dataset to avoid interference with later torch code
             }
             ds = ds.earthml.remove_dims_and_coords(allowed_dims)
 
-            # Remove missed_times from the dataset to avoid interference with later torch code
-            ds = ds.drop_dims("missed_time")
             ds_d[role] = ds
 
         loading_time = time.time() - s
