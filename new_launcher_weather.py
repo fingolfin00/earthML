@@ -127,7 +127,7 @@ if __name__ == "__main__":
         if start_test_date <= juno_location_cutoff and end_test_date > juno_location_cutoff:
             test_periods = [
                 TimeRange(start=start_test_date, end=juno_location_cutoff, freq=freq),
-                TimeRange(start=juno_location_cutoff + relativedelta(days=1), end=end_test_date, freq=freq),
+                TimeRange(start=juno_location_cutoff + relativedelta(days=1), end=end_test_date, freq=freq), # TODO use freq?
             ]
             input_test_provider_kwargs = dict(
                 train=dict(root_path=root_path_forecast),
