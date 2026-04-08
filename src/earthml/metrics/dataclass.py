@@ -4,7 +4,7 @@ from typing import Sequence
 import numpy as np
 import xarray as xr
 
-from ..utils import get_and_rename_dim
+from ..experiments.mlbc.load import get_and_rename_dim
 
 
 @dataclass
