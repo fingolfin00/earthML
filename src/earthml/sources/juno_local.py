@@ -144,7 +144,7 @@ class JunoLocalSource(MFXarrayLocalSource):
         samples = [s for date, s in self.elements.samples.items() if date not in self.elements.missed] # list of lists
         assert len(samples) > 0, "No samples obtained."
         dates = [date for date in self.elements.samples.keys() if date not in self.elements.missed]
-        print(f"File samples: {len(samples)}, minus: {len(self.elements.extra['minus_samples'])}, plus: {len(self.elements.extra['plus_samples'])}, missed: {len(self.elements.missed)}")
+        print(f"Juno local file samples: {len(samples)}, minus: {len(self.elements.extra['minus_samples'])}, plus: {len(self.elements.extra['plus_samples'])}, missed: {len(self.elements.missed)}")
         samples_d = {}
 
         lock = SerializableLock()
