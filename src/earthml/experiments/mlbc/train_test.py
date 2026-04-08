@@ -575,12 +575,15 @@ class MLBCExperiment:
         x_mean, x_std = x_stats["target_mean"], x_stats["target_std"]
         y_mean, y_std = y_stats["target_mean"], y_stats["target_std"]
 
-        # Count masked elements
+        # Count masked/invalid elements
         x_masked = (~torch_dataset.x_mask).sum().item()
         y_masked = (~torch_dataset.y_mask).sum().item()
 
         x_total = torch_dataset.x_mask.numel()
         y_total = torch_dataset.y_mask.numel()
+
+        if x_total == 0 or y_total == 0:
+            raise ValueError("Mask tensor is empty: check dataset construction")
 
         self.rich_console.print(Table({f'{data_type} dataset': {
             'input': {
