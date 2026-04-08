@@ -57,6 +57,9 @@ class XarrayDataset(Dataset):
         mask_y_np = np.isfinite(y_np)
         y_np_filled = np.where(mask_y_np, y_np, 0.0)
 
+        assert all(d > 0 for d in x_np.shape), f"Input has zero-sized dimension: {x_np.shape}"
+        assert all(d > 0 for d in y_np.shape), f"Target has zero-sized dimension: {y_np.shape}"
+
         # print(f"Dataset x mean: {np.nanmean(x_np)}, std: {np.nanstd(x_np)}")
         # print(f"Dataset y mean: {np.nanmean(y_np)}, std: {np.nanstd(y_np)}")
         # print("input vars:", list(input_ds.data_vars))
@@ -161,13 +164,25 @@ class XarrayDataset(Dataset):
                     self.y = torch.tensor(y_np_filled, dtype=torch.float32).permute(1, 0, 2, 3)
                     self.y_mask = torch.tensor(mask_y_np, dtype=torch.bool).permute(1, 0, 2, 3)
 
+            # print("self.x shape:", self.x.shape)
+            # print("self.x_mask shape:", self.x_mask.shape)
+            # print("self.y shape:", self.y.shape)
+            # print("self.y_mask shape:", self.y_mask.shape)
+
+            # Final checks
+            assert self.x.numel() > 0, f"Empty torch dataset x: {self.x.shape}"
+            assert self.y.numel() > 0, f"Empty torch dataset y: {self.y.shape}"
+            assert self.x_mask.numel() > 0, f"Empty torch mask x_mask: {self.x_mask.shape}"
+            assert self.y_mask.numel() > 0, f"Empty torch mask y_mask: {self.y_mask.shape}"
+
             # print("TENSORS self.x", self.x.shape, "self.y", self.y.shape, "self.y_mask", self.y_mask.shape)
-            assert self.y.shape == self.y_mask.shape, (self.y.shape, self.y_mask.shape)
+            assert self.x.shape == self.x_mask.shape, f"Mismatched x tensor and its mask shapes: x={self.x.shape}, x_mask={self.x_mask.shape}"
+            assert self.y.shape == self.y_mask.shape, f"Mismatched y tensor and its mask shapes: y={self.y.shape}, y_mask={self.y_mask.shape}"
 
             # self.x = torch.tensor(self.input_ds.to_array().values, dtype=torch.float32).permute(1, 0, 2, 3)
             # self.y = torch.tensor(self.target_ds.to_array().values, dtype=torch.float32).permute(1, 0, 2, 3)
 
-            assert self.x.shape == self.y.shape, (f"Mismatched dataset shape: x={self.x.shape}, y={self.y.shape}")
+            assert self.x.shape == self.y.shape, f"Mismatched dataset shape: x={self.x.shape}, y={self.y.shape}"
 
     @staticmethod
     def _transpose_dims_ds_to_da(
