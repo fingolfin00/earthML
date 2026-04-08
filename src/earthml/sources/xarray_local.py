@@ -35,7 +35,7 @@ class XarrayLocalSource(BaseSource):
     def _get_data(self) -> xr.Dataset:
         self.ds = xr.open_dataset(self.path, **self.xarray_args)
 
-        # Select only non-missed samples
+        # Select only non-missed samples # TODO maybe can be removed
         if self.elements.missed:
             time_dim = self.ds.earthml.guessed_dims.time
             missed = xr.DataArray(list(self.elements.missed), dims="missed_time", name="missed_time")
