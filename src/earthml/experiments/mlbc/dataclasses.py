@@ -5,7 +5,7 @@ from pathlib import Path
 
 import xarray as xr
 
-from ...sources import DataSource
+from ...sources import DataSource, EarthkitSourceConfig, JunoLocalSourceConfig, CopernicusmarineSourceConfig, XarrayLocalSourceConfig
 from .registry import MLBCExperimentType, MLBCExperimentName, MLBCExperimentDatasetRole, MLBCRunMode
 
 PreprocessFn = Callable[[xr.Dataset, xr.Dataset], Tuple[xr.Dataset, xr.Dataset]]
@@ -22,8 +22,8 @@ class MLBCExperimentLauncherConfig:
 class MLBCExperimentDataset:
     role            : MLBCExperimentDatasetRole
     datasource      : DataSource | List[DataSource]
-    source_configs  : Any = None # TODO set correct provider dataclasses
     save            : bool = False
+    source_configs  : EarthkitSourceConfig | JunoLocalSourceConfig | CopernicusmarineSourceConfig | XarrayLocalSourceConfig | None = None
 
 @dataclass(frozen=True)
 class MLBCNeuralNet:
