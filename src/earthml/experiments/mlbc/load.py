@@ -1,5 +1,9 @@
-from typing import Sequence, List, Tuple
+from collections.abc import Mapping
+from dataclasses import fields, is_dataclass, replace
+from typing import Any, Sequence, List
+from datetime import datetime, date
 
+import os
 from pathlib import Path
 import joblib
 
@@ -10,8 +14,10 @@ import cf_xarray
 import xarray as xr
 from dateutil.relativedelta import relativedelta
 
+from ...sources import build_source, BaseSource
 
-from ...sources import build_source
+from .dataclasses import MLBCExperimentConfig, MLBCExperimentDatasetRole, MLBCExperimentDataset
+from .train_test import MLBCExperiment
 
 
 def _is_int_leadtime(ds, coord="leadtime"):
@@ -96,231 +102,362 @@ def harmonize_leadtime_int(*datasets, coord="leadtime", method="int_source"):
     return out
 
 
-def make_exp_folder_path(
-        exp_root: Path,
-        exp_name: str,
-        v_d: dict, # variable dict
-        lt: str,
-        lt_unit: str,
-        train_period: str,
-        test_period: str,
-    ):
-    exp_full_name = (
-        f"exp_{exp_name}_{v_d['exp_var']['fc']}-{v_d['exp_var']['an']}"
-        f"_{lt}{lt_unit}_{v_d['region']}"
-        f"_{train_period}"
-        f"_{test_period}"
-        f"_{v_d['input_provider']}_{v_d['target_provider']}"
-        f"{v_d['exp_suffix']}"
-    )
-    return Path(exp_root) / exp_full_name
+def _load_saved_experiment(
+    exp_cfg: MLBCExperimentConfig | str | Path
+) -> tuple[Path, dict]: # returns a dict as defined in joblib.dump in train_test.py
+    if isinstance(exp_cfg, MLBCExperimentConfig):
+        exp_path = Path(exp_cfg.work_path)
+    else:
+        exp_path = Path(exp_cfg)
+        if exp_path.is_file():
+            exp_path = exp_path.parent
+
+    return exp_path, joblib.load(exp_path / "experiment.cfg")
 
 
-def load_exp(
-    exp_cfg,
+def _source_with_root_path(
+    source: BaseSource,
+    root_path: str | Path,
+) -> BaseSource:
+    config = getattr(source, "config", None)
+    root_path = Path(root_path)
+
+    if config is not None and hasattr(config, "root_path"):
+        if is_dataclass(config):
+            config = replace(config, root_path=root_path)
+        else:
+            config.root_path = root_path
+        return type(source)(source.datasource, config)
+
+    return type(source)(source.datasource, root_path)
+
+
+def _load_single_exp(
+    exp_cfg: MLBCExperimentConfig | str | Path,
     type_data: str,
     load_train_preds: bool = False,
     load_models: Sequence[str] | None = None,
     only_sizes: bool = False,
-    merge_compat: str = "override"
-) -> dict:
-    """
-    Return dict keyed by train_period and number of valid samples.
-
-    out[tp]["fc"] -> Dataset with dim 'leadtime'
-    out[tp]["an"] -> Dataset with dim 'leadtime'
-    out[tp]["pr"] -> Dataset with dim 'leadtime' (or None if type_data != 'test')
-    """
-    exp_root      = exp_cfg["root"]
-    exp_name      = exp_cfg["name"]
-    var_specs     = exp_cfg["vars"]
-    leadtimes     = exp_cfg["leadtimes"]
-    lt_unit       = exp_cfg["leadtime_unit"]
-    train_periods = exp_cfg["train_periods"]
-    test_period   = exp_cfg["test_period"]
-
-    # print(exp_cfg)
+) -> tuple[dict[str, xr.Dataset], dict]:
+    exp_path, experiment = _load_saved_experiment(exp_cfg)
 
     load_models = {"fc", "an", "pr"} if load_models is None else set(load_models)
     need_fc = "fc" in load_models
     need_an = "an" in load_models
     need_pr = "pr" in load_models
 
-    out, n_valid_samples = {}, {}
-    for tp in train_periods:
-        n_valid_samples[tp] = {}
-        fc_lt, an_lt, pr_lt, mask_lt = [], [], [], []
-        for lt in leadtimes:
-            pr_list, fc_list, an_list, mask_list = [], [], [], []
-            n_valid_samples[tp][lt] = {}
+    source: dict[MLBCExperimentDatasetRole, BaseSource] = experiment[f"{type_data}_data"]
+    mask_exp: MLBCExperimentDataset = experiment[f"{type_data}_mask_data"]
+    mask_source = build_source(
+        name=mask_exp.datasource.source,
+        params={
+            "datasource": mask_exp.datasource,
+            "config": mask_exp.source_configs,
+        },
+    )
 
-            for v, v_d in var_specs.items():
-                exp_folder_path = make_exp_folder_path(
-                    exp_root, exp_name, v_d, lt, lt_unit, tp, test_period,
-                )
-                exp_path = exp_folder_path / "experiment.cfg"
-                print(f"Load experiment: {exp_path}")
+    n_valid_samples = {
+        "input": len(source["input"].elements.samples),
+        "target": len(source["target"].elements.samples),
+    }
+    if need_pr and (type_data == "test" or load_train_preds) and "prediction" in source:
+        n_valid_samples["prediction"] = len(source["prediction"].elements.samples)
 
-                experiment = joblib.load(exp_path)
-                source = experiment[f"{type_data}_data"]  # e.g. "test_data"
+    if only_sizes:
+        return {}, n_valid_samples
 
-                # Create mask data source
-                mask_exp = experiment[f"{type_data}_mask_data"]
-                mask_source = build_source(
-                    name=mask_exp.datasource.source,
-                    datasource=mask_exp.datasource,
-                    **mask_exp.source_configs,
-                )
-
-                n_valid_samples[tp][lt][v] = {
-                    "input": (len(source["input"].elements.samples)),
-                    "target": (len(source["target"].elements.samples)),
-                }
-                if need_pr and (type_data == "test" or load_train_preds):
-                    n_valid_samples[tp][lt][v]["prediction"] = (len(source["prediction"].elements.samples))
-
-                if only_sizes:
-                    continue
-
-                if need_pr and (type_data == "test" or load_train_preds):
-                    source["prediction"] = type(source["prediction"])(
-                        source["prediction"].datasource,
-                        exp_folder_path / f"{type_data}_preds.zarr"
-                    )
-                    # source["prediction"].__init__(source["prediction"].datasource, exp_folder_path / "test_preds.zarr")
-                    pr = source["prediction"].reload() # reload? YES!
-                    pr = normalize_ds_dims_and_coords(pr)
-                    pr_list.append(pr.rename_vars({v_d["exp_var"]["fc"]: v}))
-
-                fc = an = None
-                if need_fc:
-                    source["input"] = type(source["input"])(
-                        source["input"].datasource,
-                        exp_folder_path / f"{type_data}_input.zarr"
-                    )
-                    fc = source["input"].reload()
-
-                if need_an:
-                    source["target"] = type(source["target"])(
-                        source["target"].datasource,
-                        exp_folder_path / f"{type_data}_target.zarr"
-                    )
-                    an = source["target"].reload()
-
-                mask = type(mask_source)(
-                    mask_source.datasource,
-                    exp_folder_path / f"mask/{type_data}_mask.zarr"
-                ).reload()
-
-                if fc is not None:
-                    fc = normalize_ds_dims_and_coords(fc)
-                if an is not None:
-                    an = normalize_ds_dims_and_coords(an)
-                mask = normalize_ds_dims_and_coords(mask)
-
-                # print(f"After norm mean fc: {float(fc.to_array().mean().values)}")
-                # print(f"After norm mean an: {float(an.to_array().mean().values)}")
-                # print(f"After norm mean pr: {float(pr.to_array().mean().values)}")
-                if fc is not None:
-                    fc_list.append(fc.rename_vars({v_d["exp_var"]["fc"]: v}))
-                if an is not None:
-                    an_list.append(an.rename_vars({v_d["exp_var"]["an"]: v}))
-
-                mask_list.append(mask.rename_vars({"common_mask": v}))
-
-            if only_sizes:
-                continue
-
-            # for name, ds_list in zip(["fc", "an", "pr"], [fc_list, an_list, pr_list]):
-            #     print(name, [id(ds) for ds in ds_list] if ds_list else None)
-
-            ds_lt = []
-
-            for ds_list in [fc_list, an_list, pr_list, mask_list]:
-                if ds_list:
-                    if "leadtime" in ds_list[0].dims:
-                        ds_list_harm = harmonize_leadtime_int(
-                            *ds_list, coord="leadtime", method="days"
-                        )
-                    else:
-                        ds_list_harm = ds_list
-
-                    ds = xr.merge(ds_list_harm, compat=merge_compat)
-                else:
-                    ds = None
-
-                # if ds is not None:
-                #     print(f"After leadtime harm mean ds: {float(ds.to_array().mean().values)}")
-                # else:
-                #     print("ds is None")
-
-                ds_lt.append(ds)
-
-            # Rename dims to standard names
-            fc_single_lt, an_single_lt, pr_single_lt, mask_single_lt = ds_lt
-            # print(f"load_exp, leadtime={lt}, merged vars ds's:")
-            # print(f"   fc_single_lt.dims: {fc_single_lt.dims if fc_single_lt is not None else 'None'}, {fc_single_lt["leadtime"].values if fc_single_lt is not None and "leadtime" in fc_single_lt.dims else 'N/A'}")
-            # print(f"   an_single_lt.dims: {an_single_lt.dims if an_single_lt is not None else 'None'}, {an_single_lt["leadtime"].values if an_single_lt is not None and "leadtime" in an_single_lt.dims else 'N/A'}")
-            # print(f"   pr_single_lt.dims: {pr_single_lt.dims if pr_single_lt is not None else 'None'}, {pr_single_lt["leadtime"].values if pr_single_lt is not None and "leadtime" in pr_single_lt.dims else 'N/A'}")
-            # print(f"   mask_single_lt.dims: {mask_single_lt.dims if mask_single_lt is not None else 'None'}, {mask_single_lt["leadtime"].values if mask_single_lt is not None and "leadtime" in mask_single_lt.dims else 'N/A'}")
-
-            fc_lt.append(fc_single_lt)
-            an_lt.append(an_single_lt)
-            mask_lt.append(mask_single_lt)
-            if need_pr and (type_data == "test" or load_train_preds):
-                pr_lt.append(pr_single_lt)
-
-        if only_sizes:
-            out[tp] = {}
-            continue
-
-        ds_tp = []
-        leadtime_fc_dim, leadtime_an_dim, leadtime_pr_dim, leadtime_mask_dim = (
-            fc_lt[0].earthml.guessed_dims.leadtime,
-            an_lt[0].earthml.guessed_dims.leadtime,
-            pr_lt[0].earthml.guessed_dims.leadtime if pr_lt else None,
-            mask_lt[0].earthml.guessed_dims.leadtime,
+    fc = an = pr = None
+    if need_fc:
+        source["input"] = _source_with_root_path(
+            source["input"],
+            exp_path / f"{type_data}_input.zarr",
         )
-        for leadtime_dim, ds_list in zip(
-            [leadtime_fc_dim, leadtime_an_dim, leadtime_pr_dim, leadtime_mask_dim],
-            [fc_lt, an_lt, pr_lt, mask_lt]
-        ):
-            if ds_list:
-                if leadtime_dim is None:
-                    leadtime_dim = "leadtime"
-                ds = xr.concat(ds_list, dim=leadtime_dim).assign_coords({leadtime_dim: np.array(leadtimes)}).assign_attrs(leadtime_unit=lt_unit, train_period=tp)
-                print(f"Concatenated {len(ds_list)} datasets along leadtime dimension '{leadtime_dim}' for train_period {tp}.")
-                print(f"   Resulting shape: {ds.dims}, leadtime values: {ds[leadtime_dim].values}")
-            else:
-                ds = None
-            # print(ds)
-            ds_tp.append(ds)
-        fc_tp, an_tp, pr_tp, mask_tp = ds_tp
+        fc = source["input"].reload().earthml.normalize_dims_and_coords()
 
-        out[tp] = {"fc": fc_tp, "an": an_tp, "pr": pr_tp, "mask": mask_tp}
+    if need_an:
+        source["target"] = _source_with_root_path(
+            source["target"],
+            exp_path / f"{type_data}_target.zarr",
+        )
+        an = source["target"].reload().earthml.normalize_dims_and_coords()
+
+    if need_pr and (type_data == "test" or load_train_preds) and "prediction" in source:
+        source["prediction"] = _source_with_root_path(
+            source["prediction"],
+            exp_path / f"{type_data}_preds.zarr",
+        )
+        pr = source["prediction"].reload().earthml.normalize_dims_and_coords()
+
+    mask = _source_with_root_path(
+        mask_source,
+        exp_path / f"mask/{type_data}_mask.zarr",
+    ).reload()
+    mask = mask.earthml.normalize_dims_and_coords()
+
+    out = {}
+    for model_name, ds in (("fc", fc), ("an", an), ("pr", pr)):
+        if ds is None:
+            continue
+        out[model_name] = ds
+
+    if mask is not None:
+        out['mask'] = mask
 
     return out, n_valid_samples
 
 
-def add_ke_to_runs(runs, suffixes=("_mse",), dataset_keys=("fc", "an", "pr"),
-                   u_name="u10", v_name="v10", ke_name="ke"):
+def load_exp(
+    exp_configs,
+    type_data: str,
+    load_train_preds: bool = False,
+    load_models: Sequence[str] | None = None,
+    only_sizes: bool = False,
+) -> tuple[dict[str, xr.Dataset], dict]:
+    if isinstance(exp_configs, (MLBCExperimentConfig, str, Path)):
+        return _load_single_exp(
+            exp_cfg=exp_configs,
+            type_data=type_data,
+            load_train_preds=load_train_preds,
+            load_models=load_models,
+            only_sizes=only_sizes,
+        )
+
+    # TODO verify this makes still sense
+    if isinstance(exp_configs, Mapping):
+        out, n_valid_samples = {}, {}
+        for key, cfg in exp_configs.items():
+            runs, sizes = _load_single_exp(
+                exp_cfg=cfg,
+                type_data=type_data,
+                load_train_preds=load_train_preds,
+                load_models=load_models,
+                only_sizes=only_sizes,
+            )
+            out[key] = runs
+            n_valid_samples[key] = sizes
+        return out, n_valid_samples
+
+    raise TypeError("exp_configs must be an MLBCExperimentConfig, a path, or a mapping of experiment configs")
+
+
+def load_all_exp_from_folder(
+    exp_root: str | Path,
+    type_data: str,
+    load_train_preds: bool = False,
+    load_models: Sequence[str] | None = None,
+    only_sizes: bool = False,
+    cfg_name: str = "experiment.cfg",
+) -> tuple[dict[str, xr.Dataset], dict]:
     """
-    Adds kinetic energy variables ke{suf} to each runs[tp][key] dataset (in place).
-    Works with datasets that have leadtime dim (it will be preserved).
+    Fetch all experiments in a provided folder.
+
+    Returns
+    -------
+    runs_out : dict[str, xr.Dataset]
+        Dictionary keyed by model name ("fc", "an", "pr", "mask"), where each
+        dataset contains all merged experiment groups/variables.
+
+    sizes_out : dict[str, dict[tuple, dict]]
+        Per-group map of experiment coordinates -> valid sample sizes.
     """
-    for tp, dd in runs.items():
-        for key in dataset_keys:
-            ds = dd.get(key)
+    exp_root = Path(exp_root)
+
+    load_models = {"fc", "an", "pr"} if load_models is None else set(load_models)
+    need_fc = "fc" in load_models
+    need_an = "an" in load_models
+    need_pr = "pr" in load_models and (type_data == "test" or load_train_preds)
+
+    def _has_required_artifacts(exp_dir: Path) -> bool:
+        required = [exp_dir / cfg_name]
+
+        if need_fc:
+            required.append(exp_dir / f"{type_data}_input.zarr")
+        if need_an:
+            required.append(exp_dir / f"{type_data}_target.zarr")
+        if need_pr:
+            required.append(exp_dir / f"{type_data}_preds.zarr")
+
+        # mask is always loaded by _load_single_exp
+        required.append(exp_dir / "mask" / f"{type_data}_mask.zarr")
+
+        return all(path.exists() for path in required)
+
+    stack = [exp_root]
+    configs = []
+
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(Path(entry.path))
+                        continue
+
+                    if not entry.is_file(follow_symlinks=False) or entry.name != cfg_name:
+                        continue
+
+                    current_path = Path(current)
+
+                    if not _has_required_artifacts(current_path):
+                        continue
+
+                    experiment = joblib.load(entry.path)
+                    config: MLBCExperimentConfig = experiment["config"]
+                    configs.append(config)
+        except FileNotFoundError:
+            continue
+
+    grouped_runs: dict[str, dict[str, list[xr.Dataset]]] = {}
+    grouped_sizes: dict[str, dict[tuple, dict]] = {}
+
+    for config in configs:
+        train_datasets = config.train_dataset
+        train_datasets = train_datasets if isinstance(train_datasets, Sequence) else [train_datasets]
+
+        idx_input = None
+        for i, td in enumerate(train_datasets):
+            if td.role == "input":
+                idx_input = i
+                break
+        if idx_input is None:
+            continue
+
+        train_ds_input = train_datasets[idx_input]
+        datasource_input = train_ds_input.datasource
+        datasource_input = datasource_input[0] if isinstance(datasource_input, Sequence) else datasource_input
+
+        source_configs = train_ds_input.source_configs
+        source_config = source_configs[0] if isinstance(source_configs, Sequence) else source_configs
+        leadtime_rd = source_config.leadtime
+
+        if leadtime_rd.hours >= 1:
+            leadtime = leadtime_rd.hours
+            leadtime_unit = "hours"
+        elif leadtime_rd.months >= 1:
+            leadtime = leadtime_rd.months
+            leadtime_unit = "months"
+        else:
+            raise ValueError(f"Unsupported leadtime for experiment {config.name}: {leadtime_rd}")
+
+        var_input = datasource_input.data_selection.variable.name
+
+        train_periods = datasource_input.data_selection.period
+        train_periods = train_periods if isinstance(train_periods, Sequence) else [train_periods]
+        train_period = f"{train_periods[0].start:%Y%m%d}-{train_periods[-1].end:%Y%m%d}"
+
+        region = datasource_input.data_selection.region.name
+        loss = config.net.loss.lower()
+
+        group_name = var_input
+
+        run_dict, size = _load_single_exp(
+            exp_cfg=config,
+            type_data=type_data,
+            load_train_preds=load_train_preds,
+            load_models=load_models,
+            only_sizes=only_sizes,
+        )
+
+        size_key = (leadtime, train_period, region, loss)
+        grouped_sizes.setdefault(group_name, {})[size_key] = size
+
+        if only_sizes:
+            continue
+
+        grouped_runs.setdefault(group_name, {})
+
+        for model_name, ds in run_dict.items():
             if ds is None:
                 continue
 
-            for suf in suffixes:
-                uvar = f"{u_name}{suf}"
-                vvar = f"{v_name}{suf}"
-                kvar = f"{ke_name}{suf}"
+            if "leadtime" in ds.dims:
+                ds = ds.drop_dims("leadtime")
+            elif "leadtime" in ds.coords:
+                ds = ds.drop_vars("leadtime")
 
-                if uvar in ds.data_vars and vvar in ds.data_vars:
-                    ke = 0.5 * (ds[uvar] ** 2 + ds[vvar] ** 2)
-                    ds[kvar] = ke.rename(kvar)
+            ds = ds.expand_dims(
+                {
+                    "leadtime": [leadtime],
+                    "train_period": [train_period],
+                    "loss": [loss],
+                }
+            )
+            ds.coords["leadtime"].attrs["unit"] = leadtime_unit
+
+            # region is metadata, not a dimension
+            ds.attrs["region"] = region
+
+            grouped_runs[group_name].setdefault(model_name, []).append(ds)
+
+    if only_sizes:
+        return {}, grouped_sizes
+
+    combined_by_group_and_model: dict[str, dict[str, xr.Dataset]] = {}
+    for group_name, model_map in grouped_runs.items():
+        combined_by_group_and_model[group_name] = {}
+        for model_name, runs in model_map.items():
+            if not runs:
+                continue
+
+            combined_by_group_and_model[group_name][model_name] = xr.combine_by_coords(
+                runs,
+                combine_attrs="drop_conflicts",
+            )
+
+    runs_out: dict[str, xr.Dataset] = {}
+    all_model_names = {
+        model_name
+        for model_map in combined_by_group_and_model.values()
+        for model_name in model_map
+    }
+
+    for model_name in all_model_names:
+        model_datasets = [
+            model_map[model_name]
+            for model_map in combined_by_group_and_model.values()
+            if model_name in model_map
+        ]
+        if not model_datasets:
+            continue
+
+        runs_out[model_name] = xr.merge(
+            model_datasets,
+            join="outer",
+            compat="no_conflicts",
+            combine_attrs="drop_conflicts",
+        )
+
+    return runs_out, grouped_sizes
+
+
+def add_ke_to_runs(
+    runs: xr.Dataset,
+    dataset_keys: Sequence[str] = ("fc", "an", "pr"),
+    u_name: str = "u10",
+    v_name: str = "v10",
+    ke_name: str = "ke",
+) -> xr.Dataset:
+    """
+    Adds kinetic energy variables ke{suf} to the runs dataset in place.
+    If a model dimension is present, computation can be restricted to dataset_keys.
+    """
+    if u_name not in runs.data_vars or v_name not in runs.data_vars:
+        return runs
+
+    model_mask = None
+    if "model" in runs.dims and dataset_keys is not None:
+        selected_models = [key for key in dataset_keys if key in runs["model"].values]
+        if selected_models and len(selected_models) != runs.sizes["model"]:
+            model_mask = xr.DataArray(
+                np.isin(runs["model"].values, selected_models),
+                dims=("model",),
+                coords={"model": runs["model"].values},
+            )
+
+    ke = 0.5 * (runs[u_name] ** 2 + runs[v_name] ** 2)
+    if model_mask is not None and "model" in ke.dims:
+        ke = ke.where(model_mask)
+    runs[ke_name] = ke.rename(ke_name)
 
     return runs

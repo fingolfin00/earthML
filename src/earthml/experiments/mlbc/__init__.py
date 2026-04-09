@@ -3,7 +3,7 @@ from .dataclasses import MLBCExperimentConfig, MLBCNeuralNet, MLBCExperimentData
 from .registry import MLBCRunMode, MLBCExperimentDatasetRole, MLBCExperimentType, MLBCExperimentName
 from .catalog import make_catalog
 from .launcher import MLBCExperimentLauncher
-from .load import load_exp
+from .load import load_exp, load_all_exp_from_folder
 
 __all__ = [
     # methods
@@ -26,4 +26,5 @@ __all__ = [
     "MLBCExperimentLauncher",
     # load
     "load_exp",
+    "load_all_exp_from_path",
 ]

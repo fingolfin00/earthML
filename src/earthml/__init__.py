@@ -8,7 +8,7 @@ from .misc import Dask, Table
 
 from .neural.losses import build_loss
 
-from .experiments.mlbc import MLBCNeuralNet, MLBCExperimentLauncherConfig, MLBCExperimentLauncher, load_exp
+from .experiments.mlbc import MLBCNeuralNet, MLBCExperimentLauncherConfig, MLBCExperimentLauncher, load_exp, load_all_exp_from_folder
 
 from .metrics import get_runs_and_metrics, metrics_to_df
 
@@ -31,6 +31,7 @@ __all__ = [
     "MLBCExperimentLauncherConfig",
     "MLBCExperimentLauncher",
     "load_exp",
+    "load_all_exp_from_folder",
     # metrics
     "get_runs_and_metrics",
     "metrics_to_df",
