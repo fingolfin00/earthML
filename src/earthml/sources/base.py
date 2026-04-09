@@ -118,7 +118,7 @@ class BaseSource(ABC):
             set(pd.to_datetime(corrupted_sel.values).to_pydatetime())
             if corrupted_sel.values.size else set()
         )
-        print(f"Currupted samples: {len(corrupted)}")
+        print(f"Currupted {self.source_name} samples: {len(corrupted)}")
 
         # Drop corrupted timesteps
         ds = ds.drop_sel({time_dim: corrupted_sel})
@@ -148,6 +148,7 @@ class BaseSource(ABC):
 
         # Select area if necessary
         if self.select_area_after_request:
+            print(f"Select region lat: {self.data_selection.region.lat}, lon: {self.data_selection.region.lon}")
             ds = ds.earthml.subset(self.data_selection)
 
         # Grid resolution
@@ -217,7 +218,7 @@ class BaseSource(ABC):
         consolidated: bool = False
     ):
         """Save dataset in Zarr format in filepath"""
-        if not self.ds:
+        if self.ds is None:
             self.ds = self.load()
         store = Path(filepath)
         print(f"Saving dataset to {store}")
