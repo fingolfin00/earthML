@@ -72,7 +72,7 @@ class EarthkitSource(BaseSource):
         self.split_month_jump = config.split_month_jump if config.split_month_jump else []
 
         self.select_area_after_request = self.config.select_area_after_request
-        self.convert_unit = self.config.convert_unit
+        self.convert_unit = self.config.convert_unit if self.config.convert_unit else None
 
         self.regrid_resolution = self.config.regrid_config.regrid_resolution
         self.regrid_vars = config.regrid_config.regrid_vars if config.regrid_config.regrid_vars is not None else self.var_name_list
