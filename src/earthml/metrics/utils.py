@@ -19,7 +19,7 @@ from .correlation import CorrelationMetrics
 from .probabilistic import ProbabilisticMetrics
 from .bundles import build_standard_metric_bundle
 
-from ..experiments.mlbc.load import load_exp, add_ke_to_runs, get_and_rename_dim
+from ..experiments.mlbc.load import load_exp, add_ke_to_runs
 
 
 # ==========================================
