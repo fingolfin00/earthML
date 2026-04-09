@@ -258,6 +258,7 @@ class MLBCExperimentLauncher:
             for tp in target_period:
                 start, end = tp.start, tp.end
 
+                # TODO use enum, not string, and make more robust
                 # Seasonal
                 if self.experiment.type == "seasonal":
                     if self.experiment.name == "juno-cmcc_oras5":
@@ -317,6 +318,8 @@ class MLBCExperimentLauncher:
 
         # Provider args generation
         for tp in target_period:
+            start, end = tp.start, tp.end
+
             # Common provider args
             provider_args_common = dict(regrid_resolution=float(self.regrid_resolution)) if self.regrid_resolution is not None else {}
 
@@ -347,7 +350,7 @@ class MLBCExperimentLauncher:
                     target_provider_args = provider_args_common | target_provider_args_oras5_consolidated
                 else:
                     target_provider_args = provider_args_common | target_provider_args_oras5_operational
-                # Input provider args for ORAS5
+                # Input provider args for CMCC
                 input_provider_args = provider_args_common | dict(earthkit_cache_dir=self.earthkit_cache_dir, split_month=12)
             else:
                 target_provider_args = provider_args_common
