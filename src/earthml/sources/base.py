@@ -37,6 +37,7 @@ class BaseSource(ABC):
         # Init
         self.elements = Sample()
         self.ds = None
+        self.var_name_list = [v.name for v in self.data_selection.variable] if isinstance(self.data_selection.variable, list) else [self.data_selection.variable.name]
         self.select_area_after_request = False
         self.regrid_resolution = None
         self.convert_unit = None

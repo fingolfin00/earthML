@@ -71,7 +71,8 @@ class EarthkitSource(BaseSource):
 
         self.split_month_jump = config.split_month_jump if config.split_month_jump else []
 
-        self.var_name_list = [v.name for v in self.data_selection.variable] if isinstance(self.data_selection.variable, list) else [self.data_selection.variable.name]
+        self.select_area_after_request = self.config.select_area_after_request
+        self.convert_unit = self.config.convert_unit
 
         self.regrid_resolution = self.config.regrid_config.regrid_resolution
         self.regrid_vars = config.regrid_config.regrid_vars if config.regrid_config.regrid_vars is not None else self.var_name_list

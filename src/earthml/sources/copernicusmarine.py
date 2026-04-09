@@ -38,6 +38,12 @@ class CopernicusmarineSource(BaseSource):
         super().__init__(datasource)
         self.config = config
 
+        self.select_area_after_request = self.config.select_area_after_request
+        self.convert_unit = self.config.convert_unit
+
+        self.regrid_resolution = self.config.regrid_config.regrid_resolution
+        self.regrid_vars = config.regrid_config.regrid_vars if config.regrid_config.regrid_vars is not None else self.var_name_list
+
 
     def _get_data(self) -> xr.Dataset:
         n_missed = len(self.elements.missed)
