@@ -101,12 +101,11 @@ class MLBCDatasetGenerator:
         train_start, train_end = self._get_period_extrema(self.train_period)
         test_start, test_end = self._get_period_extrema(self.test_period)
         return (
-            f"exp_{self.experiment.type}" # TODO maybe change naming convention, add experiment.name?
+            f"exp_{self.experiment.type}_{self.experiment.name}"
             f"_{_var_names(self.var_target_key)}-{_var_names(self.var_input_key)}"
             f"_{str(self.leadtime_input.value)}{self.leadtime_input.unit}_{self.region.name}"
             f"_{train_start:%Y%m%d}-{train_end:%Y%m%d}"
             f"_{test_start:%Y%m%d}-{test_end:%Y%m%d}"
-            # f"_{self.input_provider}_{self.target_provider}"
             f"{self.experiment.suffix}"
         )
 
