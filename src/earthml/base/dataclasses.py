@@ -69,15 +69,17 @@ class Dims:
     longitude: str
     realization: str | None
     leadtime: str | None
-
+    """
+    items and __len__ exclude None dims
+    """
     def items(self):
         return ((k, v) for k, v in asdict(self).items() if v is not None)
 
     def __iter__(self):
-        return (v for v in astuple(self) if v is not None)
+        return (v for v in astuple(self))
 
     def __getitem__(self, index):
-        return tuple(v for v in astuple(self) if v is not None)[index]
+        return astuple(self)[index]
 
     def __len__(self):
         return sum(1 for v in astuple(self) if v is not None)
