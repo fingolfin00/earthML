@@ -172,32 +172,34 @@ def _load_single_exp(
             source["input"],
             exp_path / f"{type_data}_input.zarr",
         )
-        fc = source["input"].reload().earthml.normalize_dims_and_coords()
+        fc: xr.Dataset = source["input"].reload().earthml.normalize_dims_and_coords()
 
     if need_an:
         source["target"] = _source_with_root_path(
             source["target"],
             exp_path / f"{type_data}_target.zarr",
         )
-        an = source["target"].reload().earthml.normalize_dims_and_coords()
+        an: xr.Dataset = source["target"].reload().earthml.normalize_dims_and_coords()
 
     if need_pr and (type_data == "test" or load_train_preds) and "prediction" in source:
         source["prediction"] = _source_with_root_path(
             source["prediction"],
             exp_path / f"{type_data}_preds.zarr",
         )
-        pr = source["prediction"].reload().earthml.normalize_dims_and_coords()
+        pr: xr.Dataset = source["prediction"].reload().earthml.normalize_dims_and_coords()
 
     mask = _source_with_root_path(
         mask_source,
         exp_path / f"mask/{type_data}_mask.zarr",
     ).reload()
-    mask = mask.earthml.normalize_dims_and_coords()
+    mask: xr.Dataset = mask.earthml.normalize_dims_and_coords()
 
     out = {}
     for model_name, ds in (("fc", fc), ("an", an), ("pr", pr)):
         if ds is None:
             continue
+        allowed_dims = ds.earthml.guessed_dims
+        ds = ds.earthml.remove_dims_and_coords(allowed_dims, drop_non_dim_coords=True)
         out[model_name] = ds
 
     if mask is not None:
