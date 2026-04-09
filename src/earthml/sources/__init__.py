@@ -3,10 +3,10 @@ from .dataclasses import SourceConfig, RegridConfig, DataSource
 from .registry import get_source_class, build_source
 from .registry import _SOURCES as _REGISTRY_SOURCES
 
-from .earthkit import EarthkitSourceConfig
-from .juno_local import JunoLocalSourceConfig, JunoLocalSourceFileNameConfig
-from .xarray_local import XarrayLocalSourceConfig
-from .copernicusmarine import CopernicusmarineSourceConfig
+from .earthkit import EarthkitSource, EarthkitSourceConfig
+from .juno_local import JunoLocalSource, JunoLocalSourceConfig, JunoLocalSourceFileNameConfig
+from .xarray_local import XarrayLocalSource, XarrayLocalSourceConfig
+from .copernicusmarine import CopernicusmarineSource, CopernicusmarineSourceConfig
 
 
 __all__ = [
@@ -16,6 +16,12 @@ __all__ = [
     "SourceConfig",
     "RegridConfig",
     "DataSource",
+    # source dataclasses
+    "EarthkitSource",
+    "JunoLocalSource",
+    "XarrayLocalSource",
+    "CopernicusmarineSource",
+    # source config
     "EarthkitSourceConfig",
     "JunoLocalSourceConfig",
     "JunoLocalSourceFileNameConfig",
