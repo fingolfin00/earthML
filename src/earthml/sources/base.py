@@ -170,6 +170,9 @@ class BaseSource(ABC):
             print(f"Converting variable units according to: {self.convert_unit}")
             ds = ds.earthml.convert_unit(self.convert_unit)
 
+        # Normalize dims
+        ds = ds.earthml.normalize_dims_and_coords()
+
         return ds
 
 
