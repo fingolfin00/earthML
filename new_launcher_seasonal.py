@@ -9,6 +9,8 @@ if __name__ == "__main__":
     # ----------------------------------------------------------------------------------
     # User params
     # ----------------------------------------------------------------------------------
+    max_retries                 = 4
+
     experiment_type             = "seasonal"                # seasonal, weather
     experiment_name             = "cds-cmcc_era5"          # cds-cmcc_oras5, cds-cmcc_era5
 
@@ -138,7 +140,7 @@ if __name__ == "__main__":
         launcher = MLBCExperimentLauncher(
             experiment=launcher_cfg,
             run_mode=run_mode,
-            max_retries=10,
+            max_retries=max_retries,
             variables_input=variables,
             variables_target=variables,
             leadtimes=leadtimes_lt,
