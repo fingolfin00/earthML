@@ -4,8 +4,6 @@ from typing import Sequence
 import numpy as np
 import xarray as xr
 
-from ..experiments.mlbc.load import get_and_rename_dim
-
 
 @dataclass
 class MetricDims:
@@ -195,8 +193,11 @@ class MetricData:
         truth_data = masked[0]
         model_data = masked[1:]
 
-        truth_data, model_data, dims = get_and_rename_dim(truth_data, model_data)
-        time_dim, lat_dim, lon_dim, realization_dim, leadtime_dim = dims
+        truth_data = truth_data.earthml.normalize_dims_and_coords()
+        for i,m in enumerate(model_data):
+            model_data[i] = m.earthml.normalize_dims_and_coords()
+
+        time_dim, lat_dim, lon_dim, realization_dim, leadtime_dim = truth_data.earthml.guessed_dims
 
         return cls(
             truth_data=truth_data,

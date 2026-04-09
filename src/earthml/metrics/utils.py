@@ -245,7 +245,6 @@ def preprocess_datasets_for_metric(
     *,
     name: str = "",
     leadtimes: Sequence[Any] | None = None,
-    reference_index: int = 0,
     align_join_strategy: str = "inner",
     rechunk_factor: int = 1,
     allowed_extra_dims: Sequence[str] = ("missed_time",),
@@ -260,9 +259,9 @@ def preprocess_datasets_for_metric(
     name
         Run name for logging/debugging.
     leadtimes
-        Optional expected leadtime sequence; only its length is checked.
-    reference_index
-        Index of the non-None dataset used as the dimension naming reference.
+        Optional expected leadtime sequence. Its length is checked and, when
+        provided, it is assigned as the canonical leadtime coordinate before
+        dataset alignment.
     align_join_strategy
         Join strategy passed to xr.align.
     rechunk_factor
@@ -281,30 +280,17 @@ def preprocess_datasets_for_metric(
 
     ds_list = list(datasets)
 
-    if not (0 <= reference_index < len(ds_list)):
-        raise ValueError(f"reference_index {reference_index} out of range")
+    for i,ds in enumerate(ds_list):
+        ds_list[i] = ds.earthml.normalize_dims_and_coords()
 
-    ref = ds_list[reference_index]
-    if ref is None:
-        raise ValueError("reference_index must point to a non-None dataset")
+    time_dim, lat_dim, lon_dim, realization_dim, leadtime_dim = ds_list[0].earthml.guessed_dims
 
-    # Rename all dims using selected reference dataset
-    other_non_null_indices = [
-        i for i, ds in enumerate(ds_list) if i != reference_index and ds is not None
-    ]
-    others = [ds_list[i] for i in other_non_null_indices]
 
-    ref, renamed_others, dims = get_and_rename_dim(ref, others)
 
-    renamed = list(ds_list)
-    renamed[reference_index] = ref
-    for i, ds in zip(other_non_null_indices, renamed_others):
-        renamed[i] = ds
-    ds_list = renamed
 
-    time_dim, lat_dim, lon_dim, realization_dim, leadtime_dim = dims
 
-    # Optional leadtime length check
+
+    # Optional leadtime length check and coordinate harmonization.
     if leadtimes is not None:
         expected_n = len(leadtimes)
         actual = {}
@@ -367,7 +353,7 @@ def preprocess_datasets_for_metric(
     # Rechunk only when requested
     lat_rc = lon_rc = None
     if rechunk_factor > 1:
-        ref = ds_list[reference_index]
+        ref = ds_list[0] # use first dataset as reference for rechunking
         if ref is None:
             raise RuntimeError("Reference dataset became None unexpectedly")
 
@@ -388,7 +374,6 @@ def preprocess_datasets_for_metric(
             "realization": realization_dim,
             "leadtime": leadtime_dim,
         },
-        "reference_index": reference_index,
         "allowed_dims": allowed_dims,
         "lat_rc": lat_rc,
         "lon_rc": lon_rc,
