@@ -24,7 +24,13 @@ class SumSource(BaseSource):
 
 
     def _get_data(self) -> xr.Dataset:
-        # This is where we finally touch the underlying data
+        print(
+            "Combine sources "
+            f"{self._left.source_name} ({self._left.date_range[0]:%Y%m%d}-{self._left.date_range[-1]:%Y%m%d}) + "
+            f"{self._right.source_name} ({self._right.date_range[0]:%Y%m%d}-{self._right.date_range[-1]:%Y%m%d})"
+        )
+
+        # Lazy-load left and right data
         ds_left = self._left.load()
         ds_right = self._right.load()
 
@@ -83,8 +89,9 @@ class SumSource(BaseSource):
         # print(f"ds_left_sel coords: {ds_left_sel.coords}")
         # print(f"ds_right_sel coords: {ds_right_sel.coords}")
 
-        # Concatenate lazily (xarray + dask)
-        ds_combined = xr.merge([ds_left_sel, ds_right_sel], compat='override')
+        # Concat lazily (xarray + dask)
+        ds_combined = xr.concat([ds_left_sel, ds_right_sel], dim=time_dim)
+        ds_combined = ds_combined.sortby(time_dim)
         # print(f"ds_combined coords: {ds_combined.coords}")
 
         return ds_combined
