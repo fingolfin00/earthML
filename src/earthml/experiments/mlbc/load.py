@@ -373,13 +373,24 @@ def load_all_exp_from_folder(
             if ds is None:
                 continue
 
+            for dim in ["train_period", "loss", "region"]:
+                if dim in ds.dims or dim in ds.coords:
+                    raise ValueError(f"{dim} already exists in dataset")
+
             # leadtime may be already present in dataset
             if "leadtime" in ds.dims:
-                ds = ds.assign_coords(leadtime=[leadtime])
-            else:
-                ds = ds.expand_dims({"leadtime": [leadtime]})
+                if ds.sizes["leadtime"] != 1:
+                    raise ValueError(
+                        f"Expected singleton leadtime dimension, got {ds.sizes['leadtime']}"
+                    )
+                ds = ds.squeeze("leadtime", drop=True)
 
-            # introduce new train_period and loss dims
+            if "leadtime" in ds.coords:
+                ds = ds.drop_vars("leadtime")
+
+            ds = ds.expand_dims(leadtime=[leadtime])
+
+            # set new train_period and loss dims
             ds = ds.expand_dims({
                 "train_period": [train_period],
                 "loss": [loss],
@@ -391,6 +402,10 @@ def load_all_exp_from_folder(
             ds.attrs["region"] = region
 
             grouped_runs[group_name].setdefault(model_name, []).append(ds)
+
+            # print(model_name, group_name, ds.dims, ds.coords)
+            # for v in ds.data_vars:
+            #     print("   ", v, ds[v].dims)
 
     if only_sizes:
         return {}, grouped_sizes
