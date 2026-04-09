@@ -9,8 +9,9 @@ class MLBCRunMode(StrEnum):
 
 
 class MLBCExperimentDatasetRole(StrEnum):
-    INPUT   = "input"
-    TARGET  = "target"
+    INPUT       = "input"
+    TARGET      = "target"
+    PREDICTION  = "prediction"
 
 
 class MLBCExperimentType(StrEnum):
