@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict, astuple
 from datetime import datetime
 from typing import List, Dict, Optional, Literal
 
@@ -64,8 +64,20 @@ class DataSelection:
 
 @dataclass
 class Dims:
-    time        : str
-    latitude    : str
-    longitude   : str
-    realization : str | None
-    leadtime    : str | None
+    time: str
+    latitude: str
+    longitude: str
+    realization: str | None
+    leadtime: str | None
+
+    def items(self):
+        return ((k, v) for k, v in asdict(self).items() if v is not None)
+
+    def __iter__(self):
+        return (v for v in astuple(self) if v is not None)
+
+    def __getitem__(self, index):
+        return tuple(v for v in astuple(self) if v is not None)[index]
+
+    def __len__(self):
+        return sum(1 for v in astuple(self) if v is not None)
