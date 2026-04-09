@@ -16,6 +16,52 @@ from ...sources import build_source, BaseSource
 from .dataclasses import MLBCExperimentConfig, MLBCExperimentDatasetRole, MLBCExperimentDataset
 
 
+_CANONICAL_VARIABLE_NAMES = {
+    "sosstsst": "sst",
+    "thetao": "sst",
+    "sst": "sst",
+    "sosaline": "sss",
+    "sss": "sss",
+    "sos": "sss",
+    "so": "sss",
+    "so14chgt": "t14d",
+    "t14d": "t14d",
+    "so17chgt": "t17d",
+    "t17d": "t17d",
+    "so20chgt": "t20d",
+    "t20d": "t20d",
+    "sossheig": "ssh",
+    "zos": "ssh",
+    "ssh": "ssh",
+}
+
+
+def _canonicalize_dataset_variable_names(ds: xr.Dataset, dataset_name: str | None = None) -> xr.Dataset:
+    """
+    Rename dataset variables to a canonical short-name namespace.
+    Only performs low-risk renames and avoids collisions.
+    """
+    rename_map: dict[str, str] = {}
+
+    for var in ds.data_vars:
+        canonical = _CANONICAL_VARIABLE_NAMES.get(var)
+        if canonical is None or canonical == var:
+            continue
+
+        if canonical in ds.data_vars:
+            # Avoid overwriting an existing variable
+            continue
+
+        rename_map[var] = canonical
+
+    if rename_map:
+        label = f" for {dataset_name!r}" if dataset_name else ""
+        print(f"Canonicalizing variables{label}: {rename_map}")
+        ds = ds.rename_vars(rename_map)
+
+    return ds
+
+
 def _is_int_leadtime(ds, coord="leadtime"):
     if coord not in ds.coords:
         return False
@@ -347,7 +393,7 @@ def load_all_exp_from_folder(
         region = datasource_input.data_selection.region.name
         loss = config.net.loss.lower()
 
-        group_name = var_input
+        group_name = _CANONICAL_VARIABLE_NAMES.get(var_input, var_input)
 
         run_dict, size = _load_single_exp(
             exp_cfg=config,
@@ -356,6 +402,15 @@ def load_all_exp_from_folder(
             load_models=load_models,
             only_sizes=only_sizes,
         )
+
+        if not only_sizes:
+            run_dict = {
+                model_name: (
+                    _canonicalize_dataset_variable_names(ds, dataset_name=model_name)
+                    if ds is not None and model_name in {"fc", "an", "pr"} else ds
+                )
+                for model_name, ds in run_dict.items()
+            }
 
         size_key = (leadtime, train_period, region, loss)
         grouped_sizes.setdefault(group_name, {})[size_key] = size
