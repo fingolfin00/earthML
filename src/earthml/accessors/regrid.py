@@ -10,57 +10,62 @@ from ..base.dataclasses import Region
 
 # TODO refactor regrid in one single optimized helper, possibly adding support for xesmf or other fast lib
 class EarthMLRegrid:
-    @staticmethod
-    def _build_target_rect_grid(
-        region: Region,
-        resolution: float | tuple[float, float],
-    ):
-        """
-        region: object with .lat (2 values: [north, south]) and .lon (2 values: [west, east])
-        resolution: float or (lat_res, lon_res) in degrees (positive)
-        Returns (lat_target, lon_target) as 1D numpy arrays.
-        """
-        # Resolution
-        if isinstance(resolution, (tuple, list)):
-            lat_res, lon_res = float(resolution[0]), float(resolution[1])
-        else:
-            lat_res = lon_res = float(resolution)
-
-        lat0, lat1 = region.lat  # typically [north, south]
-        lon0, lon1 = region.lon  # typically [west, east]
-
-        # Orientation: ECMWF "area" is [north, west, south, east]
-        # So lat usually decreases, lon usually increases.
-        eps = 1e-6
-
-        # latitude
-        if lat0 > lat1:
-            # descending: north -> south
-            lat_vals = np.arange(lat0, lat1 - eps, -lat_res)
-        else:
-            # ascending
-            lat_vals = np.arange(lat0, lat1 + eps, lat_res)
-
-        # longitude
-        if lon0 <= lon1:
-            lon_vals = np.arange(lon0, lon1 + eps, lon_res)
-        else:
-            # if someone gives east < west, go descending
-            lon_vals = np.arange(lon0, lon1 - eps, -lon_res)
-
-        return lat_vals.astype("float32"), lon_vals.astype("float32")
-
-    @staticmethod
-    def _to_180(lon):
-        return ((lon + 180) % 360) - 180
-
-
     def regrid_to_rectilinear(
         self,
         region: Region,
-        resolution: float | tuple[float, float], # TODO why do we accept tuple?
+        resolution: float | tuple[float, float],
         vars_to_regrid=None,
     ) -> xr.Dataset:
+        """
+        Regrid dataset variables onto a rectilinear latitude/longitude target grid.
+
+        This accessor supports two source-grid layouts:
+
+        1. Rectilinear source grid
+        - latitude and longitude are both 1D coordinates
+        - regridding is performed with ``xarray.Dataset.interp``
+
+        2. Curvilinear source grid
+        - latitude and longitude are both 2D coordinates
+        - regridding is performed variable-by-variable with
+            ``scipy.interpolate.griddata`` onto a 1D rectilinear target grid
+
+        Parameters
+        ----------
+        region : Region
+            Geographic target region. Expected shape:
+            - ``region.lat = (north, south)`` or ``(south, north)``
+            - ``region.lon = (west, east)``
+            Longitudes may be given in any continuous degree convention
+            (for example ``(-200, -120)`` is accepted).
+        resolution : float or tuple[float, float]
+            Target grid resolution in degrees.
+            - If float: same resolution is used for latitude and longitude.
+            - If tuple/list: interpreted as ``(lat_res, lon_res)``.
+        vars_to_regrid : iterable of str or None, optional
+            Names of data variables to regrid. Variables not listed are copied
+            through unchanged. If None, all data variables are considered.
+
+        Returns
+        -------
+        xr.Dataset
+            Dataset with requested variables regridded onto 1D rectilinear target
+            coordinates named using the dataset's guessed latitude/longitude
+            coordinate names.
+
+        Notes
+        -----
+        - Longitude interpolation is done in a continuous longitude frame chosen
+        from the requested region, rather than by forcing everything into
+        ``[-180, 180)`` first. This avoids artificial seams and inconsistent
+        target spacing for dateline-crossing or extended-longitude requests such
+        as ``(-200, -120)``.
+        - For rectilinear sources, source longitudes are shifted by multiples of
+        360 degrees to lie near the target longitude interval before sorting and
+        interpolating.
+        - For curvilinear sources, 2D source longitudes are shifted similarly
+        before calling ``griddata``.
+        """
         ds = self._obj
 
         lon_name = ds.earthml.guessed_coords.longitude
@@ -74,59 +79,89 @@ class EarthMLRegrid:
         else:
             lat_res = lon_res = float(resolution)
 
-        lat0, lat1 = map(float, region.lat)   # [north, south]
-        lon0, lon1 = map(float, region.lon)   # [west, east]
+        if lat_res <= 0 or lon_res <= 0:
+            raise ValueError(
+                f"Resolution must be positive. Got lat_res={lat_res}, lon_res={lon_res}."
+            )
 
-        eps = 1e-6
-
-        # Build latitude target
-        if lat0 > lat1:
-            lat_target = np.arange(lat0, lat1 - eps, -lat_res)
+        if vars_to_regrid is None:
+            vars_to_regrid = list(ds.data_vars)
         else:
-            lat_target = np.arange(lat0, lat1 + eps, lat_res)
-
-        rectilinear_src = (lat_da.ndim == 1 and lon_da.ndim == 1)
+            vars_to_regrid = list(vars_to_regrid)
 
         print(f"Regrid: available data vars {list(ds.data_vars.keys())}, requested vars {vars_to_regrid}")
 
-        # Normalize requested longitude
-        lon0_t = self._to_180(lon0)
-        lon1_t = self._to_180(lon1)
+        lat0, lat1 = map(float, region.lat)
+        lon0, lon1 = map(float, region.lon)
 
-        # Build geographic target interval in [-180, 180)
-        if lon0_t <= lon1_t:
-            lon_target = np.arange(lon0_t, lon1_t + eps, lon_res)
+        eps = 1e-6
+
+        # ---- Target latitude: preserve requested orientation ----
+        if lat0 > lat1:
+            lat_target = np.arange(lat0, lat1 - eps, -lat_res, dtype="float32")
         else:
-            # true dateline-crossing request, e.g. 170 -> -170
-            lon_target = np.concatenate([
-                np.arange(lon0_t, 180, lon_res),
-                np.arange(-180, lon1_t + eps, lon_res),
-            ])
+            lat_target = np.arange(lat0, lat1 + eps, lat_res, dtype="float32")
 
-        # ===== Case 1: rectilinear source (1D lat/lon) =====
+        # ---- Target longitude: keep a continuous interval, do NOT wrap to [-180, 180) ----
+        # Example: (-200, -120) should remain continuous, not become [160..179, -180..-120]
+        lon0_u, lon1_u = float(lon0), float(lon1)
+        if lon_res > 0:
+            while lon1_u < lon0_u:
+                lon1_u += 360.0
+            lon_target = np.arange(lon0_u, lon1_u + eps, lon_res, dtype="float32")
+        else:
+            while lon1_u > lon0_u:
+                lon1_u -= 360.0
+            lon_target = np.arange(lon0_u, lon1_u - eps, lon_res, dtype="float32")
+
+        lon_center = 0.5 * (lon0_u + lon1_u)
+
+        def _shift_longitudes_near_reference(lon_values: np.ndarray, reference: float) -> np.ndarray:
+            """
+            Shift longitudes by multiples of 360 so they lie as close as possible
+            to a given reference longitude. Preserves local spacing while choosing
+            a continuous longitude branch compatible with the target interval.
+            """
+            lon_values = np.asarray(lon_values, dtype=np.float64)
+            return lon_values + 360.0 * np.round((reference - lon_values) / 360.0)
+
+        def _deduplicate_sorted_1d_axis(ds_in: xr.Dataset, coord_name: str) -> xr.Dataset:
+            """
+            Sort dataset by a 1D coordinate and drop exact duplicate coordinate values,
+            keeping first occurrence. interp() requires unique monotonic indexes.
+            """
+            ds_in = ds_in.sortby(coord_name)
+            coord_vals = np.asarray(ds_in[coord_name].values)
+
+            _, unique_idx = np.unique(coord_vals, return_index=True)
+            if len(unique_idx) != ds_in.sizes[coord_name]:
+                ds_in = ds_in.isel({coord_name: np.sort(unique_idx)})
+
+            return ds_in
+
+        rectilinear_src = (lat_da.ndim == 1 and lon_da.ndim == 1)
+
+        # ======================================================================
+        # Case 1: rectilinear (1D) source -> rectilinear (1D) target
+        # ======================================================================
         if rectilinear_src:
             print("Regrid: rectilinear (1D) source -> rectilinear (1D) target via xarray.interp.")
 
-            # Normalize source longitude to [-180, 180) and sort
-            ds = ds.assign_coords({
-                lon_name: self._to_180(ds[lon_name])
-            }).sortby(lon_name)
+            lat_src = np.asarray(ds[lat_name].values, dtype=np.float64)
+            lon_src = _shift_longitudes_near_reference(ds[lon_name].values, lon_center)
 
-            # Some source grids include duplicated endpoints after longitude
-            # normalization (for example both 0 and 360 -> 0). interp()
-            # requires unique coordinate indexes.
-            _, lon_index = np.unique(ds[lon_name].values, return_index=True)
-            if len(lon_index) != ds.sizes[lon_name]:
-                ds = ds.isel({lon_name: np.sort(lon_index)})
+            ds_interp = ds.assign_coords({
+                lat_name: xr.DataArray(lat_src, dims=ds[lat_name].dims),
+                lon_name: xr.DataArray(lon_src, dims=ds[lon_name].dims),
+            })
 
-            _, lat_index = np.unique(ds[lat_name].values, return_index=True)
-            if len(lat_index) != ds.sizes[lat_name]:
-                ds = ds.isel({lat_name: np.sort(lat_index)})
+            ds_interp = _deduplicate_sorted_1d_axis(ds_interp, lon_name)
+            ds_interp = _deduplicate_sorted_1d_axis(ds_interp, lat_name)
 
             lat_tgt_da = xr.DataArray(lat_target, dims=(lat_name,), name=lat_name)
             lon_tgt_da = xr.DataArray(lon_target, dims=(lon_name,), name=lon_name)
 
-            regridded = ds.interp(
+            regridded = ds_interp.interp(
                 {lat_name: lat_tgt_da, lon_name: lon_tgt_da},
                 method="linear",
             )
@@ -136,7 +171,9 @@ class EarthMLRegrid:
             )
             return regridded
 
-        # ===== Case 2: curvilinear (2D) source (lat/lon 2D) -> rectilinear (1D) target =====
+        # ======================================================================
+        # Case 2: curvilinear (2D) source -> rectilinear (1D) target
+        # ======================================================================
         print("Regrid: curvilinear (2D) source -> rectilinear (1D) target via scipy.griddata.")
 
         if lat_da.ndim != 2 or lon_da.ndim != 2:
@@ -145,24 +182,28 @@ class EarthMLRegrid:
                 f"Got lat.ndim={lat_da.ndim}, lon.ndim={lon_da.ndim}."
             )
 
-        y_dim_src, x_dim_src = lat_da.dims  # e.g. ("y", "x")
+        if lat_da.dims != lon_da.dims:
+            raise ValueError(
+                f"Curvilinear lat/lon must share the same dimensions. "
+                f"Got lat.dims={lat_da.dims}, lon.dims={lon_da.dims}."
+            )
 
-        # Source coords in same lon convention as lon_target
-        lat_src_2d = lat_da.values
-        lon_src_2d = ((lon_da.values + 180) % 360) - 180
+        y_dim_src, x_dim_src = lat_da.dims
 
-        # Target grid shape
+        lat_src_2d = np.asarray(lat_da.values, dtype=np.float64)
+        lon_src_2d = _shift_longitudes_near_reference(lon_da.values, lon_center)
+
         Ny = lat_target.size
         Nx = lon_target.size
 
-        # Flatten source coords
         lat_flat = lat_src_2d.ravel()
         lon_flat = lon_src_2d.ravel()
-        points = np.column_stack([lon_flat, lat_flat])
 
-        # Target grid as flat xi
-        lon_out_2d, lat_out_2d = np.meshgrid(lon_target, lat_target)  # [Ny, Nx]
-        xi = np.column_stack([lon_out_2d.ravel(), lat_out_2d.ravel()])  # [Ntgt, 2]
+        coord_valid = np.isfinite(lat_flat) & np.isfinite(lon_flat)
+        points = np.column_stack([lon_flat[coord_valid], lat_flat[coord_valid]])
+
+        lon_out_2d, lat_out_2d = np.meshgrid(lon_target, lat_target)
+        xi = np.column_stack([lon_out_2d.ravel(), lat_out_2d.ravel()])
 
         data_vars_out = {}
 
@@ -177,30 +218,39 @@ class EarthMLRegrid:
 
             print(f"  Regridding variable '{name}' with griddata...")
 
-            # Move (y, x) to the end
             da_spatial = da.transpose(
                 *[d for d in da.dims if d not in (y_dim_src, x_dim_src)],
-                y_dim_src, x_dim_src,
+                y_dim_src,
+                x_dim_src,
             )
-            data_np = da_spatial.values  # [..., Ny_src, Nx_src]
+            data_np = da_spatial.values
 
             leading_dims = da_spatial.dims[:-2]
             leading_shape = data_np.shape[:-2]
             ny_src, nx_src = data_np.shape[-2:]
 
-            arr = data_np.reshape(-1, ny_src * nx_src)  # [Nlead, Nsrc]
+            if (ny_src, nx_src) != lat_src_2d.shape:
+                raise ValueError(
+                    f"Variable '{name}' spatial shape {(ny_src, nx_src)} does not match "
+                    f"lat/lon shape {lat_src_2d.shape}."
+                )
+
+            arr = data_np.reshape(-1, ny_src * nx_src)
 
             out_slices = []
             for i in range(arr.shape[0]):
-                zi = arr[i, :]  # [Nsrc]
+                zi = arr[i, :]
 
-                valid = np.isfinite(lon_flat) & np.isfinite(lat_flat) & np.isfinite(zi)
+                valid = coord_valid & np.isfinite(zi)
 
-                if not np.any(valid):
-                    zi_interp = np.full(xi.shape[0], np.nan)
+                if valid.sum() == 0:
+                    zi_interp = np.full(xi.shape[0], np.nan, dtype=np.float64)
+                elif valid.sum() < 3:
+                    # Not enough points for linear triangulation
+                    zi_interp = np.full(xi.shape[0], np.nan, dtype=np.float64)
                 else:
                     zi_interp = griddata(
-                        points[valid],
+                        points[valid[coord_valid]],
                         zi[valid],
                         xi,
                         method="linear",
@@ -209,15 +259,15 @@ class EarthMLRegrid:
                 zi_interp_2d = zi_interp.reshape(Ny, Nx)
                 out_slices.append(zi_interp_2d)
 
-            out = np.stack(out_slices, axis=0).reshape(
-                *leading_shape,
-                Ny,
-                Nx,
-            )
+            out = np.stack(out_slices, axis=0).reshape(*leading_shape, Ny, Nx)
 
             out_dims = leading_dims + (lat_name, lon_name)
             out_coords = {
-                **{d: da_spatial.coords[d] for d in leading_dims if d in da_spatial.coords},
+                **{
+                    d: da_spatial.coords[d]
+                    for d in leading_dims
+                    if d in da_spatial.coords
+                },
                 lat_name: xr.DataArray(lat_target, dims=(lat_name,)),
                 lon_name: xr.DataArray(lon_target, dims=(lon_name,)),
             }
@@ -229,7 +279,6 @@ class EarthMLRegrid:
                 attrs=da.attrs,
             )
 
-        # Dataset coords: keep non-lat/lon coords from src, override lat/lon
         coord_out = {
             k: v for k, v in ds.coords.items()
             if k not in (lat_name, lon_name)
