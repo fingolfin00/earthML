@@ -197,7 +197,48 @@ class MetricData:
         for i,m in enumerate(model_data):
             model_data[i] = m.earthml.normalize_dims_and_coords()
 
-        time_dim, lat_dim, lon_dim, realization_dim, leadtime_dim = truth_data.earthml.guessed_dims
+        time_dim, lat_dim, lon_dim, realization_dim, leadtime_dim = model_data[0].earthml.guessed_dims
+
+        def _broadcast_singleton_realization(
+            ds: xr.Dataset,
+            target_values: np.ndarray | None,
+        ) -> xr.Dataset:
+            if realization_dim is None or target_values is None or target_values.size <= 1:
+                return ds
+
+            if realization_dim in ds.dims:
+                if ds.sizes.get(realization_dim, 0) == 1:
+                    ds = ds.squeeze(realization_dim, drop=True)
+                    ds = ds.expand_dims({realization_dim: target_values})
+                    ds = ds.assign_coords({realization_dim: target_values})
+                return ds
+
+            if realization_dim in ds.coords and ds[realization_dim].ndim == 0:
+                ds = ds.drop_vars(realization_dim, errors="ignore")
+
+            return ds.expand_dims({realization_dim: target_values}).assign_coords({realization_dim: target_values})
+
+        target_realization_values = None
+        for ds in model_data:
+            if (
+                realization_dim is not None
+                and realization_dim in ds.dims
+                and realization_dim in ds.coords
+                and ds.sizes.get(realization_dim, 0) > 1
+            ):
+                target_realization_values = ds[realization_dim].values
+                break
+
+        if target_realization_values is not None:
+            truth_data = _broadcast_singleton_realization(truth_data, target_realization_values)
+            model_data = [
+                _broadcast_singleton_realization(ds, target_realization_values)
+                for ds in model_data
+            ]
+            clim_data = [
+                _broadcast_singleton_realization(ds, target_realization_values) if ds is not None else None
+                for ds in clim_data
+            ]
 
         return cls(
             truth_data=truth_data,
