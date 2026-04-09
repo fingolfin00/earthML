@@ -373,21 +373,21 @@ def load_all_exp_from_folder(
             if ds is None:
                 continue
 
+            # leadtime may be already present in dataset
             if "leadtime" in ds.dims:
-                ds = ds.drop_dims("leadtime")
-            elif "leadtime" in ds.coords:
-                ds = ds.drop_vars("leadtime")
+                ds = ds.assign_coords(leadtime=[leadtime])
+            else:
+                ds = ds.expand_dims({"leadtime": [leadtime]})
 
-            ds = ds.expand_dims(
-                {
-                    "leadtime": [leadtime],
-                    "train_period": [train_period],
-                    "loss": [loss],
-                }
-            )
+            # introduce new train_period and loss dims
+            ds = ds.expand_dims({
+                "train_period": [train_period],
+                "loss": [loss],
+            })
+
             ds.coords["leadtime"].attrs["unit"] = leadtime_unit
 
-            # region is metadata, not a dimension
+            # region is metadata
             ds.attrs["region"] = region
 
             grouped_runs[group_name].setdefault(model_name, []).append(ds)
