@@ -1,4 +1,4 @@
-from typing import Sequence, Dict, Tuple, Literal
+from typing import Sequence, Literal
 from dataclasses import asdict
 
 import time, multiprocessing, joblib
@@ -18,8 +18,7 @@ import lightning as L
 from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
 from lightning.pytorch.loggers import TensorBoardLogger
 
-from .dataclasses import MLBCExperimentDataset, MLBCExperimentConfig
-from .load import get_and_rename_dim
+from .dataclasses import MLBCExperimentDataset, MLBCExperimentConfig, MLBCExperimentDatasetRole
 
 from ...sources import build_source, BaseSource, DataSource, XarrayLocalSourceConfig
 
@@ -37,7 +36,7 @@ class MLBCExperiment:
         self.config = config
         self.rich_console = Console()
 
-        self.per_channel_masked_mean = False if self.config.output_realizations else True # TODO not sure it's super general
+        self.per_channel_masked_mean = False if self.config.output_realizations else True # return (1, C, 1, 1) in _masked_metrics (see neural/normalize.py) # TODO not sure it's super general
 
         # Get test variable list,
         self.test_var_list = self._get_var_list(self.config.test_dataset)
@@ -56,7 +55,8 @@ class MLBCExperiment:
         self.tl_logger = TensorBoardLogger(self.config.work_path, name="tensorboard_logs") # version=self.run_number
 
         # Init
-        self.normalize = None
+        self.normalize_input = None
+        self.normalize_target = None
         self.train_datamodule = None
 
         # Init climatologies
@@ -65,13 +65,13 @@ class MLBCExperiment:
 
         self.consolidated_zarr = False
 
-        # Init predictions
+        # Init prediction experiment datasets and add to test and train lists
         self.test_preds_store = self.config.work_path / Path("test_preds").with_suffix(".zarr")
-        test_preds_exp = self._init_experiment(self.test_preds_store, self.config.test_dataset)
+        test_preds_exp = self._init_experiment_dataset(self.test_preds_store, self.config.test_dataset, MLBCExperimentDatasetRole.PREDICTION)
         self.config.test_dataset.append(test_preds_exp)
 
         self.train_preds_store = self.config.work_path / Path("train_preds").with_suffix(".zarr")
-        train_preds_exp = self._init_experiment(self.train_preds_store, self.config.train_dataset)
+        train_preds_exp = self._init_experiment_dataset(self.train_preds_store, self.config.train_dataset, MLBCExperimentDatasetRole.PREDICTION)
         self.config.train_dataset.append(train_preds_exp)
 
         # Init source data objects and save original datasets
@@ -140,10 +140,10 @@ class MLBCExperiment:
         mask_filename = "mask"
 
         self.test_mask_store = self.mask_folder_path.joinpath(Path("test_"+mask_filename).with_suffix(".zarr"))
-        self.test_mask_exp = self._init_experiment(self.test_mask_store, self.config.test_dataset)
+        self.test_mask_exp = self._init_experiment_dataset(self.test_mask_store, self.config.test_dataset, MLBCExperimentDatasetRole.PREDICTION)
 
         self.train_mask_store = self.mask_folder_path.joinpath(Path("train_"+mask_filename).with_suffix(".zarr"))
-        self.train_mask_exp = self._init_experiment(self.train_mask_store, self.config.train_dataset)
+        self.train_mask_exp = self._init_experiment_dataset(self.train_mask_store, self.config.train_dataset, MLBCExperimentDatasetRole.PREDICTION)
 
         self.train_mask_ds = self._create_and_save_common_mask(self.train_input_ds, self.train_target_ds, 'train')
         self.test_mask_ds = self._create_and_save_common_mask(self.test_input_ds, self.test_target_ds, 'test')
@@ -201,6 +201,7 @@ class MLBCExperiment:
         self.work_path = Path(self.config.work_path)
         # Weights location
         self.weights_folder_path = self.work_path.joinpath("./weights")
+        self.weights_folder_path.mkdir(parents=True, exist_ok=True)
         self.weights_filename = f"{self.config.name}_weights"
         self.weights_path = self.weights_folder_path.joinpath(self.weights_filename+'.ckpt')
         # Train dataset normalization data location
@@ -221,11 +222,11 @@ class MLBCExperiment:
         self.ckpt_filename = "checkpoint"
         self.ckpt_folder_path = self.work_path.joinpath("./checkpoints")
         self.ckpt_folder_path.mkdir(parents=True, exist_ok=True)
-        ckpt_files = self.ckpt_folder_path.glob(f"{self.ckpt_filename}*.ckpt")
+        ckpt_files = list(self.ckpt_folder_path.glob(f"{self.ckpt_filename}*.ckpt"))
         try:
-            self.ckpt_path = max(ckpt_files, key=lambda item: item.stat().st_ctime) # get most recent
-        except:
-            self.ckpt_path = self.ckpt_folder_path.joinpath(f"{self.ckpt_filename}.ckpt")
+            self.ckpt_path = max(ckpt_files, key=lambda p: p.stat().st_ctime) # get most recent
+        except ValueError:  # empty sequence
+            self.ckpt_path = self.ckpt_folder_path / f"{self.ckpt_filename}.ckpt"
 
     @staticmethod
     def _get_latitudes(ds: xr.Dataset) -> np.ndarray:
@@ -244,7 +245,12 @@ class MLBCExperiment:
         return test_config_datasel.variable if isinstance(test_config_datasel.variable, list) else [test_config_datasel.variable]
 
 
-    def _init_experiment(self, exp_store: Path, exp_datasets: Sequence[MLBCExperimentDataset]):
+    def _init_experiment_dataset(
+        self,
+        exp_store: Path,
+        exp_datasets: Sequence[MLBCExperimentDataset],
+        role = MLBCExperimentDatasetRole,
+    ):
         base_dataset = exp_datasets[0]
         datasource = base_dataset.datasource
         data_selection = (
@@ -254,7 +260,7 @@ class MLBCExperiment:
         )
 
         exp = MLBCExperimentDataset(
-            role="prediction",
+            role=role,
             datasource=DataSource("xarray-local", data_selection),
             source_configs=XarrayLocalSourceConfig(
                 root_path=exp_store,
@@ -287,13 +293,13 @@ class MLBCExperiment:
 
     def _generate_xarray_ds(
         self,
-        source_data: Dict[str, BaseSource],
+        source_data: dict[str, BaseSource],
         experiments: MLBCExperimentDataset | Sequence[MLBCExperimentDataset],
         data_type: str
-    ) -> Tuple[xr.Dataset]:
+    ) -> tuple[xr.Dataset, xr.Dataset]:
         if not isinstance(experiments, list):
             experiments = [experiments]
-        exp_roles = [e.role for e in experiments if e.role != 'prediction']
+        exp_roles = [e.role for e in experiments if e.role != MLBCExperimentDatasetRole.PREDICTION]
         ds_d = {}
         s = time.time()
 
@@ -364,29 +370,57 @@ class MLBCExperiment:
 
         return mask_ds
 
-    def _init_source_data(self, exp_ds: MLBCExperimentDataset | Sequence[MLBCExperimentDataset], source_type: str):
-        """Returns populated Source instances"""
+    def _init_source_data(
+        self,
+        exp_ds: MLBCExperimentDataset | Sequence[MLBCExperimentDataset],
+        source_type: str
+    ) -> dict[MLBCExperimentDatasetRole, BaseSource]:
+        """Returns dictionary of populated Source instances"""
+
+        def _to_list(data):
+            if isinstance(data, list):
+                return data
+            if isinstance(data, Sequence) and not isinstance(data, (str, bytes)):
+                return list(data)
+            return [data]
 
         # Normalize to list
-        if not isinstance(exp_ds, list):
-            exp_ds = [exp_ds]
+        exp_ds = _to_list(exp_ds)
 
-        sources = {}
+        sources: dict[MLBCExperimentDatasetRole, BaseSource] = {}
         for e in exp_ds:
+            # Guard for duplicate roles
+            if e.role in sources:
+                raise ValueError(f"Duplicate role encountered: {e.role}")
+
             datasource = e.datasource
             source_configs = e.source_configs
 
             # Normalize to lists
-            if not isinstance(datasource, list) and not isinstance(source_configs, list): # TODO verify this check makes sense
-                datasource = [datasource]
-                source_configs = [source_configs]
+            datasource = _to_list(datasource)
+            source_configs = _to_list(source_configs)
+            if not datasource:
+                raise ValueError(f"No datasource entries provided for role={e.role}")
 
             save_path = self.config.work_path.joinpath(Path(f"{source_type}_{e.role}")).with_suffix(".zarr")
 
-            if save_path.exists(): # TODO weak check, make more robust, like check it is really a zarr store
+            # Check if dataset already exists in Zarr format
+            is_zarr_store = save_path.is_dir() and any(
+                save_path.joinpath(marker).exists()
+                for marker in ("zarr.json",) # only supports Zarr v3
+                # for marker in ("zarr.json", ".zgroup", ".zmetadata") # supports also older Zarr versions
+            )
+
+            if is_zarr_store:
                 xr_loc_source_configs, sources[e.role] = self._create_xarray_local_source(save_path, datasource)
                 self.rich_console.print(Table({f"Source '{sources[e.role].datasource.source}' {source_type} {e.role} params": asdict(xr_loc_source_configs)}, twocols=True).table)
             else:
+                if len(datasource) != len(source_configs):
+                    raise ValueError(
+                        f"datasource and source_configs length mismatch for role={e.role}: "
+                        f"{len(datasource)} != {len(source_configs)}"
+                    )
+
                 sources_list: list[BaseSource] = []
                 for i, (d, sc) in enumerate(zip(datasource, source_configs)):
                     sources_list.append(
@@ -399,53 +433,38 @@ class MLBCExperiment:
                         )
                     )
                     self.rich_console.print(Table({f"Source '{d.source}' {source_type} {e.role} [{i}] params": asdict(sc)}, twocols=True).table)
-                source = sum(sources_list)
-                sources[e.role] = source
+                source: BaseSource = sum(sources_list)
 
-        # Normalize dim names
-        input_ds_renamed, target_ds_renamed_list, dims = get_and_rename_dim(sources["input"].load(), [sources["target"].load()])
-        sources["input"].ds, sources["target"].ds = input_ds_renamed, target_ds_renamed_list[0]
-        print(f"Normalized {source_type} dataset dimensions: {dims}")
+                # Save datasets if requested
+                if e.save:
+                    source.load()
+                    source.save(save_path) # TODO examine, save may be not atomic
+                    # Regenerate as xarray-local source type
+                    xr_loc_source_configs, sources[e.role] = self._create_xarray_local_source(save_path, datasource)
+                    self.rich_console.print(Table({f"Source '{sources[e.role].datasource.source}' {source_type} {e.role} params": asdict(xr_loc_source_configs)}, twocols=True).table)
+                else:
+                    sources[e.role] = source
 
-        # Save datasets if requested
-        for e in exp_ds:
-            save_path = self.config.work_path.joinpath(Path(f"{source_type}_{e.role}")).with_suffix(".zarr")
-            datasource = e.datasource
-            if not isinstance(datasource, list):
-                datasource = [datasource]
-            if e.save and not save_path.exists():
-                sources[e.role].save(save_path)
-                # Regenerate as xarray-local source type
-                xr_loc_source_configs, sources[e.role] = self._create_xarray_local_source(save_path, datasource)
-                self.rich_console.print(Table({f"Source '{sources[e.role].datasource.source}' {source_type} {e.role} params": asdict(xr_loc_source_configs)}, twocols=True).table)
-
-        # Detect missing samples
+        # Union of missing samples
         missed = set()
         for role, source in sources.items():
-            if isinstance(source.elements.samples, dict):
-                missed |= {p for p in source.elements.missed} # missed is a set
-            if source.source_name == "xarray-local" and role != "prediction":
-                with source.load() as ds:
-                    if "missed_time" in ds:
-                        missed |= set(pd.to_datetime(ds["missed_time"].values).to_pydatetime())
-        print(f"Missed dates ({source_type}): {missed}")
+            source_missed = getattr(source.elements, "missed", None)
+            if source_missed:
+                missed |= set(source_missed)
+            if role != MLBCExperimentDatasetRole.PREDICTION:
+                ds = source.load()
+                if "missed_time" in ds:
+                    missed |= set(pd.to_datetime(ds["missed_time"].values).to_pydatetime())
+        self.rich_console.print(f"Combined missed dates ({source_type}): {missed}")
 
         # Reload to remove union of missed elements from all datasets (for dimension consistency)
         if missed:
             for role, source in sources.items():
-                if source.source_name == "xarray-local" and role != "prediction":
+                if role != MLBCExperimentDatasetRole.PREDICTION:
                     source.elements.missed = missed
-                    with source.reload() as ds:
-                        _ = ds.sizes # just to trigger reload
-        # source_table_dict = {f"{source.source_name} [{role}]": source.load().sizes for role, source in sources.items() if role != "prediction"}
-        # self.rich_console.print(Table({f"Reloaded source shapes": source_table_dict}).table)
+                    ds = source.reload()
+                    _ = ds.sizes # just to trigger reload
 
-        # missed = {p for source in sources.values() for p in source.elements.get('missed_samples', [])} # missed is a set
-        # if missed:
-        #     for role, source in sources.items():
-        #         source.elements.samples = {k: v for k, v in source.elements.samples.items() if k not in missed}
-        #         print(f"Removed missed data {missed} from {role}")
-        #         print(f"Number of {source_type} {role}: {len(source.elements.samples)}")
         return sources
 
 
@@ -460,7 +479,7 @@ class MLBCExperiment:
         self,
         input_ds: xr.Dataset,
         target_ds: xr.Dataset,
-    ) -> Tuple[xr.Dataset, xr.Dataset]:
+    ) -> tuple[xr.Dataset, xr.Dataset]:
         if self.target_clim_ts is None or self.input_clim_ts is None:
             raise RuntimeError("Anomaly climatologies were not initialized from the Train dataset.")
 
@@ -540,7 +559,7 @@ class MLBCExperiment:
         self,
         input_ds: xr.Dataset,
         target_ds: xr.Dataset,
-        source_data: Dict[str, BaseSource],
+        source_data: dict[str, BaseSource],
         data_type: str
     ):
         # Create torch dataset
@@ -572,33 +591,49 @@ class MLBCExperiment:
 
         x_mean, x_std = x_stats["target_mean"], x_stats["target_std"]
         y_mean, y_std = y_stats["target_mean"], y_stats["target_std"]
+        x_mean_np, x_std_np = np.nanmean(torch_dataset.x_np), np.nanstd(torch_dataset.x_np)
+        y_mean_np, y_std_np = np.nanmean(torch_dataset.y_np), np.nanstd(torch_dataset.y_np)
 
         # Count masked/invalid elements
         x_masked = (~torch_dataset.x_mask).sum().item()
         y_masked = (~torch_dataset.y_mask).sum().item()
+        x_masked_np = (~torch_dataset.mask_x_np).sum()
+        y_masked_np = (~torch_dataset.mask_y_np).sum()
 
         x_total = torch_dataset.x_mask.numel()
         y_total = torch_dataset.y_mask.numel()
+        x_total_np = torch_dataset.mask_x_np.size
+        y_total_np = torch_dataset.mask_y_np.size
 
         if x_total == 0 or y_total == 0:
             raise ValueError("Mask tensor is empty: check dataset construction")
 
         self.rich_console.print(Table({f'{data_type} dataset': {
             'input': {
-                'shape': torch_dataset.x.shape,
-                'mean': x_mean,
-                'std': x_std,
-                'masked_elements': x_masked,
-                'masked_fraction': x_masked / x_total,
-                'source': source_data['input'].datasource.source
+                'numpy shape': torch_dataset.x_np.shape,
+                'numpy mean': x_mean_np,
+                'numpy std': x_std_np,
+                'numpy masked_elements': x_masked_np,
+                'numpy masked_fraction': x_masked_np / x_total_np,
+                'torch shape': torch_dataset.x.shape,
+                'torch mean': x_mean,
+                'torch std': x_std,
+                'torch masked_elements': x_masked,
+                'torch masked_fraction': x_masked / x_total,
+                'source': source_data['input'].datasource.source,
             },
             'target': {
-                'shape': torch_dataset.y.shape,
-                'mean': y_mean,
-                'std': y_std,
-                'masked_elements': y_masked,
-                'masked_fraction': y_masked / y_total,
-                'source': source_data['target'].datasource.source
+                'numpy shape': torch_dataset.y_np.shape,
+                'numpy mean': y_mean_np,
+                'numpy std': y_std_np,
+                'numpy masked_elements': y_masked_np,
+                'numpy masked_fraction': y_masked_np / y_total_np,
+                'torch shape': torch_dataset.y.shape,
+                'torch mean': y_mean,
+                'torch std': y_std,
+                'torch masked_elements': y_masked,
+                'torch masked_fraction': y_masked / y_total,
+                'source': source_data['target'].datasource.source,
             },
         }}).table)
 
@@ -758,7 +793,7 @@ class MLBCExperiment:
     def _test(
         self,
         test_data_type: Literal['Test', 'Train'],
-        test_data: Dict, # dict of sources
+        test_data: dict[str, BaseSource],
         test_input_ds: xr.Dataset,
         test_target_ds: xr.Dataset,
         preds_store: Path,
@@ -818,7 +853,7 @@ class MLBCExperiment:
         self.rich_console.print(Table({f"Test on {test_data_type} dataset run info": meta}, twocols=True).table)
         self.rich_console.print(Table({f"Test on {test_data_type} dataset metrics (per variable)": var_cols}).table)
 
-        self.save(preds, dataset, test_data, 'input', preds_store)
+        self.save(preds, dataset, test_data, var_list, 'input', preds_store)
 
         return dataloader
 
@@ -923,6 +958,7 @@ class MLBCExperiment:
         data: torch.Tensor,
         dataset: XarrayDataset,
         source_data: dict,
+        var_list: Sequence,
         metadata_source: str,
         preds_store: Path
     ):
@@ -957,7 +993,7 @@ class MLBCExperiment:
         ds = xr.Dataset(
             {
                 var.name: (dims, data_vars[i].cpu().numpy())
-                for i, var in enumerate(self.test_var_list)
+                for i, var in enumerate(var_list)
             },
             coords={c: meta_ds.coords[c] for c in meta_ds.coords},
             attrs=meta_ds.attrs,
@@ -976,7 +1012,7 @@ class MLBCExperiment:
             ds = ds.groupby(f"{tdim}.month") + clim_ds
 
         compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
-        encoding_zarr = {v.name: {"compressors": compressor} for v in self.test_var_list}
+        encoding_zarr = {v.name: {"compressors": compressor} for v in var_list}
 
         print(f"Save preds to {preds_store}")
         ds.to_zarr(preds_store, encoding=encoding_zarr, mode="w", consolidated=self.consolidated_zarr)
