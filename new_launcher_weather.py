@@ -115,6 +115,8 @@ if __name__ == "__main__":
     root_path_analysis          = "/data/inputs/METOCEAN/historical/model/atmos/ECMWF/IFS_010/analysis/6h/grib/"
     root_path_analysis_new      = "/data/inputs/METOCEAN/historical/model/atmos/ECMWF/IFS_010_new/analysis/6h/grib/"
 
+    grib_index_path             = "/work/cmcc/jd19424/test-ML/.grib_index"
+
     cmems_credential = dict(
         username="jacopo.dallaglio2@unibo.it",
         password="ovUqR&5Q$q9%",
@@ -126,39 +128,39 @@ if __name__ == "__main__":
     target_test_provider_kwargs = None
 
     if experiment_name == "juno-ecmwf_juno-ecmwf":
+        grib_indexing = dict(cfgrib_idx_path=grib_index_path)
         if start_test_date <= juno_location_cutoff and end_test_date > juno_location_cutoff:
             test_periods = [
                 TimeRange(start=start_test_date, end=juno_location_cutoff, freq=freq),
                 TimeRange(start=juno_location_cutoff + relativedelta(days=1), end=end_test_date, freq=freq), # TODO use freq?
             ]
             input_test_provider_kwargs = dict(
-                train=dict(root_path=root_path_forecast),
+                train=dict(root_path=root_path_forecast) | grib_indexing,
                 # test partly in old folder and partly in new folder
                 test=[
-                    dict(root_path=root_path_forecast),
-                    dict(root_path=root_path_forecast_new, file_header="CMS"),
+                    dict(root_path=root_path_forecast) | grib_indexing,
+                    dict(root_path=root_path_forecast_new, file_header="CMS") | grib_indexing,
                 ],
             )
             target_test_provider_kwargs = dict(
-                train=dict(root_path=root_path_analysis),
+                train=dict(root_path=root_path_analysis) | grib_indexing,
                 test=[
-                    dict(root_path=root_path_analysis),
-                    dict(root_path=root_path_analysis_new, file_header="CMD"),
+                    dict(root_path=root_path_analysis) | grib_indexing,
+                    dict(root_path=root_path_analysis_new, file_header="CMD") | grib_indexing,
                 ],
             )
         else:
             if start_test_date >= juno_location_cutoff and end_test_date > juno_location_cutoff:
                 input_test_provider_kwargs = dict(
-                    train=dict(root_path=root_path_forecast),
+                    train=dict(root_path=root_path_forecast) | grib_indexing,
                     # test fully in new folder
-                    test=dict(root_path=root_path_forecast_new, file_header="CMS"),
+                    test=dict(root_path=root_path_forecast_new, file_header="CMS") | grib_indexing,
                 )
                 target_test_provider_kwargs = dict(
-                    train=dict(root_path=root_path_analysis),
+                    train=dict(root_path=root_path_analysis) | grib_indexing,
                     # test fully in new folder
-                    test=dict(root_path=root_path_analysis_new, file_header="CMS"),
+                    test=dict(root_path=root_path_analysis_new, file_header="CMS") | grib_indexing,
             )
-
     if experiment_name == "cmems_cmems":
         input_test_provider_kwargs = dict(
             train=cmems_credential,
