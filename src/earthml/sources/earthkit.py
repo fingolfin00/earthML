@@ -85,8 +85,9 @@ class EarthkitSource(BaseSource):
         """Populate missed if some months are skipped for seasonal requests"""
         # TODO we only support monthly seasonal datasets
         if self.config.request_type == "monthly":
-            start = self.data_selection.period.start - self.config.leadtime
-            end = self.data_selection.period.end - self.config.leadtime
+            # Use effective start/end
+            start = self.date_range[0] - self.config.leadtime
+            end = self.date_range[-1] - self.config.leadtime
             skip_months = set(self.split_month_jump)
 
             missed = [
@@ -417,9 +418,10 @@ class EarthkitSource(BaseSource):
             and self.config.leadtime.seconds == 0
         )
         # print(f"Leadtime is zero: {lead_is_zero}")
-        # print(f"Data sel start: {self.data_selection.period.start}, end: {self.data_selection.period.end}")
-        start = self.data_selection.period.start - self.config.leadtime #+ relativedelta(**self.data_selection.period.shifted) if self.data_selection.period.shifted is not None else self.data_selection.period.start
-        end = self.data_selection.period.end - self.config.leadtime #+ relativedelta(**self.data_selection.period.shifted) if self.data_selection.period.shifted is not None else self.data_selection.period.end
+        # print(f"Data sel start: {self.date_range[0]}, end: {self.date_range[-1]}")
+        # Use effective start and end dates
+        start = self.date_range[0] - self.config.leadtime #+ relativedelta(**self.data_selection.period.shifted) if self.data_selection.period.shifted is not None else self.data_selection.period.start
+        end = self.date_range[-1] - self.config.leadtime #+ relativedelta(**self.data_selection.period.shifted) if self.data_selection.period.shifted is not None else self.data_selection.period.end
 
         # TEMP quick fix for monthly forecast products:
         # current selected lead lands one month earlier than the target pairing,

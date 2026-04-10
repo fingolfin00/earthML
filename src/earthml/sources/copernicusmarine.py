@@ -50,8 +50,8 @@ class CopernicusmarineSource(BaseSource):
         samples = [s for s in self.elements.samples if s not in self.elements.missed] # TODO refactor to BaseSource?
         print(f"Samples: {len(samples)}, missed: {n_missed}")
 
-        start = self.data_selection.period.start - self.config.leadtime
-        end = self.data_selection.period.end - self.config.leadtime
+        start = self.date_range[0] - self.config.leadtime
+        end = self.date_range[-1] - self.config.leadtime
 
         min_lat, max_lat, min_lon, max_lon = None, None, None, None
         if not self.select_area_after_request:
