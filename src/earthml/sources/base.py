@@ -155,7 +155,7 @@ class BaseSource(ABC):
         # Remove corrupted timesteps and update missed (in class and in ds)
         ds = self._remove_corrupted_timesteps(ds)
 
-        # Select area if necessary
+        # Select area if necessary, juno-local subsets in _preprocess.py, xarray-local doesn't support it
         if self.select_area_after_request:
             print(f"Select region lat: {self.data_selection.region.lat}, lon: {self.data_selection.region.lon}")
             ds = ds.earthml.subset(self.data_selection)
@@ -174,11 +174,22 @@ class BaseSource(ABC):
             )
             lat_res_regrid, lon_res_regrid = ds.earthml.resolution()
             print(f"Target rectilinear resolutions: lat {lat_res_regrid:.2f}, lon {lon_res_regrid:.2f}")
+        for var in [v for v in ds.data_vars if v != "_has_var"]:
+            da = ds[var]
+            time_dim = ds.earthml.guessed_dims.time
+            reduce_dims = [d for d in da.dims if d != time_dim]
+            ts_mean = da.mean(dim=reduce_dims, skipna=True) if reduce_dims else da
+            n_ok = int(ts_mean.notnull().sum().compute() if hasattr(ts_mean.data, "compute") else ts_mean.notnull().sum())
+            print(f"POST-REGRID {self.source_name}: var={var}, non-null timesteps={n_ok}/{ts_mean.size}")
 
-       # Convert unit of variables if necessary (e.g. from C to K for SST)
+        # Convert unit of variables if necessary (e.g. from C to K for SST)
         if self.convert_unit is not None:
             print(f"Converting variable units according to: {self.convert_unit}")
             ds = ds.earthml.convert_unit(self.convert_unit)
+
+        time_like_dims = [d for d in ("time", "valid_time", "source_time", "time_counter", "t") if d in ds.dims]
+        if len(time_like_dims) > 1:
+            print(f"Warning: multiple time-like dims present: {time_like_dims}")
 
         # Normalize dims
         ds = ds.earthml.normalize_dims_and_coords()
