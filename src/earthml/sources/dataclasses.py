@@ -10,6 +10,14 @@ class DataSource:
     source          : str
     data_selection  : DataSelection
 
+    def __post_init__(self):
+        if not self.source:
+            raise ValueError("source must not be empty")
+        if self.data_selection is None:
+            raise ValueError("data_selection must not be None")
+        if self.data_selection.period is None:
+            raise ValueError("data_selection.period must not be None")
+
     def __add__(self, other: "DataSource") -> "DataSource":
         if not isinstance(other, DataSource):
             return NotImplemented
