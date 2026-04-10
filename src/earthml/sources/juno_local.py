@@ -47,11 +47,12 @@ class JunoLocalSourceFileNameConfig:
 
 @dataclass
 class JunoLocalSourceConfig:
-    leadtime            : relativedelta # TODO move to Leadtime?
-    root_path           : str | Path
-    engine              : str
-    file_name_config    : JunoLocalSourceFileNameConfig
-    regrid_config       : RegridConfig
+    leadtime                    : relativedelta # TODO move to Leadtime?
+    root_path                   : str | Path
+    engine                      : str
+    file_name_config            : JunoLocalSourceFileNameConfig
+    regrid_config               : RegridConfig
+    select_area_after_request   : bool = True
 
 
 class JunoLocalSource(MFXarrayLocalSource):
@@ -71,6 +72,8 @@ class JunoLocalSource(MFXarrayLocalSource):
 
         self.leadtime = config.leadtime
         self.elements = self._get_data_filenames(self.leadtime, config.file_name_config)
+
+        self.select_area_after_request = self.config.select_area_after_request
 
         self.regrid_resolution = config.regrid_config.regrid_resolution
         self.regrid_vars = config.regrid_config.regrid_vars if config.regrid_config.regrid_vars is not None else self.var_name_list
@@ -385,9 +388,6 @@ class JunoLocalSource(MFXarrayLocalSource):
                 samples_d[date] = dsR.assign_coords({realization_concat_dim: np.arange(R)})
 
         self.elements.missed.update(pd.to_datetime(missing_samples).to_pydatetime().tolist())
-
-        # Subset (select region)
-        ds = ds.earthml.subset(self.data_selection)
 
         # Concatenate
         times = np.array(
