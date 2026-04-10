@@ -42,7 +42,8 @@ class XarrayLocalSource(BaseSource):
             keep_mask = ~self.ds[time_dim].isin(missed)
             # print(missed)
             # print(self.ds[time_dim])
-            self.ds = self.ds.sel({time_dim: keep_mask})
+            # self.ds = self.ds.sel({time_dim: keep_mask})
+            self.ds = self.ds.where(keep_mask, drop=True)
 
             # Update missed_time coord if present
             if "missed_time" in self.ds.coords:
