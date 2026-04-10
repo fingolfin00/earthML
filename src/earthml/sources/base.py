@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import field
 from typing import Callable
 
+from copy import deepcopy
 from pathlib import Path
 
 import time
@@ -25,13 +26,19 @@ class BaseSource(ABC):
         self,
         datasource: DataSource,
     ):
-        self.datasource = datasource
-        self.data_selection = datasource.data_selection
+        self.datasource = deepcopy(datasource) # deepcopy on entry to avoid unwanted mutations
+        self.data_selection = self.datasource.data_selection
         self.source_name = datasource.source
         self.date_range = self.generate_date_range(self.data_selection.period)
-        self.data_selection.period.start = self.date_range[0] # this may change the periods generated in the launcher script!
+        if len(self.date_range) == 0:
+            raise ValueError(
+                f"Generated empty date range for source={self.source_name} "
+                f"from period={self.data_selection.period}"
+            )
+        # self.data_selection.period.start = self.date_range[0] # this may change the periods generated in the launcher script!
         # self.data_selection.period.end = self.date_range[-1]
-        print(f"Date range: length {len(self.date_range)}, {self.date_range[0]} to {self.date_range[-1]}")
+        print(f"Requested date range: {self.data_selection.period.start} to {self.data_selection.period.end}")
+        print(f"Effective date range: {self.date_range[0]} to {self.date_range[-1]}, length {len(self.date_range)}")
         # print(self.date_range)
 
         # Init
@@ -109,6 +116,8 @@ class BaseSource(ABC):
             ts_mean = da.mean(dim=reduce_dims, skipna=True) if reduce_dims else da
             keep = keep & ts_mean.notnull()
 
+            print(f"{self.source_name}: var={var}, non-null timesteps={int(ts_mean.notnull().sum())}/{ts_mean.size}")
+
         # Compute only the 1D mask (cheaper)
         keep = keep.compute() if hasattr(keep.data, "compute") else keep
 
@@ -118,7 +127,7 @@ class BaseSource(ABC):
             set(pd.to_datetime(corrupted_sel.values).to_pydatetime())
             if corrupted_sel.values.size else set()
         )
-        print(f"Currupted {self.source_name} samples: {len(corrupted)}")
+        print(f"Corrupted {self.source_name} samples: {len(corrupted)}")
 
         # Drop corrupted timesteps
         ds = ds.drop_sel({time_dim: corrupted_sel})
