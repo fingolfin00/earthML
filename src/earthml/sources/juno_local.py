@@ -2,7 +2,8 @@ from typing import Literal
 from dataclasses import dataclass
 from functools import partial
 
-import re, time
+import re, time, dask
+from heapq import nlargest
 from pathlib import Path
 
 from datetime import timedelta
@@ -28,6 +29,9 @@ from .dataclasses import DataSource, Sample, RegridConfig
 from .utils import retry_fetch_after_hdf_err
 from .xarray_local import MFXarrayLocalSource
 from ._preprocess import preprocess_mfdataset
+
+
+REALIZATION_RE = re.compile(r"_r(\d+)")
 
 
 @dataclass
@@ -72,6 +76,45 @@ class JunoLocalSource(MFXarrayLocalSource):
         self.regrid_vars = config.regrid_config.regrid_vars if config.regrid_config.regrid_vars is not None else self.var_name_list
 
 
+    @staticmethod
+    def _latest_matching_files(data_path: Path, pattern: str, realizations: int | Literal["all"]) -> list[Path]:
+        """
+        Return matching files sorted by newest mtime first.
+        Preserves the original behavior:
+        - only files
+        - sorted by st_mtime descending
+        - if realizations != 'all', keep only the newest `realizations`
+        """
+        matches = []
+        for p in data_path.glob(pattern):
+            if p.is_file():
+                try:
+                    mtime = p.stat().st_mtime
+                except FileNotFoundError:
+                    # File vanished between glob and stat; equivalent to not found
+                    continue
+                matches.append((mtime, p))
+
+        if not matches:
+            return []
+
+        if realizations == "all":
+            matches.sort(key=lambda t: t[0], reverse=True)
+            return [p for _, p in matches]
+
+        # Keep exact same observable behavior: newest files only, newest-first order
+        top = nlargest(realizations, matches, key=lambda t: t[0])
+        top.sort(key=lambda t: t[0], reverse=True)
+        return [p for _, p in top]
+
+    @staticmethod
+    def _realization_key(p: Path) -> int:
+        m = REALIZATION_RE.search(p.name)
+        if not m:
+            raise ValueError(f"Could not parse realization from filename: {p.name}")
+        return int(m.group(1))
+
+
     def _get_data_filenames(
         self,
         leadtime: relativedelta,
@@ -80,68 +123,63 @@ class JunoLocalSource(MFXarrayLocalSource):
         """Get the data filenames for the given data selection."""
 
         s = Sample(extra={"plus_samples": [], "minus_samples": []})
-        assert config.realizations == 'all' or config.realizations > 0
+        assert config.realizations == "all" or config.realizations > 0
+
+        both_dates_in_name = config.both_data_and_previous_date_in_file
+        realizations = config.realizations
+        file_header = config.file_header
+        file_suffix = config.file_suffix
+        file_date_format = config.file_date_format
+        file_path_date_format = config.file_path_date_format
+
+        minus_td = config.minus_timedelta
+        plus_td = config.plus_timedelta
+
         for date in self.date_range:
             previous_date = date - leadtime
-            # print("juno-local prev date:", previous_date)
-            data_path = self.path.joinpath(previous_date.strftime(config.file_path_date_format))
-            if config.both_data_and_previous_date_in_file:
-                data_glob = f"{config.file_header}{previous_date.strftime(config.file_date_format)}{date.strftime(config.file_date_format)}{config.file_suffix}"
+            data_path = self.path.joinpath(previous_date.strftime(file_path_date_format))
+
+            prev_str = previous_date.strftime(file_date_format)
+            date_str = date.strftime(file_date_format)
+
+            if both_dates_in_name:
+                data_glob = f"{file_header}{prev_str}{date_str}{file_suffix}"
             else:
-                data_glob = f"{config.file_header}{previous_date.strftime(config.file_date_format)}{config.file_suffix}"
-            # print(f"{date}, glob:", data_path / data_glob)
+                data_glob = f"{file_header}{prev_str}{file_suffix}"
 
-            # files_exact = [p for p in data_path.glob(data_glob) if p.is_file()]
-            files_exact = sorted(
-                (p for p in data_path.glob(data_glob) if p.is_file()),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True  # newest first
-            )
+            files_exact = self._latest_matching_files(data_path, data_glob, realizations)
 
-            if len(files_exact) > 1:
-                if config.realizations == 'all':
-                    r = len(files_exact)
-                else:
-                    r = config.realizations
-                # print(f"{date}: {len(files_exact)} matches")
-                # print(f"{date}: {len(files_exact)} matches, keeping {files_exact[:r]}")
-                files_exact = files_exact[:r]  # keep latest only, still a list
-            # print(f"{date}, path:", files_exact)
-
-            # Try direct match first
             if files_exact:
                 s.samples[date] = files_exact
                 continue
 
-            # Fallback search
             found = False
-            fallbacks = []
-            if config.minus_timedelta:
-                fallbacks.append((-config.minus_timedelta, s.extra["minus_samples"]))
-            if config.plus_timedelta:
-                fallbacks.append((config.plus_timedelta, s.extra["plus_samples"]))
-            for delta, store in fallbacks:
-                test_date = date + delta
-                if config.both_data_and_previous_date_in_file:
-                    test_glob = f"{config.file_header}{previous_date.strftime(config.file_date_format)}{test_date.strftime(config.file_date_format)}{config.file_suffix}"
+
+            if minus_td is not None:
+                test_date = date - minus_td
+                if both_dates_in_name:
+                    test_glob = f"{file_header}{prev_str}{test_date.strftime(file_date_format)}{file_suffix}"
                 else:
-                    test_glob = f"{config.file_header}{previous_date.strftime(config.file_date_format)}{config.file_suffix}" # TODO look better into this
-                test_files = sorted(
-                    (p for p in data_path.glob(test_glob) if p.is_file()),
-                    key=lambda p: p.stat().st_mtime,
-                    reverse=True,
-                )
-                # print(f"New file {delta}: {test_files}")
+                    test_glob = f"{file_header}{prev_str}{file_suffix}"
+
+                test_files = self._latest_matching_files(data_path, test_glob, realizations)
                 if test_files:
-                    if config.realizations == 'all':
-                        r = len(test_files)
-                    else:
-                        r = config.realizations
-                    s.samples[date] = test_files[:r]
-                    # s.samples.extend(test_files)
-                    store.append(date)
+                    s.samples[date] = test_files
+                    s.extra["minus_samples"].append(date)
                     found = True
-                    break
+
+            if not found and plus_td is not None:
+                test_date = date + plus_td
+                if both_dates_in_name:
+                    test_glob = f"{file_header}{prev_str}{test_date.strftime(file_date_format)}{file_suffix}"
+                else:
+                    test_glob = f"{file_header}{prev_str}{file_suffix}"
+
+                test_files = self._latest_matching_files(data_path, test_glob, realizations)
+                if test_files:
+                    s.samples[date] = test_files
+                    s.extra["plus_samples"].append(date)
+                    found = True
 
             if not found:
                 print(f"Missed sample (local filename not found): {date}")
@@ -149,23 +187,29 @@ class JunoLocalSource(MFXarrayLocalSource):
 
         return s
 
+
     def _get_data(self) -> xr.Dataset:
-        # years = [str(date.year) for date in xr.date_range(start=data.period.start, end=data.period.end, freq='YS', inclusive='left')]
-        # print(f"{self.source_name} missed dates: {self.elements.missed}")
-        # print(self.elements.samples)
-        samples = [s for date, s in self.elements.samples.items() if date not in self.elements.missed] # list of lists
+        samples = [s for date, s in self.elements.samples.items() if date not in self.elements.missed]
         assert len(samples) > 0, "No samples obtained."
         dates = [date for date in self.elements.samples.keys() if date not in self.elements.missed]
-        print(f"Juno local file samples: {len(samples)}, minus: {len(self.elements.extra['minus_samples'])}, plus: {len(self.elements.extra['plus_samples'])}, missed: {len(self.elements.missed)}")
-        samples_d = {}
 
+        minus_samples = self.elements.extra["minus_samples"]
+        plus_samples = self.elements.extra["plus_samples"]
+        has_shifted_samples = bool(minus_samples or plus_samples)
+
+        print(
+            f"Juno local file samples: {len(samples)}, "
+            f"minus: {len(minus_samples)}, plus: {len(plus_samples)}, missed: {len(self.elements.missed)}"
+        )
+
+        samples_d: dict[pd.Timestamp, xr.Dataset] = {}
         lock = SerializableLock()
 
         common_args = {
-            "combine": "nested",  # if self.concat_dim else "by_coords",
-            "coords": "minimal" if (self.elements.extra['minus_samples'] or self.elements.extra['plus_samples']) else "different", # ["time"],
+            "combine": "nested",
+            "coords": "minimal" if has_shifted_samples else "different",
             # if minus/plus_samples time coordinate stepping might be irregular so override
-            "compat": "override" if (self.elements.extra['minus_samples'] or self.elements.extra['plus_samples']) else "no_conflicts",
+            "compat": "override" if has_shifted_samples else "no_conflicts",
             "engine": self.engine,
             # "chunks": {'time': -1},
             "chunks": "auto",
@@ -185,8 +229,7 @@ class JunoLocalSource(MFXarrayLocalSource):
             else self.data_selection.variable.name
         )
 
-        probe_backend_kwargs = dict(common_args.get("backend_kwargs", {}))
-
+        probe_backend_kwargs = dict(common_args["backend_kwargs"])
         if self.engine == "cfgrib":
             probe_backend_kwargs.update({
                 "indexpath": "",
@@ -200,9 +243,12 @@ class JunoLocalSource(MFXarrayLocalSource):
             backend_kwargs=probe_backend_kwargs,
             lock=lock,
         ) as ds0:
-            common_args["concat_dim"] = ds0.earthml.guessed_dims.realization or "realization"
+            realization_concat_dim = ds0.earthml.guessed_dims.realization or "realization"
 
-        realization_concat_dim = common_args["concat_dim"]
+        common_args["concat_dim"] = realization_concat_dim
+
+        is_var_list = isinstance(self.data_selection.variable, list)
+        selected_vars = self.data_selection.variable if is_var_list else [self.data_selection.variable]
 
         with Progress(
             SpinnerColumn(),
@@ -211,36 +257,29 @@ class JunoLocalSource(MFXarrayLocalSource):
             MofNCompleteColumn(),
             TimeElapsedColumn(),
         ) as prog:
-            task = prog.add_task("Opening samples...", total=len(samples))
+            task = prog.add_task("Opening local samples", total=len(samples))
+
             for sample, date in zip(samples, dates):
                 assert isinstance(sample, list), f"Sample should be a list but it is {type(sample)}"
 
-                args = dict(common_args) # make local copy
-
                 # Try sorting by realization "...rxx..."
                 if len(sample) > 1:
-                    def _realization_key(p: Path) -> int:
-                        m = re.search(r"_r(\d+)", p.name)
-                        if not m:
-                            raise ValueError(f"Could not parse realization from filename: {p.name}")
-                        return int(m.group(1))
+                    sample = sorted(sample, key=self._realization_key)
 
-                    sample = sorted(sample, key=_realization_key)
-                # print(sample)
-                args['paths'] = sample
+                args = dict(common_args) # make local copy
+                args["paths"] = sample
 
-                if isinstance(self.data_selection.variable, list):
+                if is_var_list:
                     var_ds_list = []
-                    for var in self.data_selection.variable:
+
+                    for var in selected_vars:
                         var_args = dict(args) # again local copy to avoid leakage between iterations
 
                         if self.engine == "cfgrib":
                             var_args["backend_kwargs"] = {
-                                "indexpath": "",
+                                "indexpath": "", # disable .idx writing
                                 "filter_by_keys": {"cfVarName": var.name},
                             }
-                            # var_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": var.name}} # not currently possible to filter with a list of keys (see https://github.com/ecmwf/cfgrib/issues/138)
-                            # var_args["indexpath"] = ""
 
                         var_args["preprocess"] = partial(
                             preprocess_mfdataset,
@@ -248,101 +287,126 @@ class JunoLocalSource(MFXarrayLocalSource):
                             var_name=var.name,
                             date=date,
                         )
+                        # var_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": var.name}} # not currently possible to filter with a list of keys (see https://github.com/ecmwf/cfgrib/issues/138)
+                        # var_args["indexpath"] = ""
 
-                        def _open_mfdataset():
-                            return xr.open_mfdataset(**var_args)
+                        def _open_mfdataset_local(local_args=var_args):
+                            return xr.open_mfdataset(**local_args)
 
-                        var_ds_list.append(retry_fetch_after_hdf_err(_open_mfdataset, error_re=r"Unspecified error in H5DSget_num_scales.*"))
+                        var_ds = retry_fetch_after_hdf_err(
+                            _open_mfdataset_local,
+                            error_re=r"Unspecified error in H5DSget_num_scales.*",
+                        )
+                        var_ds_list.append(var_ds)
 
                     ds_sample = xr.merge(var_ds_list, compat="no_conflicts", combine_attrs="no_conflicts")
 
-                    # Load realization coord
                     if realization_concat_dim in ds_sample.coords:
-                        ds_sample = ds_sample.assign_coords({realization_concat_dim: ds_sample[realization_concat_dim].load()})
+                        ds_sample = ds_sample.assign_coords(
+                            {realization_concat_dim: ds_sample[realization_concat_dim].load()}
+                        )
                 else:
+                    var = selected_vars[0]
+
                     if self.engine == "cfgrib":
                         args["backend_kwargs"] = {
-                            "indexpath": "",                 # disable .idx writing
-                            "filter_by_keys": {"cfVarName": self.data_selection.variable.name},
+                            "indexpath": "", # disable .idx writing
+                            "filter_by_keys": {"cfVarName": var.name},
                         }
-                        # args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": self.data_selection.variable.name}}
-                        # args["indexpath"] = ""
 
-                    args["preprocess"] = partial(preprocess_mfdataset, data=self.data_selection, var_name=self.data_selection.variable.name, date=date)
+                    args["preprocess"] = partial(
+                        preprocess_mfdataset,
+                        data=self.data_selection,
+                        var_name=var.name,
+                        date=date,
+                    )
 
-                    # Tested support for netcdf4
-                    def _open_mfdataset ():
-                        return xr.open_mfdataset(**args)
+                    def _open_mfdataset_local(local_args=args):
+                        return xr.open_mfdataset(**local_args)
 
-                    ds_sample = retry_fetch_after_hdf_err(_open_mfdataset, error_re=r"Unspecified error in H5DSget_num_scales.*")
+                    ds_sample = retry_fetch_after_hdf_err(
+                        _open_mfdataset_local,
+                        error_re=r"Unspecified error in H5DSget_num_scales.*",
+                    )
 
                     # Load realization coord
                     if realization_concat_dim in ds_sample.coords:
-                        ds_sample = ds_sample.assign_coords({realization_concat_dim: ds_sample[realization_concat_dim].load()})
+                        ds_sample = ds_sample.assign_coords(
+                            {realization_concat_dim: ds_sample[realization_concat_dim].load()}
+                        )
                     # Promote realization to coord
                     if realization_concat_dim in ds_sample.dims:
-                        ds_sample = ds_sample.assign_coords({realization_concat_dim: ds_sample[realization_concat_dim]})
+                        ds_sample = ds_sample.assign_coords(
+                            {realization_concat_dim: ds_sample[realization_concat_dim]}
+                        )
 
-                # print(ds_sample)
-                # ds_sample is alway Rx1xYxX
                 samples_d[date] = ds_sample
-
                 prog.advance(task)
 
-        # Count valid realizations
-        samples_len, missing_samples = [], []
+        # Batch validity checks instead of one compute() per sample
+        validity_tasks = []
+        validity_dates = []
+
         for date, ds in samples_d.items():
             time_dim = ds.earthml.guessed_dims.time
-            # print(f"Realization dim: {realization_concat_dim}, time dim: {time_dim}")
             dims = tuple(
                 d for d in (realization_concat_dim, time_dim)
                 if d is not None and d in ds["_has_var"].dims
             )
-            # print(f"Sample {date} _has_var dims: {dims}")
-            has_any = ds["_has_var"].any(dim=dims)
-            has_any = bool(has_any.compute().item() if hasattr(has_any.data, "compute") else has_any.item())
-            if has_any:
+            validity_tasks.append(ds["_has_var"].any(dim=dims))
+            validity_dates.append(date)
+
+        validity_values = dask.compute(*validity_tasks) if validity_tasks else ()
+
+        samples_len = []
+        missing_samples = []
+
+        for date, ds, has_any in zip(validity_dates, (samples_d[d] for d in validity_dates), validity_values):
+            ok = bool(has_any.item())
+            if ok:
                 samples_len.append(ds.sizes.get(realization_concat_dim, 1))
             else:
                 # Store dates with no valid realizations
                 missing_samples.append(date)
 
-        # print(f"Samples length for realization minimization: {len(samples_len)}")
         if not samples_len:
             raise ValueError(
                 f"No valid samples found for {self.source_name}. "
                 f"Total candidates={len(samples_d)}, missing_samples={len(missing_samples)}"
             )
-        min_R = min(samples_len)
+
         # Use only min_R realizations per sample
+        min_R = min(samples_len)
+
         for date, ds in samples_d.items():
             if realization_concat_dim in ds.dims:
                 dsR = ds.isel({realization_concat_dim: slice(0, min_R)})
-                # Realizations are simple integers
                 R = dsR.sizes[realization_concat_dim]
                 samples_d[date] = dsR.assign_coords({realization_concat_dim: np.arange(R)})
-        # print(f"Smallest number of realizations for valid samples: {min_R}")
-        # print(f"Missed samples after file-processing: {missing_samples}")
-        # print(f"Missed elements before file-processing: {self.elements.missed}")
+
         self.elements.missed.update(pd.to_datetime(missing_samples).to_pydatetime().tolist())
-        # print(f"Updated missed elements: {self.elements.missed}")
+
+        # Subset (select region)
+        ds = ds.earthml.subset(self.data_selection)
 
         # Concatenate
-        times = np.array([d for d in sorted(samples_d.keys()) if d not in self.elements.missed], dtype="datetime64[ns]")
+        times = np.array(
+            [d for d in sorted(samples_d.keys()) if d not in self.elements.missed],
+            dtype="datetime64[ns]",
+        )
         objs = [samples_d[d] for d in sorted(samples_d) if d not in self.elements.missed]
+
         if not objs:
             raise ValueError(
                 f"No datasets left to concatenate for {self.source_name} after removing missed samples."
             )
-        # print(objs)
 
+        # TODO add progress bar to concat too?
         return xr.concat(
             objs=objs,
-            dim=xr.IndexVariable("time", times),
-            coords='minimal',
-            # compat="broadcast_equals",
+            dim=xr.IndexVariable(time_dim, times), # TODO time_dim here is an abuse, as is selected in a loop
+            coords="minimal",
             compat="override",
-            join='outer',
-            # join='exact',
-            combine_attrs='drop_conflicts'
+            join="outer",
+            combine_attrs="drop_conflicts",
         )
