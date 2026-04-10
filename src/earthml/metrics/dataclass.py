@@ -4,6 +4,11 @@ from typing import Sequence
 import numpy as np
 import xarray as xr
 
+from ..logging import get_logger
+
+
+logger = get_logger(__name__)
+
 
 @dataclass
 class MetricDims:
@@ -260,7 +265,7 @@ class MetricData:
         """
         Print a summary of dataset dimensions for truth and model inputs.
         """
-        print("Metrics initialized with truth and model shapes:")
-        print(f"  {self.truth_name}: {dict(self.truth_data.sizes)}")
+        logger.info("Metrics initialized with truth and model shapes:")
+        logger.info("  %s: %s", self.truth_name, dict(self.truth_data.sizes))
         for ds, name in zip(self.model_data, self.model_names):
-            print(f"  {name}: {dict(ds.sizes)}")
+            logger.info("  %s: %s", name, dict(ds.sizes))

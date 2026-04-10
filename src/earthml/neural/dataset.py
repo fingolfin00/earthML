@@ -6,6 +6,11 @@ import xarray as xr
 import torch
 from torch.utils.data import Dataset
 
+from ..logging import get_logger
+
+
+logger = get_logger(__name__)
+
 
 class XarrayDataset(Dataset):
     def __init__(
@@ -74,7 +79,7 @@ class XarrayDataset(Dataset):
         # print(f"Input shape: {self.x_np.shape}, target shape: {self.y_np.shape}")
 
         if realization_as_channel:
-            print("Realization as channel branch")
+            logger.info("Realization as channel branch")
             # X: merge R into C
             if self.x_np_filled.ndim == 5:  # (C,T,R,H,W)
                 C, T, R, H, W = self.x_np_filled.shape

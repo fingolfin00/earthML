@@ -1,8 +1,11 @@
-from rich import print # TODO thin the module, there shoulnd't be print here
-
 import numpy as np
 import cf_xarray
 import xarray as xr
+
+from ..logging import get_logger
+
+
+logger = get_logger(__name__)
 
 
 class EarthMLResolution:
@@ -170,7 +173,7 @@ class EarthMLResolution:
 
             # 2a. Rectilinear in disguise?
             if self._is_rectilinear_disguised(lat2d, lon2d):
-                print("Detected rectilinear grid stored as 2D.")
+                logger.info("Detected rectilinear grid stored as 2D.")
                 lat_line = lat2d[:, 0]
                 lon_line = lon2d[0, :]
                 lat_res = self._coord_resolution_1d(lat_line, lat_coord)
@@ -180,16 +183,16 @@ class EarthMLResolution:
             # 2b. Regular curvilinear?
             is_reg, (lat_reg, lon_reg) = self._is_regular_curvilinear(lat2d, lon2d, rel_tol=0.5)
             if is_reg:
-                print("Detected regular curvilinear grid.")
+                logger.info("Detected regular curvilinear grid.")
                 return lat_reg, lon_reg
 
             # 2c. Fallback heuristic
-            print("Grid appears non-regular; using fallback curvilinear heuristic.")
+            logger.info("Grid appears non-regular; using fallback curvilinear heuristic.")
             lat_res, lon_res = self._fallback_curvilinear_res(lat2d, lon2d)
             return lat_res, lon_res
 
         # Case 3: mixed dims (rare) – treat each independently
-        print("Mixed lat/lon dimensions (one 1D, one 2D); treating separately.")
+        logger.info("Mixed lat/lon dimensions (one 1D, one 2D); treating separately.")
 
         # Latitude
         if lat_da.ndim == 1:

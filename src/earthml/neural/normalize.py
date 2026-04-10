@@ -2,6 +2,11 @@ from typing import Optional
 
 import joblib, torch
 
+from ..logging import get_logger
+
+
+logger = get_logger(__name__)
+
 
 class Normalize:
     """
@@ -168,7 +173,7 @@ class Normalize:
             try:
                 self = self.load(filepath)
             except Exception as e:
-                print(e)
+                logger.exception("Failed to load normalizer from %s", filepath)
                 raise ValueError("Transform not fitted.")
 
     def _broadcast_params(self, t: torch.Tensor):

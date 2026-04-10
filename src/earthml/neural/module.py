@@ -9,8 +9,12 @@ import lightning as L
 
 import matplotlib.cm as cm
 
+from ..logging import get_logger
 from .metrics import MaskedMAE, MaskedRMSE, MaskedSpatialCorr
 from .utils import call_loss
+
+
+logger = get_logger(__name__)
 
 
 class EarthMLLightningModule(L.LightningModule):
@@ -113,7 +117,10 @@ class EarthMLLightningModule(L.LightningModule):
         if colormap:
             # Apply colormap
             if img_tensor.dim() not in [2, 3]: # Should be 2D (H,W) or (1,H,W) for colormapping
-                print(f"Colormap applied to unexpected tensor dim: {img_tensor.shape}. Expecting 2D or (1,H,W).")
+                logger.warning(
+                    "Colormap applied to unexpected tensor dim: %s. Expecting 2D or (1,H,W).",
+                    img_tensor.shape,
+                )
                 return
 
             # If it's (1, H, W), squeeze to (H, W) for colormapping
@@ -147,7 +154,7 @@ class EarthMLLightningModule(L.LightningModule):
             elif img_tensor.dim() == 3:
                 log_tensor = img_tensor # Already (C, H, W)
             else:
-                print(f"Unexpected tensor dimension for image logging without colormap: {img_tensor.shape}. Skipping.")
+                logger.warning("Unexpected tensor dimension for image logging without colormap: %s. Skipping.", img_tensor.shape)
                 return
 
         logger_instance.experiment.add_image(name_tag, log_tensor, self.global_step)
@@ -174,14 +181,14 @@ class EarthMLLightningModule(L.LightningModule):
             return
 
         if pred_tensor is None or target_tensor is None:
-            print("Attempted to log image, but prediction or target tensor is None.")
+            logger.warning("Attempted to log image, but prediction or target tensor is None.")
             return
         
         if pred_tensor.dim() != 4 or pred_tensor.shape[0] == 0:
-            print(f"Prediction tensor not 4D (N,C,H,W) or empty for logging: {pred_tensor.shape}. Skipping.")
+            logger.warning("Prediction tensor not 4D (N,C,H,W) or empty for logging: %s. Skipping.", pred_tensor.shape)
             return
         if target_tensor.dim() != 4 or target_tensor.shape[0] == 0:
-            print(f"Target tensor not 4D (N,C,H,W) or empty for logging: {target_tensor.shape}. Skipping.")
+            logger.warning("Target tensor not 4D (N,C,H,W) or empty for logging: %s. Skipping.", target_tensor.shape)
             return
 
         # Choose the first sample (index 0) and the first channel (index 0)
@@ -360,7 +367,7 @@ class EarthMLLightningModule(L.LightningModule):
         # optimizer = self.optimizers()
         # current_lr = optimizer.param_groups[0]['lr']
         # self.log('lr', current_lr, on_step=False, on_epoch=True)
-        print(f"Epoch {self.current_epoch}: learning Rate = {current_lr}")
+        logger.info("Epoch %s: learning Rate = %s", self.current_epoch, current_lr)
 
     # def on_validation_epoch_end (self):
     #     """Process validation results, including logging a sample image"""
@@ -379,11 +386,11 @@ class EarthMLLightningModule(L.LightningModule):
         final_test_scc = self.test_scc.compute()
         # final_test_acc = self.test_acc.compute()
         
-        print(f"Test Results - "
-            f"MAE: {final_test_mae:.4f}, "
-            f"RMSE: {final_test_rmse:.4f}, "
-            f"SCC: {final_test_scc:.4f}, "
-            # f"ACC: {final_test_acc:.4f}"
+        logger.info(
+            "Test Results - MAE: %.4f, RMSE: %.4f, SCC: %.4f",
+            final_test_mae,
+            final_test_rmse,
+            final_test_scc,
         )
 
         # Store all test_preds/targets for post-test analysis

@@ -10,8 +10,11 @@ from torch import nn
 import torch.nn.functional as F
 import lightning as L
 
+from ...logging import get_logger
 from .. import EarthMLLightningModule
 from .. import resolve_loss
+
+logger = get_logger(__name__)
 
 # DEBUG
 # import traceback
@@ -191,7 +194,7 @@ class UpDS(EarthMLLightningModule):
         diffX = x2.size()[3] - x1.size()[3]
 
         if diffX < 0 or diffY < 0:
-            print(f"UpDS.forward - Negative padding needed! x1:{x1.shape}, x2:{x2.shape}")
+            logger.warning("UpDS.forward - Negative padding needed! x1:%s, x2:%s", x1.shape, x2.shape)
             # This indicates an issue with dimensions being larger than expected,
             # which could lead to problematic padding arguments.
             # You might want to raise an error or adjust logic here.

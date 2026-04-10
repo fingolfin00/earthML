@@ -17,11 +17,13 @@ import pandas as pd
 import xarray as xr
 import earthkit.data as ekd
 
-from rich import print
-
 from .dataclasses import DataSource, RegridConfig
 from .utils import retry_fetch_after_hdf_err, generate_hours
 from .base import BaseSource
+from ..logging import get_logger
+
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -200,7 +202,7 @@ class EarthkitSource(BaseSource):
 
         ds_chunks = []
         for i, req_time_arg in enumerate(request_time_args_list, start=1):
-            print(_format_request_chunk_log(req_time_arg, start, end, i, len(request_time_args_list)))
+            logger.info("%s", _format_request_chunk_log(req_time_arg, start, end, i, len(request_time_args_list)))
 
             request_d = dict(
                 **request_other_args,
@@ -304,7 +306,7 @@ class EarthkitSource(BaseSource):
             realization_dim = ds_chunk.earthml.guessed_dims.realization
             leadtime_dim = ds_chunk.earthml.guessed_dims.leadtime # actual leadtime in chunk
 
-            print(f"   Chunk size: {ds_chunk.sizes}")
+            logger.info("   Chunk size: %s", ds_chunk.sizes)
             # print(f"   Chunk coords: {ds_chunk.coords}")
             # print(f"   Leadtime: {self.leadtime_d}")
 
@@ -348,10 +350,13 @@ class EarthkitSource(BaseSource):
                     mask_lt = (lt_values >= low) & (lt_values <= high)
                     idxs = np.where(mask_lt)[0]
 
-                    print(f"   Nearest leadtime center: {pd.to_timedelta(center_lt) if np.issubdtype(unique_lt.dtype, np.timedelta64) else center_lt}, "
-                        f"window: [{pd.to_timedelta(low) if np.issubdtype(unique_lt.dtype, np.timedelta64) else low}, "
-                        f"{pd.to_timedelta(high) if np.issubdtype(unique_lt.dtype, np.timedelta64) else high}], "
-                        f"inferred realizations {idxs.size}")
+                    logger.info(
+                        "   Nearest leadtime center: %s, window: [%s, %s], inferred realizations %s",
+                        pd.to_timedelta(center_lt) if np.issubdtype(unique_lt.dtype, np.timedelta64) else center_lt,
+                        pd.to_timedelta(low) if np.issubdtype(unique_lt.dtype, np.timedelta64) else low,
+                        pd.to_timedelta(high) if np.issubdtype(unique_lt.dtype, np.timedelta64) else high,
+                        idxs.size,
+                    )
 
                     if idxs.size == 0:
                         raise ValueError("No leadtimes found in the computed window")
@@ -411,7 +416,7 @@ class EarthkitSource(BaseSource):
                         # Restore a length-1 leadtime dimension with the requested conceptual value
                         ds_chunk = ds_chunk.expand_dims({leadtime_name: [target_np]})
 
-                    print(f"   Size after all processing: {ds_chunk.sizes}")
+                    logger.info("   Size after all processing: %s", ds_chunk.sizes)
 
             xarray_concat_dim = ds_chunk.earthml.guessed_dims.time if not self.config.xarray_concat_dim else self.config.xarray_concat_dim
             # print(xarray_concat_dim)
@@ -421,7 +426,7 @@ class EarthkitSource(BaseSource):
     def _get_data(self) -> xr.Dataset:
         n_missed = len(self.elements.missed) # at this stage is always zero
         samples = [s for s in self.elements.samples if s not in self.elements.missed] # TODO refactor to BaseSource?
-        print(f"Samples: {len(samples)}, missed: {n_missed}")
+        logger.info("Samples: %s, missed: %s", len(samples), n_missed)
 
         var_longname_list = [v.longname for v in self.data_selection.variable] if isinstance(self.data_selection.variable, list) else [self.data_selection.variable.longname]
 
@@ -480,8 +485,17 @@ class EarthkitSource(BaseSource):
         if len(years) == 0:
             raise ValueError("Years calculated from date range is empty")
 
-        print(f"Requesting {var_longname_list} ({dates}, {self.data_selection.period.freq}) in region {area} from {self.config.provider}:{self.config.dataset} (ekd_ver={self.ekd_version})")
-        print(f"Check request status: https://cds.climate.copernicus.eu/requests?tab=all")
+        logger.info(
+            "Requesting %s (%s, %s) in region %s from %s:%s (ekd_ver=%s)",
+            var_longname_list,
+            dates,
+            self.data_selection.period.freq,
+            area,
+            self.config.provider,
+            self.config.dataset,
+            self.ekd_version,
+        )
+        logger.info("Check request status: https://cds.climate.copernicus.eu/requests?tab=all")
 
         if (
             self.config.split_request and (
@@ -503,7 +517,7 @@ class EarthkitSource(BaseSource):
                     years = years.append(
                         xr.date_range(end + relativedelta(months=1), end + relativedelta(months=1), periods=1)
                     )
-            print(f"Requested split-by-year ranges: {years}")
+            logger.info("Requested split-by-year ranges: %s", years)
 
             datasets = []
             xarray_concat_dim = None
@@ -674,6 +688,10 @@ class EarthkitSource(BaseSource):
         # full_index = pd.DatetimeIndex(self.date_range)
         # ds_all = ds_all.reindex({xarray_concat_dim: full_index})
 
-        print(f"First and last time values in obtained dataset: {pd.to_datetime(ds_all[xarray_concat_dim].values[0])}, {pd.to_datetime(ds_all[xarray_concat_dim].values[-1])}")
+        logger.info(
+            "First and last time values in obtained dataset: %s, %s",
+            pd.to_datetime(ds_all[xarray_concat_dim].values[0]),
+            pd.to_datetime(ds_all[xarray_concat_dim].values[-1]),
+        )
 
         return ds_all

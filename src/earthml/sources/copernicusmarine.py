@@ -8,10 +8,12 @@ from dateutil.relativedelta import relativedelta
 import xarray as xr
 import copernicusmarine
 
-from rich import print
-
 from .dataclasses import DataSource, RegridConfig
 from .base import BaseSource
+from ..logging import get_logger
+
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -48,7 +50,7 @@ class CopernicusmarineSource(BaseSource):
     def _get_data(self) -> xr.Dataset:
         n_missed = len(self.elements.missed)
         samples = [s for s in self.elements.samples if s not in self.elements.missed] # TODO refactor to BaseSource?
-        print(f"Samples: {len(samples)}, missed: {n_missed}")
+        logger.info("Samples: %s, missed: %s", len(samples), n_missed)
 
         start = self.date_range[0] - self.config.leadtime
         end = self.date_range[-1] - self.config.leadtime
@@ -74,9 +76,17 @@ class CopernicusmarineSource(BaseSource):
             depth = self.data_selection.variable.levm
             depth_unit = "m"
 
-        print(f"Copernicusmarine:")
-        print(f"  - requested period: {start.strftime('%Y-%m-%d')} - {end.strftime('%Y-%m-%d')}")
-        print(f"  - requested lon: {min_lon}-{max_lon}, lat: {min_lat}-{max_lat}, depth: {depth} {depth_unit} (actual depth seleceted with 'nearest' method)")
+        logger.info("Copernicusmarine:")
+        logger.info("  - requested period: %s - %s", start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+        logger.info(
+            "  - requested lon: %s-%s, lat: %s-%s, depth: %s %s (actual depth seleceted with 'nearest' method)",
+            min_lon,
+            max_lon,
+            min_lat,
+            max_lat,
+            depth,
+            depth_unit,
+        )
 
         ds = copernicusmarine.open_dataset(
             dataset_id=self.config.dataset,
@@ -91,6 +101,6 @@ class CopernicusmarineSource(BaseSource):
             maximum_longitude=max_lon,
         )
 
-        print(ds)
+        logger.info("%s", ds)
 
         return ds.sel(depth=depth, method="nearest")

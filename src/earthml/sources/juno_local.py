@@ -18,7 +18,6 @@ import xarray as xr
 
 from dask.utils import SerializableLock
 
-from rich import print
 from rich.progress import (
     Progress,
     SpinnerColumn,
@@ -32,9 +31,11 @@ from .dataclasses import DataSource, Sample, RegridConfig
 from .utils import retry_fetch_after_hdf_err
 from .xarray_local import MFXarrayLocalSource
 from ._preprocess import preprocess_mfdataset
+from ..logging import get_logger
 
 
 REALIZATION_RE = re.compile(r"_r(\d+)")
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -244,7 +245,7 @@ class JunoLocalSource(MFXarrayLocalSource):
                     found = True
 
             if not found:
-                print(f"Missed sample (local filename not found): {date}")
+                logger.warning("Missed sample (local filename not found): %s", date)
                 s.missed.add(date)
 
         return s
@@ -259,9 +260,12 @@ class JunoLocalSource(MFXarrayLocalSource):
         plus_samples = self.elements.extra["plus_samples"]
         has_shifted_samples = bool(minus_samples or plus_samples)
 
-        print(
-            f"Juno local file samples: {len(samples)}, "
-            f"minus: {len(minus_samples)}, plus: {len(plus_samples)}, missed: {len(self.elements.missed)}"
+        logger.info(
+            "Juno local file samples: %s, minus: %s, plus: %s, missed: %s",
+            len(samples),
+            len(minus_samples),
+            len(plus_samples),
+            len(self.elements.missed),
         )
 
         samples_d: dict[pd.Timestamp, xr.Dataset] = {}
@@ -463,7 +467,7 @@ class JunoLocalSource(MFXarrayLocalSource):
         ref_lon = np.round(ref_lon, 10)
         ref_lon = np.unique(ref_lon) # remove exact duplicates
 
-        print("Juno local inferred reference lon size:", ref_lon.size)
+        logger.info("Juno local inferred reference lon size: %s", ref_lon.size)
 
         # Enforce same lon convention to all samples
         for date, ds_sample in samples_d.items():
@@ -548,6 +552,6 @@ class JunoLocalSource(MFXarrayLocalSource):
             join="outer",
             combine_attrs="drop_conflicts",
         )
-        print(f"Juno local, size of ds after concat: {ds_all.sizes}")
+        logger.info("Juno local, size of ds after concat: %s", ds_all.sizes)
 
         return ds_all

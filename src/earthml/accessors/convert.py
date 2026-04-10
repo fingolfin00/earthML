@@ -1,5 +1,10 @@
 from typing import Callable
 
+from ..logging import get_logger
+
+
+logger = get_logger(__name__)
+
 
 class EarthMLConvert:
     def convert_unit(self, convert_unit_d: dict[Callable, str]):
@@ -9,15 +14,19 @@ class EarthMLConvert:
         found_candidate = False
         for var_name, (func, target_unit) in convert_unit_d.items():
             if var_name not in ds.data_vars:
-                print(f"Exact match variable {var_name} not found in dataset for unit conversion. Try matching within available variables {list(ds.data_vars.keys())}")
+                logger.warning(
+                    "Exact match variable %s not found in dataset for unit conversion. Try matching within available variables %s",
+                    var_name,
+                    list(ds.data_vars.keys()),
+                )
                 for var_candidate in ds.data_vars.keys():
                     if var_name.lower() in var_candidate.lower() or var_candidate.lower() in var_name.lower():
-                        print(f"   Found candidate variable {var_candidate} for conversion of {var_name}")
+                        logger.info("   Found candidate variable %s for conversion of %s", var_candidate, var_name)
                         var_name = var_candidate
                         found_candidate = True
                         break
                 if not found_candidate:
-                    print(f"No variable found for conversion of {var_name}, skipping...")
+                    logger.warning("No variable found for conversion of %s, skipping...", var_name)
                     continue
 
             da = ds[var_name]
@@ -25,11 +34,15 @@ class EarthMLConvert:
 
             # Skip if already in target unit
             if src_unit == target_unit:
-                print(f"Variable {var_name} already in target unit {target_unit}, skipping conversion.")
+                logger.info("Variable %s already in target unit %s, skipping conversion.", var_name, target_unit)
                 continue
 
-            print(f"Converting unit of variable {var_name}"
-                f"{'' if src_unit is None else f' from {src_unit}'} to {target_unit}")
+            logger.info(
+                "Converting unit of variable %s%s to %s",
+                var_name,
+                "" if src_unit is None else f" from {src_unit}",
+                target_unit,
+            )
 
             # Preserve metadata
             old_attrs = dict(da.attrs)

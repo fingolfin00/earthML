@@ -5,7 +5,11 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
+from ...logging import get_logger
 from .utils import _expand_mask_to, _masked_mean_var
+
+
+logger = get_logger(__name__)
 
 
 # -------------------------
@@ -49,7 +53,7 @@ class GeoMSELoss(nn.Module):
         super().__init__()
         weights = torch.cos(torch.deg2rad(latitudes))
         self.register_buffer("weights", weights)  # 1D tensor length H
-        print(eps)
+        logger.debug("GeoMSELoss eps=%s", eps)
         self.eps = float(eps)
 
     def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor):

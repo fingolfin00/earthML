@@ -1,11 +1,13 @@
-from rich import print # TODO thin the module, there shoulnd't be print here
-
 import numpy as np
 import cf_xarray
 import xarray as xr
 import pandas as pd
 
 from ..base.dataclasses import DataSelection
+from ..logging import get_logger
+
+
+logger = get_logger(__name__)
 
 
 class EarthMLSubset:
@@ -252,7 +254,7 @@ class EarthMLSubset:
 
         is_rectilinear = self._is_rectilinear_grid(ds, lon_coord, lat_coord)
         grid_type = "rectilinear" if is_rectilinear else "curvilinear"
-        print("Grid type:", grid_type)
+        logger.info("Grid type: %s", grid_type)
 
         # Roll dataset if requested interval crosses the native cutline
         ds = self.roll_ds(ds, (lon_min_req, lon_max_req))
@@ -336,5 +338,5 @@ class EarthMLSubset:
                 "Requested region may not overlap the dataset."
             )
 
-        print("Size after subsetting", ds.sizes)
+        logger.info("Size after subsetting %s", ds.sizes)
         return ds

@@ -3,8 +3,6 @@ from numbers import Number
 from pathlib import Path
 from itertools import product
 
-from rich import print
-
 import numpy as np
 import pandas as pd
 import cf_xarray
@@ -20,6 +18,10 @@ import cartopy.crs as ccrs
 from cartopy.mpl.gridliner import LONGITUDE_FORMATTER, LATITUDE_FORMATTER
 
 from .config import build_plot_config, get_var_plot_cmap, get_var_plot_limits
+from ..logging import get_logger
+
+
+logger = get_logger(__name__)
 
 
 DEFAULT_PLOT_CONFIG = build_plot_config()
@@ -523,8 +525,8 @@ def create_panel_from_data(
 
     mappables, cbar_axes = [], []
 
-    print("cmaps", cmaps)
-    print("limits", norms)
+    logger.info("cmaps %s", cmaps)
+    logger.info("limits %s", norms)
 
     for r in range(nrows):
         row_mappable = None
@@ -602,7 +604,7 @@ def create_panel_from_data(
             if cbar_mode == "subplot" and im is not None:
                 divider = make_axes_locatable(ax)
                 if cbar_orientation == "horizontal":
-                    print("Colorbar horizontal orientation not yet supported")
+                    logger.warning("Colorbar horizontal orientation not yet supported")
                 else:
                     cax = divider.append_axes(
                         "right",
@@ -620,7 +622,7 @@ def create_panel_from_data(
             last_ax = axes[r, ncols - 1]
             divider = make_axes_locatable(last_ax)
             if cbar_orientation == "horizontal":
-                print("Colorbar horizontal orientation not yet supported")
+                logger.warning("Colorbar horizontal orientation not yet supported")
             else:
                 cax = divider.append_axes(
                     "right",

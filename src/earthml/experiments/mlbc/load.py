@@ -2,18 +2,20 @@ from collections.abc import Mapping
 from dataclasses import is_dataclass, replace
 from typing import Sequence
 
+import joblib
 import os
 from pathlib import Path
-import joblib
-
-from rich import print
 
 import numpy as np
 import cf_xarray
 import xarray as xr
 
+from ...logging import get_logger
 from ...sources import build_source, BaseSource
 from .dataclasses import MLBCExperimentConfig, MLBCExperimentDatasetRole, MLBCExperimentDataset
+
+
+logger = get_logger(__name__)
 
 
 _CANONICAL_VARIABLE_NAMES = {
@@ -56,7 +58,7 @@ def _canonicalize_dataset_variable_names(ds: xr.Dataset, dataset_name: str | Non
 
     if rename_map:
         label = f" for {dataset_name!r}" if dataset_name else ""
-        print(f"Canonicalizing variables{label}: {rename_map}")
+        logger.info("Canonicalizing variables%s: %s", label, rename_map)
         ds = ds.rename_vars(rename_map)
 
     return ds

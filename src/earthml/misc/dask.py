@@ -4,6 +4,11 @@ import numpy as np
 import dask
 from dask.distributed import Client, LocalCluster
 
+from ..logging import get_logger
+
+
+logger = get_logger(__name__)
+
 
 class Dask:
     """
@@ -66,10 +71,16 @@ class Dask:
         self.client.run(lambda: __import__("cf_xarray"))
 
         import socket
-        print(f"Dask dashboard running on {socket.gethostname()}:{self.cluster.scheduler.services['dashboard'].port}")
-        print(f"Cores: {n_cores}, Mem: {total_mem_gb} GB -> Dask active workers: {n_active_workers} (requested: {n_workers})")
-        print(f"Dask memory per worker (avg): {workers_mem_limit_gb.mean():.2f} GB")
-        print(f"Write Dask local files in {local_dir}")
+        logger.info("Dask dashboard running on %s:%s", socket.gethostname(), self.cluster.scheduler.services["dashboard"].port)
+        logger.info(
+            "Cores: %s, Mem: %.2f GB -> Dask active workers: %s (requested: %s)",
+            n_cores,
+            total_mem_gb,
+            n_active_workers,
+            n_workers,
+        )
+        logger.info("Dask memory per worker (avg): %.2f GB", workers_mem_limit_gb.mean())
+        logger.info("Write Dask local files in %s", local_dir)
 
         return self
 

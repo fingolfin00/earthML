@@ -1,14 +1,17 @@
 import os, logging, warnings
 from pathlib import Path
 from dataclasses import dataclass
-from rich import print
 
 from ...misc import Dask
+from ...logging import configure_logging, get_logger
 
 def configure_warnings_and_logging() -> None:
     warnings.filterwarnings("ignore", category=FutureWarning)
     warnings.filterwarnings("ignore", category=UserWarning)
     logging.getLogger("distributed.scheduler").setLevel(logging.ERROR)
+    logging.getLogger("distributed.worker").setLevel(logging.ERROR)
+    logging.getLogger("distributed.nanny").setLevel(logging.ERROR)
+    configure_logging()
 
 def configure_ca_bundle() -> None:
     bundle = Path.home() / "certs" / "earthml-ca-bundle.pem"
@@ -28,5 +31,5 @@ class Runtime:
             configure_ca_bundle()
         d = Dask(n_workers=self.dask_workers)
         d.start()
-        print("Dask dashboard:", d.client.dashboard_link)
+        get_logger().info("Dask dashboard: %s", d.client.dashboard_link)
         return d

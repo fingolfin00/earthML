@@ -1,7 +1,10 @@
 import xarray as xr
-from rich import print
 
 from .base import BaseSource
+from ..logging import get_logger
+
+
+logger = get_logger(__name__)
 
 
 class SumSource(BaseSource):
@@ -24,7 +27,7 @@ class SumSource(BaseSource):
 
 
     def _get_data(self) -> xr.Dataset:
-        print(
+        logger.info(
             "Combine sources "
             f"{self._left.source_name} ({self._left.date_range[0]:%Y%m%d}-{self._left.date_range[-1]:%Y%m%d}) + "
             f"{self._right.source_name} ({self._right.date_range[0]:%Y%m%d}-{self._right.date_range[-1]:%Y%m%d})"
@@ -56,10 +59,12 @@ class SumSource(BaseSource):
         extra_left = sorted(left_vars - right_vars)
         extra_right = sorted(right_vars - left_vars)
         if extra_left or extra_right:
-            print(
-                "[yellow]Warning:[/yellow] dropping non-common variables when adding sources:\n"
-                f"  only in left:  {extra_left}\n"
-                f"  only in right: {extra_right}"
+            logger.warning(
+                "Dropping non-common variables when adding sources:\n"
+                "  only in left:  %s\n"
+                "  only in right: %s",
+                extra_left,
+                extra_right,
             )
 
         ds_left_sel = ds_left.drop_vars(list(extra_left), errors="ignore")
@@ -77,10 +82,12 @@ class SumSource(BaseSource):
         # print(f"  only in right:  {sorted(only_right_coords)}")
 
         if only_left_coords or only_right_coords:
-            print(
-                "[yellow]Warning:[/yellow] dropping non-common coordinates when adding sources:\n"
-                f"  only in left:  {sorted(only_left_coords)}\n"
-                f"  only in right: {sorted(only_right_coords)}"
+            logger.warning(
+                "Dropping non-common coordinates when adding sources:\n"
+                "  only in left:  %s\n"
+                "  only in right: %s",
+                sorted(only_left_coords),
+                sorted(only_right_coords),
             )
 
         # Drop coords that are not shared

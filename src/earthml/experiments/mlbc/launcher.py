@@ -7,13 +7,17 @@ from pathlib import Path
 import traceback
 
 from numpy import isin
-from rich import print
 
 from dateutil.relativedelta import relativedelta
 from datetime import datetime
 
 from ...misc import Dask, Table
 from ...base import Leadtime, TimeRange
+from ...logging import (
+    add_experiment_file_handler,
+    get_logger,
+    remove_experiment_file_handler,
+)
 from ...sources.providers import available_providers, Provider
 
 from .dataset import MLBCDatasetGenerator
@@ -486,7 +490,7 @@ class MLBCExperimentLauncher:
     def get_exp_data(
         self,
         exp_gen_config: dict,
-    ) -> tuple[str, MLBCDatasetGenerator, MLBCExperiment]:
+    ) -> tuple[str, MLBCDatasetGenerator, MLBCExperimentConfig]:
         dataset = MLBCDatasetGenerator(**exp_gen_config)
 
         exp_cfg = MLBCExperimentConfig(
@@ -504,17 +508,17 @@ class MLBCExperimentLauncher:
             output_realizations=self.output_realizations,
         )
 
-        return dataset.experiment_run_name, dataset, MLBCExperiment(config=exp_cfg)
+        return dataset.experiment_run_name, dataset, exp_cfg
 
 
     def _run_exp(
         self,
         mode: MLBCRunMode,
-        exp_gen_config: dict,
+        dataset: MLBCDatasetGenerator,
+        exp: MLBCExperiment,
     ):
-        if mode in ("prepare", "train", "test", "train_test", "train_test_on_train"):
-            run_name, dataset, exp = self.get_exp_data(exp_gen_config)
-        else:
+        run_name = dataset.experiment_run_name
+        if mode not in ("prepare", "train", "test", "train_test", "train_test_on_train"):
             raise ValueError(f"Invalid run mode {mode}")
         if mode in ("train", "train_test", "train_test_on_train"):
             exp.train()
@@ -528,6 +532,7 @@ class MLBCExperimentLauncher:
     def run(self):
         failed_runs: list[tuple[int, str, str]] = []
         exp_gen_cfgs, needs_ca_bundle = self._gen_exp_configs()
+        logger = get_logger()
         for run_idx, exp_cfg in enumerate(exp_gen_cfgs):
             success = False
             run_name = None
@@ -538,20 +543,51 @@ class MLBCExperimentLauncher:
                     needs_ca_bundle=needs_ca_bundle,
                 )
                 dask_runtime = runtime.start()
+                log_file = None
                 try:
-                    print(f"RUN, ATTEMPT: ({run_idx}, {attempt})")
+                    run_name, dataset, exp_cfg_obj = self.get_exp_data(exp_cfg)
+                    log_file = add_experiment_file_handler(
+                        logger,
+                        dataset.experiment_path / "logs" / "experiment.log",
+                    )
+                    exp = MLBCExperiment(config=exp_cfg_obj)
+
+                    logger.info(
+                        "Run %s/%s, attempt %s/%s: %s",
+                        run_idx + 1,
+                        len(exp_gen_cfgs),
+                        attempt + 1,
+                        self.max_retries,
+                        run_name,
+                    )
+                    logger.info("Experiment path: %s", dataset.experiment_path)
+
                     run_name, dataset, exp = self._run_exp(
                         mode=self.run_mode,
-                        exp_gen_config=exp_cfg,
+                        dataset=dataset,
+                        exp=exp,
                     )
-                    print(f"RUN SUCCESSFULL: {run_name}")
+                    logger.info("Run completed successfully: %s", run_name)
                     success = True
                     break
                 except (RuntimeError, OSError) as e:
                     e_last = e
+                    failed_name = run_name if run_name else f"run_{run_idx}"
+                    if attempt + 1 == self.max_retries:
+                        logger.exception("Run failed permanently: %s", failed_name)
+                    else:
+                        logger.warning(
+                            "Run failed and will be retried (%s/%s): %s: %s",
+                            attempt + 1,
+                            self.max_retries,
+                            type(e).__name__,
+                            e,
+                        )
                     if attempt + 1 == self.max_retries: # print traceback on last retry only
                         traceback.print_exc()
                 finally:
+                    if log_file is not None:
+                        remove_experiment_file_handler(logger, log_file)
                     dask_runtime.close()
             if not success:
                 failed_run_name = run_name if run_name else run_idx
@@ -562,5 +598,5 @@ class MLBCExperimentLauncher:
                 continue
 
         for failed_run_name, exc_type, err in failed_runs:
-            print("FAIL", failed_run_name)
-            print(f"{exc_type}: {err}")
+            logger.error("FAIL %s", failed_run_name)
+            logger.error("%s: %s", exc_type, err)

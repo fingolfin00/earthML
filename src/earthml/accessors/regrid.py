@@ -1,11 +1,13 @@
-from rich import print
-
 import numpy as np
 import cf_xarray
 import xarray as xr
 from scipy.interpolate import griddata
 
 from ..base.dataclasses import Region
+from ..logging import get_logger
+
+
+logger = get_logger(__name__)
 
 
 # TODO refactor regrid in one single optimized helper, possibly adding support for xesmf or other fast lib
@@ -89,7 +91,7 @@ class EarthMLRegrid:
         else:
             vars_to_regrid = list(vars_to_regrid)
 
-        print(f"Regrid: available data vars {list(ds.data_vars.keys())}, requested vars {vars_to_regrid}")
+        logger.info("Regrid: available data vars %s, requested vars %s", list(ds.data_vars.keys()), vars_to_regrid)
 
         lat0, lat1 = map(float, region.lat)
         lon0, lon1 = map(float, region.lon)
@@ -142,7 +144,7 @@ class EarthMLRegrid:
         # Case 1: rectilinear (1D) source -> rectilinear (1D) target
         # ======================================================================
         if rectilinear_src:
-            print("Regrid: rectilinear (1D) source -> rectilinear (1D) target via xarray.interp.")
+            logger.info("Regrid: rectilinear (1D) source -> rectilinear (1D) target via xarray.interp.")
 
             lat_src = np.asarray(ds[lat_name].values, dtype=np.float64)
             lon_src = _shift_longitudes_near_reference(ds[lon_name].values, lon_center)
@@ -166,7 +168,7 @@ class EarthMLRegrid:
             same_lon = src_lon.shape == lon_target.shape and np.allclose(src_lon, lon_target, atol=1e-6)
 
             if same_lat and same_lon:
-                print("  no-op: keeping existing rectilinear grid")
+                logger.info("  no-op: keeping existing rectilinear grid")
                 return ds_interp
 
             lat_tgt_da = xr.DataArray(lat_target, dims=(lat_name,), name=lat_name)
@@ -198,7 +200,7 @@ class EarthMLRegrid:
         # ======================================================================
         # Case 2: curvilinear (2D) source -> rectilinear (1D) target
         # ======================================================================
-        print("Regrid: curvilinear (2D) source -> rectilinear (1D) target via scipy.griddata.")
+        logger.info("Regrid: curvilinear (2D) source -> rectilinear (1D) target via scipy.griddata.")
 
         if lat_da.ndim != 2 or lon_da.ndim != 2:
             raise ValueError(
@@ -240,7 +242,7 @@ class EarthMLRegrid:
                 data_vars_out[name] = da
                 continue
 
-            print(f"  Regridding variable '{name}' with griddata...")
+            logger.info("  Regridding variable '%s' with griddata...", name)
 
             da_spatial = da.transpose(
                 *[d for d in da.dims if d not in (y_dim_src, x_dim_src)],

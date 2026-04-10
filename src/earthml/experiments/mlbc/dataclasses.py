@@ -55,9 +55,10 @@ class MLBCNeuralNet:
 
 @dataclass
 class MLBCExperimentConfig:
-    # Name and folder
+    # Name and folders
     name                        : str
     work_path                   : str | Path
+    # download_path               : str | Path
     # NN and hyperparams
     net                         : MLBCNeuralNet
     # Dataset

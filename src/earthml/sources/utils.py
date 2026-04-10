@@ -5,12 +5,15 @@ from datetime import datetime, timedelta
 
 import re, time, shutil
 
-from rich import print
-
 import xarray as xr
 
 import earthkit
 from earthkit.data.sources.empty import EmptySource
+
+from ..logging import get_logger
+
+
+logger = get_logger(__name__)
 
 
 def retry_fetch_after_hdf_err_eks_source(
@@ -25,7 +28,7 @@ def retry_fetch_after_hdf_err_eks_source(
             return fetch_fn()
         except Exception as e:
             last_e = e
-            print(f"   Attempt {attempt}/{tries} failed: {e}")
+            logger.warning("   Attempt %s/%s failed: %s", attempt, tries, e)
             time.sleep(base_sleep * (2 ** (attempt - 1)))
     raise RuntimeError(f"Couldn't fetch requested Earthkit source after {tries} attempts") from last_e
 
@@ -65,7 +68,7 @@ def retry_fetch_after_hdf_err(
             data = fetch_fn()
 
             if isinstance(data, EmptySource):
-                print(f"   EmptySource returned, setting tmp cache dir ({attempt}/{tries})")
+                logger.warning("   EmptySource returned, setting tmp cache dir (%s/%s)", attempt, tries)
                 _set_ekd_cache_dir()  # default tmp cache
                 # continue retry loop
             else:
@@ -84,28 +87,28 @@ def retry_fetch_after_hdf_err(
                 _set_ekd_cache_dir(orig_ekd_cache_dir)
                 raise  # non-matching error -> fail fast
 
-            print(f"   Attempt {attempt}/{tries}")
+            logger.warning("   Attempt %s/%s", attempt, tries)
             if p:
-                print(f"   Matched retryable error opening {p}, wait {base_sleep}s")
+                logger.warning("   Matched retryable error opening %s, wait %ss", p, base_sleep)
 
                 if delete_bad_file and p.exists():
                     try:
                         p.unlink()
-                        print(f"   → deleted corrupt cache file: {p}")
+                        logger.warning("   -> deleted corrupt cache file: %s", p)
                     except Exception as del_e:
-                        print(f"   → failed to delete {p}: {del_e}")
+                        logger.warning("   -> failed to delete %s: %s", p, del_e)
 
                 if delete_bad_parent:
                     cache_subdir = p.parent
                     if cache_subdir.exists():
                         try:
                             rmdir(cache_subdir)
-                            print(f"   → deleted corrupt cache parent subdir: {cache_subdir}")
+                            logger.warning("   -> deleted corrupt cache parent subdir: %s", cache_subdir)
                         except Exception as del_e:
-                            print(f"   → failed to delete {cache_subdir}: {del_e}")
+                            logger.warning("   -> failed to delete %s: %s", cache_subdir, del_e)
             else:
                 # Retryable but no path extracted: log message
-                print(f"   Matched retryable error (no .nc path found): {msg}")
+                logger.warning("   Matched retryable error (no .nc path found): %s", msg)
 
         time.sleep(base_sleep * (2 ** (attempt - 1)))
 

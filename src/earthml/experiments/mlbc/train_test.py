@@ -5,9 +5,6 @@ import time, multiprocessing, joblib
 from copy import deepcopy
 from pathlib import Path
 
-from rich import print
-from rich.console import Console
-
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -22,8 +19,8 @@ from lightning.pytorch.loggers import TensorBoardLogger
 from .dataclasses import MLBCExperimentDataset, MLBCExperimentConfig, MLBCExperimentDatasetRole
 
 from ...sources import build_source, BaseSource, DataSource, XarrayLocalSourceConfig
-
 from ...misc import Table
+from ...logging import get_logger, log_renderable
 from ...neural import XarrayDataset, Normalize, EpochRandomSplitDataModule
 from ...neural.nets import build_net
 
@@ -35,7 +32,7 @@ class MLBCExperiment:
     ):
         self._configure_torch_env()
         self.config = config
-        self.rich_console = Console()
+        self.logger = get_logger(__name__)
 
         self.per_channel_masked_mean = False if self.config.output_realizations else True # return (1, C, 1, 1) in _masked_metrics (see neural/normalize.py) # TODO not sure it's super general
 
@@ -50,7 +47,12 @@ class MLBCExperiment:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         num_cpus, num_gpus = multiprocessing.cpu_count(), torch.cuda.device_count() if torch.cuda.is_available() else 1 # torch.backends.mps.is_available()
         self.torch_workers = max(1, num_cpus // num_gpus // 2) if not torch.backends.mps.is_available() else 1 # could be moved in datamodule definition, but in test() still using dataloader
-        print(f"Torch workers in use: {self.torch_workers} ({num_cpus} CPUs // {num_gpus} GPU (CUDA or others) devices // 2)")
+        self.logger.info(
+            "Torch workers in use: %s (%s CPUs // %s GPU (CUDA or others) devices // 2)",
+            self.torch_workers,
+            num_cpus,
+            num_gpus,
+        )
         L.seed_everything(self.config.net.seed)
         # Tensorboard
         self.tl_logger = TensorBoardLogger(self.config.work_path, name="tensorboard_logs") # version=self.run_number
@@ -121,7 +123,7 @@ class MLBCExperiment:
 
         # Inpaint nan if requested
         if self.config.inpaint_nan:
-            print(f"Inpainting NaN values in datasets with bilinear interpolation...")
+            self.logger.info("Inpainting NaN values in datasets with bilinear interpolation...")
             self.train_input_ds, self.train_target_ds = (
                 self.train_input_ds.earthml.inpaint_nan_lonlat_bilinear(),
                 self.train_target_ds.earthml.inpaint_nan_lonlat_bilinear(),
@@ -133,7 +135,7 @@ class MLBCExperiment:
 
         # Hook preprocessing function
         if self.config.torch_preprocess_fn is not None:
-            print("Apply preprocessing custom function...")
+            self.logger.info("Apply preprocessing custom function...")
             self.train_input_ds, self.train_target_ds = self.config.torch_preprocess_fn(self.train_input_ds, self.train_target_ds)
             self.test_input_ds, self.test_target_ds = self.config.torch_preprocess_fn(self.test_input_ds, self.test_target_ds)
 
@@ -170,9 +172,8 @@ class MLBCExperiment:
 
         # Log model info
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        print(f"Net {type(self.model).__name__} trainable parameters: {trainable_params:,}")
-
-        self.rich_console.print(Table(self.config, title="ExperimentConfig", twocols=True).table)
+        self.logger.info("Net %s trainable parameters: %s", type(self.model).__name__, f"{trainable_params:,}")
+        log_renderable(Table(self.config, title="ExperimentConfig", twocols=True).table, logger=self.logger)
 
         # Save experiment
         with open(self.work_path.joinpath("experiment.cfg"), 'wb') as f:
@@ -232,7 +233,7 @@ class MLBCExperiment:
 
     @staticmethod
     def _get_latitudes(ds: xr.Dataset) -> np.ndarray:
-        print("Getting latitudes from dataset for loss function...")
+        self.logger.info("Getting latitudes from dataset for loss function...")
         return ds[ds.earthml.guessed_dims.latitude].values
 
     @staticmethod
@@ -328,7 +329,7 @@ class MLBCExperiment:
             ds_d[role] = ds
 
         loading_time = time.time() - s
-        print(f"{data_type} loading time: {loading_time:.1f}s")
+        self.logger.info("%s loading time: %.1fs", data_type, loading_time)
 
         # For now only support input and target roles
         assert "input" in exp_roles and "target" in exp_roles
@@ -367,10 +368,10 @@ class MLBCExperiment:
         encoding_zarr = {"common_mask": {"compressors": compressor}}
 
         if data_type == "train":
-            print(f"Save mask to {self.train_mask_store}")
+            self.logger.info("Save mask to %s", self.train_mask_store)
             mask_ds.to_zarr(self.train_mask_store, encoding=encoding_zarr, mode="w", consolidated=self.consolidated_zarr)
         elif data_type == "test":
-            print(f"Save mask to {self.test_mask_store}")
+            self.logger.info("Save mask to %s", self.test_mask_store)
             mask_ds.to_zarr(self.test_mask_store, encoding=encoding_zarr, mode="w", consolidated=self.consolidated_zarr)
         else:
             raise ValueError(f"Unknown data_type {data_type} for mask saving")
@@ -421,7 +422,10 @@ class MLBCExperiment:
 
             if is_zarr_store:
                 xr_loc_source_configs, sources[e.role] = self._create_xarray_local_source(save_path, datasource)
-                self.rich_console.print(Table({f"Source '{sources[e.role].datasource.source}' {source_type} {e.role} params": asdict(xr_loc_source_configs)}, twocols=True).table)
+                log_renderable(
+                    Table({f"Source '{sources[e.role].datasource.source}' {source_type} {e.role} params": asdict(xr_loc_source_configs)}, twocols=True).table,
+                    logger=self.logger,
+                )
             else:
                 if len(datasource) != len(source_configs):
                     raise ValueError(
@@ -440,7 +444,10 @@ class MLBCExperiment:
                             ),
                         )
                     )
-                    self.rich_console.print(Table({f"Source '{d.source}' {source_type} {e.role} [{i}] params": asdict(sc)}, twocols=True).table)
+                    log_renderable(
+                        Table({f"Source '{d.source}' {source_type} {e.role} [{i}] params": asdict(sc)}, twocols=True).table,
+                        logger=self.logger,
+                    )
                 source: BaseSource = sum(sources_list)
 
                 # Union of missing samples
@@ -457,11 +464,14 @@ class MLBCExperiment:
                     source.save(save_path) # TODO examine, save may be not atomic
                     # Regenerate as xarray-local source type
                     xr_loc_source_configs, sources[e.role] = self._create_xarray_local_source(save_path, datasource)
-                    self.rich_console.print(Table({f"Source '{sources[e.role].datasource.source}' {source_type} {e.role} params": asdict(xr_loc_source_configs)}, twocols=True).table)
+                    log_renderable(
+                        Table({f"Source '{sources[e.role].datasource.source}' {source_type} {e.role} params": asdict(xr_loc_source_configs)}, twocols=True).table,
+                        logger=self.logger,
+                    )
                 else:
                     sources[e.role] = source
 
-        self.rich_console.print(f"Combined missed dates ({source_type}): {missed}")
+        self.logger.info("Combined missed dates (%s): %s", source_type, missed)
 
         # Reload to remove union of missed elements from all non prediction  datasets (for dimension consistency)
         if missed: # TODO this logic may be a bit weak
@@ -476,7 +486,7 @@ class MLBCExperiment:
 
     # Anomaly helpers
     def _init_anomaly_climatologies(self):
-        print("Calculate target and input climatologies from train dataset...")
+        self.logger.info("Calculate target and input climatologies from train dataset...")
 
         self.target_clim_ts = self.train_target_ds.earthml.climatology(groupby="month")
         self.input_clim_ts = self.train_input_ds.earthml.climatology(groupby="month")
@@ -614,7 +624,7 @@ class MLBCExperiment:
         if x_total == 0 or y_total == 0:
             raise ValueError("Mask tensor is empty: check dataset construction")
 
-        self.rich_console.print(Table({f'{data_type} dataset': {
+        log_renderable(Table({f'{data_type} dataset': {
             'input': {
                 'numpy shape': torch_dataset.x_np.shape,
                 'numpy mean': x_mean_np,
@@ -641,7 +651,7 @@ class MLBCExperiment:
                 'torch masked_fraction': y_masked / y_total,
                 'source': source_data['target'].datasource.source,
             },
-        }}).table)
+        }}).table, logger=self.logger)
 
         return torch_dataset
 
@@ -789,7 +799,7 @@ class MLBCExperiment:
         trainer = self._init_train_trainer()
         ckpt_path = Path(self.ckpt_path) if Path(self.ckpt_path).exists() else None
         if ckpt_path is None:
-            print("Starting training from scratch")
+            self.logger.info("Starting training from scratch")
         trainer.fit(
             self.model,
             datamodule=self.train_datamodule,
@@ -810,13 +820,13 @@ class MLBCExperiment:
 
         # Normalize input
         if not self.normalize_input:
-            print(f"Load normalization data from {self.normdata_input_path}")
+            self.logger.info("Load normalization data from %s", self.normdata_input_path)
             self.normalize_input = Normalize().load(self.normdata_input_path)
         dataset.transform_x = self.normalize_input
 
         # Normalize target
         if not self.normalize_target:
-            print(f"Load normalization data from {self.normdata_target_path}")
+            self.logger.info("Load normalization data from %s", self.normdata_target_path)
             self.normalize_target = Normalize().load(self.normdata_target_path)
         dataset.transform_y = self.normalize_target
 
@@ -824,7 +834,7 @@ class MLBCExperiment:
         dataloader = DataLoader(dataset, batch_size=1, num_workers=self.torch_workers, shuffle=False)
         if not weights_filename:
             # Load checkpoint file
-            print(f"Load checkpoints from {self.ckpt_path}")
+            self.logger.info("Load checkpoints from %s", self.ckpt_path)
             checkpoint = torch.load(self.ckpt_path, map_location=self.device)
             # print(f"Available keys in checkpoint file: {checkpoint.keys()}")
             # dict_keys(['epoch', 'global_step', 'pytorch-lightning_version', 'state_dict', 'loops', 'callbacks', 'optimizer_states', 'lr_schedulers', 'MixedPrecision'])
@@ -843,7 +853,7 @@ class MLBCExperiment:
             weights_file = Path(weights_filename)
 
         # Load weights
-        print(f"Load weights from file: {weights_file}")
+        self.logger.info("Load weights from file: %s", weights_file)
         weights = torch.load(weights_file, map_location=self.device)
         self.model.load_state_dict(weights['state_dict'])
 
@@ -856,8 +866,8 @@ class MLBCExperiment:
 
         # Print info
         meta, var_cols = self._make_test_info_table(dataset, test_data, self.model.test_preds, preds, var_list)
-        self.rich_console.print(Table({f"Test on {test_data_type} dataset run info": meta}, twocols=True).table)
-        self.rich_console.print(Table({f"Test on {test_data_type} dataset metrics (per variable)": var_cols}).table)
+        log_renderable(Table({f"Test on {test_data_type} dataset run info": meta}, twocols=True).table, logger=self.logger)
+        log_renderable(Table({f"Test on {test_data_type} dataset metrics (per variable)": var_cols}).table, logger=self.logger)
 
         self.save(preds, dataset, test_data, var_list, 'input', preds_store)
 
@@ -1020,6 +1030,6 @@ class MLBCExperiment:
         compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
         encoding_zarr = {v.name: {"compressors": compressor} for v in var_list}
 
-        print(f"Save preds to {preds_store}")
+        self.logger.info("Save preds to %s", preds_store)
         ds.to_zarr(preds_store, encoding=encoding_zarr, mode="w", consolidated=self.consolidated_zarr)
         return ds
