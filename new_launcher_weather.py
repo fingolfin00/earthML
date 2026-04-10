@@ -10,6 +10,7 @@ if __name__ == "__main__":
     # ----------------------------------------------------------------------------------
     # User params
     # ----------------------------------------------------------------------------------
+    max_retries                 = 4
     experiment_type             = "weather"                 # seasonal, weather
     experiment_name             = "cmems_cmems"             # cmems_cmems, juno-ecmwf_juno-ecmwf
 
@@ -31,7 +32,7 @@ if __name__ == "__main__":
     leadtimes                   = (.5, 1, 2, 3)
 
     inpaint_nan                 = True                      # whether to inpaint nan values in input and target datasets (after loading, before torch dataset generation)
-    anomaly                     = False                      # if True, predict anomaly (i.e. remove climatology from target variable), otherwise predict absolute values
+    anomaly                     = False                     # if True, predict anomaly (i.e. remove climatology from target variable), otherwise predict absolute values
     per_epoch_resplit           = False                     # if True, split test and validation randomly per epoch with a different seed, if False only one initial split for all epochs (fixed seed)
 
     if experiment_name == "juno-ecmwf_juno-ecmwf":
@@ -90,14 +91,15 @@ if __name__ == "__main__":
     if experiment_mode in ("short", "debug"):
         # Short exp
         leadtimes       = (3,)
+        losses          = [{"MSELoss": dict(loss={}, net={})}]
         if experiment_mode == "debug":
             # Very short periods for debug
             if experiment_name == "juno-ecmwf_juno-ecmwf":
-                start_train_date        = datetime(2020, 1, 8)
+                start_train_date        = datetime(2019, 10, 11)
                 # start_train_date        = datetime(2020, 2, 10)
-                end_train_date          = datetime(2020, 2, 20)
-                start_test_date         = datetime(2025, 1, 1)
-                end_test_date           = datetime(2025, 1, 2)
+                end_train_date          = datetime(2019, 11, 2)
+                start_test_date         = datetime(2025, 10, 1)
+                end_test_date           = datetime(2025, 11, 1)
             if experiment_name == "cmems_cmems":
                 start_train_date        = datetime(2022, 6, 4)
                 end_train_date          = datetime(2022, 6, 9)
@@ -212,7 +214,7 @@ if __name__ == "__main__":
         launcher = MLBCExperimentLauncher(
             experiment=launcher_cfg,
             run_mode=run_mode,
-            max_retries=10,
+            max_retries=max_retries,
             variables_input=variables,
             variables_target=variables,
             leadtimes=leadtimes_lt,
