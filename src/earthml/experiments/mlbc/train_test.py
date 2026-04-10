@@ -2,6 +2,7 @@ from typing import Sequence, Literal
 from dataclasses import asdict
 
 import time, multiprocessing, joblib
+from copy import deepcopy
 from pathlib import Path
 
 from rich import print
@@ -74,7 +75,7 @@ class MLBCExperiment:
         train_preds_exp = self._init_experiment_dataset(self.train_preds_store, self.config.train_dataset, MLBCExperimentDatasetRole.PREDICTION)
         self.config.train_dataset.append(train_preds_exp)
 
-        # Init source data objects and save original datasets
+        # Init source data objects and save original datasets. Entry point for download and preprocessing in Source
         self.source_train_data = self._init_source_data(self.config.train_dataset, "train")
         self.source_test_data  = self._init_source_data(self.config.test_dataset,  "test")
 
@@ -187,6 +188,7 @@ class MLBCExperiment:
                 'train_mask_data': self.train_mask_exp,
             }, f)
 
+
     def _configure_torch_env(self):
         import os
         os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -261,7 +263,7 @@ class MLBCExperiment:
 
         exp = MLBCExperimentDataset(
             role=role,
-            datasource=DataSource("xarray-local", data_selection),
+            datasource=DataSource("xarray-local", deepcopy(data_selection)),
             source_configs=XarrayLocalSourceConfig(
                 root_path=exp_store,
                 xarray_args={"consolidated": self.consolidated_zarr},
@@ -270,8 +272,9 @@ class MLBCExperiment:
 
         return exp
 
+
     def _create_xarray_local_source(self, save_path: str | Path, datasource_list: list[DataSource]):
-        source_configs=XarrayLocalSourceConfig(
+        source_configs = XarrayLocalSourceConfig(
             root_path=save_path,
             xarray_args={
                 "consolidated": self.consolidated_zarr,
@@ -279,15 +282,19 @@ class MLBCExperiment:
             },
         )
 
-        datasource_sum = sum(datasource_list)
-        datasource_sum.source = "xarray-local"
+        # DO not reuse objects, can create issues later
+        combined = deepcopy(sum(datasource_list))
+        combined = DataSource(
+            source="xarray-local",
+            data_selection=deepcopy(combined.data_selection),
+        )
 
         src = build_source(
             "xarray-local",
-            params=dict(
-                datasource=datasource_sum,
-                config=source_configs,
-            ),
+            params={
+                "datasource": combined,
+                "config": source_configs,
+            },
         )
         return source_configs, src
 
