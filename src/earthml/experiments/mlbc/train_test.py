@@ -395,6 +395,7 @@ class MLBCExperiment:
         exp_ds = _to_list(exp_ds)
 
         sources: dict[MLBCExperimentDatasetRole, BaseSource] = {}
+        missed = set()
         for e in exp_ds:
             # Guard for duplicate roles
             if e.role in sources:
@@ -442,9 +443,17 @@ class MLBCExperiment:
                     self.rich_console.print(Table({f"Source '{d.source}' {source_type} {e.role} [{i}] params": asdict(sc)}, twocols=True).table)
                 source: BaseSource = sum(sources_list)
 
+                # Union of missing samples
+                if e.role != MLBCExperimentDatasetRole.PREDICTION: # preds exists as folder but cannot be materialized
+                    ds = source.load() # this is the first load!
+                    source_missed = getattr(source.elements, "missed", None)
+                    if source_missed:
+                        missed |= set(source_missed)
+                        if "missed_time" in ds:
+                            missed |= set(pd.to_datetime(ds["missed_time"].values).to_pydatetime())
+
                 # Save datasets if requested
                 if e.save:
-                    source.load()
                     source.save(save_path) # TODO examine, save may be not atomic
                     # Regenerate as xarray-local source type
                     xr_loc_source_configs, sources[e.role] = self._create_xarray_local_source(save_path, datasource)
@@ -452,25 +461,15 @@ class MLBCExperiment:
                 else:
                     sources[e.role] = source
 
-        # Union of missing samples
-        missed = set()
-        for role, source in sources.items():
-            source_missed = getattr(source.elements, "missed", None)
-            if source_missed:
-                missed |= set(source_missed)
-            if role != MLBCExperimentDatasetRole.PREDICTION:
-                ds = source.load()
-                if "missed_time" in ds:
-                    missed |= set(pd.to_datetime(ds["missed_time"].values).to_pydatetime())
         self.rich_console.print(f"Combined missed dates ({source_type}): {missed}")
 
-        # Reload to remove union of missed elements from all datasets (for dimension consistency)
-        if missed:
+        # Reload to remove union of missed elements from all non prediction  datasets (for dimension consistency)
+        if missed: # TODO this logic may be a bit weak
             for role, source in sources.items():
                 if role != MLBCExperimentDatasetRole.PREDICTION:
-                    source.elements.missed = missed
-                    ds = source.reload()
-                    _ = ds.sizes # just to trigger reload
+                    sources[role].elements.missed = missed # TODO we shouldn't update the internal source state here, but for now it's ok
+                    sources[role].reload()
+                    # _ = ds.sizes # just to trigger reload
 
         return sources
 
