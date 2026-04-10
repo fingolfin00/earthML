@@ -260,7 +260,7 @@ class JunoLocalSource(MFXarrayLocalSource):
             MofNCompleteColumn(),
             TimeElapsedColumn(),
         ) as prog:
-            task = prog.add_task("Opening local samples", total=len(samples))
+            task = prog.add_task("Opening local Juno samples", total=len(samples))
 
             for sample, date in zip(samples, dates):
                 assert isinstance(sample, list), f"Sample should be a list but it is {type(sample)}"
@@ -343,8 +343,57 @@ class JunoLocalSource(MFXarrayLocalSource):
                             {realization_concat_dim: ds_sample[realization_concat_dim]}
                         )
 
+                lon_name = ds_sample.earthml.guessed_coords.longitude
+                lon = np.asarray(ds_sample[lon_name].values, dtype=np.float64)
+
+                # normalize convention
+                lon = ((lon + 180.0) % 360.0) - 180.0
+                # lon = (lon % 360.0)
+                lon = np.round(lon, 10)
+                lon = np.where(np.isclose(lon, 180.0, atol=1e-8), -180.0, lon)
+
+                ds_sample = ds_sample.assign_coords({lon_name: lon}).sortby(lon_name)
+
+                # drop exact duplicates
+                vals = np.asarray(ds_sample[lon_name].values)
+                _, idx = np.unique(vals, return_index=True)
+                ds_sample = ds_sample.isel({lon_name: np.sort(idx)})
+
                 samples_d[date] = ds_sample
+
                 prog.advance(task)
+
+        # dbg_sample_k = self.date_range[10]
+        # print(f"Juno local, size of ds[{dbg_sample_k}] after open_mfdataset: {samples_d[dbg_sample_k].sizes}")
+
+        # Infer resolution from first sample
+        ref_idx = 0
+        ref_date = dates[ref_idx]
+        ref_lon_name = samples_d[ref_date].earthml.guessed_coords.longitude
+        ref_lon = np.asarray(samples_d[ref_date][ref_lon_name].values, dtype=np.float64)
+        ref_lon = np.round(ref_lon, 10)
+        ref_lon = np.unique(ref_lon) # remove exact duplicates
+
+        print("Juno local inferred reference lon size:", ref_lon.size)
+
+        # Enforce same lon convention to all samples
+        for date, ds_sample in samples_d.items():
+            lon_name = ds_sample.earthml.guessed_coords.longitude
+            vals = np.asarray(ds_sample[lon_name].values, dtype=np.float64)
+            vals = np.round(vals, 10)
+
+            if vals.size != ref_lon.size:
+                raise ValueError(
+                    f"{date}: longitude size mismatch {vals.size} vs ref {ref_lon.size}"
+                )
+
+            if not np.allclose(vals, ref_lon, atol=1e-8, rtol=0.0):
+                diff = np.max(np.abs(vals - ref_lon))
+                raise ValueError(
+                    f"{date}: longitude grid differs from reference, max abs diff={diff}"
+                )
+
+            samples_d[date] = ds_sample.assign_coords({lon_name: ref_lon})
 
         # Batch validity checks instead of one compute() per sample
         validity_tasks = []
@@ -402,7 +451,7 @@ class JunoLocalSource(MFXarrayLocalSource):
             )
 
         # TODO add progress bar to concat too?
-        return xr.concat(
+        ds_all = xr.concat(
             objs=objs,
             dim=xr.IndexVariable(time_dim, times), # TODO time_dim here is an abuse, as is selected in a loop
             coords="minimal",
@@ -410,3 +459,6 @@ class JunoLocalSource(MFXarrayLocalSource):
             join="outer",
             combine_attrs="drop_conflicts",
         )
+        print(f"Juno local, size of ds after concat: {ds_all.sizes}")
+
+        return ds_all
