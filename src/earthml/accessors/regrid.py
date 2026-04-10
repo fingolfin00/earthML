@@ -109,7 +109,7 @@ class EarthMLRegrid:
             while lon1_u < lon0_u:
                 lon1_u += 360.0
             lon_target = np.arange(lon0_u, lon1_u + eps, lon_res, dtype="float32")
-        else:
+        else: # probably dead code
             while lon1_u > lon0_u:
                 lon1_u -= 360.0
             lon_target = np.arange(lon0_u, lon1_u - eps, lon_res, dtype="float32")
@@ -158,18 +158,42 @@ class EarthMLRegrid:
             ds_interp = _deduplicate_sorted_1d_axis(ds_interp, lon_name)
             ds_interp = _deduplicate_sorted_1d_axis(ds_interp, lat_name)
 
+            src_lat = np.asarray(ds_interp[lat_name].values, dtype=np.float64)
+            src_lon = np.asarray(ds_interp[lon_name].values, dtype=np.float64)
+
+            src_lat_res = float(np.abs(np.diff(src_lat)).mean()) if src_lat.size > 1 else np.nan
+            src_lon_res = float(np.abs(np.diff(src_lon)).mean()) if src_lon.size > 1 else np.nan
+
+            # safest no-op: same spacing, keep existing grid exactly
+            if np.isclose(src_lat_res, lat_res, atol=1e-6) and np.isclose(src_lon_res, lon_res, atol=1e-6):
+                print("  no-op: keeping existing rectilinear grid")
+                return ds_interp
+
             lat_tgt_da = xr.DataArray(lat_target, dims=(lat_name,), name=lat_name)
             lon_tgt_da = xr.DataArray(lon_target, dims=(lon_name,), name=lon_name)
 
-            regridded = ds_interp.interp(
-                {lat_name: lat_tgt_da, lon_name: lon_tgt_da},
-                method="linear",
-            )
+            coord_out = {k: v for k, v in ds_interp.coords.items() if k not in (lat_name, lon_name)}
+            coord_out[lat_name] = lat_tgt_da
+            coord_out[lon_name] = lon_tgt_da
 
-            regridded = regridded.assign_coords(
-                {lat_name: lat_tgt_da, lon_name: lon_tgt_da}
-            )
-            return regridded
+            data_vars_out = {}
+            for name, da in ds_interp.data_vars.items():
+                if name in vars_to_regrid and lat_name in da.dims and lon_name in da.dims:
+                    data_vars_out[name] = da.interp(
+                        {lat_name: lat_tgt_da, lon_name: lon_tgt_da},
+                        method="linear",
+                    )
+                else:
+                    # keep untouched vars only if they do not depend on lat/lon
+                    if lat_name in da.dims or lon_name in da.dims:
+                        data_vars_out[name] = da.interp(
+                            {lat_name: lat_tgt_da, lon_name: lon_tgt_da},
+                            method="nearest",
+                        )
+                    else:
+                        data_vars_out[name] = da
+
+            return xr.Dataset(data_vars_out, coords=coord_out, attrs=ds_interp.attrs)
 
         # ======================================================================
         # Case 2: curvilinear (2D) source -> rectilinear (1D) target
