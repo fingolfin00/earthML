@@ -32,7 +32,7 @@ class EarthkitSourceConfig:
     regrid_config               : RegridConfig
     split_request               : bool = False
     split_month                 : int = 12
-    split_month_jump            : list[int] | None = None
+    split_month_jump            : list[str] | None = None
     select_area_after_request   : bool = False
     request_type                : Literal["hourly", "daily", "monthly"] = "hourly"
     request_extra_args          : dict[str, Any] = field(default_factory=dict)
@@ -172,16 +172,36 @@ class EarthkitSource(BaseSource):
                 pass
 
 
-    def _fetch_chunks (self, request_time_args_list, start, end, request_other_args):
-        """Helper to fetch chunked datasets using ekd"""
+    def _fetch_chunks(self, request_time_args_list, start, end, request_other_args):
+        """
+        Helper to fetch chunked datasets using ekd
+        """
+        def _format_request_chunk_log(req_time_arg, start, end, idx, total):
+            months_req = req_time_arg.get("month")
+            years_req = req_time_arg.get("year")
+            date_req = req_time_arg.get("date")
+            time_req = req_time_arg.get("time")
+
+            parts = [f" → Fetching chunk {idx}/{total}:"]
+
+            if date_req is not None:
+                parts.append(f"date={date_req}")
+            else:
+                parts.append(f"window={start:%Y-%m-%d}..{end:%Y-%m-%d}")
+
+            if years_req is not None:
+                parts.append(f"year={years_req}")
+            if months_req is not None:
+                parts.append(f"month={months_req}")
+            if time_req is not None:
+                parts.append(f"time={time_req}")
+
+            return ", ".join(parts)
 
         ds_chunks = []
-        for req_time_arg in request_time_args_list:
-            months_req = ""
-            if 'month' in req_time_arg:
-                months_req = req_time_arg['month'] if isinstance(req_time_arg['month'], list) else [req_time_arg['month']]
-                n_months_req = len(months_req)
-            print(f" → Fetching chunk: {start:%Y-%m-%d} to {end:%Y-%m-%d} {months_req}")
+        for i, req_time_arg in enumerate(request_time_args_list, start=1):
+            print(self._format_request_chunk_log(req_time_arg, start, end, i, len(request_time_args_list)))
+
             request_d = dict(
                 **request_other_args,
                 **req_time_arg,
@@ -241,7 +261,7 @@ class EarthkitSource(BaseSource):
             )
 
             def _fetch_ekd():
-                with self._file_lock(lock_path):
+                with self._file_lock(lock_path): # TODO safe to reuse the same lock?
                     # Open and load dataset
                     ds_chunk = src_ekd.to_xarray(**(self.config.to_xarray_args or {}))
                     ds_chunk = ds_chunk.load()
@@ -322,7 +342,7 @@ class EarthkitSource(BaseSource):
                     center_lt = unique_lt[idx0]
 
                     # Window around nearest center
-                    half_window = np.timedelta64(3, "D") # 3-day window is a good guess
+                    half_window = np.timedelta64(3, "D") # 3-day window is a good guess # TODO maybe improve? make it explicit?
                     low, high = center_lt - half_window, center_lt + half_window
 
                     mask_lt = (lt_values >= low) & (lt_values <= high)
@@ -339,14 +359,13 @@ class EarthkitSource(BaseSource):
                     ds_chunk = ds_chunk.isel({leadtime_dim: idxs})
                     # print(f"   Chunk size after selection: {ds_chunk.sizes}")
 
+                    # TODO realization guessing is brittle, but I have no alternative for now
                     if leadtime_dim in ds_chunk.dims and realization_dim is None:
                         # In this case leadtime is the time dimension, swap and sort
-                        ds_chunk = (
-                            ds_chunk
-                            .swap_dims({leadtime_dim: "time"})
-                            .drop_vars(leadtime_dim)
-                            .sortby("time")
-                        )
+                        ds_chunk = ds_chunk.swap_dims({leadtime_dim: "time"})
+                        if leadtime_dim in ds_chunk.data_vars:
+                            ds_chunk = ds_chunk.drop_vars(leadtime_dim)
+                        ds_chunk = ds_chunk.sortby("time")
                         # print(f"   Chunk coords after swap: {ds_chunk.coords}")
 
                         # Infer member index from repeats within each time
@@ -400,7 +419,7 @@ class EarthkitSource(BaseSource):
         return xarray_concat_dim, ds_chunks
 
     def _get_data(self) -> xr.Dataset:
-        n_missed = len(self.elements.missed)
+        n_missed = len(self.elements.missed) # at this stage is always zero
         samples = [s for s in self.elements.samples if s not in self.elements.missed] # TODO refactor to BaseSource?
         print(f"Samples: {len(samples)}, missed: {n_missed}")
 
@@ -417,6 +436,8 @@ class EarthkitSource(BaseSource):
             and self.config.leadtime.minutes == 0
             and self.config.leadtime.seconds == 0
         )
+        # lead_is_zero = self.config.leadtime == relativedelta() # possibile stricter alternative
+
         # print(f"Leadtime is zero: {lead_is_zero}")
         # print(f"Data sel start: {self.date_range[0]}, end: {self.date_range[-1]}")
         # Use effective start and end dates
@@ -456,6 +477,8 @@ class EarthkitSource(BaseSource):
             request_args = dict(variable=var_longname_list, area=area)
 
         years = xr.date_range(start=start, end=end, freq="YS") # from the first year after the start
+        if len(years) == 0:
+            raise ValueError("Years calculated from date range is empty")
 
         print(f"Requesting {var_longname_list} ({dates}, {self.data_selection.period.freq}) in region {area} from {self.config.provider}:{self.config.dataset} (ekd_ver={self.ekd_version})")
         print(f"Check request status: https://cds.climate.copernicus.eu/requests?tab=all")
@@ -483,6 +506,7 @@ class EarthkitSource(BaseSource):
             print(f"Requested split-by-year ranges: {years}")
 
             datasets = []
+            xarray_concat_dim = None
             for y1, y2 in zip(years[:-1], years[1:]):
                 # print(f"y1={y1}, y2={y2}")
                 request_time_args_list = []
@@ -526,6 +550,13 @@ class EarthkitSource(BaseSource):
                     xarray_concat_dim, ds_chunks = self._fetch_chunks(request_time_args_list, y1, y2, request_args | self.config.request_extra_args)
                     datasets.extend(ds_chunks)
 
+            # Guard for empy datasets and no concat dim
+            if not datasets or xarray_concat_dim is None:
+                raise ValueError(
+                    f"No datasets fetched for {self.source_name}. "
+                    f"request_type={self.config.request_type}, start={start}, end={end}"
+                )
+
             # Combine all datasets
             # print(f"Combine split-request datasets of length {len(datasets)}")
             ds_all = xr.concat(datasets, dim=xarray_concat_dim, **self.config.xarray_concat_extra_args)
@@ -565,6 +596,13 @@ class EarthkitSource(BaseSource):
             if request_time_args_list:
                 xarray_concat_dim, datasets = self._fetch_chunks(request_time_args_list, start, end, request_args | self.config.request_extra_args)
 
+            # Guard for empy datasets and no concat dim
+            if not datasets or xarray_concat_dim is None:
+                raise ValueError(
+                    f"No datasets fetched for {self.source_name}. "
+                    f"request_type={self.config.request_type}, start={start}, end={end}"
+                )
+
             # Combine all datasets
             ds_all = xr.concat(datasets, dim=xarray_concat_dim, **self.config.xarray_concat_extra_args)
 
@@ -588,6 +626,7 @@ class EarthkitSource(BaseSource):
         # print(f"Datasets before dropping missing samples: {len(ds_all[xarray_concat_dim].values)}")
         # print(f"Time values after reassignment: {ds_all[xarray_concat_dim].values}")
 
+        n_missed = len(self.elements.missed) # recompute after fetching
         n_actual_samples = len(ds_all[xarray_concat_dim].values)
         n_all_samples = len(self.date_range)
         assert n_missed + n_actual_samples == n_all_samples, f"number of samples obtained + missed is different from number of all samples ({n_actual_samples}+{n_missed} =/= {n_all_samples})"
@@ -617,7 +656,23 @@ class EarthkitSource(BaseSource):
         #         f"Expected: {list(expected)}"
         #     )
 
-        ds_all = ds_all.assign_coords({xarray_concat_dim: self.date_range})
+        # Validate actual and expected sample date ranges
+        expected = pd.DatetimeIndex([d for d in self.date_range if d not in self.elements.missed])
+        actual = pd.DatetimeIndex(pd.to_datetime(ds_all[xarray_concat_dim].values))
+
+        if not actual.equals(expected):
+            raise ValueError(
+                f"Fetched times do not match expected non-missed date_range.\n"
+                f"Actual head/tail: {actual[:3].tolist()} ... {actual[-3:].tolist()}\n"
+                f"Expected head/tail: {expected[:3].tolist()} ... {expected[-3:].tolist()}"
+            )
+
+        # TODO here we need to decide what to do, currently do nothing might work
+        # Assign date range as time coords, after validation is mostly safe
+        # ds_all = ds_all.assign_coords({xarray_concat_dim: self.date_range})
+        # Reindex, set NaNs instead of missed values
+        # full_index = pd.DatetimeIndex(self.date_range)
+        # ds_all = ds_all.reindex({xarray_concat_dim: full_index})
 
         print(f"First and last time values in obtained dataset: {pd.to_datetime(ds_all[xarray_concat_dim].values[0])}, {pd.to_datetime(ds_all[xarray_concat_dim].values[-1])}")
 
