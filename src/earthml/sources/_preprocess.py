@@ -112,7 +112,11 @@ def preprocess_mfdataset(ds: xr.Dataset, data: DataSelection, var_name: str | No
                 f"Expected 1D leadtime coordinate {leadtime.name!r}, got dims={coord.dims}"
             )
         lead_dim = coord.dims[0]
-        idx = int((abs(coord - target)).argmin(dim=lead_dim).compute().item())
+        # idx = int((abs(coord - target)).argmin(dim=lead_dim).compute().item())
+        ## speed-up attempt
+        coord_vals = np.asarray(coord.values)
+        idx = int(np.abs(coord_vals - target).argmin())
+        ##
         da = da.isel({lead_dim: idx})
 
     out = xr.Dataset({da.name or var_name: da})

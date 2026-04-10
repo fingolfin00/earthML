@@ -12,6 +12,7 @@ def juno_forecast_hourly(
     leadtime_unit: str,
     root_path: str | Path = "/data/inputs/METOCEAN/rolling/model/atmos/ECMWF/IFS_010/1.0forecast/1h/grib/",
     engine: str = "cfgrib",
+    cfgrib_idx_path: str = "",
     regrid_resolution: float | None = None,
     file_path_date_format: str = "%Y%m%d",
     file_header: str = "JLS",
@@ -29,6 +30,7 @@ def juno_forecast_hourly(
             leadtime=leadtime,
             root_path=Path(root_path),
             engine=engine,
+            cfgrib_idx_path=cfgrib_idx_path,
             file_name_config=JunoLocalSourceFileNameConfig(
                 file_path_date_format=file_path_date_format,
                 file_header=file_header,
@@ -54,6 +56,7 @@ def juno_analysis_6hourly(
     leadtime_unit: str,
     root_path: str | Path = "/data/inputs/METOCEAN/historical/model/atmos/ECMWF/IFS_010/analysis/6h/grib/",
     engine: str = "cfgrib",
+    cfgrib_idx_path: str = "",
     regrid_resolution: float | None = None,
     file_path_date_format: str = "%Y/%m",
     file_header: str = "JLD",
@@ -71,6 +74,7 @@ def juno_analysis_6hourly(
             leadtime=leadtime,
             root_path=Path(root_path),
             engine=engine,
+            cfgrib_idx_path=cfgrib_idx_path,
             file_name_config=JunoLocalSourceFileNameConfig(
                 file_path_date_format=file_path_date_format,
                 file_header=file_header,

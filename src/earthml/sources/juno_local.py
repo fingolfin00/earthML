@@ -6,6 +6,9 @@ import re, time, dask
 from heapq import nlargest
 from pathlib import Path
 
+import hashlib
+import json
+
 from datetime import timedelta
 from dateutil.relativedelta import relativedelta
 
@@ -53,6 +56,7 @@ class JunoLocalSourceConfig:
     file_name_config            : JunoLocalSourceFileNameConfig
     regrid_config               : RegridConfig
     select_area_after_request   : bool = True
+    cfgrib_idx_path             : str | Path = ""
 
 
 class JunoLocalSource(MFXarrayLocalSource):
@@ -78,6 +82,61 @@ class JunoLocalSource(MFXarrayLocalSource):
         self.regrid_resolution = config.regrid_config.regrid_resolution
         self.regrid_vars = config.regrid_config.regrid_vars if config.regrid_config.regrid_vars is not None else self.var_name_list
 
+        self.cfgrib_idx_path = str(config.cfgrib_idx_path)
+        if self.engine == "cfgrib" and self.cfgrib_idx_path:
+            Path(self.cfgrib_idx_path).mkdir(parents=True, exist_ok=True)
+
+
+    @staticmethod
+    def _make_cfgrib_index_key(path: Path, filter_by_keys: dict | None = None) -> str:
+        """Create unique index key for grib indexing"""
+        try:
+            stat = path.stat()
+            file_sig = {
+                "path": str(path.resolve()),
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+            }
+        except FileNotFoundError:
+            file_sig = {
+                "path": str(path.resolve()),
+                "size": None,
+                "mtime_ns": None,
+            }
+
+        key_data = {
+            "file": file_sig,
+            "filter_by_keys": filter_by_keys or {},
+        }
+
+        raw = json.dumps(key_data, sort_keys=True, separators=(",", ":"))
+        return hashlib.md5(raw.encode()).hexdigest()
+
+
+    def _open_one_cfgrib(self, path: Path, var_name: str, date, lock):
+        filter_by_keys = {"cfVarName": var_name}
+        indexpath_key = self._make_cfgrib_index_key(path, filter_by_keys)
+        indexpath = str(Path(self.cfgrib_idx_path) / f"{indexpath_key}.idx")
+
+        ds = xr.open_dataset(
+            path,
+            engine="cfgrib",
+            backend_kwargs={
+                "indexpath": indexpath,
+                "filter_by_keys": filter_by_keys,
+            },
+            decode_cf=True,
+            decode_timedelta=True,
+            lock=lock,
+            chunks="auto",
+        )
+
+        return preprocess_mfdataset(
+            ds,
+            data=self.data_selection,
+            var_name=var_name,
+            date=date,
+        )
 
     @staticmethod
     def _latest_matching_files(data_path: Path, pattern: str, realizations: int | Literal["all"]) -> list[Path]:
@@ -214,9 +273,10 @@ class JunoLocalSource(MFXarrayLocalSource):
             # if minus/plus_samples time coordinate stepping might be irregular so override
             "compat": "override" if has_shifted_samples else "no_conflicts",
             "engine": self.engine,
-            # "chunks": {'time': -1},
+            # "chunks": {'time': -1}, ## speed-up attempt
             "chunks": "auto",
             "parallel": True,
+            # "parallel": False, ## speed-up attempt
             "decode_timedelta": True,
             "backend_kwargs": {},
             "preprocess": partial(preprocess_mfdataset, data=self.data_selection),
@@ -276,66 +336,95 @@ class JunoLocalSource(MFXarrayLocalSource):
                     var_ds_list = []
 
                     for var in selected_vars:
-                        var_args = dict(args) # again local copy to avoid leakage between iterations
-
-                        if self.engine == "cfgrib":
-                            var_args["backend_kwargs"] = {
-                                "indexpath": "", # disable .idx writing
-                                "filter_by_keys": {"cfVarName": var.name},
-                            }
-
-                        var_args["preprocess"] = partial(
-                            preprocess_mfdataset,
-                            data=self.data_selection,
-                            var_name=var.name,
-                            date=date,
-                        )
                         # var_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": var.name}} # not currently possible to filter with a list of keys (see https://github.com/ecmwf/cfgrib/issues/138)
-                        # var_args["indexpath"] = ""
+                        # Use open_dataset for grib
+                        if self.engine == "cfgrib":
+                            per_file = []
+                            for path in sample:
+                                def _open_one(path=path, var_name=var.name, date=date):
+                                    return self._open_one_cfgrib(path, var_name, date, lock)
 
-                        def _open_mfdataset_local(local_args=var_args):
-                            return xr.open_mfdataset(**local_args)
+                                ds_one = retry_fetch_after_hdf_err(
+                                    _open_one,
+                                    error_re=r"Unspecified error in H5DSget_num_scales.*",
+                                )
+                                per_file.append(ds_one)
 
-                        var_ds = retry_fetch_after_hdf_err(
-                            _open_mfdataset_local,
-                            error_re=r"Unspecified error in H5DSget_num_scales.*",
+                            ds_var = xr.concat(
+                                per_file,
+                                dim=realization_concat_dim,
+                                coords="minimal",
+                                compat="override",
+                                combine_attrs="drop_conflicts",
+                            )
+                            var_ds_list.append(ds_var)
+
+                        else: # use open_mfdataset if not grib
+                            var_args = dict(args) # again local copy to avoid leakage between iterations
+                            var_args["preprocess"] = partial(
+                                preprocess_mfdataset,
+                                data=self.data_selection,
+                                var_name=var.name,
+                                date=date,
                         )
-                        var_ds_list.append(var_ds)
+                            def _open_mfdataset_local(local_args=var_args):
+                                return xr.open_mfdataset(**local_args)
+
+                            var_ds = retry_fetch_after_hdf_err(
+                                _open_mfdataset_local,
+                                error_re=r"Unspecified error in H5DSget_num_scales.*",
+                            )
+                            var_ds_list.append(var_ds)
 
                     ds_sample = xr.merge(var_ds_list, compat="no_conflicts", combine_attrs="no_conflicts")
 
                     if realization_concat_dim in ds_sample.coords:
                         ds_sample = ds_sample.assign_coords(
-                            {realization_concat_dim: ds_sample[realization_concat_dim].load()}
+                            {realization_concat_dim: np.asarray(ds_sample[realization_concat_dim].values)}
                         )
                 else:
                     var = selected_vars[0]
 
+                    # Use open_dataset for grib
                     if self.engine == "cfgrib":
-                        args["backend_kwargs"] = {
-                            "indexpath": "", # disable .idx writing
-                            "filter_by_keys": {"cfVarName": var.name},
-                        }
+                        per_file = []
+                        for path in sample:
+                            def _open_one(path=path, var_name=var.name, date=date):
+                                return self._open_one_cfgrib(path, var_name, date, lock)
 
-                    args["preprocess"] = partial(
-                        preprocess_mfdataset,
-                        data=self.data_selection,
-                        var_name=var.name,
-                        date=date,
-                    )
+                            ds_one = retry_fetch_after_hdf_err(
+                                _open_one,
+                                error_re=r"Unspecified error in H5DSget_num_scales.*",
+                            )
+                            per_file.append(ds_one)
 
-                    def _open_mfdataset_local(local_args=args):
-                        return xr.open_mfdataset(**local_args)
+                        ds_sample = xr.concat(
+                            per_file,
+                            dim=realization_concat_dim,
+                            coords="minimal",
+                            compat="override",
+                            combine_attrs="drop_conflicts",
+                        )
 
-                    ds_sample = retry_fetch_after_hdf_err(
-                        _open_mfdataset_local,
-                        error_re=r"Unspecified error in H5DSget_num_scales.*",
-                    )
+                    else: # use open_mfdataset if not grib
+                        args["preprocess"] = partial(
+                            preprocess_mfdataset,
+                            data=self.data_selection,
+                            var_name=var.name,
+                            date=date,
+                        )
+                        def _open_mfdataset_local(local_args=args):
+                            return xr.open_mfdataset(**local_args)
+
+                        ds_sample = retry_fetch_after_hdf_err(
+                            _open_mfdataset_local,
+                            error_re=r"Unspecified error in H5DSget_num_scales.*",
+                        )
 
                     # Load realization coord
                     if realization_concat_dim in ds_sample.coords:
                         ds_sample = ds_sample.assign_coords(
-                            {realization_concat_dim: ds_sample[realization_concat_dim].load()}
+                            {realization_concat_dim: np.asarray(ds_sample[realization_concat_dim].values)}
                         )
                     # Promote realization to coord
                     if realization_concat_dim in ds_sample.dims:
