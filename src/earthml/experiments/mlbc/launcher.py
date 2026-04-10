@@ -16,6 +16,7 @@ from ...base import Leadtime, TimeRange
 from ...logging import (
     add_experiment_file_handler,
     get_logger,
+    log_renderable,
     remove_experiment_file_handler,
 )
 from ...sources.providers import available_providers, Provider
@@ -142,7 +143,62 @@ class MLBCExperimentLauncher:
             else:
                 raise ValueError(f"Unsupported combo input n_channels={n_channels}, output n_classes={n_classes}")
 
-        # TODO print a Table summary
+
+    @staticmethod
+    def _format_time_range(period: TimeRange | Sequence[TimeRange]) -> str:
+        if isinstance(period, Sequence):
+            parts = []
+            for tp in period:
+                parts.append(f"{tp.start:%Y-%m-%d}..{tp.end:%Y-%m-%d} ({tp.freq})")
+            return " | ".join(parts)
+        return f"{period.start:%Y-%m-%d}..{period.end:%Y-%m-%d} ({period.freq})"
+
+    @staticmethod
+    def _format_train_period_groups(period_groups: list[dict[MLBCExperimentDatasetRole, TimeRange | Sequence[TimeRange]]]) -> str:
+        lines = []
+        for idx, period_d in enumerate(period_groups, start=1):
+            input_period = MLBCExperimentLauncher._format_time_range(period_d["input"])
+            target_period = MLBCExperimentLauncher._format_time_range(period_d["target"])
+            lines.append(f"{idx}: input={input_period}; target={target_period}")
+        return "\n".join(lines)
+
+    def _summary_table_data(self, exp_gen_cfgs: Sequence[dict]) -> dict[str, dict[str, Any]]:
+        return {
+            "experiment.type": self.experiment.type,
+            "experiment.name": self.experiment.name,
+            "experiment.suffix": self.experiment.suffix,
+            "experiment.root_path": str(self.experiment.root_path),
+            "run.mode": self.run_mode,
+            "run.planned_runs": len(exp_gen_cfgs),
+            "run.max_retries": self.max_retries,
+            "data.variables_input": list(self.variables_input),
+            "data.variables_target": list(self.variables_target),
+            "data.regions": list(self.regions),
+            "data.leadtimes": [f"{lt.value} {lt.unit}" for lt in self.leadtimes],
+            "data.train_period_groups": self._format_train_period_groups(self.train_periodss),
+            "data.test_periods": self._format_time_range(self.test_periods),
+            "runtime.dask_workers": self.dask_workers,
+            "runtime.regrid_resolution": self.regrid_resolution,
+            "runtime.earthkit_cache_dir": str(self.earthkit_cache_dir),
+            "runtime.only_longest_train_period": self.only_longest_train_period,
+            "options.anomaly": self.anomaly,
+            "options.inpaint_nan": self.inpaint_nan,
+            "options.per_epoch_resplit": self.per_epoch_resplit,
+            "options.target_realization_avg": self.target_realization_avg,
+            "options.realization_as_channel": self.realization_as_channel,
+            "options.output_realizations": self.output_realizations,
+            "options.torch_preprocess_fn": getattr(self.torch_preprocess_fn, "__name__", None) if self.torch_preprocess_fn else None,
+            "net.name": self.net.name,
+            "net.loss": self.net.loss,
+            "net.batch_size": self.net.batch_size,
+            "net.epochs": self.net.epochs,
+            "net.learning_rate": self.net.learning_rate,
+            "net.accumulate_grad_batches": self.net.accumulate_grad_batches,
+            "net.train_percent": self.net.train_percent,
+            "net.earlystopping_patience": self.net.earlystopping_patience,
+            "net.n_channels": self.net.n_channels,
+            "net.n_classes": self.net.n_classes,
+        }
 
 
     def _handle_sequence_of_train_periods(
@@ -533,6 +589,10 @@ class MLBCExperimentLauncher:
         failed_runs: list[tuple[int, str, str]] = []
         exp_gen_cfgs, needs_ca_bundle = self._gen_exp_configs()
         logger = get_logger()
+        log_renderable(
+            Table(self._summary_table_data(exp_gen_cfgs), title="Launcher Summary", twocols=True).table,
+            logger=logger,
+        )
         for run_idx, exp_cfg in enumerate(exp_gen_cfgs):
             success = False
             run_name = None
