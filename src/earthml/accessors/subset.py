@@ -290,6 +290,7 @@ class EarthMLSubset:
             sel_lat = lat_vals.where(lat_mask, drop=True)
 
             ds = ds.sel({lon_coord: sel_lon, lat_coord: sel_lat})
+            # ds = ds.sel({lon_coord: sel_lon.values, lat_coord: sel_lat.values})
 
             if selection_d:
                 ds = ds.sel(**selection_d)
