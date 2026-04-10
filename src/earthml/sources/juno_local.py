@@ -436,32 +436,45 @@ class JunoLocalSource(MFXarrayLocalSource):
                             {realization_concat_dim: ds_sample[realization_concat_dim]}
                         )
 
+                # Reject placeholder / invalid samples before touching spatial coords
+                if "_has_var" not in ds_sample:
+                    raise ValueError(f"{date}: ds_sample has no _has_var flag")
+
+                if not bool(ds_sample["_has_var"].any().item()):
+                    self.elements.missed.add(date)
+                    prog.advance(task)
+                    continue
+
                 lon_name = ds_sample.earthml.guessed_coords.longitude
+                lat_name = ds_sample.earthml.guessed_coords.latitude
+
+                if lon_name is None or lat_name is None:
+                    self.elements.missed.add(date)
+                    prog.advance(task)
+                    continue
+
                 lon = np.asarray(ds_sample[lon_name].values, dtype=np.float64)
 
                 # normalize convention
                 lon = ((lon + 180.0) % 360.0) - 180.0
-                # lon = (lon % 360.0)
                 lon = np.round(lon, 10)
                 lon = np.where(np.isclose(lon, 180.0, atol=1e-8), -180.0, lon)
 
                 ds_sample = ds_sample.assign_coords({lon_name: lon}).sortby(lon_name)
 
-                # drop exact duplicates
                 vals = np.asarray(ds_sample[lon_name].values)
                 _, idx = np.unique(vals, return_index=True)
                 ds_sample = ds_sample.isel({lon_name: np.sort(idx)})
 
                 samples_d[date] = ds_sample
-
                 prog.advance(task)
 
         # dbg_sample_k = self.date_range[10]
         # print(f"Juno local, size of ds[{dbg_sample_k}] after open_mfdataset: {samples_d[dbg_sample_k].sizes}")
 
-        # Infer resolution from first sample
-        ref_idx = 0
-        ref_date = dates[ref_idx]
+        # Infer resolution from first valid sample
+        valid_dates = sorted(samples_d)
+        ref_date = valid_dates[0]
         ref_lon_name = samples_d[ref_date].earthml.guessed_coords.longitude
         ref_lon = np.asarray(samples_d[ref_date][ref_lon_name].values, dtype=np.float64)
         ref_lon = np.round(ref_lon, 10)
@@ -543,10 +556,15 @@ class JunoLocalSource(MFXarrayLocalSource):
                 f"No datasets left to concatenate for {self.source_name} after removing missed samples."
             )
 
+        concat_time_dim = (
+            samples_d[ref_date].earthml.guessed_dims.time
+            or samples_d[ref_date].earthml.guessed_coords.time
+            or "time"
+        )
         # TODO add progress bar to concat too?
         ds_all = xr.concat(
             objs=objs,
-            dim=xr.IndexVariable(time_dim, times), # TODO time_dim here is an abuse, as is selected in a loop
+            dim=xr.IndexVariable(concat_time_dim, times),
             coords="minimal",
             compat="override",
             join="outer",

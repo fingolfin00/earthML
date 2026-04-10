@@ -75,6 +75,19 @@ def preprocess_mfdataset(ds: xr.Dataset, data: DataSelection, var_name: str | No
 
     lon_coord, lat_coord = ds.earthml.guessed_coords.longitude, ds.earthml.guessed_coords.latitude
 
+    # Require both spatial coordinates; otherwise mark sample invalid
+    if lon_coord is None or lat_coord is None:
+        out = xr.Dataset()
+        out["_has_var"] = _status_da(ds, time_coord, False, name="_has_var")
+        out.attrs["_missing_spatial_coords"] = {
+            "longitude": lon_coord,
+            "latitude": lat_coord,
+        }
+        out.attrs["_source"] = ds.encoding.get("source", "")
+        if date is not None and time_coord is not None and time_coord in out.dims and out.sizes[time_coord] == 1:
+            out = out.assign_coords({time_coord: [np.datetime64(date)]})
+        return out
+
     # Decide desired variable name
     var_name = var_name or var0.name
 
