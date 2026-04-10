@@ -94,25 +94,22 @@ class EarthMLRegrid:
         lat0, lat1 = map(float, region.lat)
         lon0, lon1 = map(float, region.lon)
 
-        eps = 1e-6
+        def _build_axis(start: float, stop: float, step: float) -> np.ndarray:
+            step = abs(float(step))
+            span = abs(stop - start)
+            n = int(round(span / step))
 
-        # ---- Target latitude: preserve requested orientation ----
-        if lat0 > lat1:
-            lat_target = np.arange(lat0, lat1 - eps, -lat_res, dtype="float32")
-        else:
-            lat_target = np.arange(lat0, lat1 + eps, lat_res, dtype="float32")
+            if start > stop:
+                return (start - np.arange(n, dtype=np.float32) * step).astype("float32")
+            else:
+                return (start + np.arange(n, dtype=np.float32) * step).astype("float32")
 
-        # ---- Target longitude: keep a continuous interval, do NOT wrap to [-180, 180) ----
-        # Example: (-200, -120) should remain continuous, not become [160..179, -180..-120]
+        lat_target = _build_axis(lat0, lat1, lat_res)
+
         lon0_u, lon1_u = float(lon0), float(lon1)
-        if lon_res > 0:
-            while lon1_u < lon0_u:
-                lon1_u += 360.0
-            lon_target = np.arange(lon0_u, lon1_u + eps, lon_res, dtype="float32")
-        else: # probably dead code
-            while lon1_u > lon0_u:
-                lon1_u -= 360.0
-            lon_target = np.arange(lon0_u, lon1_u - eps, lon_res, dtype="float32")
+        while lon1_u < lon0_u:
+            lon1_u += 360.0
+        lon_target = _build_axis(lon0_u, lon1_u, lon_res)
 
         lon_center = 0.5 * (lon0_u + lon1_u)
 
@@ -165,7 +162,10 @@ class EarthMLRegrid:
             src_lon_res = float(np.abs(np.diff(src_lon)).mean()) if src_lon.size > 1 else np.nan
 
             # safest no-op: same spacing, keep existing grid exactly
-            if np.isclose(src_lat_res, lat_res, atol=1e-6) and np.isclose(src_lon_res, lon_res, atol=1e-6):
+            same_lat = src_lat.shape == lat_target.shape and np.allclose(src_lat, lat_target, atol=1e-6)
+            same_lon = src_lon.shape == lon_target.shape and np.allclose(src_lon, lon_target, atol=1e-6)
+
+            if same_lat and same_lon:
                 print("  no-op: keeping existing rectilinear grid")
                 return ds_interp
 
