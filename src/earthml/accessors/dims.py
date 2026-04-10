@@ -1,6 +1,7 @@
 from typing import Collection
 import warnings
 
+import numpy as np
 import xarray as xr
 
 from ..base import Dims
@@ -105,7 +106,15 @@ class EarthMLDims:
         return ds_out
 
 
-    def rename_dim_and_coord(self, ds: xr.Dataset, src: str, target: str):
+    def _rename_dim_and_coord(
+        self,
+        ds: xr.Dataset,
+        src: str,
+        target: str
+    ) -> xr.Dataset:
+        """
+        Private method, to be used only in this module.
+        """
         rename_map = {}
 
         if src in ds.dims:
@@ -118,7 +127,14 @@ class EarthMLDims:
 
         return ds
 
-    def normalize_dims_and_coords(self):
+    def rename_dim_and_coord(self, src: str, target: str) -> xr.Dataset:
+        """
+        Rename dimension/coord/data variable `src` to `target`.
+        """
+        ds = self._obj
+        return self._rename_dim_and_coord(ds, src, target)
+
+    def normalize_dims_and_coords(self) -> xr.Dataset :
         """
         Normalize the input dataset by renaming guessed dimensions to standard names.
         """
@@ -131,6 +147,70 @@ class EarthMLDims:
             (ds.earthml.guessed_dims.leadtime, "leadtime"),
         ):
             if src_dim is not None and src_dim != target_dim:
-                ds = self.rename_dim_and_coord(ds, src_dim, target_dim)
+                ds = self._rename_dim_and_coord(ds, src_dim, target_dim)
 
         return ds
+
+
+    def promote_to_dim(
+        self,
+        name: str,
+        *,
+        standard_name: str | None = None,
+        axis: str | None = None,
+    ) -> xr.Dataset:
+        """
+        Promote an existing coordinate or data variable to a dimension.
+
+        Behavior:
+        - if `name` is already a dimension, return dataset unchanged
+        - if `name` is a scalar coord/variable, promote it to a length-1 dimension
+        - if `name` is 1D on another dimension, swap that dimension to `name`
+        - otherwise raise ValueError
+        """
+        ds = self._obj
+
+        def _mark(ds2: xr.Dataset) -> xr.Dataset:
+            if name in ds2.coords:
+                if standard_name is not None:
+                    ds2[name].attrs["standard_name"] = standard_name
+                if axis is not None:
+                    ds2[name].attrs["axis"] = axis
+            return ds2
+
+        # already a dim
+        if name in ds.dims:
+            return _mark(ds)
+
+        # coord preferred, else variable
+        t = ds.coords.get(name, None)
+        if t is None:
+            if name not in ds.variables:
+                raise KeyError(f"{name!r} not found in dataset coords/variables")
+            t = ds[name]
+
+        # scalar -> length-1 dim
+        if t.ndim == 0:
+            dummy = f"__promote_{name}__"
+            while dummy in ds.dims or dummy in ds.coords or dummy in ds.data_vars:
+                dummy = "_" + dummy
+
+            ds2 = ds.expand_dims({dummy: 1})
+            ds2 = ds2.assign_coords({
+                name: xr.DataArray(
+                    np.asarray([t.values]),
+                    dims=(dummy,),
+                )
+            })
+            ds2 = ds2.swap_dims({dummy: name})
+            return _mark(ds2)
+
+        # 1D on another dim -> swap
+        if t.ndim == 1:
+            base_dim = t.dims[0]
+            ds2 = ds.swap_dims({base_dim: name})
+            return _mark(ds2)
+
+        raise ValueError(
+            f"Cannot promote {name!r} with dims={t.dims} ndim={t.ndim} to a dimension"
+        )
