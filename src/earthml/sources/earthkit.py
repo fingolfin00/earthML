@@ -200,7 +200,7 @@ class EarthkitSource(BaseSource):
 
         ds_chunks = []
         for i, req_time_arg in enumerate(request_time_args_list, start=1):
-            print(self._format_request_chunk_log(req_time_arg, start, end, i, len(request_time_args_list)))
+            print(_format_request_chunk_log(req_time_arg, start, end, i, len(request_time_args_list)))
 
             request_d = dict(
                 **request_other_args,
