@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from dask.distributed import wait
+from dask.distributed import wait, progress
 from zarr.codecs import BloscCodec
 
 from rich import print
@@ -191,8 +191,11 @@ class BaseSource(ABC):
         if self.ds is None:
             print(f"Load data from {self.source_name}...")
             t0 = time.time()
+
+            print("  1/3 building dataset...")
             ds = self._get_data()
 
+            print("  2/3 finalizing dataset...")
             ds = self._finalize(ds)
 
             # Persist here to materialise the dataset on the cluster
@@ -205,13 +208,16 @@ class BaseSource(ABC):
                 ds = ds.unify_chunks()
 
             if is_dask:
-                ds = ds.chunk()   # ensure it's dask-backed (no-op if already)
+                print("  3/3 materializing on cluster...")
+                ds = ds.chunk() # ensure it's dask-backed (no-op if already)
                 ds = ds.persist()
+                progress(ds) # show progress bar
                 wait(ds) # block load() until materialised
 
             self.ds = ds
             print(f" → loading time: {time.time() - t0:.2f}s")
             print(f" → dataset shape: {self.ds.sizes}")
+
         return self.ds
 
 
