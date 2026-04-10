@@ -10,11 +10,11 @@ def _status_da(ds: xr.Dataset, time_coord: str | None, ok: bool, name: str = "_h
     import xarray as xr
 
     # ensure a length-1 time dim if scalar
-    if time_coord not in ds.dims and time_coord in ds.coords:
+    if time_coord is not None and time_coord not in ds.dims and time_coord in ds.coords:
         coord = ds[time_coord]
         ds = ds.expand_dims({time_coord: [coord.values]})
 
-    if time_coord in ds.sizes:
+    if time_coord is not None and time_coord in ds.sizes:
         n = ds.sizes[time_coord]
         return xr.DataArray(
             [ok] * n,
@@ -23,69 +23,43 @@ def _status_da(ds: xr.Dataset, time_coord: str | None, ok: bool, name: str = "_h
             name=name,
         )
 
-    # fallback: scalar
+    # fallback: scalar # TODO verify this is acceptable downstream
     return xr.DataArray(ok, name=name)
 
-def ensure_time_dim(
-    ds: xr.Dataset,
-    time_coord: str | None,
-    *,
-    standard_name="time",
-) -> tuple[xr.Dataset, str]:
-    """
-    Ensure there is a time dimension. Returns (ds2, time_name_used).
 
-    Strategy:
-    - If time_coord is None, pick the first candidate that exists as coord/var.
-    - If chosen time exists but is scalar coord -> attach along a dummy dim and swap.
-    - If chosen time exists 1D on another dim -> swap that dim to time.
-    - If no time-like variable exists -> create a placeholder time dim with NaT length 1.
-    """
+def ensure_time_dim(ds: xr.Dataset) -> tuple[xr.Dataset, str]:
     import numpy as np
     import xarray as xr
 
-    tname = time_coord
-    # If no tname, return
-    if tname is None:
-        return ds, tname
+    time_name = ds.earthml.guessed_dims.time or ds.earthml.guessed_coords.time
 
-    # If already a dimension, just ensure attrs (and if scalar coord exists too, leave it)
-    if tname in ds.dims:
-        ds2 = ds
-        if tname in ds2.coords:
-            ds2[tname].attrs.update({"standard_name": standard_name, "axis": "T"})
-        return ds2, tname
-
-    # Get time "values" as a DataArray (coord preferred, else data_var)
-    t = ds.coords.get(tname, None)
-    if t is None:
-        t = ds[tname]  # data_var
-
-    # Promote scalar time to a dimension (no name collision)
-    if t.ndim == 0:
-        # Create a dummy dim that definitely doesn't collide
-        dummy = "__time_dummy__"
-        while dummy in ds.dims or dummy in ds.coords or dummy in ds.data_vars:
-            dummy = "_" + dummy
-
-        # Expand along dummy, then attach time values along dummy, then swap dims
-        ds2 = ds.expand_dims({dummy: 1})
-        ds2 = ds2.assign_coords(
-            {tname: xr.DataArray(np.array([t.values], dtype="datetime64[ns]"), dims=(dummy,))}
+    if time_name is not None:
+        ds2 = ds.earthml.promote_to_dim(
+            time_name,
+            standard_name="time",
+            axis="T",
         )
-        ds2 = ds2.swap_dims({dummy: tname})
-        ds2[tname].attrs.update({"standard_name": standard_name, "axis": "T"})
-        return ds2, tname
+        return ds2, time_name
 
-    # If time is 1D on some other dim, swap that dim to time
-    if t.ndim == 1:
-        base_dim = t.dims[0]
-        ds2 = ds.swap_dims({base_dim: tname})
-        ds2[tname].attrs.update({"standard_name": standard_name, "axis": "T"})
-        return ds2, tname
+    # fallback: create placeholder time dim
+    tname = "time"
+    if tname in ds.dims or tname in ds.coords or tname in ds.data_vars:
+        base = tname
+        i = 1
+        while tname in ds.dims or tname in ds.coords or tname in ds.data_vars:
+            tname = f"{base}_{i}"
+            i += 1
 
-    print(f"Don't know how to promote {tname!r} with ndim={t.ndim} to a time dimension.")
-    return ds, tname
+    ds2 = ds.expand_dims({tname: 1})
+    ds2 = ds2.assign_coords({
+        tname: xr.DataArray(
+            np.array([np.datetime64("NaT")], dtype="datetime64[ns]"),
+            dims=(tname,),
+        )
+    })
+    ds2[tname].attrs.update({"standard_name": "time", "axis": "T"})
+    return ds2, tname
+
 
 def preprocess_mfdataset(ds: xr.Dataset, data: DataSelection, var_name: str | None = None, date = None) -> xr.Dataset:
     import numpy as np
@@ -96,9 +70,8 @@ def preprocess_mfdataset(ds: xr.Dataset, data: DataSelection, var_name: str | No
     var0 = data.variable[0] if isinstance(data.variable, list) else data.variable
     leadtime = var0.leadtime
 
-    time_coord = ds.earthml.guessed_dims.time
-    # Ensure time_coord is a dimension
-    ds, time_coord = ensure_time_dim(ds, time_coord)
+    # Ensure ds a=has a time dim
+    ds, time_coord = ensure_time_dim(ds)
 
     lon_coord, lat_coord = ds.earthml.guessed_coords.longitude, ds.earthml.guessed_coords.latitude
 
@@ -117,10 +90,12 @@ def preprocess_mfdataset(ds: xr.Dataset, data: DataSelection, var_name: str | No
         out.attrs["_missing_var_name"] = var_name
         out.attrs["_source"] = ds.encoding.get("source", "")
         # Assign at least time coord
-        if not time_coord:
-            # print(date)
-            out = out.assign_coords({"source_time": date})
-            out = out.expand_dims("source_time")
+        # if not time_coord:
+        #     # print(date)
+        #     out = out.assign_coords({"source_time": date})
+        #     out = out.expand_dims("source_time")
+        if date is not None and time_coord is not None and time_coord in out.dims and out.sizes[time_coord] == 1:
+            out = out.assign_coords({time_coord: [np.datetime64(date)]})
         # print(out)
         return out
 
@@ -128,13 +103,17 @@ def preprocess_mfdataset(ds: xr.Dataset, data: DataSelection, var_name: str | No
     da = ds[var_name]
 
     # Select leadtime if present
-    if leadtime is not None and leadtime.name in ds.coords:
+    if leadtime is not None and leadtime.name in da.coords: # TODO need to understand this bit better
         td = pd.to_timedelta(f"{leadtime.value} {leadtime.unit}")
-        coord_dtype = ds[leadtime.name].dtype
-        target = td.to_numpy().astype(coord_dtype)
-        dist = abs(da[leadtime.name] - target)
-        idx = int(dist.argmin(time_coord).compute())
-        da = da.isel({time_coord: idx})
+        coord = da[leadtime.name]
+        target = td.to_numpy().astype(coord.dtype)
+        if coord.ndim != 1:
+            raise ValueError(
+                f"Expected 1D leadtime coordinate {leadtime.name!r}, got dims={coord.dims}"
+            )
+        lead_dim = coord.dims[0]
+        idx = int((abs(coord - target)).argmin(dim=lead_dim).compute().item())
+        da = da.isel({lead_dim: idx})
 
     out = xr.Dataset({da.name or var_name: da})
     out["_has_var"] = _status_da(out, time_coord, True, name="_has_var")
