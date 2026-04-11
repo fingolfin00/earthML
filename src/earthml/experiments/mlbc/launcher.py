@@ -98,17 +98,18 @@ class MLBCExperimentLauncher:
         # Lead time const and experiment type check
         self.leadtime_var_unit = "days"
         if self.experiment.type == "seasonal":
-            self.all_leadtimes       = (1, 2, 3, 4, 5, 6) # months
+            # self.all_leadtimes       = (1, 2, 3, 4, 5, 6) # months
             self.all_leadtimes_vars  = {
                 "ocean" : {1: 15, 2: 45, 3: 75, 4: 105, 5: 135, 6: 165},
                 "atmo"  : {1: 30, 2: 60, 3: 90, 4: 120, 5: 150, 6: 180},  # atmo seasonal forecast has end of month leadtimes
             }
         if self.experiment.type == "weather":
-            leadtimes_weather_days = (12, 24, 48, 72)
-            self.all_leadtimes       = leadtimes_weather_days # days
+            # leadtimes_weather_days = (0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9) # all possible days
+            # leadtimes_weather_hours = (0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9) # all possible hours
+            # self.all_leadtimes       = leadtimes_weather_days # days
             self.all_leadtimes_vars  = {
-                "ocean" : leadtimes_weather_days,
-                "atmo"  : leadtimes_weather_days,
+                "ocean" : {1: 24, 2: 48, 3: 72, 4: 96}, # TODO complete up to 9
+                "atmo"  : {0.5: 12, 1: 24, 2: 48, 3: 72},
             }
         
         # 6) leadtime conventions + target provider kwargs common
@@ -291,8 +292,9 @@ class MLBCExperimentLauncher:
         if self.experiment.name in ("juno-cmcc_juno-cmcc", "juno-ecmwf_juno-ecmwf"): # local Juno atmo weather or ocean (not really available)
             var_catalog_keys = (f"{var_input}_juno_fc", f"{var_target}_juno_an")
 
-        if self.experiment.name == "cmems_cmems": # ocean weather: CMEMS global ocean fc and an
+        if self.experiment.name in ("juno-cmcc_cmems", "cmems_cmems"): # ocean weather: CMEMS global ocean fc and an
             var_catalog_keys = (f"{var_input}_gopaf_fc", f"{var_target}_gopaf_an")
+
         if self.experiment.name == "juno-ecmwf_era5": # atmo weather: local Juno forecasts + ERA5 reanalysis
             raise NotImplementedError(f"Experiment {self.experiment.name} not yet implemented.")
         return var_catalog_keys
@@ -363,9 +365,13 @@ class MLBCExperimentLauncher:
                         input_provider = "atmo.juno.ecmwf.forecast.hourly"
                         target_provider = "atmo.juno.ecmwf.analysis.6hourly"
 
-                    if self.experiment.name == "cmems_cmems": # ocean weather
+                    if self.experiment.name == "cmems_cmems": # ocean weather cloud (cannot work, no past forecasts)
                         input_provider = "ocean.copernicusmarine.gopaf.forecast.hourly"
                         target_provider = "ocean.copernicusmarine.gopaf.analysis.hourly"
+
+                    if self.experiment.name == "juno-cmcc_cmems": # ocean weather Juno local + cloud for analysis (daily)
+                        input_provider = "ocean.juno.gopaf.forecast.daily.atlantic"
+                        target_provider = "ocean.copernicusmarine.gopaf.analysis.daily"
 
                 target_provider_list.append(target_provider)
                 input_provider_list.append(input_provider)
@@ -497,8 +503,9 @@ class MLBCExperimentLauncher:
                     raise ValueError(f"Unsupported atmo seasonal leadtime: {leadtime.value} {leadtime.unit}") from exc
                 leadtime_var_input = Leadtime(leadtime.name, self.leadtime_var_unit, leadtime_var_value)
 
-            if self.experiment.name == "cmems_cmems": # ocean weather experiment
-                leadtime_var_input = Leadtime(leadtime.name, self.leadtime_var_unit, self.all_leadtimes_vars["ocean"][lt_idx])
+            if self.experiment.name in ("juno-cmcc_cmems", "cmems_cmems"): # ocean weather experiment from cloud (cmems_cmems) cannot work currently (no past forecasts)
+                leadtime_var_input = Leadtime(leadtime.name, self.leadtime_var_unit, self.all_leadtimes_vars["ocean"][leadtime.value])
+
             # TODO most experiments are not implemented, we need to make this more general maybe?
 
             leadtime_target = Leadtime(leadtime.name, leadtime.unit, 0) # TODO maybe make it configurable by user?
