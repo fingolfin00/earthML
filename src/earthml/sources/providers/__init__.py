@@ -1,10 +1,10 @@
-from .registry import register_provider, build_provider, available_providers
+from .registry import register_source_config_provider, build_source_config_provider, available_source_config_providers
 from .dataclasses import Provider
 from . import ocean, atmo, ecmwf_opendata
 
 __all__ = [
-    "register_provider",
-    "build_provider",
-    "available_providers",
+    "register_source_config_provider",
+    "build_source_config_provider",
+    "available_source_config_providers",
     "Provider",
 ]

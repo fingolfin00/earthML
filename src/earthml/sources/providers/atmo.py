@@ -1,9 +1,9 @@
 from dateutil.relativedelta import relativedelta
 from pathlib import Path
 
-from .. import SourceConfig, RegridConfig, JunoLocalSourceConfig, JunoLocalSourceFileNameConfig, EarthkitSourceConfig
+from .. import SourceConfigContainer, RegridConfig, JunoLocalSourceConfig, JunoLocalSourceFileNameConfig, EarthkitSourceConfig
 
-from .registry import register_provider
+from .registry import register_source_config_provider as register_provider
 
 @register_provider("atmo.juno.ecmwf.forecast.hourly")
 def juno_forecast_hourly(
@@ -21,10 +21,10 @@ def juno_forecast_hourly(
     both_data_and_previous_date_in_file: bool = True,
     minus_hours: int = 1,
     plus_hours: int = 1,
-) -> SourceConfig:
+) -> SourceConfigContainer:
     leadtime = relativedelta(**{leadtime_unit: leadtime_value})
 
-    return SourceConfig(
+    return SourceConfigContainer(
         source="juno-local",
         config=JunoLocalSourceConfig(
             leadtime=leadtime,
@@ -65,10 +65,10 @@ def juno_analysis_6hourly(
     both_data_and_previous_date_in_file: bool = True,
     minus_hours: int = 1,
     plus_hours: int = 1,
-) -> SourceConfig:
+) -> SourceConfigContainer:
     leadtime = relativedelta(**{leadtime_unit: 0})
 
-    return SourceConfig(
+    return SourceConfigContainer(
         source="juno-local",
         config=JunoLocalSourceConfig(
             leadtime=leadtime,
@@ -105,10 +105,10 @@ def earthkit_cds_era5_single_levels(
     convert_unit: dict | None = None, # dict of var_name: (func, target_unit) to convert variable unit (e.g. {"temperature": (lambda x: x - 273.15, "C")})
     time_dim_mode: str = "valid_time",
     add_earthkit_attrs: bool = False,
-) -> SourceConfig:
+) -> SourceConfigContainer:
     leadtime = relativedelta(**{leadtime_unit: 0})
 
-    return SourceConfig(
+    return SourceConfigContainer(
         source="earthkit",
         config=EarthkitSourceConfig(
             leadtime=leadtime,
@@ -159,7 +159,7 @@ def earthkit_cmcc_monthly_hindcast_atmo(
     split_month_jump: list[str] | None = None,
     data_format: str = "grib", # netcdf (experimental)
     earthkit_cache_dir: str  = Path("/tmp/earthkit-cache/"),
-) -> SourceConfig:
+) -> SourceConfigContainer:
     leadtime = relativedelta(**{leadtime_unit: leadtime_value})
     
     if data_format == "netcdf":
@@ -178,7 +178,7 @@ def earthkit_cmcc_monthly_hindcast_atmo(
             decode_timedelta=True,
         )
 
-    return SourceConfig(
+    return SourceConfigContainer(
         source="earthkit",
         config=EarthkitSourceConfig(
             leadtime=leadtime,
@@ -218,10 +218,10 @@ def earthkit_cds_era5_single_levels_monthly(
     earthkit_cache_dir: str  = Path("/tmp/earthkit-cache/"),
     convert_unit: dict | None = None, # dict of var_name: (func, target_unit) to convert variable unit (e.g. {"temperature": (lambda x: x - 273.15, "C")})
     add_earthkit_attrs: bool = False,
-) -> SourceConfig:
+) -> SourceConfigContainer:
     leadtime = relativedelta(**{leadtime_unit: 0})
 
-    return SourceConfig(
+    return SourceConfigContainer(
         source="earthkit",
         config=EarthkitSourceConfig(
             leadtime=leadtime,

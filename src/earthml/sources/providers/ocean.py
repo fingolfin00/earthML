@@ -1,10 +1,9 @@
 from pathlib import Path
-from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
-from .. import SourceConfig, RegridConfig, JunoLocalSourceConfig, JunoLocalSourceFileNameConfig, EarthkitSourceConfig, CopernicusmarineSourceConfig
+from .. import SourceConfigContainer, RegridConfig, JunoLocalSourceConfig, JunoLocalSourceFileNameConfig, EarthkitSourceConfig, CopernicusmarineSourceConfig
 
-from .registry import register_provider
+from .registry import register_source_config_provider as register_provider
 
 
 # Seasonal ocean
@@ -22,11 +21,11 @@ def juno_monthly_hindcast_ocean_netcdf(
     file_path_var_prefix: str = "00_ocean_mon_ocean2d_", # _ocean_6hr_surface_
     file_date_format: str = "%Y%m%d",
     both_data_and_previous_date_in_file: bool = False,
-) -> SourceConfig:
+) -> SourceConfigContainer:
     members = str(realizations) if isinstance(realizations, int) else "*"
     leadtime = relativedelta(**{leadtime_unit: leadtime_value})
 
-    return SourceConfig(
+    return SourceConfigContainer(
         source="juno-local",
         config=JunoLocalSourceConfig(
             leadtime=leadtime,
@@ -60,10 +59,10 @@ def earthkit_cmcc_monthly_hindcast_ocean(
     split_month: int = 1,
     split_month_jump: list[str] | None = None, # ['03', '04', '06', '07'],
     earthkit_cache_dir: str  = Path("/tmp/earthkit-cache/"),
-) -> SourceConfig:
+) -> SourceConfigContainer:
     leadtime = relativedelta(**{leadtime_unit: leadtime_value})
 
-    return SourceConfig(
+    return SourceConfigContainer(
         source="earthkit",
         config=EarthkitSourceConfig(
             leadtime=leadtime,
@@ -111,10 +110,10 @@ def earthkit_cds_oras5(
     select_area_after_request: bool = True,
     earthkit_cache_dir: str  = Path("/tmp/earthkit-cache/"),
     convert_unit: dict | None = None, # dict of var_name: (func, target_unit) to convert variable unit (e.g. {"temperature": (lambda x: x - 273.15, "C")})
-) -> SourceConfig:
+) -> SourceConfigContainer:
     leadtime = relativedelta(**{leadtime_unit: 0})
 
-    return SourceConfig(
+    return SourceConfigContainer(
         source="earthkit",
         config=EarthkitSourceConfig(
             leadtime=leadtime,
@@ -161,10 +160,10 @@ def copernicusmarine_global_ocean_physics_analysis_hourly(
     select_area_after_request: bool = True,
     # copernicusmarine_cache_dir: str  = Path("/tmp/copernicusmarine-cache/"),
     convert_unit: dict | None = None, # dict of var_name: (func, target_unit) to convert variable unit (e.g. {"temperature": (lambda x: x - 273.15, "C")})
-) -> SourceConfig:
+) -> SourceConfigContainer:
     leadtime = relativedelta(**{leadtime_unit: 0})
 
-    return SourceConfig(
+    return SourceConfigContainer(
         source="copernicusmarine",
         config=CopernicusmarineSourceConfig(
             leadtime=leadtime,
@@ -193,7 +192,7 @@ def copernicusmarine_global_ocean_physics_analysis_daily(
     select_area_after_request: bool = True,
     # copernicusmarine_cache_dir: str  = Path("/tmp/copernicusmarine-cache/"),
     convert_unit: dict | None = None, # dict of var_name: (func, target_unit) to convert variable unit (e.g. {"temperature": (lambda x: x - 273.15, "C")})
-) -> SourceConfig:
+) -> SourceConfigContainer:
     leadtime = relativedelta(**{leadtime_unit: 0})
 
     if var_name in ("thetao", "so"):
@@ -201,7 +200,7 @@ def copernicusmarine_global_ocean_physics_analysis_daily(
     else:
         var_dataset_name = ""
 
-    return SourceConfig(
+    return SourceConfigContainer(
         source="copernicusmarine",
         config=CopernicusmarineSourceConfig(
             leadtime=leadtime,
@@ -233,10 +232,10 @@ def juno_global_ocean_physics_forecast_daily_atlantic(
     file_suffix: str = ".nc",
     file_date_format: str = "%Y%m%d",
     both_data_and_previous_date_in_file: bool = False,
-) -> SourceConfig:
+) -> SourceConfigContainer:
     leadtime = relativedelta(**{leadtime_unit: leadtime_value})
 
-    return SourceConfig(
+    return SourceConfigContainer(
         source="juno-local",
         config=JunoLocalSourceConfig(
             leadtime=leadtime,

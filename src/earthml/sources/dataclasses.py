@@ -1,8 +1,25 @@
 from dataclasses import dataclass, field, is_dataclass
-from typing import Any, Sequence, Set
+from typing import Any, Sequence, Set, TYPE_CHECKING, TypeAlias
 from datetime import datetime
 
 from ..base import DataSelection
+
+
+if TYPE_CHECKING:
+    from .earthkit import EarthkitSourceConfig
+    from .juno_local import JunoLocalSourceConfig
+    from .xarray_local import XarrayLocalSourceConfig
+    from .copernicusmarine import CopernicusmarineSourceConfig
+
+    SourceConfig: TypeAlias = (
+        JunoLocalSourceConfig
+        | CopernicusmarineSourceConfig
+        | EarthkitSourceConfig
+        | XarrayLocalSourceConfig
+    )
+else:
+    SourceConfig = Any
+
 
 
 @dataclass
@@ -68,9 +85,9 @@ class RegridConfig:
     regrid_vars         : list[str] = field(default_factory=list)
 
 @dataclass
-class SourceConfig:
+class SourceConfigContainer:
     source: str
-    config: Any
+    config: SourceConfig
 
     def __post_init__(self) -> None: # TODO verify this check makes sense
         from .registry import get_source_config_class, list_sources

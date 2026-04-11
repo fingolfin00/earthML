@@ -1,5 +1,5 @@
 from .base import BaseSource
-from .dataclasses import SourceConfig, RegridConfig, DataSource
+from .dataclasses import SourceConfig, SourceConfigContainer, RegridConfig, DataSource
 from .registry import get_source_class, build_source
 from .registry import _SOURCES as _REGISTRY_SOURCES
 
@@ -14,6 +14,7 @@ __all__ = [
     "get_source_class",
     "build_source",
     "SourceConfig",
+    "SourceConfigContainer",
     "RegridConfig",
     "DataSource",
     # source dataclasses

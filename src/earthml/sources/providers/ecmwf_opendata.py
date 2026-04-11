@@ -1,8 +1,8 @@
 from dateutil.relativedelta import relativedelta
 
-from .. import SourceConfig, RegridConfig, EarthkitSourceConfig
+from .. import SourceConfigContainer, RegridConfig, EarthkitSourceConfig
 
-from .registry import register_provider
+from .registry import register_source_config_provider as register_provider
 
 
 @register_provider("earthkit.ecmwf_open_data.forecast.sfc")
@@ -16,10 +16,10 @@ def earthkit_ecmwf_open_data_fc_sfc(
     time_dim_mode: str = "valid_time",
     chunks: dict | None = None,
     add_earthkit_attrs: bool = False,
-) -> SourceConfig:
+) -> SourceConfigContainer:
     leadtime = relativedelta(**{leadtime_unit: 0})
 
-    return SourceConfig(
+    return SourceConfigContainer(
         source="earthkit",
         config=EarthkitSourceConfig(
             leadtime=leadtime,
