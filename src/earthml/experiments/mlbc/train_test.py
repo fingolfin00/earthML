@@ -231,8 +231,7 @@ class MLBCExperiment:
         except ValueError:  # empty sequence
             self.ckpt_path = self.ckpt_folder_path / f"{self.ckpt_filename}.ckpt"
 
-    @staticmethod
-    def _get_latitudes(ds: xr.Dataset) -> np.ndarray:
+    def _get_latitudes(self, ds: xr.Dataset) -> np.ndarray:
         self.logger.info("Getting latitudes from dataset for loss function...")
         return ds[ds.earthml.guessed_dims.latitude].values
 
