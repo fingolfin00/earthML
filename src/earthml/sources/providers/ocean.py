@@ -157,7 +157,7 @@ def copernicusmarine_global_ocean_physics_analysis_hourly(
     leadtime_unit: str,
     username: str,
     password: str,
-    regrid_resolution: float = 0.83,
+    regrid_resolution: float = 0.08,
     select_area_after_request: bool = True,
     # copernicusmarine_cache_dir: str  = Path("/tmp/copernicusmarine-cache/"),
     convert_unit: dict | None = None, # dict of var_name: (func, target_unit) to convert variable unit (e.g. {"temperature": (lambda x: x - 273.15, "C")})
@@ -189,12 +189,17 @@ def copernicusmarine_global_ocean_physics_analysis_daily(
     leadtime_unit: str,
     username: str,
     password: str,
-    regrid_resolution: float = 0.83, # TODO check it's correct
+    regrid_resolution: float = 0.08,
     select_area_after_request: bool = True,
     # copernicusmarine_cache_dir: str  = Path("/tmp/copernicusmarine-cache/"),
     convert_unit: dict | None = None, # dict of var_name: (func, target_unit) to convert variable unit (e.g. {"temperature": (lambda x: x - 273.15, "C")})
 ) -> SourceConfig:
     leadtime = relativedelta(**{leadtime_unit: 0})
+
+    if var_name in ("thetao", "so"):
+        var_dataset_name = f"-{var_name}"
+    else:
+        var_dataset_name = ""
 
     return SourceConfig(
         source="copernicusmarine",
@@ -202,7 +207,7 @@ def copernicusmarine_global_ocean_physics_analysis_daily(
             leadtime=leadtime,
             username=username,
             password=password,
-            dataset="cmems_mod_glo_phy_anfc_0.083deg_PT1D-m", # hourly
+            dataset=f"cmems_mod_glo_phy{var_dataset_name}_anfc_0.083deg_P1D-m", # hourly
             regrid_config=RegridConfig(
                 regrid_resolution=regrid_resolution,
                 regrid_vars=[var_name],
@@ -222,7 +227,7 @@ def juno_global_ocean_physics_forecast_daily_atlantic(
     root_path: str | Path = "/data/inputs/METOCEAN/rolling/model/ocean/CMS/GlobOce/MERCATOR/1.0forecast/day/",
     engine: str = "h5netcdf",
     cfgrib_idx_path: str = "",
-    regrid_resolution: float = 0.83,
+    regrid_resolution: float = 0.08,
     file_path_date_format: str = "%Y%m%d",
     file_header: str = "cmems_mod_glo_phy_anfc_0.083deg_P1D-m_MEDATL_*",
     file_suffix: str = ".nc",
