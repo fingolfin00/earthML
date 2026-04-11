@@ -108,7 +108,7 @@ class MLBCExperimentLauncher:
             # leadtimes_weather_hours = (0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9) # all possible hours
             # self.all_leadtimes       = leadtimes_weather_days # days
             self.all_leadtimes_vars  = {
-                "ocean" : {1: 24, 2: 48, 3: 72, 4: 96}, # TODO complete up to 9
+                "ocean" : {1: 24, 2: 48, 3: 72, 4: 96, 5: 120, 6: 144, 7: 168, 8: 192, 9: 216},
                 "atmo"  : {0.5: 12, 1: 24, 2: 48, 3: 72},
             }
         
