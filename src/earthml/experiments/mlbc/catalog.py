@@ -13,8 +13,8 @@ def make_var(
         sst_gopaf_fc=Variable(longname="sea_surface_temperature", name="thetao", levm=0, leadtime=leadtime_input),
         sst_gopaf_an=Variable(longname="sea_surface_temperature", name="thetao", levm=0),
 
-        ssh_gopaf_fc=Variable(longname="Sea surface height", name="zos", levm=0, leadtime=leadtime_input),
-        ssh_gopaf_an=Variable(longname="Sea surface height", name="zos", levm=0),
+        ssh_gopaf_fc=Variable(longname="Sea surface height", name="zos", leadtime=leadtime_input),
+        ssh_gopaf_an=Variable(longname="Sea surface height", name="zos"), # only surface variable
 
         # Atmo weather
         # local forecast
