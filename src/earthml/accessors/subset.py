@@ -307,7 +307,7 @@ class EarthMLSubset:
             # ds = ds.sel({lon_coord: sel_lon.values, lat_coord: sel_lat.values})
 
             if selection_d:
-                ds = ds.sel(**selection_d)
+                ds = ds.sel(**selection_d, method='nearest')
 
             sel_lon_min = float(np.nanmin(ds[lon_coord].values))
             sel_lon_max = float(np.nanmax(ds[lon_coord].values))
