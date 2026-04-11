@@ -38,6 +38,19 @@ _CANONICAL_VARIABLE_NAMES = {
 }
 
 
+def _rehydrate_saved_experiment(exp_path: Path, experiment: dict) -> dict:
+    """
+    Rebind location-dependent fields after loading a saved experiment.
+
+    Experiments may be moved after creation, so any serialized absolute path
+    must be reconciled with the current folder that contains ``experiment.cfg``.
+    """
+    config = experiment.get("config")
+    if config is not None and hasattr(config, "work_path"):
+        config.work_path = exp_path
+    return experiment
+
+
 def _canonicalize_dataset_variable_names(ds: xr.Dataset, dataset_name: str | None = None) -> xr.Dataset:
     """
     Rename dataset variables to a canonical short-name namespace.
@@ -156,7 +169,9 @@ def _load_saved_experiment(
         if exp_path.is_file():
             exp_path = exp_path.parent
 
-    return exp_path, joblib.load(exp_path / "experiment.cfg")
+    experiment = joblib.load(exp_path / "experiment.cfg")
+    experiment = _rehydrate_saved_experiment(exp_path, experiment)
+    return exp_path, experiment
 
 
 def _source_with_root_path(
@@ -349,6 +364,7 @@ def load_all_exp_from_folder(
                         continue
 
                     experiment = joblib.load(entry.path)
+                    experiment = _rehydrate_saved_experiment(current_path, experiment)
                     config: MLBCExperimentConfig = experiment["config"]
                     configs.append(config)
         except FileNotFoundError:
