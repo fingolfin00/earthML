@@ -170,14 +170,26 @@ class EarthMLSubset:
         # Leadtime
         leadtime = data_selection.variable.leadtime
         if leadtime is not None:
-            td = pd.to_timedelta(f"{leadtime.value} {leadtime.unit}")
-            coord_dtype = ds[leadtime.name].dtype
-            target = td.to_numpy().astype(coord_dtype)
-            leadtime_sel_d = self._dim_selection(ds.earthml.guessed_dims.leadtime, target)
+            leadtime_coord = None
+            if leadtime.name in ds.coords:
+                leadtime_coord = leadtime.name
+            else:
+                leadtime_coord = ds.earthml.guessed_coords.leadtime
 
-            if leadtime_sel_d:
-                leadtime_dim = next(iter(leadtime_sel_d))
-                if not (
+            leadtime_dim = ds.earthml.guessed_dims.leadtime
+
+            if leadtime_coord is None or leadtime_dim is None:
+                logger.info(
+                    "Skipping leadtime selection for %s: dataset has no leadtime coord/dim",
+                    leadtime.name,
+                )
+            else:
+                td = pd.to_timedelta(f"{leadtime.value} {leadtime.unit}")
+                coord_dtype = ds[leadtime_coord].dtype
+                target = td.to_numpy().astype(coord_dtype)
+                leadtime_sel_d = self._dim_selection(leadtime_dim, target)
+
+                if leadtime_sel_d and not (
                     ds[leadtime_dim].ndim == 1
                     and ds[leadtime_dim].shape[0] == 1
                 ):
