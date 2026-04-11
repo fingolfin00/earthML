@@ -1,17 +1,15 @@
 from dataclasses import dataclass
-from typing import Sequence, Literal, Callable, Any
+from typing import Sequence, Callable, Any, TypeAlias
 from itertools import product
 
 from pathlib import Path
 
 import traceback
 
-from numpy import isin
-
 from dateutil.relativedelta import relativedelta
 from datetime import datetime
 
-from ...misc import Dask, Table
+from ...misc import Table
 from ...base import Leadtime, TimeRange
 from ...logging import (
     add_experiment_file_handler,
@@ -19,16 +17,21 @@ from ...logging import (
     log_renderable,
     remove_experiment_file_handler,
 )
-from ...sources.providers import available_providers, Provider
+from ...sources.providers import Provider
 
 from .dataset import MLBCDatasetGenerator
 from .dataclasses import MLBCExperimentLauncherConfig, MLBCNeuralNet, MLBCExperimentConfig
-from .registry import MLBCExperimentDatasetRole, MLBCRunMode, MLBCExperimentName
+from .registry import MLBCExperimentDatasetRole, MLBCRunMode, MLBCExperimentName, MLBCExperimentMode, MLBCExperimentType
 from .train_test import MLBCExperiment
 from .utils import half_train_periods_days, halved_windows_split_by_cutoff
 from .runtime import Runtime
 from .conversion import celsius_to_kelvin
-from .registry import available_exp_types, available_exps, available_runmodes, available_roles
+from .registry import available_exp_types, available_exps, available_runmodes
+
+
+ProviderKwargs: TypeAlias = dict[str, Any]
+ProviderKwargsSlot: TypeAlias = ProviderKwargs | Sequence[ProviderKwargs]
+ProviderKwargsByMode: TypeAlias = dict[MLBCExperimentMode, ProviderKwargsSlot | Sequence[ProviderKwargsSlot]]
 
 
 @dataclass
@@ -52,8 +55,8 @@ class MLBCExperimentLauncher:
     earthkit_cache_dir          : str | Path = Path("/tmp/.earthkit_data")
     regrid_resolution           : float | None = None
     # Source providers
-    providers                   : dict[MLBCExperimentDatasetRole, Provider | Sequence[Provider]] | None = None # TODO right now Provider type not used, string is actually inferred
-    providers_kwargs            : dict[MLBCExperimentDatasetRole, dict | Sequence[dict]] | None = None
+    providers                   : dict[MLBCExperimentDatasetRole, str | Sequence[str]] | None = None
+    providers_kwargs            : dict[MLBCExperimentDatasetRole, ProviderKwargsByMode | None] | None = None
     # Experiment
     inpaint_nan                 : bool = False
     anomaly                     : bool = False
@@ -89,7 +92,6 @@ class MLBCExperimentLauncher:
         self.regions            = [self.regions] if isinstance(self.regions, str) else self.regions
 
         # Set var categories
-        # self.vars_cloud_oras5        = ("sst", "ssh") # TODO implement or remove, only for juno experiments
         self.vars_cloud_cds          = {
             "ocean": ("ssh", "sss", "t14d", "t17d", "t20d", "t26d", "t28d", "mld01", "mld03", "das300", "dat300", "sit"), # https://cds.climate.copernicus.eu/datasets/seasonal-monthly-ocean
             "atmo" : ("sst", "t2m", "tp", "u10", "v10"), # https://cds.climate.copernicus.eu/datasets/seasonal-monthly-single-levels
@@ -97,13 +99,13 @@ class MLBCExperimentLauncher:
 
         # Lead time const and experiment type check
         self.leadtime_var_unit = "days"
-        if self.experiment.type == "seasonal":
+        if self.experiment.type == MLBCExperimentType.SEASONAL:
             # self.all_leadtimes       = (1, 2, 3, 4, 5, 6) # months
             self.all_leadtimes_vars  = {
                 "ocean" : {1: 15, 2: 45, 3: 75, 4: 105, 5: 135, 6: 165},
                 "atmo"  : {1: 30, 2: 60, 3: 90, 4: 120, 5: 150, 6: 180},  # atmo seasonal forecast has end of month leadtimes
             }
-        if self.experiment.type == "weather":
+        if self.experiment.type == MLBCExperimentType.WEATHER:
             # leadtimes_weather_days = (0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9) # all possible days
             # leadtimes_weather_hours = (0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9) # all possible hours
             # self.all_leadtimes       = leadtimes_weather_days # days
@@ -111,26 +113,8 @@ class MLBCExperimentLauncher:
                 "ocean" : {1: 24, 2: 48, 3: 72, 4: 96, 5: 120, 6: 144, 7: 168, 8: 192, 9: 216},
                 "atmo"  : {0.5: 12, 1: 24, 2: 48, 3: 72},
             }
-        
-        # 6) leadtime conventions + target provider kwargs common
-        # if experiment == "juno-cmcc_juno-cmcc":
-        #     target_provider_args_common = provider_args_common | dict(
-        #         file_path_var_prefix="00_ocean_6hr_surface_",  # WRONG
-        #     )
 
-        #     all_leadtimes = all_leadtime_hours_sst
-        #     all_leadtime_multiple = all_leadtime_hours_sst
-        #     leadtime_var_an_value = 0
-        #     leadtime_var_unit = "hours"
-        #     leadtime_unit = "hours"
-        # else:
-
-        # all_leadtimes_months = tuple(leadtime_d)
-        # leadtime_var_an_value = 15
-        # leadtime_var_unit = "days"
-        # leadtime_unit = "months"
-
-        self.train_periodss = self._get_train_periods()
+        self.train_periods = self._get_train_periods()
         self.test_periods = self.test_periods if isinstance(self.test_periods, Sequence) else [self.test_periods]
 
         # If realization_as_channel is true use provided input and output channel dims, else infer from number of variables
@@ -176,7 +160,7 @@ class MLBCExperimentLauncher:
             "data.variables_target": list(self.variables_target),
             "data.regions": list(self.regions),
             "data.leadtimes": [f"{lt.value} {lt.unit}" for lt in self.leadtimes],
-            "data.train_period_groups": self._format_train_period_groups(self.train_periodss),
+            "data.train_period_groups": self._format_train_period_groups(self.train_periods),
             "data.test_periods": self._format_time_range(self.test_periods),
             "runtime.dask_workers": self.dask_workers,
             "runtime.regrid_resolution": self.regrid_resolution,
@@ -314,8 +298,8 @@ class MLBCExperimentLauncher:
         var_input: str,
         var_target: str,
         target_period: TimeRange | Sequence[TimeRange],
-        role: MLBCExperimentDatasetRole,
-    ) -> dict[MLBCExperimentDatasetRole, dict[Literal["name", "args"]]]:
+        mode: MLBCExperimentMode,
+    ) -> dict[MLBCExperimentDatasetRole, Sequence[Provider]]:
         """
         Run in mainloop
         """
@@ -324,14 +308,35 @@ class MLBCExperimentLauncher:
 
         target_period = [target_period] if isinstance(target_period, TimeRange) else target_period
 
+        def _validate_provider_name_list(
+            provider_names: Sequence[str | Sequence[str]],
+            role: MLBCExperimentDatasetRole,
+        ) -> None:
+            if len(provider_names) != len(target_period):
+                raise ValueError(
+                    f"Autogenerated {role} providers for mode={mode} do not match target periods: "
+                    f"{len(provider_names)} providers for {len(target_period)} periods"
+                )
+            for idx, provider_name in enumerate(provider_names):
+                if isinstance(provider_name, Sequence) and not isinstance(provider_name, str):
+                    if len(provider_name) == 0:
+                        raise ValueError(
+                            f"Autogenerated {role} providers at index {idx} for mode={mode} is an empty sequence"
+                        )
+                elif not isinstance(provider_name, str):
+                    raise TypeError(
+                        f"Autogenerated {role} provider at index {idx} for mode={mode} must be a string or sequence of strings, "
+                        f"got {type(provider_name)}"
+                    )
+
         # Automatic providers generation based on experiment type and name
         if self.providers is None:
             for tp in target_period:
                 start, end = tp.start, tp.end
 
-                # TODO use enum, not string, and make more robust
+                # TODO and make more robust
                 # Seasonal
-                if self.experiment.type == "seasonal":
+                if self.experiment.type == MLBCExperimentType.SEASONAL:
                     if self.experiment.name == MLBCExperimentName.JUNO_CMCC__ORAS5:
                         input_provider = "ocean.juno.cmcc.hindcast"
                         if start <= self.cutoff_oras5_consolidated < end: # duplicate to acommodate two provider args, see below
@@ -369,7 +374,7 @@ class MLBCExperimentLauncher:
                         target_provider = "atmo.earthkit.era5.reanalysis.monthly"
 
                 # Weather
-                if self.experiment.type == "weather":
+                if self.experiment.type == MLBCExperimentType.WEATHER:
                     if self.experiment.name == MLBCExperimentName.JUNO_ECMWF__JUNO_ECMWF: # local Juno atmo weather
                         input_provider = "atmo.juno.ecmwf.forecast.hourly"
                         target_provider = "atmo.juno.ecmwf.analysis.6hourly"
@@ -385,11 +390,27 @@ class MLBCExperimentLauncher:
                 target_provider_list.append(target_provider)
                 input_provider_list.append(input_provider)
 
-            #TODO add check on autogenerated list
+            _validate_provider_name_list(input_provider_list, MLBCExperimentDatasetRole.INPUT)
+            _validate_provider_name_list(target_provider_list, MLBCExperimentDatasetRole.TARGET)
 
         else: # providers provided by user, their responsability they are consistent with train periods
-            target_provider_list = self.providers["target"] if isinstance(self.providers["target"], Sequence) else [self.providers["target"]]
-            input_provider_list = self.providers["input"] if isinstance(self.providers["input"], Sequence) else [self.providers["input"]]
+            raw_target_provider = self.providers[MLBCExperimentDatasetRole.TARGET]
+            raw_input_provider = self.providers[MLBCExperimentDatasetRole.INPUT]
+            target_provider_list = (
+                list(raw_target_provider)
+                if isinstance(raw_target_provider, Sequence) and not isinstance(raw_target_provider, str)
+                else [raw_target_provider]
+            )
+            input_provider_list = (
+                list(raw_input_provider)
+                if isinstance(raw_input_provider, Sequence) and not isinstance(raw_input_provider, str)
+                else [raw_input_provider]
+            )
+
+            if len(target_provider_list) == 1 and len(target_period) > 1:
+                target_provider_list = len(target_period) * target_provider_list
+            if len(input_provider_list) == 1 and len(target_period) > 1:
+                input_provider_list = len(target_period) * input_provider_list
 
         # Provider args generation
         for tp in target_period:
@@ -436,45 +457,93 @@ class MLBCExperimentLauncher:
 
         # Update provider args with user's kwargs
         # print(self.providers_kwargs)
-        if self.providers_kwargs: # TODO generalize to roles in registry (input, target), add checks maybe
-            if self.providers_kwargs["target"] is not None and self.providers_kwargs["target"][role] is not None:
-                user_target_kwargs = self.providers_kwargs["target"][role] if isinstance(self.providers_kwargs["target"][role], Sequence) else [self.providers_kwargs["target"][role]]
-                assert len(target_provider_args_list)==len(user_target_kwargs), f"User provided kwargs {user_target_kwargs} for target [{role}] source provider(s) not compatible"
-                for i,ar in enumerate(target_provider_args_list):
-                    target_provider_args_list[i] = ar | user_target_kwargs[i]
+        if self.providers_kwargs:
+            target_mode_kwargs = self.providers_kwargs.get(MLBCExperimentDatasetRole.TARGET)
+            if target_mode_kwargs is not None and target_mode_kwargs.get(mode) is not None:
+                raw_target_kwargs = target_mode_kwargs[mode]
+                user_target_kwargs = (
+                    list(raw_target_kwargs)
+                    if isinstance(raw_target_kwargs, Sequence) and not isinstance(raw_target_kwargs, dict)
+                    else [raw_target_kwargs]
+                )
+                assert len(target_provider_args_list) == len(user_target_kwargs), (
+                    f"User provided kwargs {user_target_kwargs} for target [{mode}] source provider(s) not compatible"
+                )
+                for i, ar in enumerate(target_provider_args_list):
+                    if isinstance(ar, list):
+                        if isinstance(user_target_kwargs[i], dict):
+                            target_provider_args_list[i] = [a | user_target_kwargs[i] for a in ar]
+                        else:
+                            assert len(ar) == len(user_target_kwargs[i]), (
+                                f"User provided kwargs {user_target_kwargs[i]} for target [{mode}] split provider(s) not compatible"
+                            )
+                            target_provider_args_list[i] = [a | u for a, u in zip(ar, user_target_kwargs[i], strict=True)]
+                    else:
+                        target_provider_args_list[i] = ar | user_target_kwargs[i]
 
-            if self.providers_kwargs["input"] is not None and self.providers_kwargs["input"][role] is not None:
-                user_input_kwargs = self.providers_kwargs["input"][role] if isinstance(self.providers_kwargs["input"][role], Sequence) else [self.providers_kwargs["input"][role]]
-                assert len(input_provider_args_list)==len(user_input_kwargs), f"User provided kwargs {user_input_kwargs} for input [{role}] source provider(s) not compatible"
-                for i,ar in enumerate(input_provider_args_list):
+            input_mode_kwargs = self.providers_kwargs.get(MLBCExperimentDatasetRole.INPUT)
+            if input_mode_kwargs is not None and input_mode_kwargs.get(mode) is not None:
+                raw_input_kwargs = input_mode_kwargs[mode]
+                user_input_kwargs = (
+                    list(raw_input_kwargs)
+                    if isinstance(raw_input_kwargs, Sequence) and not isinstance(raw_input_kwargs, dict)
+                    else [raw_input_kwargs]
+                )
+                assert len(input_provider_args_list) == len(user_input_kwargs), (
+                    f"User provided kwargs {user_input_kwargs} for input [{mode}] source provider(s) not compatible"
+                )
+                for i, ar in enumerate(input_provider_args_list):
                     input_provider_args_list[i] = ar | user_input_kwargs[i]
 
+        input_providers: list[Provider] = []
+        target_providers: list[Provider] = []
+
+        assert len(input_provider_list) == len(input_provider_args_list), (
+            f"Input providers/kwargs mismatch for mode={mode}: {len(input_provider_list)} != {len(input_provider_args_list)}"
+        )
+        assert len(target_provider_list) == len(target_provider_args_list), (
+            f"Target providers/kwargs mismatch for mode={mode}: {len(target_provider_list)} != {len(target_provider_args_list)}"
+        )
+
+        for provider_name, provider_args in zip(input_provider_list, input_provider_args_list, strict=True):
+            input_providers.append(Provider(name=provider_name, params=provider_args))
+
+        for provider_name, provider_args in zip(target_provider_list, target_provider_args_list, strict=True):
+            if isinstance(provider_name, Sequence) and not isinstance(provider_name, str):
+                assert isinstance(provider_args, list), (
+                    f"Target provider {provider_name} requires a list of kwargs, got {type(provider_args)}"
+                )
+                target_providers.extend(
+                    Provider(name=name, params=args)
+                    for name, args in zip(provider_name, provider_args, strict=True)
+                )
+            else:
+                target_providers.append(Provider(name=provider_name, params=provider_args))
 
         return {
-            "input": {
-                "name": input_provider_list,
-                "args": input_provider_args_list,
-            },
-            "target":{
-                "name": target_provider_list,
-                "args": target_provider_args_list,
-            },
+            MLBCExperimentDatasetRole.INPUT: input_providers,
+            MLBCExperimentDatasetRole.TARGET: target_providers,
         }
 
 
     @staticmethod
-    def _needs_ca_bundle(input_provider, target_provider) -> bool:
+    def _needs_ca_bundle(
+        providers: dict[MLBCExperimentDatasetRole, dict[MLBCExperimentMode, Provider | Sequence[Provider]]],
+    ) -> bool:
         """Heuristic to decide if setting SSL certificate env variable. See runtime.py"""
-        def _contains_earthkit(provider: str | dict[MLBCExperimentDatasetRole, str | Sequence[str]]) -> bool:
-            if isinstance(provider, str):
-                return "earthkit" in provider
-            return any(
-                "earthkit" in provider_name
-                for provider_value in provider.values()
-                for provider_name in (provider_value if isinstance(provider_value, Sequence) else [provider_value])
+        def _contains_earthkit(provider: Provider | Sequence[Provider]) -> bool:
+            provider_list = (
+                list(provider)
+                if isinstance(provider, Sequence) and not isinstance(provider, Provider)
+                else [provider]
             )
+            return any("earthkit" in p.name for p in provider_list)
 
-        return _contains_earthkit(input_provider) or _contains_earthkit(target_provider)
+        return any(
+            _contains_earthkit(provider)
+            for role_providers in providers.values()
+            for provider in role_providers.values()
+        )
 
     def _gen_exp_configs(self):
         exp_configs: list[dict] = []
@@ -484,7 +553,7 @@ class MLBCExperimentLauncher:
             enumerate(self.leadtimes),
             self.variables,
             self.regions,
-            self.train_periodss
+            self.train_periods
         ):
             var_input, var_target = variable["input"], variable["target"]
             var_input_key, var_target_key = self._get_experiment_vars(var_input, var_target)
@@ -525,34 +594,18 @@ class MLBCExperimentLauncher:
 
             leadtime_target = Leadtime(leadtime.name, leadtime.unit, 0) # TODO maybe make it configurable by user?
 
-            # TODO absolutely refactor this is insane, or maybe it's not that bad actually
-            train_providers_and_args_d = self._get_source_providers(var_input, var_target, train_period_d["target"], "train")
-            test_providers_and_args_d = self._get_source_providers(var_input, var_target, self.test_periods, "test")
+            train_providers = self._get_source_providers(var_input, var_target, train_period_d["target"], MLBCExperimentMode.TRAIN)
+            test_providers = self._get_source_providers(var_input, var_target, self.test_periods, MLBCExperimentMode.TEST)
             providers_d = {
-                "input": {
-                    "train": train_providers_and_args_d["input"]["name"],
-                    "test" : test_providers_and_args_d["input"]["name"],
+                MLBCExperimentDatasetRole.INPUT: {
+                    MLBCExperimentMode.TRAIN: train_providers[MLBCExperimentDatasetRole.INPUT],
+                    MLBCExperimentMode.TEST: test_providers[MLBCExperimentDatasetRole.INPUT],
                 },
-                "target": {
-                    "train": train_providers_and_args_d["target"]["name"],
-                    "test" : test_providers_and_args_d["target"]["name"],
-                },
-            }
-            providers_args_d = {
-                "input": {
-                    "train": train_providers_and_args_d["input"]["args"],
-                    "test" : test_providers_and_args_d["input"]["args"],
-                },
-                "target": {
-                    "train": train_providers_and_args_d["target"]["args"],
-                    "test" : test_providers_and_args_d["target"]["args"],
+                MLBCExperimentDatasetRole.TARGET: {
+                    MLBCExperimentMode.TRAIN: train_providers[MLBCExperimentDatasetRole.TARGET],
+                    MLBCExperimentMode.TEST: test_providers[MLBCExperimentDatasetRole.TARGET],
                 },
             }
-
-            # print("providers_d['input']", providers_d["input"])
-            # print("providers_d['target']", providers_d["target"])
-            # print("providers_args_d['input']", providers_args_d["input"])
-            # print("providers_args_d['target']", providers_args_d["target"])
 
             exp_configs.append(dict(
                 experiment=self.experiment,
@@ -565,14 +618,11 @@ class MLBCExperimentLauncher:
                 region_key=region,
                 train_period=train_period_d,    # list of dictionaries of TimeRanges, keys: ["input", "target"]
                 test_period=self.test_periods,   # one-dim list of TimeRange
-                input_provider=providers_d["input"],
-                target_provider=providers_d["target"],
-                input_provider_args=providers_args_d["input"],
-                target_provider_args=providers_args_d["target"],
+                providers=providers_d, # dict [train, test] of dicts [input, target] of providers [Provider]
                 save_train=True,
                 save_test=True,
             ))
-            needs_ca_bundles.append(self._needs_ca_bundle(providers_d["input"], providers_d["target"]))
+            needs_ca_bundles.append(self._needs_ca_bundle(providers_d))
 
         return exp_configs, any(needs_ca_bundles)
 

@@ -1,14 +1,15 @@
 from pathlib import Path
 from datetime import datetime
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Sequence
+from typing import Sequence
 
 from rich import print
 
 from .utils import _var_names
 from .catalog import make_catalog
-from .dataclasses import MLBCExperimentDataset, MLBCExperimentLauncherConfig, MLBCExperimentDatasetRole
+from .dataclasses import MLBCExperimentDataset, MLBCExperimentLauncherConfig
+from .registry import MLBCExperimentDatasetRole, MLBCExperimentMode
 
 from ...base import (
     Leadtime,
@@ -17,8 +18,8 @@ from ...base import (
     TimeRange,
     DataSelection,
 )
-from ...sources import DataSource
-from ...sources.providers import build_provider
+from ...sources import DataSource, SourceConfig
+from ...sources.providers import build_source_config_provider, Provider
 
 
 @dataclass
@@ -44,13 +45,10 @@ class MLBCDatasetGenerator:
     var_target_key          : str
     region_key              : str
     # periods
-    train_period            : TimeRange | dict[MLBCExperimentDatasetRole, TimeRange | Sequence[TimeRange]]
+    train_period            : TimeRange | dict[MLBCExperimentDatasetRole, TimeRange | Sequence[TimeRange]] # we support dict, see _get_train_periods in launcher.py
     test_period             : TimeRange | dict[MLBCExperimentDatasetRole, TimeRange | Sequence[TimeRange]]
     # providers (names + args)
-    input_provider          : str | dict[MLBCExperimentDatasetRole, str | Sequence[str]]
-    target_provider         : str | dict[MLBCExperimentDatasetRole, str | Sequence[str]]
-    input_provider_args     : dict[str, Any] | dict[MLBCExperimentDatasetRole, dict[str, Any] | Sequence[dict[str, Any]]] = field(default_factory=dict)
-    target_provider_args    : dict[str, Any] | dict[MLBCExperimentDatasetRole, dict[str, Any] | Sequence[dict[str, Any]]] = field(default_factory=dict)
+    providers               : dict[MLBCExperimentDatasetRole, dict[MLBCExperimentMode, Provider | Sequence[Provider]]]
     # save datasets
     save_train              : bool = True
     save_test               : bool = True
@@ -116,87 +114,86 @@ class MLBCDatasetGenerator:
 
     @staticmethod
     def _generate_datasources_and_config_lists(
-        var: Variable, region: Region, leadtime: Leadtime,
-        period_type: str, periods: TimeRange | Sequence[TimeRange],
-        provider_names: str | dict[str, str | Sequence[str]],
-        provider_args: dict[str, Any] | dict[str, dict[str, Any] | Sequence[dict[str, Any]]]
-    ) -> tuple[Sequence[DataSource], Sequence[dict[str, Any]]]: # Use SourceConfig not Any
+        var: Variable,
+        region: Region,
+        leadtime: Leadtime,
+        provider_mode: MLBCExperimentMode, # test or train
+        periods: TimeRange | Sequence[TimeRange], # can be more than one to support split periods
+        providers: Provider | Sequence[Provider] | dict[MLBCExperimentMode, Provider | Sequence[Provider]],
+    ) -> tuple[Sequence[DataSource], Sequence[dict[str, SourceConfig]]]:
 
         (leadtime_value, leadtime_unit) = (leadtime.value, leadtime.unit) if leadtime else (0, "hours")
 
-        if isinstance(provider_names, dict):
-            provider_names = provider_names[period_type]
-        if period_type in list(provider_args.keys()):
-            provider_args = provider_args[period_type]
+        periods = periods if isinstance(periods, Sequence) else [periods]
 
-        if isinstance(periods, list):
-            datasources: Sequence[DataSource] = []
-            configs: Sequence[Any] = [] # TODO not Any but actual source config dataclasses
+        if isinstance(providers, dict):
+            if provider_mode in list(providers.keys()):
+                providers = providers[provider_mode]
+            else:
+                raise ValueError(f"Wrong Provider mode {provider_mode}. Pick one {MLBCExperimentMode}") # TODO is this ok?
 
-            provider_names = provider_names if isinstance(provider_names, list) else len(periods)*[provider_names]
-            provider_args = provider_args if isinstance(provider_args, list) else len(periods)*[provider_args]
+        datasources: Sequence[DataSource] = []
+        configs: Sequence[SourceConfig] = []
 
-            for period, provider_name, args in zip(periods, provider_names, provider_args):
-                # print(f"Building datasource for period {period.start} -> {period.end} with provider {provider_name} and args {args}")
-                args_updated = args | dict(var_name=var.name, leadtime_value=leadtime_value, leadtime_unit=leadtime_unit)
-                provider = build_provider(
-                    provider_name,
-                    **args_updated,
-                )
-                datasources.append(DataSource(source=provider.source, data_selection=DataSelection(var, region, period)))
-                configs.append(provider.config)
-        else: # TODO check this branch, not sure it works
-            assert type(provider_names) == str and type(provider_args) == dict, f"Mismatch between periods and provider {provider_names}, please check..."
-            args_updates = provider_args | dict(var_name=var.name, leadtime_value=leadtime_value, leadtime_unit=leadtime_unit)
-            provider = build_provider(
-                provider_names,
-                args_updates,
+        providers = (
+            list(providers)
+            if isinstance(providers, Sequence) and not isinstance(providers, Provider)
+            else len(periods) * [providers]
+        )
+
+        for period, provider in zip(periods, providers, strict=True):
+            provider_with_runtime_params = Provider(
+                name=provider.name,
+                params=provider.params | dict(
+                    var_name=var.name,
+                    leadtime_value=leadtime_value,
+                    leadtime_unit=leadtime_unit,
+                ),
             )
-            datasources = DataSource(source=provider.source, data_selection=DataSelection(var, region, periods))
-            configs = provider.config
+            source_config = build_source_config_provider(provider_with_runtime_params)
+            datasources.append(DataSource(source=source_config.source, data_selection=DataSelection(var, region, period)))
+            configs.append(source_config.config)
 
         # print(f"Built datasources: {datasources} with configs: {configs}")
         return datasources, configs
 
     def _build_datasets(
         self,
-        period_type: str,
-        period: TimeRange | dict[str, TimeRange | Sequence[TimeRange]],
+        mode: MLBCExperimentMode,
+        period: TimeRange | dict[MLBCExperimentDatasetRole, TimeRange | Sequence[TimeRange]],
         save: bool,
     ) -> Sequence[MLBCExperimentDataset]:
         # Input: either single period or segmented periods
-        periods_input = period["input"] if isinstance(period, dict) else period
+        periods_input = period[MLBCExperimentDatasetRole.INPUT] if isinstance(period, dict) else period
         input_datasources, input_configs = self._generate_datasources_and_config_lists(
             self.var_input,
             self.region,
             self.leadtime_input,
-            period_type,
+            mode,
             periods_input,
-            self.input_provider,
-            self.input_provider_args
+            self.providers[MLBCExperimentDatasetRole.INPUT],
         )
 
         # Target: either single period or segmented periods
-        periods_target = period["target"] if isinstance(period, dict) else period
+        periods_target = period[MLBCExperimentDatasetRole.TARGET] if isinstance(period, dict) else period
         target_datasources, target_configs = self._generate_datasources_and_config_lists(
             self.var_target,
             self.region,
             self.leadtime_target,
-            period_type,
+            mode,
             periods_target,
-            self.target_provider,
-            self.target_provider_args
+            self.providers[MLBCExperimentDatasetRole.TARGET],
         )
 
         return [
             MLBCExperimentDataset(
-                role="input",
+                role=MLBCExperimentDatasetRole.INPUT,
                 save=save,
                 datasource=input_datasources,
                 source_configs=input_configs
             ),
             MLBCExperimentDataset(
-                role="target",
+                role=MLBCExperimentDatasetRole.TARGET,
                 save=save,
                 datasource=target_datasources,
                 source_configs=target_configs
@@ -207,14 +204,14 @@ class MLBCDatasetGenerator:
     # Entry points
     def build_train_datasets(self) -> Sequence[MLBCExperimentDataset]:
         return self._build_datasets(
-            "train",
+            MLBCExperimentMode.TRAIN,
             self.train_period,
             self.save_train,
         )
 
     def build_test_datasets(self) -> Sequence[MLBCExperimentDataset]:
         return self._build_datasets(
-            "test",
+            MLBCExperimentMode.TEST,
             self.test_period,
             self.save_test,
         )

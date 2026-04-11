@@ -8,6 +8,10 @@ class MLBCRunMode(StrEnum):
     PREPARE             = "prepare"
 
 
+class MLBCExperimentMode(StrEnum):
+    TRAIN               = "train"
+    TEST                = "test"
+
 class MLBCExperimentDatasetRole(StrEnum):
     INPUT       = "input"
     TARGET      = "target"
