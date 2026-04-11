@@ -337,8 +337,16 @@ class MLBCExperiment:
         assert "input" in exp_roles and "target" in exp_roles
         input_ds, target_ds = ds_d['input'], ds_d['target']
 
-        # Align
-        input_ds, target_ds = xr.align(input_ds, target_ds, join="inner")
+        # Align on shared sample/grid axes, but do not intersect realization axes.
+        exclude_align_dims = tuple(
+            dim
+            for dim in (
+                input_ds.earthml.guessed_dims.realization,
+                target_ds.earthml.guessed_dims.realization,
+            )
+            if dim is not None
+        )
+        input_ds, target_ds = xr.align(input_ds, target_ds, join="inner", exclude=exclude_align_dims)
         self._plot_dataset_stage(
             input_ds=input_ds,
             target_ds=target_ds,
