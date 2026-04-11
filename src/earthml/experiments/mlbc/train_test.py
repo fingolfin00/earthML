@@ -202,6 +202,9 @@ class MLBCExperiment:
 
     def _path_setup(self):
         self.work_path = Path(self.config.work_path)
+        # Diagnostic plots location
+        self.plots_folder_path = self.work_path.joinpath("./plots")
+        self.plots_folder_path.mkdir(parents=True, exist_ok=True)
         # Weights location
         self.weights_folder_path = self.work_path.joinpath("./weights")
         self.weights_folder_path.mkdir(parents=True, exist_ok=True)
@@ -336,8 +339,38 @@ class MLBCExperiment:
 
         # Align
         input_ds, target_ds = xr.align(input_ds, target_ds, join="inner")
+        self._plot_dataset_stage(
+            input_ds=input_ds,
+            target_ds=target_ds,
+            data_type=data_type.lower(),
+            stage="generate_xarray_ds",
+        )
 
         return input_ds, target_ds
+
+    def _plot_dataset_stage(
+        self,
+        input_ds: xr.Dataset,
+        target_ds: xr.Dataset,
+        data_type: str,
+        stage: str,
+    ) -> None:
+        """
+        Hook for lightweight diagnostic plots during the experiment lifecycle.
+
+        Intended use:
+        - keep all plotting calls centralized in train_test.py
+        - save artifacts under a train/test folder in the run work path
+        - remain a no-op until plotting behavior is implemented
+        """
+        stage_plot_folder = self.plots_folder_path.joinpath(data_type)
+        stage_plot_folder.mkdir(parents=True, exist_ok=True)
+        self.logger.debug(
+            "Stage plotting hook available for %s (%s) at %s",
+            data_type,
+            stage,
+            stage_plot_folder,
+        )
 
     def _create_and_save_common_mask(
         self,
