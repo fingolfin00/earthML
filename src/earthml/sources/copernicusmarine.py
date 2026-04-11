@@ -101,6 +101,9 @@ class CopernicusmarineSource(BaseSource):
             maximum_longitude=max_lon,
         )
 
-        logger.info("%s", ds)
+        # logger.info("%s", ds)
 
-        return ds.sel(depth=depth, method="nearest")
+        if "depth" in ds:
+            return ds.sel(depth=depth, method="nearest")
+        else:
+            return ds
