@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from dask.distributed import progress
 from dask.utils import SerializableLock
 
 from rich.progress import (
@@ -570,6 +571,7 @@ class JunoLocalSource(MFXarrayLocalSource):
             join="outer",
             combine_attrs="drop_conflicts",
         )
+        # progress(ds_all) # show progress bar (concat lazy, not working)
         logger.info("Juno local, size of ds after concat: %s", ds_all.sizes)
 
         return ds_all
