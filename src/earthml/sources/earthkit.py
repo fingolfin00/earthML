@@ -449,13 +449,6 @@ class EarthkitSource(BaseSource):
         start = self.date_range[0] - self.config.leadtime #+ relativedelta(**self.data_selection.period.shifted) if self.data_selection.period.shifted is not None else self.data_selection.period.start
         end = self.date_range[-1] - self.config.leadtime #+ relativedelta(**self.data_selection.period.shifted) if self.data_selection.period.shifted is not None else self.data_selection.period.end
 
-        # TEMP quick fix for monthly forecast products:
-        # current selected lead lands one month earlier than the target pairing,
-        # so request init dates one month later.
-        if self.config.request_type == "monthly" and not lead_is_zero:
-            start = start + relativedelta(months=1)
-            end = end + relativedelta(months=1)
-
         # TODO wrong if months requested are 12 1, it splits wrongly
         dates = f"{start.strftime('%Y-%m-%d')}/{end.strftime('%Y-%m-%d')}"
 
@@ -670,20 +663,62 @@ class EarthkitSource(BaseSource):
         #         f"Expected: {list(expected)}"
         #     )
 
-        # Validate actual and expected sample date ranges
-        expected = pd.DatetimeIndex([d for d in self.date_range if d not in self.elements.missed])
-        actual = pd.DatetimeIndex(pd.to_datetime(ds_all[xarray_concat_dim].values))
+        # Canonical convention for earthkit sources:
+        # - `time` is always the model-aligned target/valid date used downstream.
+        # - raw provider timestamps are preserved separately as `source_time`.
+        source_time = pd.DatetimeIndex(pd.to_datetime(ds_all[xarray_concat_dim].values))
+        canonical_time = pd.DatetimeIndex(
+            [d for d in self.date_range if d not in self.elements.missed]
+        )
 
-        if not actual.equals(expected):
+        if len(source_time) != len(canonical_time):
             raise ValueError(
-                f"Fetched times do not match expected non-missed date_range.\n"
-                f"Actual head/tail: {actual[:3].tolist()} ... {actual[-3:].tolist()}\n"
-                f"Expected head/tail: {expected[:3].tolist()} ... {expected[-3:].tolist()}"
+                "Fetched sample count does not match canonical non-missed date_range.\n"
+                f"Fetched count: {len(source_time)}\n"
+                f"Canonical count: {len(canonical_time)}\n"
+                f"Fetched head/tail: {source_time[:3].tolist()} ... {source_time[-3:].tolist()}\n"
+                f"Canonical head/tail: {canonical_time[:3].tolist()} ... {canonical_time[-3:].tolist()}"
             )
 
-        # TODO here we need to decide what to do, currently do nothing might work
-        # Assign date range as time coords, after validation is mostly safe
-        # ds_all = ds_all.assign_coords({xarray_concat_dim: self.date_range})
+        if not source_time.is_monotonic_increasing:
+            raise ValueError(
+                "Fetched source_time is not monotonic increasing.\n"
+                f"Head/tail: {source_time[:3].tolist()} ... {source_time[-3:].tolist()}"
+            )
+
+        if not source_time.is_unique:
+            duplicates = source_time[source_time.duplicated()].unique().tolist()
+            raise ValueError(
+                "Fetched source_time contains duplicates after leadtime selection.\n"
+                f"Duplicate values (up to 10): {duplicates[:10]}"
+            )
+
+        ds_all = ds_all.assign_coords(source_time=(xarray_concat_dim, source_time.values))
+        ds_all["source_time"].attrs.update({
+            "long_name": "raw provider time coordinate before canonical remapping",
+            "note": (
+                "For forecast products this may represent initialization time or provider-specific "
+                "valid-time semantics depending on dataset/engine. The canonical training axis is `time`."
+            ),
+        })
+
+        # Assign canonical target/valid dates used everywhere else in the pipeline.
+        ds_all = ds_all.assign_coords({xarray_concat_dim: canonical_time.values})
+
+        logger.info(
+            "Time convention mapping: source_time head/tail=%s ... %s | canonical_time head/tail=%s ... %s",
+            source_time[:3].tolist(),
+            source_time[-3:].tolist(),
+            canonical_time[:3].tolist(),
+            canonical_time[-3:].tolist(),
+        )
+        if len(source_time) > 0 and len(canonical_time) > 0:
+            logger.info(
+                "Leadtime audit: requested_leadtime=%s, first source->canonical=%s -> %s",
+                self.config.leadtime,
+                source_time[0],
+                canonical_time[0],
+            )
         # Reindex, set NaNs instead of missed values
         # full_index = pd.DatetimeIndex(self.date_range)
         # ds_all = ds_all.reindex({xarray_concat_dim: full_index})
