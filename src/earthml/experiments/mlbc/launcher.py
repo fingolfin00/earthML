@@ -100,8 +100,8 @@ class MLBCExperimentLauncher:
         if self.experiment.type == "seasonal":
             self.all_leadtimes       = (1, 2, 3, 4, 5, 6) # months
             self.all_leadtimes_vars  = {
-                "ocean" : (15, 45, 75, 105, 135, 165),
-                "atmo"  : (30, 60, 90, 120, 150, 180),  # atmo seasonal forecast has end of month leadtimes
+                "ocean" : {1: 15, 2: 45, 3: 75, 4: 105, 5: 135, 6: 165},
+                "atmo"  : {1: 30, 2: 60, 3: 90, 4: 120, 5: 150, 6: 180},  # atmo seasonal forecast has end of month leadtimes
             }
         if self.experiment.type == "weather":
             leadtimes_weather_days = (12, 24, 48, 72)
@@ -476,14 +476,26 @@ class MLBCExperimentLauncher:
 
             if self.experiment.name == "cds-cmcc_oras5": # ocean seasonal experiment, except SST for forecasts
                 if var_input in self.vars_cloud_cds["ocean"]:
-                    leadtime_var_input = Leadtime(leadtime.name, self.leadtime_var_unit, self.all_leadtimes_vars["ocean"][lt_idx])
+                    try:
+                        leadtime_var_value = self.all_leadtimes_vars["ocean"][leadtime.value]
+                    except KeyError as exc:
+                        raise ValueError(f"Unsupported ocean seasonal leadtime: {leadtime.value} {leadtime.unit}") from exc
+                    leadtime_var_input = Leadtime(leadtime.name, self.leadtime_var_unit, leadtime_var_value)
                 elif var_input in self.vars_cloud_cds["atmo"]:
-                    leadtime_var_input = Leadtime(leadtime.name, self.leadtime_var_unit, self.all_leadtimes_vars["atmo"][lt_idx])
+                    try:
+                        leadtime_var_value = self.all_leadtimes_vars["atmo"][leadtime.value]
+                    except KeyError as exc:
+                        raise ValueError(f"Unsupported atmo seasonal leadtime: {leadtime.value} {leadtime.unit}") from exc
+                    leadtime_var_input = Leadtime(leadtime.name, self.leadtime_var_unit, leadtime_var_value)
                 else:
                     raise ValueError(f"Input variable {var_input} for MLBC experiment {self.experiment.name} not supported")
 
             if self.experiment.name in ("juno-ecmwf_juno-ecmwf", "cds-cmcc_era5"): # atmo experiments
-                leadtime_var_input = Leadtime(leadtime.name, self.leadtime_var_unit, self.all_leadtimes_vars["atmo"][lt_idx])
+                try:
+                    leadtime_var_value = self.all_leadtimes_vars["atmo"][leadtime.value]
+                except KeyError as exc:
+                    raise ValueError(f"Unsupported atmo seasonal leadtime: {leadtime.value} {leadtime.unit}") from exc
+                leadtime_var_input = Leadtime(leadtime.name, self.leadtime_var_unit, leadtime_var_value)
 
             if self.experiment.name == "cmems_cmems": # ocean weather experiment
                 leadtime_var_input = Leadtime(leadtime.name, self.leadtime_var_unit, self.all_leadtimes_vars["ocean"][lt_idx])
