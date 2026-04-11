@@ -23,7 +23,7 @@ from ...sources.providers import available_providers, Provider
 
 from .dataset import MLBCDatasetGenerator
 from .dataclasses import MLBCExperimentLauncherConfig, MLBCNeuralNet, MLBCExperimentConfig
-from .registry import MLBCExperimentDatasetRole, MLBCRunMode
+from .registry import MLBCExperimentDatasetRole, MLBCRunMode, MLBCExperimentName
 from .train_test import MLBCExperiment
 from .utils import half_train_periods_days, halved_windows_split_by_cutoff
 from .runtime import Runtime
@@ -249,7 +249,10 @@ class MLBCExperimentLauncher:
         train_periods_input = self._handle_sequence_of_train_periods(self.train_periods)
 
         # Train target periods
-        if "oras5" in self.experiment.name: # TODO a bit weak
+        if self.experiment.name in (
+            MLBCExperimentName.JUNO_CMCC__ORAS5,
+            MLBCExperimentName.CDS_CMCC__ORAS5,
+        ):
             #TODO issue if train_period is only one month, check
             train_periods_target = halved_windows_split_by_cutoff(
                 self.train_periods,
@@ -281,21 +284,27 @@ class MLBCExperimentLauncher:
         """
         Run in mainloop
         """
-        if self.experiment.name == "juno-cmcc_oras5": # ocean seasonal: local Juno + ORAS5
+        if self.experiment.name == MLBCExperimentName.JUNO_CMCC__ORAS5: # ocean seasonal: local Juno + ORAS5
             var_catalog_keys = (f"{var_input}_juno_fc", f"{var_target}_oras5_an")
-        if self.experiment.name == "cds-cmcc_oras5": # ocean seasonal: SPS4 + ORAS5
+        if self.experiment.name == MLBCExperimentName.CDS_CMCC__ORAS5: # ocean seasonal: SPS4 + ORAS5
             var_catalog_keys = (f"{var_input}_cds_fc", f"{var_target}_oras5_an")
-        if self.experiment.name == "cds-cmcc_era5": # atmo seasonal
+        if self.experiment.name == MLBCExperimentName.CDS_CMCC__ERA5: # atmo seasonal
             var_catalog_keys = (f"{var_input}_cds_fc", f"{var_target}_era5_seasonal_an")
 
         # Common (weather and seasonal) Juno experiment variable naming convention
-        if self.experiment.name in ("juno-cmcc_juno-cmcc", "juno-ecmwf_juno-ecmwf"): # local Juno atmo weather or ocean (not really available)
+        if self.experiment.name in (
+            MLBCExperimentName.JUNO_CMCC__JUNO_CMCC,
+            MLBCExperimentName.JUNO_ECMWF__JUNO_ECMWF,
+        ): # local Juno atmo weather or ocean (not really available)
             var_catalog_keys = (f"{var_input}_juno_fc", f"{var_target}_juno_an")
 
-        if self.experiment.name in ("juno-cmcc_cmems", "cmems_cmems"): # ocean weather: CMEMS global ocean fc and an
+        if self.experiment.name in (
+            MLBCExperimentName.JUNO_CMCC__CMEMS,
+            MLBCExperimentName.CMEMS__CMEMS,
+        ): # ocean weather: CMEMS global ocean fc and an
             var_catalog_keys = (f"{var_input}_gopaf_fc", f"{var_target}_gopaf_an")
 
-        if self.experiment.name == "juno-ecmwf_era5": # atmo weather: local Juno forecasts + ERA5 reanalysis
+        if self.experiment.name == MLBCExperimentName.JUNO_ECMWF__ERA5: # atmo weather: local Juno forecasts + ERA5 reanalysis
             raise NotImplementedError(f"Experiment {self.experiment.name} not yet implemented.")
         return var_catalog_keys
 
@@ -323,7 +332,7 @@ class MLBCExperimentLauncher:
                 # TODO use enum, not string, and make more robust
                 # Seasonal
                 if self.experiment.type == "seasonal":
-                    if self.experiment.name == "juno-cmcc_oras5":
+                    if self.experiment.name == MLBCExperimentName.JUNO_CMCC__ORAS5:
                         input_provider = "ocean.juno.cmcc.hindcast"
                         if start <= self.cutoff_oras5_consolidated < end: # duplicate to acommodate two provider args, see below
                             target_provider = [
@@ -333,11 +342,11 @@ class MLBCExperimentLauncher:
                         else:
                             target_provider = "ocean.earthkit.oras5.reanalysis.monthly"
 
-                    if self.experiment.name == "juno-cmcc_juno-cmcc":
+                    if self.experiment.name == MLBCExperimentName.JUNO_CMCC__JUNO_CMCC:
                         input_provider = "ocean.juno.cmcc.hindcast"
                         target_provider = "ocean.juno.cmcc.hindcast"
 
-                    if self.experiment.name == "cds-cmcc_oras5":
+                    if self.experiment.name == MLBCExperimentName.CDS_CMCC__ORAS5:
                         input_provider = (
                             "atmo.earthkit.cmcc.hindcast.monthly"
                             if var_input in self.vars_cloud_cds["atmo"]
@@ -351,7 +360,7 @@ class MLBCExperimentLauncher:
                         else:
                             target_provider = "ocean.earthkit.oras5.reanalysis.monthly"
 
-                    if self.experiment.name == "cds-cmcc_era5":
+                    if self.experiment.name == MLBCExperimentName.CDS_CMCC__ERA5:
                         input_provider = ( # TODO refactor with above?
                             "atmo.earthkit.cmcc.hindcast.monthly"
                             if var_input in self.vars_cloud_cds["atmo"]
@@ -361,15 +370,15 @@ class MLBCExperimentLauncher:
 
                 # Weather
                 if self.experiment.type == "weather":
-                    if self.experiment.name == "juno-ecmwf_juno-ecmwf": # local Juno atmo weather
+                    if self.experiment.name == MLBCExperimentName.JUNO_ECMWF__JUNO_ECMWF: # local Juno atmo weather
                         input_provider = "atmo.juno.ecmwf.forecast.hourly"
                         target_provider = "atmo.juno.ecmwf.analysis.6hourly"
 
-                    if self.experiment.name == "cmems_cmems": # ocean weather cloud (cannot work, no past forecasts)
+                    if self.experiment.name == MLBCExperimentName.CMEMS__CMEMS: # ocean weather cloud (cannot work, no past forecasts)
                         input_provider = "ocean.copernicusmarine.gopaf.forecast.hourly"
                         target_provider = "ocean.copernicusmarine.gopaf.analysis.hourly"
 
-                    if self.experiment.name == "juno-cmcc_cmems": # ocean weather Juno local + cloud for analysis (daily)
+                    if self.experiment.name == MLBCExperimentName.JUNO_CMCC__CMEMS: # ocean weather Juno local + cloud for analysis (daily)
                         input_provider = "ocean.juno.gopaf.forecast.daily.atlantic"
                         target_provider = "ocean.copernicusmarine.gopaf.analysis.daily"
 
@@ -405,7 +414,7 @@ class MLBCExperimentLauncher:
             )
 
             # Combine input and target args if necessary (only for ORAS5 currently)
-            if self.experiment.name == "cds-cmcc_oras5":
+            if self.experiment.name == MLBCExperimentName.CDS_CMCC__ORAS5:
                 # Check if target period in ORAS5 consolidated or operational datasets, or both
                 if start <= self.cutoff_oras5_consolidated < end:
                     target_provider_args = [
@@ -480,7 +489,7 @@ class MLBCExperimentLauncher:
             var_input, var_target = variable["input"], variable["target"]
             var_input_key, var_target_key = self._get_experiment_vars(var_input, var_target)
 
-            if self.experiment.name == "cds-cmcc_oras5": # ocean seasonal experiment, except SST for forecasts
+            if self.experiment.name == MLBCExperimentName.CDS_CMCC__ORAS5: # ocean seasonal experiment, except SST for forecasts
                 if var_input in self.vars_cloud_cds["ocean"]:
                     try:
                         leadtime_var_value = self.all_leadtimes_vars["ocean"][leadtime.value]
@@ -496,14 +505,20 @@ class MLBCExperimentLauncher:
                 else:
                     raise ValueError(f"Input variable {var_input} for MLBC experiment {self.experiment.name} not supported")
 
-            if self.experiment.name in ("juno-ecmwf_juno-ecmwf", "cds-cmcc_era5"): # atmo experiments
+            if self.experiment.name in (
+                MLBCExperimentName.JUNO_ECMWF__JUNO_ECMWF,
+                MLBCExperimentName.CDS_CMCC__ERA5,
+            ): # atmo experiments
                 try:
                     leadtime_var_value = self.all_leadtimes_vars["atmo"][leadtime.value]
                 except KeyError as exc:
                     raise ValueError(f"Unsupported atmo seasonal leadtime: {leadtime.value} {leadtime.unit}") from exc
                 leadtime_var_input = Leadtime(leadtime.name, self.leadtime_var_unit, leadtime_var_value)
 
-            if self.experiment.name in ("juno-cmcc_cmems", "cmems_cmems"): # ocean weather experiment from cloud (cmems_cmems) cannot work currently (no past forecasts)
+            if self.experiment.name in (
+                MLBCExperimentName.JUNO_CMCC__CMEMS,
+                MLBCExperimentName.CMEMS__CMEMS,
+            ): # ocean weather experiment from cloud (cmems_cmems) cannot work currently (no past forecasts)
                 leadtime_var_input = Leadtime(leadtime.name, self.leadtime_var_unit, self.all_leadtimes_vars["ocean"][leadtime.value])
 
             # TODO most experiments are not implemented, we need to make this more general maybe?
