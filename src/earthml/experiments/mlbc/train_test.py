@@ -373,75 +373,100 @@ class MLBCExperiment:
         - save artifacts under a train/test folder in the run work path
         - remain a no-op until plotting behavior is implemented
         """
+        plot_specs = [
+            {"ds": input_ds, "label": "input", "mean_label": "input mean", "color": "tab:blue"},
+            {"ds": target_ds, "label": "target", "mean_label": "target mean", "color": "tab:orange"},
+        ]
+        self._plot_stage_timeseries(
+            plot_specs=plot_specs,
+            data_type=data_type,
+            stage=stage,
+            stage_kind="dataset",
+            title_prefix="",
+        )
+
+    def _get_stage_plot_folder(self, data_type: str) -> Path:
         stage_plot_folder = self.plots_folder_path.joinpath(data_type)
         stage_plot_folder.mkdir(parents=True, exist_ok=True)
+        return stage_plot_folder
+
+    @staticmethod
+    def _select_plot_var(ds: xr.Dataset, var: str) -> xr.Dataset:
+        return ds[[var]] if len(ds.data_vars) > 1 else ds
+
+    @staticmethod
+    def _get_plot_members(ds: xr.Dataset) -> tuple[xr.Dataset | None, str | None]:
+        rdim = ds.earthml.guessed_dims.realization
+        if rdim is not None and rdim in ds.dims:
+            return ds, rdim
+        return None, rdim
+
+    def _plot_stage_timeseries(
+        self,
+        plot_specs: list[dict],
+        data_type: str,
+        stage: str,
+        stage_kind: str,
+        title_prefix: str = "",
+    ) -> None:
+        stage_plot_folder = self._get_stage_plot_folder(data_type)
         self.logger.info(
-            "Generate dataset stage plots for %s (%s) in %s",
+            "Generate %s stage plots for %s (%s) in %s",
+            stage_kind,
             data_type,
             stage,
             stage_plot_folder,
         )
 
-        time_dim = input_ds.earthml.guessed_dims.time
-        if time_dim is None or time_dim not in input_ds.dims or time_dim not in target_ds.dims:
-            self.logger.debug("Skip stage plotting for %s: no common time dimension.", data_type)
+        base_ds = plot_specs[0]["ds"]
+        time_dim = base_ds.earthml.guessed_dims.time
+        if time_dim is None or any(time_dim not in spec["ds"].dims for spec in plot_specs):
+            self.logger.debug("Skip %s plotting for %s: no common time dimension.", stage_kind, data_type)
             return
 
-        common_vars = [var for var in input_ds.data_vars if var in target_ds.data_vars]
+        common_vars = set(plot_specs[0]["ds"].data_vars)
+        for spec in plot_specs[1:]:
+            common_vars &= set(spec["ds"].data_vars)
+        common_vars = list(common_vars)
         if not common_vars:
-            self.logger.debug("Skip stage plotting for %s: no common variables.", data_type)
+            self.logger.debug("Skip %s plotting for %s: no common variables.", stage_kind, data_type)
             return
-
-        rdim_in = input_ds.earthml.guessed_dims.realization
-        rdim_tgt = target_ds.earthml.guessed_dims.realization
 
         for var in common_vars:
             fig, ax = plt.subplots(figsize=(10, 4))
             try:
-                input_da = input_ds[[var]] if len(input_ds.data_vars) > 1 else input_ds
-                target_da = target_ds[[var]] if len(target_ds.data_vars) > 1 else target_ds
+                for spec in plot_specs:
+                    ds_var = self._select_plot_var(spec["ds"], var)
+                    members, rdim = self._get_plot_members(ds_var)
+                    self.logger.info(
+                        "Plot %s %s/%s: %s realizations=%s",
+                        stage_kind,
+                        data_type,
+                        var,
+                        spec["label"],
+                        ds_var.sizes.get(rdim, 0) if members is not None and rdim is not None else 0,
+                    )
+                    plot_realization_timeseries(
+                        ds_var,
+                        members=members,
+                        x_dim=time_dim,
+                        ens_dim=rdim or "realization",
+                        ax=ax,
+                        x_label="Time",
+                        label=spec["label"],
+                        mean_label=spec["mean_label"],
+                        color=spec["color"],
+                    )
 
-                input_members = input_da if rdim_in is not None and rdim_in in input_da.dims else None
-                target_members = target_da if rdim_tgt is not None and rdim_tgt in target_da.dims else None
-
-                self.logger.info(
-                    "Plot %s/%s: input realizations=%s, target realizations=%s",
-                    data_type,
-                    var,
-                    input_da.sizes.get(rdim_in, 0) if input_members is not None and rdim_in is not None else 0,
-                    target_da.sizes.get(rdim_tgt, 0) if target_members is not None and rdim_tgt is not None else 0,
-                )
-
-                plot_realization_timeseries(
-                    input_da,
-                    members=input_members,
-                    x_dim=time_dim,
-                    ens_dim=rdim_in or "realization",
-                    ax=ax,
-                    x_label="Time",
-                    label="input",
-                    mean_label="input mean",
-                    color="tab:blue",
-                )
-                plot_realization_timeseries(
-                    target_da,
-                    members=target_members,
-                    x_dim=time_dim,
-                    ens_dim=rdim_tgt or "realization",
-                    ax=ax,
-                    x_label="Time",
-                    label="target",
-                    mean_label="target mean",
-                    color="tab:orange",
-                )
-
-                ax.set_title(f"{var} - {data_type} - {stage}")
+                title = f"{var} - {data_type} - {stage}" if not title_prefix else f"{var} - {title_prefix} - {data_type} - {stage}"
+                ax.set_title(title)
                 ax.legend()
                 fig.tight_layout()
                 fig.savefig(stage_plot_folder.joinpath(f"{stage}_{var}_timeseries.png"), dpi=150)
             except Exception as exc:
                 self.logger.warning(
-                    "Failed to generate stage plot for %s/%s/%s: %s",
+                    "Failed to generate %s plot for %s/%s/%s: %s",
+                    stage_kind,
                     data_type,
                     stage,
                     var,
@@ -449,6 +474,27 @@ class MLBCExperiment:
                 )
             finally:
                 plt.close(fig)
+
+    def _plot_prediction_stage(
+        self,
+        pred_ds: xr.Dataset,
+        input_ds: xr.Dataset,
+        target_ds: xr.Dataset,
+        data_type: str,
+        stage: str,
+    ) -> None:
+        plot_specs = [
+            {"ds": pred_ds, "label": "pred", "mean_label": "pred mean", "color": "tab:green"},
+            {"ds": input_ds, "label": "input", "mean_label": "input mean", "color": "tab:blue"},
+            {"ds": target_ds, "label": "target", "mean_label": "target mean", "color": "tab:orange"},
+        ]
+        self._plot_stage_timeseries(
+            plot_specs=plot_specs,
+            data_type=data_type,
+            stage=stage,
+            stage_kind="prediction",
+            title_prefix="preds",
+        )
 
     def _create_and_save_common_mask(
         self,
@@ -979,7 +1025,14 @@ class MLBCExperiment:
         log_renderable(Table({f"Test on {test_data_type} dataset run info": meta}, twocols=True).table, logger=self.logger)
         log_renderable(Table({f"Test on {test_data_type} dataset metrics (per variable)": var_cols}).table, logger=self.logger)
 
-        self.save(preds, dataset, test_data, var_list, 'input', preds_store)
+        pred_ds = self.save(preds, dataset, test_data, var_list, 'input', preds_store)
+        self._plot_prediction_stage(
+            pred_ds=pred_ds,
+            input_ds=test_input_ds,
+            target_ds=test_target_ds,
+            data_type=test_data_type.lower(),
+            stage="test_preds",
+        )
 
         return dataloader
 
