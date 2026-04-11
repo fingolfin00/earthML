@@ -8,7 +8,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import xarray as xr
-import matplotlib.pyplot as plt
 from zarr.codecs import BloscCodec
 
 import torch
@@ -24,7 +23,7 @@ from ...misc import Table
 from ...logging import get_logger, log_renderable
 from ...neural import XarrayDataset, Normalize, EpochRandomSplitDataModule
 from ...neural.nets import build_net
-from ...plots import plot_realization_timeseries
+from .plot import plot_stage_timeseries
 
 
 class MLBCExperiment:
@@ -377,103 +376,15 @@ class MLBCExperiment:
             {"ds": input_ds, "label": "input", "mean_label": "input mean", "color": "tab:blue"},
             {"ds": target_ds, "label": "target", "mean_label": "target mean", "color": "tab:orange"},
         ]
-        self._plot_stage_timeseries(
+        plot_stage_timeseries(
+            logger=self.logger,
+            plots_folder_path=self.plots_folder_path,
             plot_specs=plot_specs,
             data_type=data_type,
             stage=stage,
             stage_kind="dataset",
             title_prefix="",
         )
-
-    def _get_stage_plot_folder(self, data_type: str) -> Path:
-        stage_plot_folder = self.plots_folder_path.joinpath(data_type)
-        stage_plot_folder.mkdir(parents=True, exist_ok=True)
-        return stage_plot_folder
-
-    @staticmethod
-    def _select_plot_var(ds: xr.Dataset, var: str) -> xr.Dataset:
-        return ds[[var]] if len(ds.data_vars) > 1 else ds
-
-    @staticmethod
-    def _get_plot_members(ds: xr.Dataset) -> tuple[xr.Dataset | None, str | None]:
-        rdim = ds.earthml.guessed_dims.realization
-        if rdim is not None and rdim in ds.dims:
-            return ds, rdim
-        return None, rdim
-
-    def _plot_stage_timeseries(
-        self,
-        plot_specs: list[dict],
-        data_type: str,
-        stage: str,
-        stage_kind: str,
-        title_prefix: str = "",
-    ) -> None:
-        stage_plot_folder = self._get_stage_plot_folder(data_type)
-        self.logger.info(
-            "Generate %s stage plots for %s (%s) in %s",
-            stage_kind,
-            data_type,
-            stage,
-            stage_plot_folder,
-        )
-
-        base_ds = plot_specs[0]["ds"]
-        time_dim = base_ds.earthml.guessed_dims.time
-        if time_dim is None or any(time_dim not in spec["ds"].dims for spec in plot_specs):
-            self.logger.debug("Skip %s plotting for %s: no common time dimension.", stage_kind, data_type)
-            return
-
-        common_vars = set(plot_specs[0]["ds"].data_vars)
-        for spec in plot_specs[1:]:
-            common_vars &= set(spec["ds"].data_vars)
-        common_vars = list(common_vars)
-        if not common_vars:
-            self.logger.debug("Skip %s plotting for %s: no common variables.", stage_kind, data_type)
-            return
-
-        for var in common_vars:
-            fig, ax = plt.subplots(figsize=(10, 4))
-            try:
-                for spec in plot_specs:
-                    ds_var = self._select_plot_var(spec["ds"], var)
-                    members, rdim = self._get_plot_members(ds_var)
-                    self.logger.info(
-                        "Plot %s %s/%s: %s realizations=%s",
-                        stage_kind,
-                        data_type,
-                        var,
-                        spec["label"],
-                        ds_var.sizes.get(rdim, 0) if members is not None and rdim is not None else 0,
-                    )
-                    plot_realization_timeseries(
-                        ds_var,
-                        members=members,
-                        x_dim=time_dim,
-                        ens_dim=rdim or "realization",
-                        ax=ax,
-                        x_label="Time",
-                        label=spec["label"],
-                        mean_label=spec["mean_label"],
-                        color=spec["color"],
-                    )
-
-                title = f"{var} - {data_type} - {stage}" if not title_prefix else f"{var} - {title_prefix} - {data_type} - {stage}"
-                ax.set_title(title)
-                ax.legend()
-                fig.tight_layout()
-                fig.savefig(stage_plot_folder.joinpath(f"{stage}_{var}_timeseries.png"), dpi=150)
-            except Exception as exc:
-                self.logger.warning(
-                    "Failed to generate %s plot for %s/%s/%s: %s",
-                    stage_kind,
-                    data_type,
-                    stage,
-                    var,
-                    exc,
-                )
-            finally:
-                plt.close(fig)
 
     def _plot_prediction_stage(
         self,
@@ -488,7 +399,9 @@ class MLBCExperiment:
             {"ds": input_ds, "label": "input", "mean_label": "input mean", "color": "tab:blue"},
             {"ds": target_ds, "label": "target", "mean_label": "target mean", "color": "tab:orange"},
         ]
-        self._plot_stage_timeseries(
+        plot_stage_timeseries(
+            logger=self.logger,
+            plots_folder_path=self.plots_folder_path,
             plot_specs=plot_specs,
             data_type=data_type,
             stage=stage,
