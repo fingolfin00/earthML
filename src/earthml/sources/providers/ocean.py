@@ -149,38 +149,7 @@ def earthkit_cds_oras5(
     )
 
 
-# Weather ocean, copernicusmarine
-@register_provider("ocean.copernicusmarine.gopaf.forecast.hourly")
-def copernicusmarine_global_ocean_physics_forecast_hourly(
-    var_name: str,
-    leadtime_value: int, # hours
-    leadtime_unit: str,
-    username: str,
-    password: str,
-    regrid_resolution: float = 0.25,
-    select_area_after_request: bool = True,
-    # copernicusmarine_cache_dir: str  = Path("/tmp/copernicusmarine-cache/"),
-    convert_unit: dict | None = None, # dict of var_name: (func, target_unit) to convert variable unit (e.g. {"temperature": (lambda x: x - 273.15, "C")})
-) -> SourceConfig:
-    leadtime = relativedelta(**{leadtime_unit: leadtime_value})
-
-    return SourceConfig(
-        source="copernicusmarine",
-        config=CopernicusmarineSourceConfig(
-            leadtime=leadtime,
-            username=username,
-            password=password,
-            dataset="cmems_mod_glo_phy_anfc_0.083deg_PT1H-m", # hourly
-            regrid_config=RegridConfig(
-                regrid_resolution=regrid_resolution,
-                regrid_vars=[var_name],
-            ),
-            select_area_after_request=select_area_after_request,
-            convert_unit=convert_unit,
-            # cache_dir=copernicusmarine_cache_dir,
-        ),
-    )
-
+# Weather ocean, copernicusmarine, hourly, analysis before TODAY
 @register_provider("ocean.copernicusmarine.gopaf.analysis.hourly")
 def copernicusmarine_global_ocean_physics_analysis_hourly(
     var_name: str,
@@ -188,7 +157,7 @@ def copernicusmarine_global_ocean_physics_analysis_hourly(
     leadtime_unit: str,
     username: str,
     password: str,
-    regrid_resolution: float = 0.25,
+    regrid_resolution: float = 0.83,
     select_area_after_request: bool = True,
     # copernicusmarine_cache_dir: str  = Path("/tmp/copernicusmarine-cache/"),
     convert_unit: dict | None = None, # dict of var_name: (func, target_unit) to convert variable unit (e.g. {"temperature": (lambda x: x - 273.15, "C")})
@@ -209,5 +178,77 @@ def copernicusmarine_global_ocean_physics_analysis_hourly(
             select_area_after_request=select_area_after_request,
             convert_unit=convert_unit,
             # cache_dir=copernicusmarine_cache_dir,
+        ),
+    )
+
+# Weather ocean, copernicusmarine, daily, analysis before TODAY
+@register_provider("ocean.copernicusmarine.gopaf.analysis.daily")
+def copernicusmarine_global_ocean_physics_analysis_daily(
+    var_name: str,
+    leadtime_value: int, # unused
+    leadtime_unit: str,
+    username: str,
+    password: str,
+    regrid_resolution: float = 0.83, # TODO check it's correct
+    select_area_after_request: bool = True,
+    # copernicusmarine_cache_dir: str  = Path("/tmp/copernicusmarine-cache/"),
+    convert_unit: dict | None = None, # dict of var_name: (func, target_unit) to convert variable unit (e.g. {"temperature": (lambda x: x - 273.15, "C")})
+) -> SourceConfig:
+    leadtime = relativedelta(**{leadtime_unit: 0})
+
+    return SourceConfig(
+        source="copernicusmarine",
+        config=CopernicusmarineSourceConfig(
+            leadtime=leadtime,
+            username=username,
+            password=password,
+            dataset="cmems_mod_glo_phy_anfc_0.083deg_PT1D-m", # hourly
+            regrid_config=RegridConfig(
+                regrid_resolution=regrid_resolution,
+                regrid_vars=[var_name],
+            ),
+            select_area_after_request=select_area_after_request,
+            convert_unit=convert_unit,
+            # cache_dir=copernicusmarine_cache_dir,
+        ),
+    )
+
+# Weather ocean, local Juno, Atlantic box lon: [-18, 1], lat: [30, 46]
+@register_provider("ocean.juno.gopaf.forecast.daily.atlantic")
+def juno_global_ocean_physics_forecast_daily_atlantic(
+    var_name: str,
+    leadtime_value: int,
+    leadtime_unit: str,
+    root_path: str | Path = "/data/inputs/METOCEAN/rolling/model/ocean/CMS/GlobOce/MERCATOR/1.0forecast/day/",
+    engine: str = "h5netcdf",
+    cfgrib_idx_path: str = "",
+    regrid_resolution: float = 0.83,
+    file_path_date_format: str = "%Y%m%d",
+    file_header: str = "cmems_mod_glo_phy_anfc_0.083deg_P1D-m_MEDATL_*",
+    file_suffix: str = ".nc",
+    file_date_format: str = "%Y%m%d",
+    both_data_and_previous_date_in_file: bool = False,
+) -> SourceConfig:
+    leadtime = relativedelta(**{leadtime_unit: leadtime_value})
+
+    return SourceConfig(
+        source="juno-local",
+        config=JunoLocalSourceConfig(
+            leadtime=leadtime,
+            root_path=Path(root_path),
+            engine=engine,
+            cfgrib_idx_path=cfgrib_idx_path,
+            file_name_config=JunoLocalSourceFileNameConfig(
+                file_path_date_format=file_path_date_format,
+                file_header=file_header,
+                file_suffix=file_suffix,
+                file_date_format=file_date_format,
+                both_data_and_previous_date_in_file=both_data_and_previous_date_in_file,
+                realizations=1,
+            ),
+            regrid_config=RegridConfig(
+                regrid_resolution=regrid_resolution,
+                regrid_vars=[var_name],
+            ),
         ),
     )
