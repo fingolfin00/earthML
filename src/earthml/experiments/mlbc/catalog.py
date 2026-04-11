@@ -92,6 +92,7 @@ def make_region ():
         italy=Region(name="ItalianPeninsula", lon=(5, 23.5), lat=(49, 25.5)),
         pacific=Region(name="CentralPacific", lon=(-200, -120), lat=(30, -30)),
         natlantic=Region(name="NorthAtlantic", lon=(-100, 40), lat=(80, 0)),
+        atlanticbox=Region(name="AtlanticBox", lon=(-18, 1), lat=(46, 30)),
         satlantic=Region(name="SouthAtlantic", lon=(-70, 30), lat=(0, -80)),
         indian=Region(name="Indian", lon=(20, 140), lat=(30, -60)),
     )
