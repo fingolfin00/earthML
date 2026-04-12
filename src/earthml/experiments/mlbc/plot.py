@@ -97,6 +97,29 @@ def _build_residual_ds(
     return left_var - right_var
 
 
+def _build_climatology_ds(ds: xr.Dataset) -> xr.Dataset:
+    return ds.earthml.climatology(groupby="month")
+
+
+def _build_ds_minus_climatology_ds(ds: xr.Dataset) -> xr.Dataset:
+    time_dim = ds.earthml.guessed_dims.time
+    if time_dim is None or time_dim not in ds.dims:
+        raise ValueError("Cannot compute dataset minus climatology without a time dimension.")
+    clim_ds = _build_climatology_ds(ds)
+    return ds.groupby(f"{time_dim}.month") - clim_ds
+
+
+def _build_anomaly_residual_ds(
+    left_ds: xr.Dataset,
+    right_ds: xr.Dataset,
+    *,
+    var: str,
+) -> xr.Dataset:
+    left_anom = _build_ds_minus_climatology_ds(left_ds)
+    right_anom = _build_ds_minus_climatology_ds(right_ds)
+    return _build_residual_ds(left_anom, right_anom, var=var)
+
+
 def plot_stage_timeseries(
     *,
     logger,
@@ -105,6 +128,9 @@ def plot_stage_timeseries(
     data_type: str,
     stage: str,
     stage_kind: str,
+    x_dim: str | None = None,
+    x_label: str = "Time",
+    filename_suffix: str = "timeseries",
 ) -> None:
     stage_plot_folder = _get_stage_plot_folder(plots_folder_path, data_type)
     logger.info(
@@ -116,9 +142,9 @@ def plot_stage_timeseries(
     )
 
     base_ds = plot_specs[0]["ds"]
-    time_dim = base_ds.earthml.guessed_dims.time
-    if time_dim is None or any(time_dim not in spec["ds"].dims for spec in plot_specs):
-        logger.debug("Skip %s plotting for %s: no common time dimension.", stage_kind, data_type)
+    plot_dim = x_dim or base_ds.earthml.guessed_dims.time
+    if plot_dim is None or any(plot_dim not in spec["ds"].dims for spec in plot_specs):
+        logger.debug("Skip %s plotting for %s: no common plot dimension.", stage_kind, data_type)
         return
 
     common_vars = set(plot_specs[0]["ds"].data_vars)
@@ -146,10 +172,10 @@ def plot_stage_timeseries(
                 plot_realization_timeseries(
                     ds_var,
                     members=members,
-                    x_dim=time_dim,
+                    x_dim=plot_dim,
                     ens_dim=rdim or "realization",
                     ax=ax,
-                    x_label="Time",
+                    x_label=x_label,
                     label=spec["label"],
                     mean_label=spec["mean_label"],
                     color=spec["color"],
@@ -157,7 +183,7 @@ def plot_stage_timeseries(
 
             ax.legend()
             fig.tight_layout()
-            fig.savefig(stage_plot_folder.joinpath(f"{stage}_{var}_timeseries.png"), dpi=200)
+            fig.savefig(stage_plot_folder.joinpath(f"{stage}_{var}_{filename_suffix}.png"), dpi=200)
         except Exception as exc:
             logger.warning(
                 "Failed to generate %s plot for %s/%s/%s: %s",
@@ -183,6 +209,7 @@ def plot_stage_residual_timeseries(
     residual_label: str,
     residual_mean_label: str,
     color: str = "tab:red",
+    anomaly: bool = False,
 ) -> None:
     stage_plot_folder = _get_stage_plot_folder(plots_folder_path, data_type)
     logger.info(
@@ -206,7 +233,11 @@ def plot_stage_residual_timeseries(
     for var in common_vars:
         fig, ax = plt.subplots(figsize=(10, 4))
         try:
-            residual_ds = _build_residual_ds(left_ds, right_ds, var=var)
+            residual_ds = (
+                _build_anomaly_residual_ds(left_ds, right_ds, var=var)
+                if anomaly else
+                _build_residual_ds(left_ds, right_ds, var=var)
+            )
             _plot_single_timeseries(
                 logger=logger,
                 ax=ax,
@@ -222,7 +253,8 @@ def plot_stage_residual_timeseries(
             ax.axhline(0.0, color="black", linewidth=1.0, linestyle=":")
             ax.legend()
             fig.tight_layout()
-            fig.savefig(stage_plot_folder.joinpath(f"{stage}_{var}_residual_timeseries.png"), dpi=200)
+            suffix = "anomaly_residual_timeseries" if anomaly else "residual_timeseries"
+            fig.savefig(stage_plot_folder.joinpath(f"{stage}_{var}_{suffix}.png"), dpi=200)
         except Exception as exc:
             logger.warning(
                 "Failed to generate %s residual plot for %s/%s/%s: %s",
@@ -234,3 +266,47 @@ def plot_stage_residual_timeseries(
             )
         finally:
             plt.close(fig)
+
+
+def plot_stage_climatology_timeseries(
+    *,
+    logger,
+    plots_folder_path: Path,
+    plot_specs: list[PlotSpec],
+    data_type: str,
+    stage: str,
+    stage_kind: str,
+) -> None:
+    clim_plot_specs = [{**spec, "ds": _build_climatology_ds(spec["ds"])} for spec in plot_specs]
+    plot_stage_timeseries(
+        logger=logger,
+        plots_folder_path=plots_folder_path,
+        plot_specs=clim_plot_specs,
+        data_type=data_type,
+        stage=stage,
+        stage_kind=f"{stage_kind} climatology",
+        x_dim="month",
+        x_label="Month",
+        filename_suffix="climatology_timeseries",
+    )
+
+
+def plot_stage_minus_climatology_timeseries(
+    *,
+    logger,
+    plots_folder_path: Path,
+    plot_specs: list[PlotSpec],
+    data_type: str,
+    stage: str,
+    stage_kind: str,
+) -> None:
+    anom_plot_specs = [{**spec, "ds": _build_ds_minus_climatology_ds(spec["ds"])} for spec in plot_specs]
+    plot_stage_timeseries(
+        logger=logger,
+        plots_folder_path=plots_folder_path,
+        plot_specs=anom_plot_specs,
+        data_type=data_type,
+        stage=stage,
+        stage_kind=f"{stage_kind} minus climatology",
+        filename_suffix="minus_climatology_timeseries",
+    )
