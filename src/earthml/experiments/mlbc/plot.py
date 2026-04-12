@@ -8,6 +8,7 @@ import numpy as np
 import xarray as xr
 from scipy.signal import welch
 
+from ...metrics import CorrelationMetrics, DeterministicMetrics
 from ...plots import plot_realization_timeseries, plot_temporal_mean_map, build_plot_config, get_var_units
 from ...plots.timeseries import _reduce_for_timeseries
 
@@ -15,6 +16,18 @@ from ...plots.timeseries import _reduce_for_timeseries
 PlotSpec = dict[str, Any]
 DEFAULT_PLOT_CONFIG = build_plot_config()
 BOOKKEEPING_VARS = {"_has_var"}
+METRIC_SPECS = [
+    {"name": "rmse", "unit_mode": "base"},
+    {"name": "mae", "unit_mode": "base"},
+    {"name": "crmse", "unit_mode": "base"},
+    {"name": "bias", "unit_mode": "base"},
+    {"name": "nrmse", "unit_mode": None},
+    {"name": "nmae", "unit_mode": None},
+    {"name": "nbias", "unit_mode": None},
+    {"name": "corr", "unit_mode": None},
+    {"name": "clim_anom_corr", "unit_mode": None},
+    {"name": "spatial_anom_corr", "unit_mode": None},
+]
 
 
 def _get_stage_plot_folder(root: Path, data_type: str) -> Path:
@@ -188,6 +201,98 @@ def _infer_lag_steps(ds: xr.Dataset, *, time_dim: str) -> int:
 
 def _format_map_cbar_label(var: str, unit: str | None) -> str:
     return f"{var} [{unit}]" if unit else var
+
+
+def _metric_display_name(metric_name: str) -> str:
+    return metric_name.replace("_", " ")
+
+
+def _metric_unit(metric_name: str, base_unit: str | None) -> str | None:
+    metric_spec = next((spec for spec in METRIC_SPECS if spec["name"] == metric_name), None)
+    if metric_spec is None:
+        return None
+    return base_unit if metric_spec["unit_mode"] == "base" else None
+
+
+def _format_metric_label(metric_name: str, *, unit: str | None) -> str:
+    return _format_y_label(_metric_display_name(metric_name), unit=unit)
+
+
+def _metric_model_specs(
+    plot_specs: list[PlotSpec],
+    truth_ds: xr.Dataset,
+) -> list[PlotSpec]:
+    return [spec for spec in plot_specs if spec["ds"] is not truth_ds]
+
+
+def _build_metric_datasets(
+    *,
+    truth_ds: xr.Dataset,
+    model_specs: list[PlotSpec],
+    reduce_dims: tuple[str, ...],
+) -> dict[str, xr.Dataset]:
+    if not model_specs or not reduce_dims:
+        return {}
+
+    model_data = [spec["ds"] for spec in model_specs]
+    model_names = [spec["label"] for spec in model_specs]
+
+    det_metrics = DeterministicMetrics(
+        truth_data=truth_ds,
+        model_data=model_data,
+        truth_name="target",
+        model_names=model_names,
+    )
+    corr_metrics = CorrelationMetrics(
+        truth_data=truth_ds,
+        model_data=model_data,
+        truth_name="target",
+        model_names=model_names,
+        clim_data=[_build_climatology_ds(truth_ds)] + [_build_climatology_ds(ds) for ds in model_data],
+    )
+
+    return {
+        "rmse": det_metrics.rmse(reduce_dims),
+        "mae": det_metrics.mae(reduce_dims),
+        "crmse": det_metrics.crmse(reduce_dims),
+        "bias": det_metrics.bias(reduce_dims),
+        "nrmse": det_metrics.nrmse(reduce_dims),
+        "nmae": det_metrics.nmae(reduce_dims),
+        "nbias": det_metrics.nbias(reduce_dims),
+        "corr": corr_metrics.corr(reduce_dims),
+        "clim_anom_corr": corr_metrics.clim_anom_corr(reduce_dims),
+        "spatial_anom_corr": corr_metrics.spatial_anom_corr(reduce_dims),
+    }
+
+
+def _select_metric_model_ds(metric_ds: xr.Dataset, model_name: str) -> xr.Dataset:
+    return metric_ds.sel(model=model_name, drop=True)
+
+
+def _scalar_pair_metrics(
+    *,
+    truth: xr.DataArray,
+    model: xr.DataArray,
+    reduce_dim: str,
+) -> tuple[float, float]:
+    var_name = truth.name or model.name or "value"
+    truth_ds = truth.to_dataset(name=var_name)
+    model_ds = model.to_dataset(name=var_name)
+
+    rmse = DeterministicMetrics(
+        truth_data=truth_ds,
+        model_data=model_ds,
+        truth_name="truth",
+        model_names="model",
+    ).rmse(reduce_dim)[var_name].sel(model="model", drop=True)
+    corr = CorrelationMetrics(
+        truth_data=truth_ds,
+        model_data=model_ds,
+        truth_name="truth",
+        model_names="model",
+    ).corr(reduce_dim)[var_name].sel(model="model", drop=True)
+
+    return float(rmse.values), float(corr.values)
 
 
 def _plot_single_timeseries(
@@ -624,24 +729,13 @@ def plot_stage_lag_diagnostic(
             input_mean, target_mean = xr.align(input_mean, target_mean, join="inner")
             x = input_mean[time_dim].values
 
-            def _score(a: xr.DataArray, b: xr.DataArray) -> tuple[float, float]:
-                av = np.asarray(a.values, dtype=np.float64)
-                bv = np.asarray(b.values, dtype=np.float64)
-                mask = np.isfinite(av) & np.isfinite(bv)
-                if not np.any(mask):
-                    return float("nan"), float("nan")
-                diff = av[mask] - bv[mask]
-                rmse = float(np.sqrt(np.mean(diff ** 2)))
-                corr = float(np.corrcoef(av[mask], bv[mask])[0, 1]) if mask.sum() > 1 else float("nan")
-                return rmse, corr
-
             lag_steps_eff = lag_steps if lag_steps is not None else _infer_lag_steps(left_ds, time_dim=time_dim)
             target_prev = target_mean.shift({time_dim: lag_steps_eff})
             target_next = target_mean.shift({time_dim: -lag_steps_eff})
 
-            rmse_0, corr_0 = _score(input_mean, target_mean)
-            rmse_prev, corr_prev = _score(input_mean, target_prev)
-            rmse_next, corr_next = _score(input_mean, target_next)
+            rmse_0, corr_0 = _scalar_pair_metrics(truth=target_mean, model=input_mean, reduce_dim=time_dim)
+            rmse_prev, corr_prev = _scalar_pair_metrics(truth=target_prev, model=input_mean, reduce_dim=time_dim)
+            rmse_next, corr_next = _scalar_pair_metrics(truth=target_next, model=input_mean, reduce_dim=time_dim)
 
             logger.info(
                 "Lag diagnostic %s/%s/%s: lag0 rmse=%.3f corr=%.3f | target(t-%s) rmse=%.3f corr=%.3f | target(t+%s) rmse=%.3f corr=%.3f",
@@ -873,6 +967,145 @@ def plot_stage_temporal_mean_maps(
                 )
 
 
+def plot_stage_metric_timeseries(
+    *,
+    logger,
+    plots_folder_path: Path,
+    plot_specs: list[PlotSpec],
+    truth_ds: xr.Dataset,
+    data_type: str,
+    stage: str,
+    stage_kind: str,
+) -> None:
+    stage_plot_folder = _get_stage_plot_folder(plots_folder_path, data_type)
+    time_dim = truth_ds.earthml.guessed_dims.time
+    lat_dim = truth_ds.earthml.guessed_dims.latitude
+    lon_dim = truth_ds.earthml.guessed_dims.longitude
+
+    if time_dim is None or time_dim not in truth_ds.dims or lat_dim is None or lon_dim is None:
+        logger.debug("Skip %s metric timeseries for %s: missing time/lat/lon dimensions.", stage_kind, data_type)
+        return
+
+    model_specs = _metric_model_specs(plot_specs, truth_ds)
+    if not model_specs:
+        logger.debug("Skip %s metric timeseries for %s: no model datasets.", stage_kind, data_type)
+        return
+
+    metric_datasets = _build_metric_datasets(
+        truth_ds=truth_ds,
+        model_specs=model_specs,
+        reduce_dims=(lat_dim, lon_dim),
+    )
+    common_vars = [
+        var for var in _data_vars_for_plotting(truth_ds)
+        if any(var in spec["ds"].data_vars or len(_data_vars_for_plotting(spec["ds"])) == 1 for spec in model_specs)
+    ]
+    if not common_vars:
+        return
+
+    for metric_name, metric_ds in metric_datasets.items():
+        for var in common_vars:
+            fig, ax = plt.subplots(figsize=(10, 4))
+            try:
+                plotted = False
+                metric_unit = _metric_unit(metric_name, _get_var_unit(truth_ds, var))
+                y_label = _format_metric_label(metric_name, unit=metric_unit)
+                for spec in model_specs:
+                    model_metric_ds = _select_metric_model_ds(metric_ds, spec["label"])
+                    if var not in model_metric_ds.data_vars and len(_data_vars_for_plotting(model_metric_ds)) != 1:
+                        continue
+                    plotted = True
+                    _plot_single_timeseries(
+                        logger=logger,
+                        ax=ax,
+                        ds=model_metric_ds,
+                        var=var,
+                        time_dim=time_dim,
+                        stage_kind=f"{stage_kind} {metric_name}",
+                        data_type=data_type,
+                        label=f"{spec['label']} {metric_name}",
+                        mean_label=f"{spec['mean_label']} {metric_name}",
+                        color=spec["color"],
+                        y_label=y_label,
+                    )
+                if not plotted:
+                    continue
+                ax.legend()
+                fig.tight_layout()
+                fig.savefig(stage_plot_folder.joinpath(f"{stage}_{var}_{metric_name}_timeseries.png"), dpi=200)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to generate %s metric timeseries for %s/%s/%s/%s: %s",
+                    stage_kind,
+                    data_type,
+                    stage,
+                    var,
+                    metric_name,
+                    repr(exc),
+                )
+            finally:
+                plt.close(fig)
+
+
+def plot_stage_metric_maps(
+    *,
+    logger,
+    plots_folder_path: Path,
+    plot_specs: list[PlotSpec],
+    truth_ds: xr.Dataset,
+    data_type: str,
+    stage: str,
+    stage_kind: str,
+) -> None:
+    stage_plot_folder = _get_stage_plot_folder(plots_folder_path, data_type)
+    time_dim = truth_ds.earthml.guessed_dims.time
+    if time_dim is None or time_dim not in truth_ds.dims:
+        logger.debug("Skip %s metric maps for %s: missing time dimension.", stage_kind, data_type)
+        return
+
+    model_specs = _metric_model_specs(plot_specs, truth_ds)
+    if not model_specs:
+        logger.debug("Skip %s metric maps for %s: no model datasets.", stage_kind, data_type)
+        return
+
+    metric_datasets = _build_metric_datasets(
+        truth_ds=truth_ds,
+        model_specs=model_specs,
+        reduce_dims=(time_dim,),
+    )
+    common_vars = [
+        var for var in _data_vars_for_plotting(truth_ds)
+        if any(var in spec["ds"].data_vars or len(_data_vars_for_plotting(spec["ds"])) == 1 for spec in model_specs)
+    ]
+    if not common_vars:
+        return
+
+    for metric_name, metric_ds in metric_datasets.items():
+        for var in common_vars:
+            for spec in model_specs:
+                try:
+                    model_metric_ds = _select_metric_model_ds(metric_ds, spec["label"])
+                    if var not in model_metric_ds.data_vars and len(_data_vars_for_plotting(model_metric_ds)) != 1:
+                        continue
+                    metric_unit = _metric_unit(metric_name, _get_var_unit(truth_ds, var))
+                    plot_temporal_mean_map(
+                        _select_plot_var_flexible(model_metric_ds, var),
+                        save_path=stage_plot_folder.joinpath(f"{stage}_{var}_{spec['label']}_{metric_name}_map.png"),
+                        cbar_label=_format_metric_label(metric_name, unit=metric_unit),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to generate %s metric map for %s/%s/%s/%s/%s: %s",
+                        stage_kind,
+                        data_type,
+                        stage,
+                        var,
+                        spec["label"],
+                        metric_name,
+                        repr(exc),
+                    )
+
+
 def run_stage_plot_bundle(
     *,
     logger,
@@ -924,6 +1157,16 @@ def run_stage_plot_bundle(
     )
     plot_stage_temporal_mean_maps(
         plot_specs=plot_specs,
+        **shared_kwargs,
+    )
+    plot_stage_metric_timeseries(
+        plot_specs=plot_specs,
+        truth_ds=right_ds,
+        **shared_kwargs,
+    )
+    plot_stage_metric_maps(
+        plot_specs=plot_specs,
+        truth_ds=right_ds,
         **shared_kwargs,
     )
     plot_stage_residual_timeseries(
