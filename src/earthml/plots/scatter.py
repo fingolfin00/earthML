@@ -42,7 +42,9 @@ def plot_metric_vs_diff(
     fit_bootstrap_iters: int = 2000,
     fit_bootstrap_seed: int | None = 0,
     # Visual
-    group_cols=("total_months", "variable", "leadtime"),
+    group_cols=None,
+    shade_by: str = "total_months",
+    shade_label: str | None = None,
     agg="mean",
     figsize=(12, 12),
     cmap_name="tab10",
@@ -68,12 +70,22 @@ def plot_metric_vs_diff(
     filters=None,  # e.g. {"variable": ["tas", "pr"], "leadtime": [1,2], "total_months":[12,24]}
 ):
     """
-    Scatter plot: x = diff_metric (e.g., nrmse_global), y = forecast_metric (e.g., r2_global),
-    grouped by (total_months, variable, leadtime). Colors encode variable, markers encode leadtime,
-    and lighter shades encode total_months.
+    Scatter plot: x = diff_metric, y = forecast_metric.
+    Colors encode variable, markers encode leadtime, and lighter shades encode
+    the selected ``shade_by`` grouping column.
 
     Returns (fig, ax, merged_df).
     """
+
+    if group_cols is None:
+        group_cols = (shade_by, "variable", "leadtime")
+    else:
+        group_cols = tuple(group_cols)
+
+    if shade_by not in group_cols:
+        raise ValueError(f"shade_by={shade_by!r} must be included in group_cols={group_cols!r}")
+
+    shade_label = shade_label or shade_by.replace("_", " ").title()
 
     def lighten(color, amount):
         r, g, b = mcolors.to_rgb(color)
@@ -140,23 +152,23 @@ def plot_metric_vs_diff(
 
     variables = sorted(df["variable"].unique())
     leadtimes = sorted(df["leadtime"].unique())
-    periods = sorted(df["total_months"].unique())
+    shade_values = sorted(df[shade_by].unique())
 
     cmap = plt.get_cmap(cmap_name)
 
     # Plot
     for vi, var in enumerate(variables):
         base = cmap(vi % cmap.N)
-        for pi, tp in enumerate(periods):
+        for pi, shade_value in enumerate(shade_values):
             # amount in [0, shade_strength]
-            denom = max(1, len(periods) - 1)
+            denom = max(1, len(shade_values) - 1)
             amt = shade_strength * (1.0 - pi / denom)
             shade = lighten(base, amt)
 
             for li, lt in enumerate(leadtimes):
                 dsub = df[
                     (df["variable"] == var)
-                    & (df["total_months"] == tp)
+                    & (df[shade_by] == shade_value)
                     & (df["leadtime"] == lt)
                 ]
                 if dsub.empty:
@@ -172,7 +184,7 @@ def plot_metric_vs_diff(
                     linewidth=linewidth,
                 )
 
-    # Fit separate lines per (total_months, leadtime), pooling all variables
+    # Fit separate lines per (shade_by, leadtime), pooling all variables
     if fit_lines:
         if fit_linestyles is None:
             _ls_cycle = ["-", "--", ":", "-."]
@@ -180,8 +192,8 @@ def plot_metric_vs_diff(
         # Use a neutral base for period shading (fits shouldn't inherit variable colors)
         neutral_base = (0.2, 0.2, 0.2)
 
-        for pi, tp in enumerate(periods):
-            denom = max(1, (len(periods) - 1))
+        for pi, shade_value in enumerate(shade_values):
+            denom = max(1, (len(shade_values) - 1))
             amt = shade_strength * (pi / denom)
 
             if fit_color_mode == "period":
@@ -192,7 +204,7 @@ def plot_metric_vs_diff(
                 raise ValueError("fit_color_mode must be 'period' or 'black'")
 
             for li, lt in enumerate(leadtimes):
-                dsub = df[(df["total_months"] == tp) & (df["leadtime"] == lt)]
+                dsub = df[(df[shade_by] == shade_value) & (df["leadtime"] == lt)]
 
                 if len(dsub) < fit_min_points:
                     continue
@@ -291,15 +303,16 @@ def plot_metric_vs_diff(
         ]
         handles.extend(var_handles)
     
-        # 2) PERIODS (total_months)
-        _section("Train window")
+        # 2) SHADED GROUP
+        _section(shade_label)
         neutral_base = (0.2, 0.2, 0.2)
-        denom = max(1, (len(periods) - 1))
-        period_handles = []
-        for pi, tp in enumerate(periods):
+        denom = max(1, (len(shade_values) - 1))
+        shade_handles = []
+        for pi, shade_value in enumerate(shade_values):
             amt = shade_strength * (1.0 - pi / denom)
             shade = lighten(neutral_base, amt)
-            period_handles.append(
+            label = f"{shade_value}M" if shade_by == "total_months" else str(shade_value)
+            shade_handles.append(
                 Line2D(
                     [0], [0],
                     marker="o",
@@ -307,10 +320,10 @@ def plot_metric_vs_diff(
                     markersize=7,
                     markerfacecolor=shade,
                     markeredgecolor=edgecolor,
-                    label=str(tp)+"M",
+                    label=label,
                 )
             )
-        handles.extend(period_handles)
+        handles.extend(shade_handles)
     
         # 3) LEADTIME (marker for points + linestyle for fits)
         _section("Lead time")
@@ -354,7 +367,7 @@ def plot_metric_vs_diff(
         # Make section headers look like headers
         for txt in leg.get_texts():
             label = txt.get_text()
-            if label in {"variable", "total_months", "leadtime"}:
+            if label in {"Variable", shade_label, "Lead time"}:
                 txt.set_weight("bold")
     
         ax.add_artist(leg)
