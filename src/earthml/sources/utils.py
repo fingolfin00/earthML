@@ -7,9 +7,6 @@ import re, time, shutil
 
 import xarray as xr
 
-import earthkit
-from earthkit.data.sources.empty import EmptySource
-
 from ..logging import get_logger
 
 
@@ -47,18 +44,27 @@ def _get_ekd_cache_dir():
     import earthkit.data as ekd # TODO why here?
     return ekd.config.get("user-cache-directory")
 
+
+def _is_earthkit_empty_source(obj) -> bool:
+    try:
+        from earthkit.data.sources.empty import EmptySource
+    except Exception:
+        return False
+    return isinstance(obj, EmptySource)
+
 def retry_fetch_after_hdf_err(
-    fetch_fn: Callable[[], xr.Dataset | EmptySource],
+    fetch_fn: Callable[[], xr.Dataset | object],
     *,
     error_re: str | None = None,
     tries: int = 5,
     base_sleep: float = 1.5,
     delete_bad_file: bool = False,
     delete_bad_parent: bool = False,
+    manage_earthkit_cache: bool = False,
 ):
     pat = re.compile(error_re, re.I) if error_re else None
     last_e: Exception | None = None
-    orig_ekd_cache_dir = _get_ekd_cache_dir()
+    orig_ekd_cache_dir = _get_ekd_cache_dir() if manage_earthkit_cache else None
 
     def rmdir(directory):
         shutil.rmtree(Path(directory), ignore_errors=False)
@@ -67,12 +73,13 @@ def retry_fetch_after_hdf_err(
         try:
             data = fetch_fn()
 
-            if isinstance(data, EmptySource):
+            if manage_earthkit_cache and _is_earthkit_empty_source(data):
                 logger.warning("   EmptySource returned, setting tmp cache dir (%s/%s)", attempt, tries)
                 _set_ekd_cache_dir()  # default tmp cache
                 # continue retry loop
             else:
-                _set_ekd_cache_dir(orig_ekd_cache_dir)
+                if manage_earthkit_cache:
+                    _set_ekd_cache_dir(orig_ekd_cache_dir)
                 return data
 
         except Exception as e:
@@ -84,7 +91,8 @@ def retry_fetch_after_hdf_err(
             retryable = True if pat is None else bool(pat.search(msg))
 
             if not retryable:
-                _set_ekd_cache_dir(orig_ekd_cache_dir)
+                if manage_earthkit_cache:
+                    _set_ekd_cache_dir(orig_ekd_cache_dir)
                 raise  # non-matching error -> fail fast
 
             logger.warning("   Attempt %s/%s", attempt, tries)
@@ -112,7 +120,8 @@ def retry_fetch_after_hdf_err(
 
         time.sleep(base_sleep * (2 ** (attempt - 1)))
 
-    _set_ekd_cache_dir(orig_ekd_cache_dir)
+    if manage_earthkit_cache:
+        _set_ekd_cache_dir(orig_ekd_cache_dir)
     raise RuntimeError(f"Failed after {tries} attempts; last error: {last_e!r}") from last_e
 
 

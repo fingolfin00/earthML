@@ -261,6 +261,7 @@ class EarthkitSource(BaseSource):
                 tries=5,
                 delete_bad_file=False,
                 delete_bad_parent=False,
+                manage_earthkit_cache=True,
             )
 
             def _fetch_ekd():
@@ -291,6 +292,7 @@ class EarthkitSource(BaseSource):
                 tries=5,
                 delete_bad_file=True,
                 delete_bad_parent=True,
+                manage_earthkit_cache=True,
             )
 
             # Validate quickly: expected variables present
