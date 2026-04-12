@@ -29,6 +29,8 @@ from .plot import (
     run_stage_plot_bundle,
 )
 
+ENABLE_STAGE_PLOTTING = True
+
 
 class MLBCExperiment:
     def __init__(
@@ -534,6 +536,10 @@ class MLBCExperiment:
         - save artifacts under a train/test folder in the run work path
         - remain a no-op until plotting behavior is implemented
         """
+        if not ENABLE_STAGE_PLOTTING:
+            self.logger.info("Skip dataset-stage plotting because ENABLE_STAGE_PLOTTING=False")
+            return
+
         plot_specs = [
             {"ds": input_ds, "label": "input", "mean_label": "input mean", "color": "tab:blue"},
             {"ds": target_ds, "label": "target", "mean_label": "target mean", "color": "tab:orange"},
@@ -563,6 +569,10 @@ class MLBCExperiment:
         mode: MLBCExperimentMode,
         stage: str,
     ) -> None:
+        if not ENABLE_STAGE_PLOTTING:
+            self.logger.info("Skip prediction-stage plotting because ENABLE_STAGE_PLOTTING=False")
+            return
+
         plot_specs = [
             {"ds": pred_ds, "label": "pred", "mean_label": "pred mean", "color": "tab:green"},
             {"ds": input_ds, "label": "input", "mean_label": "input mean", "color": "tab:blue"},
