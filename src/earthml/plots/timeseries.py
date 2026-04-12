@@ -29,8 +29,9 @@ def _reduce_for_timeseries(
     if not reduce_dims:
         return da
     with xr.set_options(use_numbagg=False):
-        reduced = da.earthml.geo_mean(reduce_dims)
-        reduced = reduced.load()
+        # Plotting only needs one reduced timeseries at a time, so materialize
+        # first and reduce eagerly to avoid dask->flox/numbagg float16 failures.
+        reduced = da.load().earthml.geo_mean(reduce_dims)
     return reduced
 
 
