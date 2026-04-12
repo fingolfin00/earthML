@@ -129,7 +129,7 @@ class BaseSource(ABC):
             set(pd.to_datetime(corrupted_sel.values).to_pydatetime())
             if corrupted_sel.values.size else set()
         )
-        logger.warning("Corrupted %s samples: %s", self.source_name, len(corrupted))
+        logger.info("Corrupted %s samples: %s", self.source_name, len(corrupted))
 
         # Drop corrupted timesteps
         ds = ds.drop_sel({time_dim: corrupted_sel})
