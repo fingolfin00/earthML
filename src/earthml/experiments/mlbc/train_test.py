@@ -16,7 +16,8 @@ import lightning as L
 from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
 from lightning.pytorch.loggers import TensorBoardLogger
 
-from .dataclasses import MLBCExperimentDataset, MLBCExperimentConfig, MLBCExperimentDatasetRole
+from .dataclasses import MLBCExperimentDataset, MLBCExperimentConfig
+from .registry import MLBCExperimentDatasetRole, MLBCExperimentMode
 
 from ...sources import build_source, BaseSource, DataSource, XarrayLocalSourceConfig
 from ...misc import Table
@@ -85,8 +86,8 @@ class MLBCExperiment:
         self.source_test_data  = self._init_source_data(self.config.test_dataset,  "test")
 
         # Generate xarray datsets
-        self.train_input_ds, self.train_target_ds = self._generate_xarray_ds(self.source_train_data, self.config.train_dataset, 'Train') # capital T just for logging
-        self.test_input_ds, self.test_target_ds = self._generate_xarray_ds(self.source_test_data, self.config.test_dataset, 'Test')
+        self.train_input_ds, self.train_target_ds = self._generate_xarray_ds(self.source_train_data, self.config.train_dataset, MLBCExperimentMode.TRAIN) # capital T just for logging
+        self.test_input_ds, self.test_target_ds = self._generate_xarray_ds(self.source_test_data, self.config.test_dataset, MLBCExperimentMode.TEST)
 
         # Handle latitudes for optional spatial weighting
         self.latitudes = None
@@ -151,8 +152,8 @@ class MLBCExperiment:
         self.train_mask_store = self.mask_folder_path.joinpath(Path("train_"+mask_filename).with_suffix(".zarr"))
         self.train_mask_exp = self._init_experiment_dataset(self.train_mask_store, self.config.train_dataset, MLBCExperimentDatasetRole.PREDICTION)
 
-        self.train_mask_ds = self._create_and_save_common_mask(self.train_input_ds, self.train_target_ds, 'train')
-        self.test_mask_ds = self._create_and_save_common_mask(self.test_input_ds, self.test_target_ds, 'test')
+        self.train_mask_ds = self._create_and_save_common_mask(self.train_input_ds, self.train_target_ds, MLBCExperimentMode.TRAIN)
+        self.test_mask_ds = self._create_and_save_common_mask(self.test_input_ds, self.test_target_ds, MLBCExperimentMode.TEST)
 
         # Build merged loss_params
         base_loss_params = dict(self.config.net.loss_params)  # shallow copy
@@ -308,7 +309,7 @@ class MLBCExperiment:
         self,
         source_data: dict[str, BaseSource],
         experiments: MLBCExperimentDataset | Sequence[MLBCExperimentDataset],
-        data_type: str
+        mode: MLBCExperimentMode
     ) -> tuple[xr.Dataset, xr.Dataset]:
         if not isinstance(experiments, list):
             experiments = [experiments]
@@ -331,14 +332,16 @@ class MLBCExperiment:
             }
             ds = ds.earthml.remove_dims_and_coords(allowed_dims)
 
+            self.logger.info(f"{mode.capitalize()} {role} dims after removal: {ds.sizes}")
+
             ds_d[role] = ds
 
         loading_time = time.time() - s
-        self.logger.info("%s loading time: %.1fs", data_type, loading_time)
+        self.logger.info("%s loading time: %.1fs", mode.capitalize(), loading_time)
 
         # For now only support input and target roles
         assert "input" in exp_roles and "target" in exp_roles
-        input_ds, target_ds = ds_d['input'], ds_d['target']
+        input_ds, target_ds = ds_d[MLBCExperimentDatasetRole.INPUT], ds_d[MLBCExperimentDatasetRole.TARGET]
 
         # Align on shared sample/grid axes, but do not intersect realization axes.
         exclude_align_dims = tuple(
@@ -353,8 +356,8 @@ class MLBCExperiment:
         self._plot_dataset_stage(
             input_ds=input_ds,
             target_ds=target_ds,
-            data_type=data_type.lower(),
-            stage="generate_xarray_ds",
+            mode=mode,
+            stage="input_target",
         )
 
         return input_ds, target_ds
@@ -363,7 +366,7 @@ class MLBCExperiment:
         self,
         input_ds: xr.Dataset,
         target_ds: xr.Dataset,
-        data_type: str,
+        mode: MLBCExperimentMode,
         stage: str,
     ) -> None:
         """
@@ -384,7 +387,7 @@ class MLBCExperiment:
             plot_specs=plot_specs,
             left_ds=input_ds,
             right_ds=target_ds,
-            data_type=data_type,
+            data_type=mode,
             stage=stage,
             stage_kind="dataset",
             residual_label="input-target",
@@ -398,7 +401,7 @@ class MLBCExperiment:
         pred_ds: xr.Dataset,
         input_ds: xr.Dataset,
         target_ds: xr.Dataset,
-        data_type: str,
+        mode: MLBCExperimentMode,
         stage: str,
     ) -> None:
         plot_specs = [
@@ -412,7 +415,7 @@ class MLBCExperiment:
             plot_specs=plot_specs,
             left_ds=pred_ds,
             right_ds=target_ds,
-            data_type=data_type,
+            data_type=mode,
             stage=stage,
             stage_kind="prediction",
             residual_label="pred-target",
@@ -657,7 +660,7 @@ class MLBCExperiment:
         input_ds: xr.Dataset,
         target_ds: xr.Dataset,
         source_data: dict[str, BaseSource],
-        data_type: str
+        mode: MLBCExperimentMode
     ):
         # Create torch dataset
         torch_dataset = XarrayDataset(
@@ -705,8 +708,8 @@ class MLBCExperiment:
         if x_total == 0 or y_total == 0:
             raise ValueError("Mask tensor is empty: check dataset construction")
 
-        log_renderable(Table({f'{data_type} dataset': {
-            'input': {
+        log_renderable(Table({f'{mode.capitalize()} dataset': {
+            MLBCExperimentDatasetRole.INPUT: {
                 'numpy shape': torch_dataset.x_np.shape,
                 'numpy mean': x_mean_np,
                 'numpy std': x_std_np,
@@ -717,9 +720,9 @@ class MLBCExperiment:
                 'torch std': x_std,
                 'torch masked_elements': x_masked,
                 'torch masked_fraction': x_masked / x_total,
-                'source': source_data['input'].datasource.source,
+                'source': source_data[MLBCExperimentDatasetRole.INPUT].datasource.source,
             },
-            'target': {
+            MLBCExperimentDatasetRole.TARGET: {
                 'numpy shape': torch_dataset.y_np.shape,
                 'numpy mean': y_mean_np,
                 'numpy std': y_std_np,
@@ -730,7 +733,7 @@ class MLBCExperiment:
                 'torch std': y_std,
                 'torch masked_elements': y_masked,
                 'torch masked_fraction': y_masked / y_total,
-                'source': source_data['target'].datasource.source,
+                'source': source_data[MLBCExperimentDatasetRole.TARGET].datasource.source,
             },
         }}).table, logger=self.logger)
 
@@ -857,7 +860,7 @@ class MLBCExperiment:
 
     def train(self):
         # Generate torch train dataset
-        train_dataset = self._generate_torch_dataset(self.train_input_ds, self.train_target_ds, self.source_train_data, 'Train')
+        train_dataset = self._generate_torch_dataset(self.train_input_ds, self.train_target_ds, self.source_train_data, MLBCExperimentMode.TRAIN)
 
         # Normalize
         self.normalize_input  = Normalize().fit(train_dataset, filepath=self.normdata_input_path, dim='x')  # mean and std of train input (x) data
@@ -889,7 +892,7 @@ class MLBCExperiment:
 
     def _test(
         self,
-        test_data_type: Literal['Test', 'Train'],
+        test_data_mode: MLBCExperimentMode,
         test_data: dict[str, BaseSource],
         test_input_ds: xr.Dataset,
         test_target_ds: xr.Dataset,
@@ -897,7 +900,7 @@ class MLBCExperiment:
         var_list: Sequence,
         weights_filename: str | Path | None = None,
     ):
-        dataset = self._generate_torch_dataset(test_input_ds, test_target_ds, test_data, test_data_type)
+        dataset = self._generate_torch_dataset(test_input_ds, test_target_ds, test_data, test_data_mode)
 
         # Normalize input
         if not self.normalize_input:
@@ -947,25 +950,25 @@ class MLBCExperiment:
 
         # Print info
         meta, var_cols = self._make_test_info_table(dataset, test_data, self.model.test_preds, preds, var_list)
-        log_renderable(Table({f"Test on {test_data_type} dataset run info": meta}, twocols=True).table, logger=self.logger)
-        log_renderable(Table({f"Test on {test_data_type} dataset metrics (per variable)": var_cols}).table, logger=self.logger)
+        log_renderable(Table({f"Test on {test_data_mode.capitalize()} dataset run info": meta}, twocols=True).table, logger=self.logger)
+        log_renderable(Table({f"Test on {test_data_mode.capitalize()} dataset metrics (per variable)": var_cols}).table, logger=self.logger)
 
-        pred_ds = self.save(preds, dataset, test_data, var_list, 'input', preds_store)
+        pred_ds = self.save(preds, dataset, test_data, var_list, MLBCExperimentDatasetRole.INPUT, preds_store)
         self._plot_prediction_stage(
             pred_ds=pred_ds,
             input_ds=test_input_ds,
             target_ds=test_target_ds,
-            data_type=test_data_type.lower(),
+            data_type=test_data_mode,
             stage="test_preds",
         )
 
         return dataloader
 
     def test(self, weights_filename=None):
-        self.test_dataloader  = self._test('Test', self.source_test_data, self.test_input_ds, self.test_target_ds, self.test_preds_store, self.test_var_list, weights_filename)
+        self.test_dataloader  = self._test(MLBCExperimentMode.TEST, self.source_test_data, self.test_input_ds, self.test_target_ds, self.test_preds_store, self.test_var_list, weights_filename)
 
     def test_on_train(self, weights_filename=None):
-        self.test_dataloader  = self._test('Train', self.source_train_data, self.train_input_ds, self.train_target_ds, self.train_preds_store, self.train_var_list, weights_filename)
+        self.test_dataloader  = self._test(MLBCExperimentMode.TRAIN, self.source_train_data, self.train_input_ds, self.train_target_ds, self.train_preds_store, self.train_var_list, weights_filename)
 
     def _infer_RT_from_source(self, dataset: XarrayDataset) -> tuple[int, int]:
         """
