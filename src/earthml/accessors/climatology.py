@@ -26,14 +26,18 @@ class EarthMLClimatology:
         group = getattr(time.dt, groupby)
         ds = ds.assign_coords({groupby: (time_dim, group.data)})
 
-        # Cast before grouped reduction is built to avoid mixed types
-        cast_map = {
-            v: np.float32
+        # Cast floating variables before grouped reduction is built to avoid
+        # mixed dtypes, but leave bookkeeping vars like `_has_var` untouched.
+        float_vars = [
+            v
             for v in ds.data_vars
             if np.issubdtype(ds[v].dtype, np.floating)
-        }
-        if cast_map:
-            ds = ds.astype(cast_map)
+        ]
+        if float_vars:
+            ds = ds.assign({
+                v: ds[v].astype(np.float32)
+                for v in float_vars
+            })
 
         return ds.groupby(groupby).mean(
             dim=time_dim,
