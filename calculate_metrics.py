@@ -8,7 +8,7 @@ from rich import print
 
 from earthml import Dask, get_runs_and_metrics
 from earthml.metrics.utils import metrics_to_df
-from earthml.plots import plot_metric_vs_diff
+from earthml.plots import plot_metric_vs_diff, plot_scoreboard
 
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -44,6 +44,22 @@ PLOT_FILTERS = None
 SHADE_BY = "loss" # loss, total_months
 SHADE_LABEL = "Loss"
 
+SCOREBOARD_ENABLED = True
+SCOREBOARD_MODE = "relative"  # "absolute" or "relative"
+SCOREBOARD_METRICS = {
+    "r2": "ensemble",
+    "nrmse": "ensemble",
+    "crps": "probabilistic",
+}
+SCOREBOARD_ROW_AXIS = "train_period"  # e.g. "train_period" or "loss"
+SCOREBOARD_COL_AXIS = "leadtime"
+SCOREBOARD_FILTERS = {
+    "variable": None,  # e.g. ["t2m"]
+    "loss": None,      # used when not on an axis
+    "train_period": None,  # used when not on an axis
+}
+SCOREBOARD_ANNOTATE = True
+
 
 def build_scalar_metric_df(
     *,
@@ -64,6 +80,55 @@ def build_scalar_metric_df(
         diff=diff,
         models=models,
     )
+
+
+def save_scoreboard_plot(
+    *,
+    metrics: dict,
+    variables: list[str],
+    plot_folder: Path,
+) -> Path:
+    scoreboard_frames: list[pd.DataFrame] = []
+    diff_mode = "delta" if SCOREBOARD_MODE == "relative" else "no"
+    outer_x_values = ["pr-fc"] if SCOREBOARD_MODE == "relative" else ["fc", "pr"]
+
+    for metric_name, metric_type in SCOREBOARD_METRICS.items():
+        scoreboard_frames.append(
+            build_scalar_metric_df(
+                metrics=metrics,
+                variables=variables,
+                metric_name=metric_name,
+                metric_type=metric_type,
+                diff=diff_mode,
+                models=MODELS_DIFF if diff_mode == "delta" else None,
+            )
+        )
+
+    df_scoreboard = pd.concat(scoreboard_frames, ignore_index=True)
+
+    filters = {}
+    for col, val in SCOREBOARD_FILTERS.items():
+        if val is None:
+            continue
+        if col in {SCOREBOARD_ROW_AXIS, SCOREBOARD_COL_AXIS, "metric", "model"}:
+            continue
+        filters[col] = val
+
+    plot_path = plot_folder / f"scoreboard_{SCOREBOARD_MODE}_{SCOREBOARD_ROW_AXIS}_vs_{SCOREBOARD_COL_AXIS}.png"
+    plot_scoreboard(
+        df=df_scoreboard,
+        outer_y={"index": "metric", "values": list(SCOREBOARD_METRICS.keys())},
+        outer_x={"index": "model", "values": outer_x_values},
+        inner_y={"index": SCOREBOARD_ROW_AXIS},
+        inner_x={"index": SCOREBOARD_COL_AXIS},
+        filters=filters,
+        agg="mean",
+        annotate=SCOREBOARD_ANNOTATE,
+        annotate_fmt="{:.2f}",
+        save_path=plot_path,
+        title=f"Scoreboard ({SCOREBOARD_MODE})",
+    )
+    return plot_path
 
 
 def save_leadtime_vs_global_metrics_plot(
@@ -151,23 +216,17 @@ def save_metrics_vs_leadtime_plots(
     ds_scalar_prob = metrics["probabilistic"]["scalar"]
 
     for metric_name, metric_type in LEADTIME_METRICS.items():
-        nrows = len(variables)
-
         fig, axs = plt.subplots(
-            nrows=nrows,
+            nrows=len(variables),
             ncols=1,
-            figsize=(12, max(5, 4.5 * nrows)),
+            figsize=(12, max(5, 4.5 * len(variables))),
             squeeze=False,
         )
         axs = axs.ravel()
 
         for i, variable in enumerate(variables):
             ax = axs[i]
-        if metric_type == "probabilistic":
-            ds_metric = ds_scalar_prob
-        else:
-            ds_metric = ds_scalar_ens
-
+            ds_metric = ds_scalar_prob if metric_type == "probabilistic" else ds_scalar_ens
             da_template = ds_metric[variable].sel(metric=metric_name)
             da_template = _filter_da(da_template)
             if da_template.size == 0:
@@ -279,10 +338,7 @@ def save_metrics_vs_leadtime_plots(
                             label=f"{model_name} {metric_name} ensemble{shade_suffix}",
                         )
                     else:
-                        raise ValueError(
-                            f"Unsupported leadtime metric plot mode {metric_type!r} "
-                            f"for metric {metric_name!r}"
-                        )
+                        raise ValueError(f"Unsupported leadtime metric plot mode {metric_type!r}")
 
             ax.set_title(f"{metric_name} vs lead time ({variable})")
             ax.set_xlabel(f"Lead time ({leadtime_unit.strip()})")
@@ -363,6 +419,14 @@ def main() -> None:
     )
     for leadtime_plot_path in leadtime_plot_paths:
         print("Saved metric-vs-leadtime plot to:", leadtime_plot_path)
+
+    if SCOREBOARD_ENABLED:
+        scoreboard_path = save_scoreboard_plot(
+            metrics=metrics,
+            variables=vars_from_fc,
+            plot_folder=PLOT_FOLDER,
+        )
+        print("Saved scoreboard plot to:", scoreboard_path)
 
 
 if __name__ == "__main__":
