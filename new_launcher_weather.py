@@ -1,4 +1,8 @@
+import os
 from datetime import datetime
+
+os.environ.setdefault("KMP_WARNINGS", "0")
+os.environ.setdefault("OMP_MAX_ACTIVE_LEVELS", "1")
 
 from rich import print
 from dateutil.relativedelta import relativedelta
