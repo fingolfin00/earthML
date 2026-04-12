@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
+import numpy as np
 import xarray as xr
 
 from ...plots import plot_realization_timeseries
@@ -118,6 +119,61 @@ def _build_anomaly_residual_ds(
     left_anom = _build_ds_minus_climatology_ds(left_ds)
     right_anom = _build_ds_minus_climatology_ds(right_ds)
     return _build_residual_ds(left_anom, right_anom, var=var)
+
+
+def _build_anomaly_variance_ds(ds: xr.Dataset, window: int | None = None) -> xr.Dataset:
+    time_dim = ds.earthml.guessed_dims.time
+    if time_dim is None or time_dim not in ds.dims:
+        raise ValueError("Cannot compute anomaly variance without a time dimension.")
+
+    anom_ds = _build_ds_minus_climatology_ds(ds)
+    time_len = int(anom_ds.sizes.get(time_dim, 0))
+    if time_len < 3:
+        raise ValueError("Need at least 3 timesteps to compute anomaly variance timeseries.")
+
+    window = min(12, time_len) if window is None else min(window, time_len)
+    min_periods = max(3, window // 2)
+
+    return anom_ds.rolling({time_dim: window}, center=True, min_periods=min_periods).var()
+
+
+def _build_anomaly_autocorr_ds(ds: xr.Dataset, nlags: int | None = None) -> xr.Dataset:
+    time_dim = ds.earthml.guessed_dims.time
+    if time_dim is None or time_dim not in ds.dims:
+        raise ValueError("Cannot compute anomaly autocorrelation without a time dimension.")
+
+    anom_ds = _build_ds_minus_climatology_ds(ds)
+    time_len = int(anom_ds.sizes.get(time_dim, 0))
+    if time_len < 3:
+        raise ValueError("Need at least 3 timesteps to compute anomaly autocorrelation.")
+
+    nlags = min(12, time_len - 1) if nlags is None else min(nlags, time_len - 1)
+    if nlags < 1:
+        raise ValueError("Need at least 1 valid lag to compute anomaly autocorrelation.")
+
+    acf_vars: dict[str, xr.DataArray] = {}
+    for var_name, da in anom_ds.data_vars.items():
+        corr_list: list[xr.DataArray] = []
+        for lag in range(nlags + 1):
+            da_lag = da.shift({time_dim: lag})
+            x = da
+            y = da_lag
+            x_mean = x.mean(dim=time_dim, skipna=True)
+            y_mean = y.mean(dim=time_dim, skipna=True)
+            x_anom = x - x_mean
+            y_anom = y - y_mean
+            cov = (x_anom * y_anom).mean(dim=time_dim, skipna=True)
+            x_std = x.std(dim=time_dim, skipna=True)
+            y_std = y.std(dim=time_dim, skipna=True)
+            denom = x_std * y_std
+            corr = xr.where(denom > 0, cov / denom, np.nan)
+            corr_list.append(corr)
+        acf_vars[var_name] = xr.concat(
+            corr_list,
+            dim=xr.IndexVariable("lag", range(nlags + 1)),
+        )
+
+    return xr.Dataset(acf_vars)
 
 
 def plot_stage_timeseries(
@@ -309,4 +365,126 @@ def plot_stage_minus_climatology_timeseries(
         stage=stage,
         stage_kind=f"{stage_kind} minus climatology",
         filename_suffix="minus_climatology_timeseries",
+    )
+
+
+def plot_stage_variance_timeseries(
+    *,
+    logger,
+    plots_folder_path: Path,
+    plot_specs: list[PlotSpec],
+    data_type: str,
+    stage: str,
+    stage_kind: str,
+    window: int | None = None,
+) -> None:
+    variance_plot_specs = [
+        {
+            **spec,
+            "ds": _build_anomaly_variance_ds(spec["ds"], window=window),
+        }
+        for spec in plot_specs
+    ]
+    plot_stage_timeseries(
+        logger=logger,
+        plots_folder_path=plots_folder_path,
+        plot_specs=variance_plot_specs,
+        data_type=data_type,
+        stage=stage,
+        stage_kind=f"{stage_kind} anomaly variance",
+        filename_suffix="variance_timeseries",
+    )
+
+
+def plot_stage_autocorr_timeseries(
+    *,
+    logger,
+    plots_folder_path: Path,
+    plot_specs: list[PlotSpec],
+    data_type: str,
+    stage: str,
+    stage_kind: str,
+    nlags: int | None = None,
+) -> None:
+    autocorr_plot_specs = [
+        {
+            **spec,
+            "ds": _build_anomaly_autocorr_ds(spec["ds"], nlags=nlags),
+        }
+        for spec in plot_specs
+    ]
+    plot_stage_timeseries(
+        logger=logger,
+        plots_folder_path=plots_folder_path,
+        plot_specs=autocorr_plot_specs,
+        data_type=data_type,
+        stage=stage,
+        stage_kind=f"{stage_kind} anomaly autocorr",
+        x_dim="lag",
+        x_label="Lag",
+        filename_suffix="autocorr_timeseries",
+    )
+
+
+def run_stage_plot_bundle(
+    *,
+    logger,
+    plots_folder_path: Path,
+    plot_specs: list[PlotSpec],
+    left_ds: xr.Dataset,
+    right_ds: xr.Dataset,
+    data_type: str,
+    stage: str,
+    stage_kind: str,
+    residual_label: str,
+    residual_mean_label: str,
+    anomaly_residual_label: str,
+    anomaly_residual_mean_label: str,
+) -> None:
+    shared_kwargs = dict(
+        logger=logger,
+        plots_folder_path=plots_folder_path,
+        data_type=data_type,
+        stage=stage,
+        stage_kind=stage_kind,
+    )
+
+    plot_stage_timeseries(
+        plot_specs=plot_specs,
+        **shared_kwargs,
+    )
+    plot_stage_climatology_timeseries(
+        plot_specs=plot_specs,
+        **shared_kwargs,
+    )
+    plot_stage_minus_climatology_timeseries(
+        plot_specs=plot_specs,
+        **shared_kwargs,
+    )
+    plot_stage_variance_timeseries(
+        plot_specs=plot_specs,
+        **shared_kwargs,
+    )
+    plot_stage_autocorr_timeseries(
+        plot_specs=plot_specs,
+        **shared_kwargs,
+    )
+    plot_stage_residual_timeseries(
+        left_ds=left_ds,
+        right_ds=right_ds,
+        residual_label=residual_label,
+        residual_mean_label=residual_mean_label,
+        **shared_kwargs,
+    )
+    plot_stage_residual_timeseries(
+        left_ds=left_ds,
+        right_ds=right_ds,
+        stage_kind=f"{stage_kind} anomaly",
+        residual_label=anomaly_residual_label,
+        residual_mean_label=anomaly_residual_mean_label,
+        anomaly=True,
+        logger=logger,
+        plots_folder_path=plots_folder_path,
+        data_type=data_type,
+        stage=stage,
     )

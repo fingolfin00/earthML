@@ -24,10 +24,7 @@ from ...logging import get_logger, log_renderable
 from ...neural import XarrayDataset, Normalize, EpochRandomSplitDataModule
 from ...neural.nets import build_net
 from .plot import (
-    plot_stage_timeseries,
-    plot_stage_residual_timeseries,
-    plot_stage_climatology_timeseries,
-    plot_stage_minus_climatology_timeseries,
+    run_stage_plot_bundle,
 )
 
 
@@ -381,33 +378,10 @@ class MLBCExperiment:
             {"ds": input_ds, "label": "input", "mean_label": "input mean", "color": "tab:blue"},
             {"ds": target_ds, "label": "target", "mean_label": "target mean", "color": "tab:orange"},
         ]
-        plot_stage_timeseries(
+        run_stage_plot_bundle(
             logger=self.logger,
             plots_folder_path=self.plots_folder_path,
             plot_specs=plot_specs,
-            data_type=data_type,
-            stage=stage,
-            stage_kind="dataset",
-        )
-        plot_stage_climatology_timeseries(
-            logger=self.logger,
-            plots_folder_path=self.plots_folder_path,
-            plot_specs=plot_specs,
-            data_type=data_type,
-            stage=stage,
-            stage_kind="dataset",
-        )
-        plot_stage_minus_climatology_timeseries(
-            logger=self.logger,
-            plots_folder_path=self.plots_folder_path,
-            plot_specs=plot_specs,
-            data_type=data_type,
-            stage=stage,
-            stage_kind="dataset",
-        )
-        plot_stage_residual_timeseries(
-            logger=self.logger,
-            plots_folder_path=self.plots_folder_path,
             left_ds=input_ds,
             right_ds=target_ds,
             data_type=data_type,
@@ -415,18 +389,8 @@ class MLBCExperiment:
             stage_kind="dataset",
             residual_label="input-target",
             residual_mean_label="input-target mean",
-        )
-        plot_stage_residual_timeseries(
-            logger=self.logger,
-            plots_folder_path=self.plots_folder_path,
-            left_ds=input_ds,
-            right_ds=target_ds,
-            data_type=data_type,
-            stage=stage,
-            stage_kind="dataset anomaly",
-            residual_label="input-target anomaly",
-            residual_mean_label="input-target anomaly mean",
-            anomaly=True,
+            anomaly_residual_label="input-target anomaly",
+            anomaly_residual_mean_label="input-target anomaly mean",
         )
 
     def _plot_prediction_stage(
@@ -442,33 +406,10 @@ class MLBCExperiment:
             {"ds": input_ds, "label": "input", "mean_label": "input mean", "color": "tab:blue"},
             {"ds": target_ds, "label": "target", "mean_label": "target mean", "color": "tab:orange"},
         ]
-        plot_stage_timeseries(
+        run_stage_plot_bundle(
             logger=self.logger,
             plots_folder_path=self.plots_folder_path,
             plot_specs=plot_specs,
-            data_type=data_type,
-            stage=stage,
-            stage_kind="prediction",
-        )
-        plot_stage_climatology_timeseries(
-            logger=self.logger,
-            plots_folder_path=self.plots_folder_path,
-            plot_specs=plot_specs,
-            data_type=data_type,
-            stage=stage,
-            stage_kind="prediction",
-        )
-        plot_stage_minus_climatology_timeseries(
-            logger=self.logger,
-            plots_folder_path=self.plots_folder_path,
-            plot_specs=plot_specs,
-            data_type=data_type,
-            stage=stage,
-            stage_kind="prediction",
-        )
-        plot_stage_residual_timeseries(
-            logger=self.logger,
-            plots_folder_path=self.plots_folder_path,
             left_ds=pred_ds,
             right_ds=target_ds,
             data_type=data_type,
@@ -476,18 +417,8 @@ class MLBCExperiment:
             stage_kind="prediction",
             residual_label="pred-target",
             residual_mean_label="pred-target mean",
-        )
-        plot_stage_residual_timeseries(
-            logger=self.logger,
-            plots_folder_path=self.plots_folder_path,
-            left_ds=pred_ds,
-            right_ds=target_ds,
-            data_type=data_type,
-            stage=stage,
-            stage_kind="prediction anomaly",
-            residual_label="pred-target anomaly",
-            residual_mean_label="pred-target anomaly mean",
-            anomaly=True,
+            anomaly_residual_label="pred-target anomaly",
+            anomaly_residual_mean_label="pred-target anomaly mean",
         )
 
     def _create_and_save_common_mask(
