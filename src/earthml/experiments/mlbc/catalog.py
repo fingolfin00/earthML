@@ -73,6 +73,14 @@ def make_var(
         t2m_cds_fc=Variable(longname="2m_temperature", name="t2m", unit="K", leadtime=leadtime_input),
         t2m_era5_seasonal_an=Variable(longname="2m_temperature", name="t2m", unit="K"),
 
+        d2m_cds_fc=Variable(longname="2m_dewpoint_temperature", name="d2m", unit="K", leadtime=leadtime_input),
+        d2m_era5_seasonal_an=Variable(longname="2m_dewpoint_temperature", name="d2m", unit="K"),
+
+        msl_cds_fc=Variable(longname="mean_sea_level_pressure", name="msl", unit="Pa", leadtime=leadtime_input),
+        msl_era5_seasonal_an=Variable(longname="2m_dewpoint_temperature", name="msl", unit="Pa"),
+
+
+        # TODO not comparable, need conversion
         tp_cds_fc=Variable(longname="total_precipitation", name="tprate", unit="", leadtime=leadtime_input),
         tp_era5_seasonal_an=Variable(longname="total_precipitation", name="tp", unit="m/s"),
 
