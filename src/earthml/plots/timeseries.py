@@ -1,6 +1,8 @@
 from typing import Literal, Sequence
 
 import xarray as xr
+import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 
@@ -23,6 +25,47 @@ def _reduce_for_timeseries(
     if not reduce_dims:
         return da
     return da.earthml.geo_mean(reduce_dims)
+
+
+def _plot_x_values(da: xr.DataArray, x_dim: str):
+    x = da[x_dim].values
+
+    if not np.issubdtype(np.asarray(x).dtype, np.datetime64):
+        return x
+
+    try:
+        idx = pd.DatetimeIndex(pd.to_datetime(x))
+    except Exception:
+        return x
+
+    if len(idx) < 2:
+        return x
+
+    try:
+        freq = getattr(idx, "freqstr", None) or xr.infer_freq(idx)
+    except Exception:
+        freq = None
+
+    is_monthly = False
+    if freq is not None:
+        freq_s = str(freq).upper()
+        is_monthly = ("MS" in freq_s) or (freq_s == "M")
+    else:
+        try:
+            diffs = np.diff(idx.values.astype("datetime64[ns]")).astype("timedelta64[D]").astype(np.int64)
+            if diffs.size:
+                med = int(np.median(diffs))
+                is_monthly = 27 <= med <= 32
+        except Exception:
+            is_monthly = False
+
+    if not is_monthly:
+        return x
+
+    month_start = idx.to_period("M").to_timestamp(how="start")
+    next_month = (idx.to_period("M") + 1).to_timestamp(how="start")
+    midpoint = month_start + (next_month - month_start) / 2
+    return midpoint.to_numpy()
 
 
 def plot_realization_timeseries(
@@ -76,7 +119,7 @@ def plot_realization_timeseries(
 
     series_mean = _reduce_for_timeseries(series_mean, keep_dims=(x_dim,))
     series_mean = series_mean.transpose(x_dim)
-    x = series_mean[x_dim].values
+    x = _plot_x_values(series_mean, x_dim)
 
     if members is not None:
         members = _reduce_for_timeseries(members, keep_dims=(x_dim, ens_dim))

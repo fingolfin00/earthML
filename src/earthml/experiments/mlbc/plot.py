@@ -9,6 +9,7 @@ import xarray as xr
 from scipy.signal import welch
 
 from ...plots import plot_realization_timeseries, plot_temporal_mean_map, build_plot_config, get_var_units
+from ...plots.timeseries import _reduce_for_timeseries
 
 
 PlotSpec = dict[str, Any]
@@ -41,6 +42,28 @@ def _resolve_plot_var_name(ds: xr.Dataset, var: str) -> str:
 
 def _select_plot_var_flexible(ds: xr.Dataset, var: str) -> xr.Dataset:
     return ds[[_resolve_plot_var_name(ds, var)]]
+
+
+def _sanitize_plot_time_coords(ds: xr.Dataset, *, x_dim: str) -> xr.Dataset:
+    """
+    Remove auxiliary time-like coordinates that can visually conflict with the
+    canonical plotting axis.
+
+    Earthkit datasets may carry `source_time` and `valid_time` alongside the
+    canonical `time` dimension. Diagnostic plots should always use the
+    canonical axis only.
+    """
+    if x_dim != "time":
+        return ds
+
+    drop_coords = [
+        name
+        for name in ("source_time", "valid_time")
+        if name in ds.coords and name != x_dim
+    ]
+    if not drop_coords:
+        return ds
+    return ds.drop_vars(drop_coords)
 
 
 def _get_plot_members(ds: xr.Dataset) -> tuple[xr.Dataset | None, str | None]:
@@ -367,6 +390,15 @@ def plot_stage_timeseries(
         logger.debug("Skip %s plotting for %s: no common plot dimension.", stage_kind, data_type)
         return
 
+    plot_specs = [
+        {
+            **spec,
+            "ds": _sanitize_plot_time_coords(spec["ds"], x_dim=plot_dim),
+        }
+        for spec in plot_specs
+    ]
+    base_ds = plot_specs[0]["ds"]
+
     common_vars = [
         var for var in _data_vars_for_plotting(plot_specs[0]["ds"])
         if all(var in spec["ds"].data_vars or len(_data_vars_for_plotting(spec["ds"])) == 1 for spec in plot_specs[1:])
@@ -457,6 +489,9 @@ def plot_stage_residual_timeseries(
         logger.debug("Skip %s residual plotting for %s: no common time dimension.", stage_kind, data_type)
         return
 
+    left_ds = _sanitize_plot_time_coords(left_ds, x_dim=time_dim)
+    right_ds = _sanitize_plot_time_coords(right_ds, x_dim=time_dim)
+
     common_vars = [
         var for var in _data_vars_for_plotting(left_ds)
         if var in right_ds.data_vars or len(_data_vars_for_plotting(right_ds)) == 1
@@ -494,6 +529,101 @@ def plot_stage_residual_timeseries(
         except Exception as exc:
             logger.warning(
                 "Failed to generate %s residual plot for %s/%s/%s: %s",
+                stage_kind,
+                data_type,
+                stage,
+                var,
+                repr(exc),
+            )
+        finally:
+            plt.close(fig)
+
+
+def plot_stage_lag_diagnostic(
+    *,
+    logger,
+    plots_folder_path: Path,
+    left_ds: xr.Dataset,
+    right_ds: xr.Dataset,
+    data_type: str,
+    stage: str,
+    stage_kind: str,
+) -> None:
+    stage_plot_folder = _get_stage_plot_folder(plots_folder_path, data_type)
+    time_dim = left_ds.earthml.guessed_dims.time
+    if time_dim is None or time_dim not in left_ds.dims or time_dim not in right_ds.dims:
+        logger.debug("Skip %s lag diagnostic for %s: no common time dimension.", stage_kind, data_type)
+        return
+
+    left_ds = _sanitize_plot_time_coords(left_ds, x_dim=time_dim)
+    right_ds = _sanitize_plot_time_coords(right_ds, x_dim=time_dim)
+
+    common_vars = [
+        var for var in _data_vars_for_plotting(left_ds)
+        if var in right_ds.data_vars or len(_data_vars_for_plotting(right_ds)) == 1
+    ]
+    if not common_vars:
+        return
+
+    for var in common_vars:
+        fig, ax = plt.subplots(figsize=(10, 4))
+        try:
+            left_var = _select_plot_var_flexible(left_ds, var)
+            right_var = _select_plot_var_flexible(right_ds, var)
+
+            input_mean = _reduce_for_timeseries(left_var, keep_dims=(time_dim,))
+            input_mean = input_mean.transpose(time_dim)
+
+            target_mean = _reduce_for_timeseries(right_var, keep_dims=(time_dim,))
+            target_mean = target_mean.transpose(time_dim)
+
+            input_mean, target_mean = xr.align(input_mean, target_mean, join="inner")
+            x = input_mean[time_dim].values
+
+            def _score(a: xr.DataArray, b: xr.DataArray) -> tuple[float, float]:
+                av = np.asarray(a.values, dtype=np.float64)
+                bv = np.asarray(b.values, dtype=np.float64)
+                mask = np.isfinite(av) & np.isfinite(bv)
+                if not np.any(mask):
+                    return float("nan"), float("nan")
+                diff = av[mask] - bv[mask]
+                rmse = float(np.sqrt(np.mean(diff ** 2)))
+                corr = float(np.corrcoef(av[mask], bv[mask])[0, 1]) if mask.sum() > 1 else float("nan")
+                return rmse, corr
+
+            target_prev = target_mean.shift({time_dim: 1})
+            target_next = target_mean.shift({time_dim: -1})
+
+            rmse_0, corr_0 = _score(input_mean, target_mean)
+            rmse_prev, corr_prev = _score(input_mean, target_prev)
+            rmse_next, corr_next = _score(input_mean, target_next)
+
+            logger.info(
+                "Lag diagnostic %s/%s/%s: lag0 rmse=%.3f corr=%.3f | target(t-1) rmse=%.3f corr=%.3f | target(t+1) rmse=%.3f corr=%.3f",
+                data_type,
+                stage,
+                var,
+                rmse_0,
+                corr_0,
+                rmse_prev,
+                corr_prev,
+                rmse_next,
+                corr_next,
+            )
+
+            ax.plot(x, input_mean.values, color="tab:blue", linewidth=2.0, label="input(t)")
+            ax.plot(x, target_mean.values, color="tab:orange", linewidth=2.0, label="target(t)")
+            ax.plot(x, target_prev.values, color="tab:green", linewidth=1.5, linestyle="--", label="target(t-1)")
+            ax.plot(x, target_next.values, color="tab:red", linewidth=1.5, linestyle="--", label="target(t+1)")
+            ax.set_xlabel("Time")
+            ax.set_ylabel(_format_y_label(var, unit=_get_var_unit(left_ds, var)))
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+            fig.tight_layout()
+            fig.savefig(stage_plot_folder.joinpath(f"{stage}_{var}_lag_diagnostic_timeseries.png"), dpi=200)
+        except Exception as exc:
+            logger.warning(
+                "Failed to generate %s lag diagnostic for %s/%s/%s: %s",
                 stage_kind,
                 data_type,
                 stage,
@@ -745,6 +875,11 @@ def run_stage_plot_bundle(
         right_ds=right_ds,
         residual_label=residual_label,
         residual_mean_label=residual_mean_label,
+        **shared_kwargs,
+    )
+    plot_stage_lag_diagnostic(
+        left_ds=left_ds,
+        right_ds=right_ds,
         **shared_kwargs,
     )
     plot_stage_residual_timeseries(
