@@ -29,12 +29,14 @@ METRIC_NAMES = None
 MODELS_DIFF = ("fc", "pr")
 
 FORECAST_METRIC = "r2"
+FORECAST_METRIC_TYPE = "ensemble"
 DIFF_METRIC = "nrmse"
+DIFF_METRIC_TYPE = "ensemble"
 LEADTIME_METRICS = {
-    "r2": "deterministic",
-    "rmse": "deterministic",
-    "mae": "deterministic",
-    "bias": "deterministic",
+    "r2": "deterministic_with_ensemble_overlay",
+    "rmse": "deterministic_with_ensemble_overlay",
+    "mae": "deterministic_with_ensemble_overlay",
+    "bias": "deterministic_with_ensemble_overlay",
     "crps": "probabilistic",
 }
 LEADTIME_UNIT_LABEL = " months"
@@ -115,7 +117,8 @@ def save_leadtime_vs_global_metrics_plot(
 
 def save_metrics_vs_leadtime_plots(
     *,
-    metric_dfs: dict[str, pd.DataFrame],
+    metrics: dict,
+    variables: list[str],
     plot_folder: Path,
     leadtime_unit: str,
     filters: dict | None,
@@ -127,30 +130,27 @@ def save_metrics_vs_leadtime_plots(
     saved_paths: list[Path] = []
     model_colors = {"fc": "tab:green", "pr": "tab:blue", "an": "tab:gray"}
 
-    for metric_name, metric_df_in in metric_dfs.items():
-        metric_df = metric_df_in.copy()
-        if filters:
-            for col, allowed in filters.items():
-                metric_df = metric_df[metric_df[col].isin(allowed)]
+    def _filter_da(da):
+        if not filters:
+            return da
+        for col, allowed in filters.items():
+            if col not in da.dims and col not in da.coords:
+                continue
+            values = allowed if isinstance(allowed, (list, tuple, set)) else [allowed]
+            da = da.sel({col: list(values)})
+        return da
 
-        required_cols = {"metric", "variable", "model", "leadtime", shade_by, "value"}
-        missing = required_cols.difference(metric_df.columns)
-        if missing:
-            raise ValueError(
-                f"metrics-vs-leadtime plot for {metric_name!r} requires columns {sorted(missing)}"
-            )
+    def _reduce_da(da, keep_dims: set[str]):
+        reduce_dims = [dim for dim in da.dims if dim not in keep_dims]
+        if reduce_dims:
+            da = da.mean(dim=reduce_dims, skipna=True)
+        return da
 
-        if metric_df.empty:
-            raise ValueError(f"No rows found for metric={metric_name!r} in no-diff dataframe")
+    ds_scalar_det = metrics["deterministic"]["scalar"]
+    ds_scalar_ens = metrics["ensemble"]["scalar"]
+    ds_scalar_prob = metrics["probabilistic"]["scalar"]
 
-        grouped = (
-            metric_df
-            .groupby(["variable", "model", shade_by, "leadtime"], as_index=False)["value"]
-            .mean()
-        )
-
-        variables = sorted(grouped["variable"].dropna().astype(str).unique())
-        shade_values = sorted(grouped[shade_by].dropna().tolist())
+    for metric_name, metric_type in LEADTIME_METRICS.items():
         nrows = len(variables)
 
         fig, axs = plt.subplots(
@@ -163,29 +163,126 @@ def save_metrics_vs_leadtime_plots(
 
         for i, variable in enumerate(variables):
             ax = axs[i]
-            var_df = grouped[grouped["variable"] == variable].copy()
+        if metric_type == "probabilistic":
+            ds_metric = ds_scalar_prob
+        else:
+            ds_metric = ds_scalar_ens
 
-            for model_name in sorted(var_df["model"].dropna().astype(str).unique()):
-                model_df = var_df[var_df["model"] == model_name]
+            da_template = ds_metric[variable].sel(metric=metric_name)
+            da_template = _filter_da(da_template)
+            if da_template.size == 0:
+                raise ValueError(f"No data available for {metric_name!r} and variable {variable!r}")
+
+            if shade_by in da_template.dims or shade_by in da_template.coords:
+                shade_values = da_template[shade_by].values.tolist()
+            else:
+                shade_values = [None]
+
+            model_values = da_template["model"].values.tolist() if "model" in da_template.dims else []
+
+            for model_name in model_values:
                 base_color = model_colors.get(model_name, None)
 
                 for j, shade_value in enumerate(shade_values):
-                    line_df = model_df[model_df[shade_by] == shade_value].sort_values("leadtime")
-                    if line_df.empty:
-                        continue
-
                     alpha = 0.35 + 0.55 * (j + 1) / max(1, len(shade_values))
-                    label = f"{model_name}, {shade_label}={shade_value}"
+                    shade_suffix = f", {shade_label}={shade_value}" if shade_value is not None else ""
 
-                    ax.plot(
-                        line_df["leadtime"],
-                        line_df["value"],
-                        marker="o",
-                        linewidth=2.0,
-                        alpha=alpha,
-                        color=base_color,
-                        label=label,
-                    )
+                    if metric_type == "probabilistic":
+                        da_prob = ds_scalar_prob[variable].sel(model=model_name, metric=metric_name)
+                        da_prob = _filter_da(da_prob)
+                        if shade_value is not None and shade_by in da_prob.dims:
+                            da_prob = da_prob.sel({shade_by: shade_value})
+                        da_prob = _reduce_da(da_prob, {"leadtime"})
+                        if da_prob.size == 0:
+                            continue
+
+                        ax.plot(
+                            da_prob["leadtime"],
+                            da_prob,
+                            marker="o",
+                            linewidth=2.0,
+                            alpha=alpha,
+                            color=base_color,
+                            label=f"{model_name}{shade_suffix}",
+                        )
+                    elif metric_type == "deterministic_with_ensemble_overlay":
+                        da_ens = ds_scalar_ens[variable].sel(model=model_name, metric=metric_name)
+                        da_det = ds_scalar_det[variable].sel(model=model_name, metric=metric_name)
+                        da_ens = _filter_da(da_ens)
+                        da_det = _filter_da(da_det)
+                        if shade_value is not None:
+                            if shade_by in da_ens.dims:
+                                da_ens = da_ens.sel({shade_by: shade_value})
+                            if shade_by in da_det.dims:
+                                da_det = da_det.sel({shade_by: shade_value})
+
+                        da_ens = _reduce_da(da_ens, {"leadtime"})
+                        da_det = _reduce_da(da_det, {"leadtime", "realization"})
+                        if da_ens.size == 0 or da_det.size == 0:
+                            continue
+
+                        x = da_det["leadtime"].values
+                        y_members = da_det.values
+                        if y_members.ndim != 2:
+                            continue
+
+                        y_mean = da_det.mean(dim="realization", skipna=True).values
+                        y_min = da_det.min(dim="realization", skipna=True).values
+                        y_max = da_det.max(dim="realization", skipna=True).values
+                        y_ens = da_ens.values
+
+                        if not (
+                            pd.notna(y_mean).any()
+                            or pd.notna(y_ens).any()
+                            or pd.notna(y_members).any()
+                        ):
+                            continue
+
+                        for member_idx in range(y_members.shape[1]):
+                            ax.plot(
+                                x,
+                                y_members[:, member_idx],
+                                color=base_color,
+                                alpha=0.06 * alpha,
+                                linewidth=0.8,
+                                linestyle="--",
+                                marker="o",
+                                markersize=2.5,
+                            )
+
+                        ax.fill_between(
+                            x,
+                            y_min,
+                            y_max,
+                            color=base_color,
+                            alpha=0.12 * alpha,
+                        )
+                        ax.plot(
+                            x,
+                            y_mean,
+                            color=base_color,
+                            linewidth=2.0,
+                            alpha=alpha,
+                            marker="o",
+                            markersize=5,
+                            label=f"{model_name} {metric_name}{shade_suffix}",
+                        )
+                        ax.plot(
+                            x,
+                            y_ens,
+                            color=base_color,
+                            linewidth=2.0,
+                            alpha=alpha,
+                            linestyle=":",
+                            marker="o",
+                            markersize=5,
+                            label=f"{model_name} {metric_name} ensemble{shade_suffix}",
+                        )
+                    else:
+                        raise ValueError(
+                            f"Unsupported leadtime metric plot mode {metric_type!r} "
+                            f"for metric {metric_name!r}"
+                        )
 
             ax.set_title(f"{metric_name} vs lead time ({variable})")
             ax.set_xlabel(f"Lead time ({leadtime_unit.strip()})")
@@ -230,14 +327,14 @@ def main() -> None:
         metrics=metrics,
         variables=vars_from_fc,
         metric_name=FORECAST_METRIC,
-        metric_type="deterministic",
+        metric_type=FORECAST_METRIC_TYPE,
         diff="no",
     )
     df_delta = build_scalar_metric_df(
         metrics=metrics,
         variables=vars_from_fc,
         metric_name=DIFF_METRIC,
-        metric_type="deterministic",
+        metric_type=DIFF_METRIC_TYPE,
         diff="delta",
         models=MODELS_DIFF,
     )
@@ -255,19 +352,9 @@ def main() -> None:
     )
     print("Saved leadtime-vs-global-metrics plot to:", plot_path)
 
-    leadtime_metric_dfs = {
-        metric_name: build_scalar_metric_df(
-            metrics=metrics,
-            variables=vars_from_fc,
-            metric_name=metric_name,
-            metric_type=metric_type,
-            diff="no",
-        )
-        for metric_name, metric_type in LEADTIME_METRICS.items()
-    }
-
     leadtime_plot_paths = save_metrics_vs_leadtime_plots(
-        metric_dfs=leadtime_metric_dfs,
+        metrics=metrics,
+        variables=vars_from_fc,
         plot_folder=PLOT_FOLDER,
         leadtime_unit=LEADTIME_UNIT_LABEL,
         filters=PLOT_FILTERS,
