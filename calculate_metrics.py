@@ -201,6 +201,34 @@ METRIC_DISPLAY_NAMES = {
     "spread_error_ratio": "Spread/Error",
 }
 
+VARIABLE_DISPLAY_NAMES = {
+    "t2m": "2m temp",
+    "d2m": "2m dewpoint",
+    "msl": "MSL pressure",
+    "mslp": "MSL pressure",
+    "u10": "10m u-wind",
+    "v10": "10m v-wind",
+    "tp": "Precipitation",
+    "tcc": "Cloud cover",
+    "sst": "SST",
+}
+
+AXIS_DISPLAY_NAMES = {
+    "variable": "",
+    "leadtime": "Lead time",
+    "loss": "Loss",
+    "train_period": "Train period",
+    "model": "Model",
+    "metric": "Metric",
+}
+
+MODEL_DISPLAY_NAMES = {
+    "fc": "FC",
+    "pr": "PR",
+    "an": "AN",
+    "pr-fc": "PR - FC",
+}
+
 
 def build_scalar_metric_df(
     *,
@@ -352,6 +380,16 @@ def _mix_colors(color_a: str, color_b: str, weight: float) -> str:
 
 def format_metric_display_name(metric: str) -> str:
     return METRIC_DISPLAY_NAMES.get(metric, metric.replace("_", " "))
+
+
+def format_variable_display_name(variable: str) -> str:
+    return VARIABLE_DISPLAY_NAMES.get(variable, str(variable))
+
+
+def format_axis_display_name(axis_name: str, *, leadtime_unit: str | None = None) -> str:
+    if axis_name == "leadtime" and leadtime_unit:
+        return f"Lead time [{leadtime_unit}]"
+    return AXIS_DISPLAY_NAMES.get(axis_name, axis_name.replace("_", " ").title())
 
 
 def _metric_name_from_index(df: pd.DataFrame, row_pos: int) -> str | None:
@@ -1072,6 +1110,12 @@ def save_scoreboard_plot(
         agg="mean",
         metric_cmaps=SCOREBOARD_METRIC_CMAPS,
         metric_vlims=SCOREBOARD_METRIC_VLIMS,
+        metric_names=METRIC_DISPLAY_NAMES,
+        display_name_maps={
+            "variable": format_variable_display_name,
+            "model": MODEL_DISPLAY_NAMES,
+            "metric": METRIC_DISPLAY_NAMES,
+        },
         annotate=SCOREBOARD_ANNOTATE,
         annotate_fmt="{:.2f}",
         annotate_color="auto",
