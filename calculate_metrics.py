@@ -101,6 +101,20 @@ SCALAR_TABLE_DECIMALS = 3
 NORMALIZED_METRICS = {"nrmse", "ncrmse", "nmae", "nbias", "r2"}
 
 
+METRIC_DISPLAY_NAMES = {
+    "r2": "R2",
+    "rmse": "RMSE",
+    "crmse": "CRMSE",
+    "mae": "MAE",
+    "bias": "Bias",
+    "nrmse": "nRMSE",
+    "ncrmse": "nCRMSE",
+    "nmae": "nMAE",
+    "nbias": "nBias",
+    "crps": "CRPS",
+}
+
+
 def build_scalar_metric_df(
     *,
     metrics,
@@ -236,6 +250,10 @@ def _mix_colors(color_a: str, color_b: str, weight: float) -> str:
     rgb_b = np.array(mcolors.to_rgb(color_b))
     mixed = (1 - weight) * rgb_a + weight * rgb_b
     return mcolors.to_hex(mixed)
+
+
+def format_metric_display_name(metric: str) -> str:
+    return METRIC_DISPLAY_NAMES.get(metric, metric.replace("_", " "))
 
 
 def _metric_name_from_index(df: pd.DataFrame, row_pos: int) -> str | None:
@@ -818,6 +836,36 @@ def infer_leadtime_unit_from_configs(exp_root: Path) -> str:
     return next(iter(units))
 
 
+def infer_region_from_configs(exp_root: Path) -> str:
+    regions: set[str] = set()
+
+    for cfg_path in exp_root.rglob("experiment.cfg"):
+        experiment = joblib.load(cfg_path)
+        config = experiment["config"]
+
+        train_datasets = config.train_dataset
+        train_datasets = train_datasets if isinstance(train_datasets, (list, tuple)) else [train_datasets]
+
+        train_input = next((td for td in train_datasets if td.role == "input"), None)
+        if train_input is None:
+            continue
+
+        datasources = train_input.datasource
+        datasources = datasources if isinstance(datasources, (list, tuple)) else [datasources]
+        if not datasources:
+            continue
+
+        region = getattr(datasources[0].data_selection.region, "name", None)
+        if region:
+            regions.add(str(region))
+
+    if not regions:
+        return ""
+    if len(regions) > 1:
+        raise ValueError(f"Multiple regions found in {exp_root}: {sorted(regions)}")
+    return next(iter(regions))
+
+
 def save_scoreboard_plot(
     *,
     metrics: dict,
@@ -887,6 +935,7 @@ def save_metric_vs_diff_plot(
     forecast_metric: str,
     diff_metric: str,
     leadtime_unit: str,
+    region: str,
     filters: dict | None,
     shade_by: str,
     shade_label: str,
@@ -898,6 +947,9 @@ def save_metric_vs_diff_plot(
             *df_delta.get("variable", pd.Series(dtype=object)).dropna().astype(str).tolist(),
         ]
     )
+    forecast_metric_label = format_metric_display_name(forecast_metric)
+    diff_metric_label = format_metric_display_name(diff_metric)
+    region_suffix = f" - {region}" if region else ""
 
     fig, ax, merged = plot_metric_vs_diff(
         df_nodiff,
@@ -908,15 +960,15 @@ def save_metric_vs_diff_plot(
         y_metric_name=forecast_metric,
         shade_by=shade_by,
         shade_label=shade_label,
-        fit_lines=True,
+        fit_lines=False,
         fit_ci=False,
         leadtime_unit=leadtime_unit,
         cmap_name=DIFF_PLOT_CMAP,
         variable_colors=get_variable_colors(variables=plot_variables),
         filters=filters,
-        title=f"{forecast_metric} vs delta {diff_metric}",
-        xlabel=f"Delta {diff_metric}",
-        ylabel=forecast_metric,
+        title=f"Forecast {forecast_metric_label} vs Δ {diff_metric_label} (ML-corrected - forecast){region_suffix}",
+        xlabel=f"Δ {diff_metric_label} (ML-corrected - forecast)",
+        ylabel=f"Forecast {forecast_metric_label}",
         legend_loc="lower left",
     )
 
@@ -1133,7 +1185,9 @@ def main() -> None:
     vars_from_fc = [v for v in runs["fc"].data_vars if v != "_has_var"]
     print(f"Processed vars: {vars_from_fc}")
     leadtime_unit = infer_leadtime_unit_from_configs(EXP_ROOT_FOLDER)
+    region = infer_region_from_configs(EXP_ROOT_FOLDER)
     print(f"Inferred leadtime unit: {leadtime_unit or 'unknown'}")
+    print(f"Inferred region: {region or 'unknown'}")
     print_available_scalar_metrics(metrics=metrics)
 
     df_nodiff = build_scalar_metric_df(
@@ -1159,6 +1213,7 @@ def main() -> None:
         forecast_metric=FORECAST_METRIC,
         diff_metric=DIFF_METRIC,
         leadtime_unit=f" {leadtime_unit}" if leadtime_unit else "",
+        region=region,
         filters=PLOT_FILTERS,
         shade_by=SHADE_BY,
         shade_label=SHADE_LABEL,
