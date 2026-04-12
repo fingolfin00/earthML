@@ -34,6 +34,7 @@ def plot_realization_timeseries(
     ens_dim: str = "realization",
     ax: Axes | None = None,
     x_label: str = "Time",
+    y_label: str | None = None,
     label: str = "",
     mean_label: str | None = None,
     color: str | None = None,
@@ -133,6 +134,8 @@ def plot_realization_timeseries(
         )
 
     ax.set_xlabel(x_label)
+    if y_label is not None:
+        ax.set_ylabel(y_label)
     ax.grid(True, alpha=0.3)
 
     return ax
