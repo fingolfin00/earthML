@@ -16,6 +16,9 @@ from .. import resolve_loss
 
 logger = get_logger(__name__)
 
+
+DEFAULT_DEBUG_NUMERICS = False
+
 # DEBUG
 # import traceback
 # _old_view = torch.Tensor.view
@@ -238,6 +241,7 @@ class SmaAt_UNet(EarthMLLightningModule):
         
         self.n_channels = n_channels # input channels
         self.n_classes = n_classes   # output channels
+        self.debug_numerics = DEFAULT_DEBUG_NUMERICS
         out_channels = (2 * self.n_classes) if needs_var else self.n_classes
         kernels_per_layer = kernels_per_layer
         self.bilinear = bilinear
@@ -262,19 +266,13 @@ class SmaAt_UNet(EarthMLLightningModule):
         self.outc = OutConv(64, out_channels)
 
     def forward(self, x):
-        # Inside your smaatunet.py, e.g., in the forward method of DoubleConv or Unet
-        if torch.isnan(x).any() or torch.isinf(x).any():
-            # print("Input tensor contains NaN or Inf values!")
-            # Add more debugging info:
-            # print(f"Input shape: {x.shape}, dtype: {x.dtype}, device: {x.device}")
-            # Potentially break here to inspect further
-            exit()
-        
-        # You can also check model parameters
-        for name, param in self.named_parameters():
-            if torch.isnan(param).any() or torch.isinf(param).any():
-                # print(f"Model parameter {name} contains NaN or Inf values!")
-                exit()
+        if self.debug_numerics:
+            if torch.isnan(x).any() or torch.isinf(x).any():
+                raise ValueError(f"Input tensor contains NaN/Inf values: shape={tuple(x.shape)}")
+
+            for name, param in self.named_parameters():
+                if torch.isnan(param).any() or torch.isinf(param).any():
+                    raise ValueError(f"Model parameter '{name}' contains NaN/Inf values")
         x1 = self.inc(x)
         x1Att = self.cbam1(x1)
         x2 = self.down1(x1)

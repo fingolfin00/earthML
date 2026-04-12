@@ -450,14 +450,16 @@ class EpochRandomSplitDataModule(L.LightningDataModule):
             batch_size=self.batch_size,
             sampler=train_sampler,
             num_workers=self.num_workers,
-            pin_memory=True,
+            pin_memory=torch.cuda.is_available(),
+            persistent_workers=self.num_workers > 0,
         )
         self._val_dl = DataLoader(
             self.dataset,
             batch_size=self.batch_size,
             sampler=valid_sampler,
             num_workers=self.num_workers,
-            pin_memory=True,
+            pin_memory=torch.cuda.is_available(),
+            persistent_workers=self.num_workers > 0,
         )
 
     def train_dataloader(self):

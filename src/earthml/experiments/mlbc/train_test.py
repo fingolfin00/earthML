@@ -1,6 +1,7 @@
 from typing import Sequence, Literal
 from dataclasses import asdict
 
+import os
 import time, multiprocessing, joblib
 from copy import deepcopy
 from pathlib import Path
@@ -48,14 +49,17 @@ class MLBCExperiment:
         self._path_setup()
 
         # General torch and Lightning setup
+        self.accelerator = "gpu" if torch.cuda.is_available() else "cpu"
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        num_cpus, num_gpus = multiprocessing.cpu_count(), torch.cuda.device_count() if torch.cuda.is_available() else 1 # torch.backends.mps.is_available()
-        self.torch_workers = max(1, num_cpus // num_gpus // 2) if not torch.backends.mps.is_available() else 1 # could be moved in datamodule definition, but in test() still using dataloader
+        num_cpus = multiprocessing.cpu_count()
+        num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
+        self.torch_workers = 0
         self.logger.info(
-            "Torch workers in use: %s (%s CPUs // %s GPU (CUDA or others) devices // 2)",
+            "Torch workers in use: %s (CPUs=%s, CUDA devices=%s, accelerator=%s)",
             self.torch_workers,
             num_cpus,
             num_gpus,
+            self.accelerator,
         )
         L.seed_everything(self.config.net.seed)
         # Tensorboard
@@ -195,14 +199,14 @@ class MLBCExperiment:
 
 
     def _configure_torch_env(self):
-        import os
         os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
     def _configure_torch_runtime(self):
         torch.set_float32_matmul_precision('medium')  # or 'high'
-        # Ensure deterministic behavior
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False 
+        if torch.cuda.is_available():
+            deterministic = False
+            torch.backends.cudnn.deterministic = deterministic
+            torch.backends.cudnn.benchmark = not deterministic
 
     def _path_setup(self):
         self.work_path = Path(self.config.work_path)
@@ -790,6 +794,8 @@ class MLBCExperiment:
         # Initialize Lightning trainer
         return L.Trainer(
             max_epochs=self.config.net.epochs,
+            accelerator=self.accelerator,
+            devices=1,
             precision="16-mixed",
             # gradient_clip_val=1.0,           # Recommended starting value (e.g., 0.5, 1.0, 5.0)
             # gradient_clip_algorithm="norm",  # "norm" for clipping by norm, "value" for clipping by value
@@ -804,6 +810,8 @@ class MLBCExperiment:
         self._configure_torch_runtime()
         return L.Trainer(
             max_epochs=self.config.net.epochs,
+            accelerator=self.accelerator,
+            devices=1,
             precision="16-mixed",
             # gradient_clip_val=1.0,           # Recommended starting value (e.g., 0.5, 1.0, 5.0)
             # gradient_clip_algorithm="norm",  # "norm" for clipping by norm, "value" for clipping by value
