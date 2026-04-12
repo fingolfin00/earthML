@@ -13,6 +13,7 @@ from ...plots import plot_realization_timeseries, plot_temporal_mean_map, build_
 
 PlotSpec = dict[str, Any]
 DEFAULT_PLOT_CONFIG = build_plot_config()
+BOOKKEEPING_VARS = {"_has_var"}
 
 
 def _get_stage_plot_folder(root: Path, data_type: str) -> Path:
@@ -25,11 +26,16 @@ def _select_plot_var(ds: xr.Dataset, var: str) -> xr.Dataset:
     return ds[[var]] if len(ds.data_vars) > 1 else ds
 
 
+def _data_vars_for_plotting(ds: xr.Dataset) -> list[str]:
+    return [var for var in ds.data_vars if var not in BOOKKEEPING_VARS]
+
+
 def _resolve_plot_var_name(ds: xr.Dataset, var: str) -> str:
     if var in ds.data_vars:
         return var
-    if len(ds.data_vars) == 1:
-        return next(iter(ds.data_vars))
+    plot_vars = _data_vars_for_plotting(ds)
+    if len(plot_vars) == 1:
+        return plot_vars[0]
     raise KeyError(f"Variable '{var}' not found in dataset with variables {list(ds.data_vars)}.")
 
 
@@ -361,10 +367,9 @@ def plot_stage_timeseries(
         logger.debug("Skip %s plotting for %s: no common plot dimension.", stage_kind, data_type)
         return
 
-    common_vars = set(plot_specs[0]["ds"].data_vars)
     common_vars = [
-        var for var in plot_specs[0]["ds"].data_vars
-        if all(var in spec["ds"].data_vars or len(spec["ds"].data_vars) == 1 for spec in plot_specs[1:])
+        var for var in _data_vars_for_plotting(plot_specs[0]["ds"])
+        if all(var in spec["ds"].data_vars or len(_data_vars_for_plotting(spec["ds"])) == 1 for spec in plot_specs[1:])
     ]
     if not common_vars:
         logger.debug("Skip %s plotting for %s: no common variables.", stage_kind, data_type)
@@ -453,8 +458,8 @@ def plot_stage_residual_timeseries(
         return
 
     common_vars = [
-        var for var in left_ds.data_vars
-        if var in right_ds.data_vars or len(right_ds.data_vars) == 1
+        var for var in _data_vars_for_plotting(left_ds)
+        if var in right_ds.data_vars or len(_data_vars_for_plotting(right_ds)) == 1
     ]
     if not common_vars:
         logger.debug("Skip %s residual plotting for %s: no common variables.", stage_kind, data_type)
@@ -655,8 +660,8 @@ def plot_stage_temporal_mean_maps(
     )
 
     common_vars = [
-        var for var in plot_specs[0]["ds"].data_vars
-        if all(var in spec["ds"].data_vars or len(spec["ds"].data_vars) == 1 for spec in plot_specs[1:])
+        var for var in _data_vars_for_plotting(plot_specs[0]["ds"])
+        if all(var in spec["ds"].data_vars or len(_data_vars_for_plotting(spec["ds"])) == 1 for spec in plot_specs[1:])
     ]
     if not common_vars:
         logger.debug("Skip %s temporal mean maps for %s: no common variables.", stage_kind, data_type)
