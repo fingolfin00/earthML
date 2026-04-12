@@ -155,6 +155,24 @@ def get_console() -> Console:
     return _SHARED_CONSOLE
 
 
+def _iter_effective_handlers(logger: logging.Logger) -> Iterator[logging.Handler]:
+    seen: set[int] = set()
+    current: Optional[logging.Logger] = logger
+
+    while current is not None:
+        for handler in current.handlers:
+            handler_id = id(handler)
+            if handler_id in seen:
+                continue
+            seen.add(handler_id)
+            yield handler
+
+        if not current.propagate:
+            break
+
+        current = current.parent
+
+
 def _render_to_text(renderable: Any) -> str:
     with _TEXT_CONSOLE.capture() as capture:
         _TEXT_CONSOLE.print(renderable)
@@ -173,7 +191,7 @@ def log_renderable(
 
     rich_handlers = []
     other_handlers = []
-    for handler in logger.handlers:
+    for handler in _iter_effective_handlers(logger):
         if handler.level > log_level:
             continue
         if isinstance(handler, RichHandler):
