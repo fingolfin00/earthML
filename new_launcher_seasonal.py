@@ -27,7 +27,7 @@ if __name__ == "__main__":
         variables               = ["sst", "ssh", "sss", "t14d"]             # ocean seasonal, e.g. ["sst", "ssh", "sss", "t14d", "t17d"]
         regions                 = ["pacific"]                               # e.g. ["pacific", "natlantic", "satlantic", "indian"]
     if experiment_name == "cds-cmcc_era5":
-        variables               = ["t2m", "tp", "u10", "v10"]               # atmo seasonal e.g. ["t2m", "tp", "u10", "v10"]
+        variables               = ["t2m", "msl", "u10", "v10", "d2m"]               # atmo seasonal e.g. ["t2m", "tp", "u10", "v10"] (tp wrong)
         regions                 = ["conus"]                                 # e.g. ["conus", "europe"]
     leadtimes                   = (1, 2, 3, 4, 5, 6)
 
@@ -35,7 +35,7 @@ if __name__ == "__main__":
     anomaly                     = False                      # if True, predict anomaly (i.e. remove climatology from target variable), otherwise predict absolute values
     per_epoch_resplit           = False                     # if True, split test and validation randomly per epoch with a different seed, if False only one initial split for all epochs (fixed seed)
 
-    start_train_date            = datetime(1993, 6, 1)
+    start_train_date            = datetime(1993, 7, 1)
     end_train_date              = datetime(2020, 12, 1)
     start_test_date             = datetime(2021, 1, 1)
     end_test_date               = datetime(2022, 12, 1)
