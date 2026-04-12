@@ -475,9 +475,15 @@ class EarthkitSource(BaseSource):
         else:
             request_args = dict(variable=var_longname_list, area=area)
 
-        years = xr.date_range(start=start, end=end, freq="YS") # from the first year after the start
+        years = xr.date_range(
+            start=datetime(start.year, 1, 1),
+            end=datetime(end.year, 1, 1),
+            freq="YS",
+        )
         if len(years) == 0:
-            raise ValueError("Years calculated from date range is empty")
+            raise ValueError(
+                f"Years calculated from date range is empty for start={start} end={end}"
+            )
 
         logger.info(
             "Requesting %s (%s, %s) in region %s from %s:%s (ekd_ver=%s)",
@@ -516,29 +522,35 @@ class EarthkitSource(BaseSource):
             datasets = []
             xarray_concat_dim = None
             for y1, y2 in zip(years[:-1], years[1:]):
-                # print(f"y1={y1}, y2={y2}")
+                chunk_start = max(pd.Timestamp(y1), pd.Timestamp(start))
                 request_time_args_list = []
                 if self.config.request_type in ("daily", "hourly"):
+                    chunk_end = min(pd.Timestamp(y2) - timedelta(days=1), pd.Timestamp(end))
+                    if chunk_start > chunk_end:
+                        continue
                     y2 = y2 - timedelta(days=1) # inclusive end
                     if self.config.provider == "ecmwf-open-data":
                         time_freq = generate_hours(self.data_selection.period.freq, 'int')
                     else:
                         time_freq = generate_hours(self.data_selection.period.freq)
                     request_time_args = dict(
-                        date=f"{y1:%Y-%m-%d}/{y2:%Y-%m-%d}",
+                        date=f"{chunk_start:%Y-%m-%d}/{chunk_end:%Y-%m-%d}",
                         time=time_freq,
                     )
                     request_time_args_list.append(request_time_args)
 
                 elif self.config.request_type == "monthly":
-                    y22 = y2 - relativedelta(months=1) # inclusive end
-                    y22 = y22 - relativedelta(years=1) if y22.strftime("%Y") != y1.strftime("%Y") else y22
-                    # print(f"y22={y22}")
-                    split_req_months = [m.strftime("%m") for m in xr.date_range(start=y1, end=y22, freq="MS")]
-                    # print(f"split_req_months: {split_req_months}")
+                    chunk_end = min(pd.Timestamp(y2) - relativedelta(months=1), pd.Timestamp(end))
+                    if chunk_start > chunk_end:
+                        continue
+                    split_req_dates = xr.date_range(start=chunk_start, end=chunk_end, freq="MS")
+                    if len(split_req_dates) == 0:
+                        continue
+                    split_req_months = [m.strftime("%m") for m in split_req_dates]
+                    split_req_years = sorted({m.strftime("%Y") for m in split_req_dates})
                     for m in months_splitted:
                         # print(f"   m:{m}")
-                        request_time_args = dict(year=xr.date_range(start=datetime(y1.year, 1, 1), end=datetime(y22.year, 1, 1), freq="YS").strftime("%Y").tolist())
+                        request_time_args = dict(year=split_req_years)
                         if "month" not in self.config.request_extra_args:
                             if isinstance(m, list):
                                 month_req = [x for x in m if x in set(split_req_months)]
@@ -555,7 +567,12 @@ class EarthkitSource(BaseSource):
 
                 # print(f"   request_time_args_list: {request_time_args_list}")
                 if request_time_args_list:
-                    xarray_concat_dim, ds_chunks = self._fetch_chunks(request_time_args_list, y1, y2, request_args | self.config.request_extra_args)
+                    xarray_concat_dim, ds_chunks = self._fetch_chunks(
+                        request_time_args_list,
+                        chunk_start,
+                        chunk_end,
+                        request_args | self.config.request_extra_args,
+                    )
                     datasets.extend(ds_chunks)
 
             # Guard for empy datasets and no concat dim
@@ -665,12 +682,39 @@ class EarthkitSource(BaseSource):
         #     )
 
         # Canonical convention for earthkit sources:
-        # - `time` is always the model-aligned target/valid date used downstream.
-        # - raw provider timestamps are preserved separately as `source_time`.
+        # - `source_time` preserves the provider-native request/init timeline
+        # - `time` is the actual forecast valid time used downstream
         source_time = pd.DatetimeIndex(pd.to_datetime(ds_all[xarray_concat_dim].values))
-        canonical_time = pd.DatetimeIndex(
+        expected_canonical_time = pd.DatetimeIndex(
             [d for d in self.date_range if d not in self.elements.missed]
         )
+
+        def _extract_time_like_coord(name: str) -> pd.DatetimeIndex | None:
+            if name not in ds_all.coords:
+                return None
+
+            coord = ds_all[name]
+            if xarray_concat_dim not in coord.dims:
+                return None
+
+            squeeze_dims = {
+                dim: 0
+                for dim in coord.dims
+                if dim != xarray_concat_dim and ds_all.sizes.get(dim, 0) == 1
+            }
+            if squeeze_dims:
+                coord = coord.isel(squeeze_dims, drop=True)
+
+            if coord.dims != (xarray_concat_dim,):
+                return None
+
+            values = pd.to_datetime(coord.values)
+            if self.config.request_type == "monthly":
+                values = values.to_period("M").to_timestamp(how="start")
+            return pd.DatetimeIndex(values)
+
+        valid_time = _extract_time_like_coord("valid_time")
+        canonical_time = valid_time if valid_time is not None else expected_canonical_time
 
         if len(source_time) != len(canonical_time):
             raise ValueError(
@@ -694,6 +738,20 @@ class EarthkitSource(BaseSource):
                 f"Duplicate values (up to 10): {duplicates[:10]}"
             )
 
+        if len(canonical_time) != len(expected_canonical_time):
+            raise ValueError(
+                "Actual valid_time count does not match expected canonical date_range.\n"
+                f"valid_time count: {len(canonical_time)}\n"
+                f"Expected count: {len(expected_canonical_time)}"
+            )
+
+        if valid_time is not None and not canonical_time.equals(expected_canonical_time):
+            raise ValueError(
+                "Fetched forecast valid_time does not match expected target dates.\n"
+                f"valid_time head/tail: {canonical_time[:3].tolist()} ... {canonical_time[-3:].tolist()}\n"
+                f"expected head/tail: {expected_canonical_time[:3].tolist()} ... {expected_canonical_time[-3:].tolist()}"
+            )
+
         ds_all = ds_all.assign_coords(source_time=(xarray_concat_dim, source_time.values))
         ds_all["source_time"].attrs.update({
             "long_name": "raw provider time coordinate before canonical remapping",
@@ -705,6 +763,11 @@ class EarthkitSource(BaseSource):
 
         # Assign canonical target/valid dates used everywhere else in the pipeline.
         ds_all = ds_all.assign_coords({xarray_concat_dim: canonical_time.values})
+        ds_all[xarray_concat_dim].attrs.update({
+            "standard_name": "time",
+            "long_name": "time",
+            "axis": "T",
+        })
 
         logger.info(
             "Time convention mapping: source_time head/tail=%s ... %s | canonical_time head/tail=%s ... %s",
