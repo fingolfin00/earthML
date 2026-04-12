@@ -426,10 +426,43 @@ def _rich_gain_cell(
     return Text(text, style=style)
 
 
+def _format_table_context_value(*, field: str, value: object, leadtime_unit: str | None = None) -> str:
+    if field == "leadtime" and leadtime_unit:
+        return f"{value} {leadtime_unit}"
+    return str(value)
+
+
+def _table_context_subtitle(
+    df: pd.DataFrame,
+    *,
+    fields: tuple[str, ...] = ("train_period", "loss", "leadtime"),
+    leadtime_unit: str | None = None,
+) -> str:
+    parts: list[str] = []
+    for field in fields:
+        if field not in df.columns:
+            continue
+        values = [value for value in df[field].dropna().unique().tolist() if str(value) != ""]
+        if not values:
+            continue
+        if len(values) == 1:
+            parts.append(
+                f"{field}: {_format_table_context_value(field=field, value=values[0], leadtime_unit=leadtime_unit)}"
+            )
+        else:
+            joined = ", ".join(
+                _format_table_context_value(field=field, value=value, leadtime_unit=leadtime_unit)
+                for value in values
+            )
+            parts.append(f"{field}: {joined}")
+    return " | ".join(parts)
+
+
 def _print_rich_dataframe_table(
     df: pd.DataFrame,
     *,
     title: str,
+    subtitle: str | None = None,
     significant_digits: int,
     raw_df: pd.DataFrame | None = None,
     base_color: str | None = None,
@@ -463,6 +496,8 @@ def _print_rich_dataframe_table(
         rich_table.add_row(*row_cells)
 
     print(rich_table)
+    if subtitle:
+        print(Text(subtitle, style="italic bright_black"))
 
 
 def _format_table_for_display(
@@ -571,6 +606,7 @@ def save_scalar_metric_table_image(
     *,
     df: pd.DataFrame,
     title: str,
+    subtitle: str | None,
     image_path: Path,
     significant_digits: int,
     dpi: int = SCALAR_TABLE_IMAGE_DPI,
@@ -607,7 +643,7 @@ def save_scalar_metric_table_image(
         colLabels=col_labels,
         cellLoc="center",
         rowLoc="center",
-        bbox=[0.01, 0.03, 0.98, 0.88],
+        bbox=[0.01, 0.10, 0.98, 0.81],
     )
     table.auto_set_font_size(False)
     table.set_fontsize(10)
@@ -687,6 +723,17 @@ def save_scalar_metric_table_image(
         fontweight="bold",
         color=base_color,
     )
+    if subtitle:
+        ax.text(
+            0.01,
+            0.035,
+            subtitle,
+            transform=ax.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=11,
+            color="#5b5b5b",
+        )
 
     fig.savefig(image_path, dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close(fig)
@@ -791,7 +838,8 @@ def build_scalar_metric_tables(
     row_index: tuple[str, ...] = SCALAR_TABLE_ROW_INDEX,
     column_index: tuple[str, ...] = SCALAR_TABLE_COLUMN_INDEX,
     group_by: tuple[str, ...] = SCALAR_TABLE_GROUP_BY,
-) -> list[tuple[str, pd.DataFrame, str]]:
+    leadtime_unit: str | None = None,
+) -> list[tuple[str, str | None, pd.DataFrame, str]]:
     df_all = _build_metric_stat_frame(metrics=metrics, variables=variables)
     df_all = _apply_df_filters(df_all, filters)
     if df_all.empty:
@@ -807,7 +855,7 @@ def build_scalar_metric_tables(
     else:
         grouped_items = [((), df_all)]
 
-    tables: list[tuple[str, pd.DataFrame, str]] = []
+    tables: list[tuple[str, str | None, pd.DataFrame, str]] = []
     for group_key, df_group in grouped_items:
         if not isinstance(group_key, tuple):
             group_key = (group_key,)
@@ -823,15 +871,20 @@ def build_scalar_metric_tables(
         pivot = _add_model_gain_columns(pivot)
         pivot = _order_table_columns(pivot)
 
-        title_parts = ["Scalar metrics"]
         filename_parts: list[str] = []
         for col, value in zip(group_cols, group_key):
             if pd.isna(value):
                 continue
-            title_parts.append(f"{col}={value}")
             filename_parts.append(f"{col}_{_sanitize_filename_fragment(str(value))}")
 
-        tables.append((" | ".join(title_parts), pivot, "__".join(filename_parts) if filename_parts else "all"))
+        tables.append(
+            (
+                "Scalar metrics",
+                _table_context_subtitle(df_group, leadtime_unit=leadtime_unit),
+                pivot,
+                "__".join(filename_parts) if filename_parts else "all",
+            )
+        )
 
     return tables
 
@@ -849,17 +902,19 @@ def save_scalar_metric_tables(
     row_index: tuple[str, ...] = SCALAR_TABLE_ROW_INDEX,
     column_index: tuple[str, ...] = SCALAR_TABLE_COLUMN_INDEX,
     stat_label_overrides: dict[str, str] | None = None,
+    leadtime_unit: str | None = None,
     base_color: str,
 ) -> list[Path]:
     output_folder.mkdir(parents=True, exist_ok=True)
 
     saved_paths: list[Path] = []
-    for title, table_df, filename_stem in build_scalar_metric_tables(
+    for title, subtitle, table_df, filename_stem in build_scalar_metric_tables(
         metrics=metrics,
         variables=variables,
         filters=filters,
         row_index=row_index,
         column_index=column_index,
+        leadtime_unit=leadtime_unit,
     ):
         if table_df.empty:
             continue
@@ -881,6 +936,7 @@ def save_scalar_metric_tables(
         _print_rich_dataframe_table(
             table_df_display,
             title=title,
+            subtitle=subtitle,
             significant_digits=significant_digits,
             raw_df=table_df,
             base_color=base_color,
@@ -892,6 +948,7 @@ def save_scalar_metric_tables(
         save_scalar_metric_table_image(
             df=table_df,
             title=title,
+            subtitle=subtitle,
             image_path=image_path,
             significant_digits=significant_digits,
             stat_label_overrides=stat_label_overrides,
@@ -1358,6 +1415,7 @@ def main() -> None:
                 filters=SCALAR_TABLE_FILTERS,
                 metrics_keep=raw_metrics,
                 filename_prefix="scalar_metrics",
+                leadtime_unit=leadtime_unit,
                 base_color=base_color,
             )
             for scalar_table_path in scalar_table_paths:
@@ -1374,6 +1432,7 @@ def main() -> None:
             row_index=("variable", "metric"),
             column_index=("model", "stat"),
             stat_label_overrides={"prob": ""},
+            leadtime_unit=leadtime_unit,
             base_color=get_variable_table_color(variable=vars_from_fc[0], variables=vars_from_fc),
         )
         for normalized_table_path in combined_normalized_table_paths:
