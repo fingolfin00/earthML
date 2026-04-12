@@ -41,12 +41,12 @@ def plot_realization_timeseries(
     nsigma: float = 1.0,
     plot_members: bool = True,
     members_alpha: float = 0.15,
-    members_lw: float = 0.8,
+    members_lw: float = 0.5,
     members_ls: str = "--",
     spread_alpha: float = 0.25,
-    mean_lw: float = 2.5,
+    mean_lw: float = 1.8,
     extra_label: str = "",
-    extra_lw: float = 2.0,
+    extra_lw: float = 1.5,
     extra_ls: str = ":",
 ) -> Axes:
     """
