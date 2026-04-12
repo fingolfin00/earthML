@@ -26,84 +26,168 @@ logging.getLogger("distributed.worker").setLevel(logging.ERROR)
 logging.getLogger("distributed.nanny").setLevel(logging.ERROR)
 
 
-EXP_ROOT_FOLDER = Path("/Users/jacopodallaglio/ML/experiments_earthML_seasonal_atmo/")
-PLOT_FOLDER = EXP_ROOT_FOLDER / "plots"
+#
+# User knobs
+# Edit these blocks first. They are grouped by output so users can quickly
+# switch products on/off or retarget a plot without digging through the code.
+#
 
-TYPE_DATA = "test"
-LOAD_MODELS = ("an", "fc", "pr")
-METRIC_NAMES = None
-MODELS_DIFF = ("fc", "pr")
-
-FORECAST_METRIC = "r2"
-FORECAST_METRIC_TYPE = "ensemble"
-DIFF_METRIC = "nrmse"
-DIFF_METRIC_TYPE = "ensemble"
-LEADTIME_METRICS = {
-    "r2": "deterministic_with_ensemble_overlay",
-    "rmse": "deterministic_with_ensemble_overlay",
-    "mae": "deterministic_with_ensemble_overlay",
-    "bias": "deterministic_with_ensemble_overlay",
-    "crps": "probabilistic",
-}
-PLOT_FILTERS = None
-SHADE_BY = "loss" # loss, total_months
-SHADE_LABEL = "Loss"
-
-MODEL_COLORS = {
-    "fc": "tab:green",
-    "pr": "tab:blue",
-    "an": "tab:orange",
+GLOBAL_KNOBS = {
+    # Main experiment folder to read from.
+    "exp_root_folder": Path("/Users/jacopodallaglio/ML/experiments_earthML_seasonal_atmo/"),
+    # All artifacts land in exp_root_folder / plot_folder_name.
+    "plot_folder_name": "plots",
+    # Dataset split and model loading.
+    "type_data": "test",
+    "load_models": ("an", "fc", "pr"),
+    # Keep None to load every scalar metric available.
+    "metric_names": None,
+    # Model pair used for delta comparisons like pr - fc.
+    "models_diff": ("fc", "pr"),
+    # Global output switches.
+    "enable_scalar_tables": True,
+    "enable_diff_plot": True,
+    "enable_leadtime_plots": True,
+    "enable_scoreboard": True,
 }
 
-DIFF_PLOT_CMAP = "magma"
+COMMON_PLOT_KNOBS = {
+    # Applied to both the diff plot and the leadtime plots.
+    "filters": None,
+    # Used to color/shade runs consistently across plots.
+    "shade_by": "loss",  # e.g. "loss", "total_months"
+    "shade_label": "Loss",
+}
 
-SCOREBOARD_ENABLED = True
-SCOREBOARD_MODE = "relative"  # "absolute" or "relative"
-SCOREBOARD_METRICS = {
-    "r2": "ensemble",
-    "nrmse": "ensemble",
-    "crps": "probabilistic",
+DIFF_PLOT_KNOBS = {
+    # x-axis: how much the ML correction changes the chosen metric.
+    "diff_metric": "nrmse",
+    "diff_metric_type": "ensemble",
+    # y-axis: the forecast quality you want to compare against.
+    "forecast_metric": "corr",
+    "forecast_metric_type": "ensemble",
+    "cmap": "magma",
 }
-SCOREBOARD_METRIC_CMAPS = {
-    "r2": "Blues",
-    "nrmse": "Blues_r",
-    "crps": "Blues_r",
-}
-SCOREBOARD_METRIC_VLIMS = {
-    # "r2": (-0.4, 0.4),
-    # "nrmse": (-0.2, 0.2),
-    # "crps": (-0.2, 0.2),
-}
-SCOREBOARD_ROW_AXIS = "variable"  # e.g. "train_period", "loss", "leadtime", "variable"
-SCOREBOARD_COL_AXIS = "leadtime"
-SCOREBOARD_FILTERS = {
-    "variable": None,  # e.g. ["t2m"]
-    "loss": "mseloss",      # used when not on an axis
-    "train_period": None,  # used when not on an axis
-    "leadtime": None
-}
-SCOREBOARD_ANNOTATE = True
 
-SCALAR_TABLE_ENABLED = True
-SCALAR_TABLE_IMAGE_DPI = 300
-SCALAR_TABLE_BASE_COLORS = ("#3c8be4", "#c9be2c", "#bb41c6")
-SCALAR_TABLE_MODEL_ORDER = ("fc", "pr", "pr-fc")
-SCALAR_TABLE_STAT_ORDER = ("avg", "spread", "ens", "prob")
-SCALAR_TABLE_FILTERS = {
-    "train_period": None,
-    "loss": None,
-    "leadtime": None,
+LEADTIME_PLOT_KNOBS = {
+    # Each metric maps to the plotting mode expected by save_metrics_vs_leadtime_plots.
+    "metrics": {
+        "r2": "deterministic_with_ensemble_overlay",
+        "rmse": "deterministic_with_ensemble_overlay",
+        "rmse_skill_clim": "deterministic_with_ensemble_overlay",
+        "mae": "deterministic_with_ensemble_overlay",
+        "bias": "deterministic_with_ensemble_overlay",
+        "crps": "probabilistic",
+        "spread": "probabilistic",
+        "spread_error_ratio": "probabilistic",
+    },
+    "model_colors": {
+        "fc": "tab:green",
+        "pr": "tab:blue",
+        "an": "tab:orange",
+    },
 }
-SCALAR_TABLE_ROW_INDEX = ("metric",)
-SCALAR_TABLE_COLUMN_INDEX = ("model", "variable", "stat")
-SCALAR_TABLE_GROUP_BY = ("train_period", "loss", "leadtime")
-SCALAR_TABLE_DECIMALS = 3
+
+TABLE_KNOBS = {
+    # Filter rows before building summary tables.
+    "filters": {
+        "train_period": None,
+        "loss": "mseloss",
+        "leadtime": 1,
+    },
+    "row_index": ("metric",),
+    "column_index": ("model", "variable", "stat"),
+    # Tables split when these dimensions have more than one surviving value.
+    "group_by": ("train_period", "loss", "leadtime"),
+    "model_order": ("fc", "pr", "pr-fc"),
+    "stat_order": ("avg", "spread", "ens", "prob"),
+    "significant_digits": 3,
+    "image_dpi": 300,
+    "base_colors": ("#3c8be4", "#c9be2c", "#bb41c6"),
+}
+
+SCOREBOARD_KNOBS = {
+    "mode": "relative",  # "absolute" or "relative"
+    "metrics": {
+        "r2": "ensemble",
+        "nrmse": "ensemble",
+        "crps": "probabilistic",
+        "rmse_skill_clim": "ensemble",
+        "spread_error_ratio": "probabilistic",
+    },
+    "metric_cmaps": {
+        "r2": "RdBu",
+        "nrmse": "RdBu_r",
+        "nmae": "RdBu_r",
+        "nbias": "RdBu_r",
+        "rmse_skill_clim": "RdBu",
+        "spread_error_ratio": "RdBu",
+    },
+    "metric_vlims": {
+        # "r2": (-0.4, 0.4),
+        # "nrmse": (-0.2, 0.2),
+        # "crps": (-0.2, 0.2),
+    },
+    # Pick which metadata dimensions span the scoreboard grid.
+    "row_axis": "variable",  # e.g. "train_period", "loss", "leadtime", "variable"
+    "col_axis": "leadtime",
+    # These act only when the dimension is not already on an axis.
+    "filters": {
+        "variable": None,  # e.g. ["t2m"]
+        "loss": "mseloss",
+        "train_period": None,
+        "leadtime": None,
+    },
+    "annotate": True,
+}
+
+
+# Derived internal aliases. The grouped knobs above are the intended edit points.
+EXP_ROOT_FOLDER = GLOBAL_KNOBS["exp_root_folder"]
+PLOT_FOLDER = EXP_ROOT_FOLDER / GLOBAL_KNOBS["plot_folder_name"]
+
+TYPE_DATA = GLOBAL_KNOBS["type_data"]
+LOAD_MODELS = GLOBAL_KNOBS["load_models"]
+METRIC_NAMES = GLOBAL_KNOBS["metric_names"]
+MODELS_DIFF = GLOBAL_KNOBS["models_diff"]
+
+FORECAST_METRIC = DIFF_PLOT_KNOBS["forecast_metric"]
+FORECAST_METRIC_TYPE = DIFF_PLOT_KNOBS["forecast_metric_type"]
+DIFF_METRIC = DIFF_PLOT_KNOBS["diff_metric"]
+DIFF_METRIC_TYPE = DIFF_PLOT_KNOBS["diff_metric_type"]
+DIFF_PLOT_CMAP = DIFF_PLOT_KNOBS["cmap"]
+
+LEADTIME_METRICS = LEADTIME_PLOT_KNOBS["metrics"]
+MODEL_COLORS = LEADTIME_PLOT_KNOBS["model_colors"]
+PLOT_FILTERS = COMMON_PLOT_KNOBS["filters"]
+SHADE_BY = COMMON_PLOT_KNOBS["shade_by"]
+SHADE_LABEL = COMMON_PLOT_KNOBS["shade_label"]
+
+SCOREBOARD_MODE = SCOREBOARD_KNOBS["mode"]
+SCOREBOARD_METRICS = SCOREBOARD_KNOBS["metrics"]
+SCOREBOARD_METRIC_CMAPS = SCOREBOARD_KNOBS["metric_cmaps"]
+SCOREBOARD_METRIC_VLIMS = SCOREBOARD_KNOBS["metric_vlims"]
+SCOREBOARD_ROW_AXIS = SCOREBOARD_KNOBS["row_axis"]
+SCOREBOARD_COL_AXIS = SCOREBOARD_KNOBS["col_axis"]
+SCOREBOARD_FILTERS = SCOREBOARD_KNOBS["filters"]
+SCOREBOARD_ANNOTATE = SCOREBOARD_KNOBS["annotate"]
+
+SCALAR_TABLE_IMAGE_DPI = TABLE_KNOBS["image_dpi"]
+SCALAR_TABLE_BASE_COLORS = TABLE_KNOBS["base_colors"]
+SCALAR_TABLE_MODEL_ORDER = TABLE_KNOBS["model_order"]
+SCALAR_TABLE_STAT_ORDER = TABLE_KNOBS["stat_order"]
+SCALAR_TABLE_FILTERS = TABLE_KNOBS["filters"]
+SCALAR_TABLE_ROW_INDEX = TABLE_KNOBS["row_index"]
+SCALAR_TABLE_COLUMN_INDEX = TABLE_KNOBS["column_index"]
+SCALAR_TABLE_GROUP_BY = TABLE_KNOBS["group_by"]
+SCALAR_TABLE_SIGNIFICANT_DIGITS = TABLE_KNOBS["significant_digits"]
 NORMALIZED_METRICS = {"nrmse", "ncrmse", "nmae", "nbias", "r2"}
 
 
 METRIC_DISPLAY_NAMES = {
     "r2": "R2",
     "rmse": "RMSE",
+    "rmse_skill_clim": "RMSE Skill",
     "crmse": "CRMSE",
     "mae": "MAE",
     "bias": "Bias",
@@ -112,6 +196,8 @@ METRIC_DISPLAY_NAMES = {
     "nmae": "nMAE",
     "nbias": "nBias",
     "crps": "CRPS",
+    "spread": "Spread",
+    "spread_error_ratio": "Spread/Error",
 }
 
 
@@ -214,13 +300,24 @@ def _apply_df_filters(df: pd.DataFrame, filters: dict | None) -> pd.DataFrame:
     return out
 
 
-def _format_scalar_value(value: object, decimals: int) -> str:
+def _format_scalar_value(value: object, significant_digits: int) -> str:
     if value is None or pd.isna(value):
         return "-"
     value_float = float(value)
     if np.isinf(value_float):
         return "inf" if value_float > 0 else "-inf"
-    return f"{value_float:.{decimals}f}"
+    if significant_digits < 1:
+        raise ValueError("significant_digits must be at least 1")
+    if value_float == 0:
+        return "0" if significant_digits == 1 else f"0.{('0' * (significant_digits - 1))}"
+
+    abs_value = abs(value_float)
+    exponent = int(np.floor(np.log10(abs_value)))
+    if exponent >= significant_digits or exponent < -3:
+        return f"{value_float:.{significant_digits - 1}e}"
+
+    decimals = significant_digits - exponent - 1
+    return f"{value_float:.{max(decimals, 0)}f}"
 
 
 def _flatten_label(parts: tuple[object, ...] | object) -> str:
@@ -272,6 +369,7 @@ def _metric_higher_is_better(metric: str) -> bool | None:
         "clim_acc": True,
         "spatial_acc": True,
         "r2": True,
+        "rmse_skill_clim": True,
         "rmse": False,
         "crmse": False,
         "mae": False,
@@ -281,6 +379,8 @@ def _metric_higher_is_better(metric: str) -> bool | None:
         "nmae": False,
         "nbias": False,
         "crps": False,
+        "spread": None,
+        "spread_error_ratio": None,
     }
     return mapping.get(metric)
 
@@ -291,10 +391,10 @@ def _rich_gain_cell(
     display_value: object,
     row_pos: int,
     col_pos: int,
-    decimals: int,
+    significant_digits: int,
     base_color: str,
 ) -> str | Text:
-    text = _format_scalar_value(display_value, decimals)
+    text = _format_scalar_value(display_value, significant_digits)
     if not isinstance(raw_df.columns, pd.MultiIndex):
         return text
 
@@ -330,7 +430,7 @@ def _print_rich_dataframe_table(
     df: pd.DataFrame,
     *,
     title: str,
-    decimals: int,
+    significant_digits: int,
     raw_df: pd.DataFrame | None = None,
     base_color: str | None = None,
 ) -> None:
@@ -354,12 +454,12 @@ def _print_rich_dataframe_table(
                         display_value=val,
                         row_pos=row_pos,
                         col_pos=col_pos,
-                        decimals=decimals,
+                        significant_digits=significant_digits,
                         base_color=base_color,
                     )
                 )
             else:
-                row_cells.append(_format_scalar_value(val, decimals))
+                row_cells.append(_format_scalar_value(val, significant_digits))
         rich_table.add_row(*row_cells)
 
     print(rich_table)
@@ -368,7 +468,6 @@ def _print_rich_dataframe_table(
 def _format_table_for_display(
     df: pd.DataFrame,
     *,
-    decimals: int,
     stat_label_overrides: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     df_display = df.copy()
@@ -387,7 +486,7 @@ def _format_table_for_display(
             ],
             names=df_display.columns.names,
         )
-    return df_display.round(decimals)
+    return df_display
 
 
 def _filter_metric_rows(df: pd.DataFrame, *, metrics_keep: set[str] | None = None) -> pd.DataFrame:
@@ -473,12 +572,12 @@ def save_scalar_metric_table_image(
     df: pd.DataFrame,
     title: str,
     image_path: Path,
-    decimals: int,
+    significant_digits: int,
     dpi: int = SCALAR_TABLE_IMAGE_DPI,
     stat_label_overrides: dict[str, str] | None = None,
     base_color: str,
 ) -> Path:
-    df_display = _format_table_for_display(df, decimals=decimals, stat_label_overrides=stat_label_overrides)
+    df_display = _format_table_for_display(df, stat_label_overrides=stat_label_overrides)
     n_rows, n_cols = df_display.shape
     table_variables = _table_variables(df)
 
@@ -498,7 +597,7 @@ def save_scalar_metric_table_image(
         for idx in df_display.index
     ]
     cell_text = [
-        [_format_scalar_value(value, decimals) for value in row]
+        [_format_scalar_value(value, significant_digits) for value in row]
         for row in df_display.to_numpy()
     ]
 
@@ -743,7 +842,7 @@ def save_scalar_metric_tables(
     variables: list[str],
     output_folder: Path,
     filters: dict | None = None,
-    decimals: int = SCALAR_TABLE_DECIMALS,
+    significant_digits: int = SCALAR_TABLE_SIGNIFICANT_DIGITS,
     metrics_keep: set[str] | None = None,
     filename_prefix: str = "scalar_metrics",
     title_prefix: str | None = None,
@@ -777,13 +876,12 @@ def save_scalar_metric_tables(
 
         table_df_display = _format_table_for_display(
             table_df,
-            decimals=decimals,
             stat_label_overrides=stat_label_overrides,
         )
         _print_rich_dataframe_table(
             table_df_display,
             title=title,
-            decimals=decimals,
+            significant_digits=significant_digits,
             raw_df=table_df,
             base_color=base_color,
         )
@@ -795,7 +893,7 @@ def save_scalar_metric_tables(
             df=table_df,
             title=title,
             image_path=image_path,
-            decimals=decimals,
+            significant_digits=significant_digits,
             stat_label_overrides=stat_label_overrides,
             base_color=base_color,
         )
@@ -1190,49 +1288,55 @@ def main() -> None:
     print(f"Inferred region: {region or 'unknown'}")
     print_available_scalar_metrics(metrics=metrics)
 
-    df_nodiff = build_scalar_metric_df(
-        metrics=metrics,
-        variables=vars_from_fc,
-        metric_name=FORECAST_METRIC,
-        metric_type=FORECAST_METRIC_TYPE,
-        diff="no",
-    )
-    df_delta = build_scalar_metric_df(
-        metrics=metrics,
-        variables=vars_from_fc,
-        metric_name=DIFF_METRIC,
-        metric_type=DIFF_METRIC_TYPE,
-        diff="delta",
-        models=MODELS_DIFF,
-    )
+    if GLOBAL_KNOBS["enable_diff_plot"]:
+        df_nodiff = build_scalar_metric_df(
+            metrics=metrics,
+            variables=vars_from_fc,
+            metric_name=FORECAST_METRIC,
+            metric_type=FORECAST_METRIC_TYPE,
+            diff="no",
+        )
+        df_delta = build_scalar_metric_df(
+            metrics=metrics,
+            variables=vars_from_fc,
+            metric_name=DIFF_METRIC,
+            metric_type=DIFF_METRIC_TYPE,
+            diff="delta",
+            models=MODELS_DIFF,
+        )
 
-    plot_path = save_metric_vs_diff_plot(
-        df_nodiff=df_nodiff,
-        df_delta=df_delta,
-        plot_folder=PLOT_FOLDER,
-        forecast_metric=FORECAST_METRIC,
-        diff_metric=DIFF_METRIC,
-        leadtime_unit=f" {leadtime_unit}" if leadtime_unit else "",
-        region=region,
-        filters=PLOT_FILTERS,
-        shade_by=SHADE_BY,
-        shade_label=SHADE_LABEL,
-    )
-    print("Saved leadtime-vs-global-metrics plot to:", plot_path)
+        plot_path = save_metric_vs_diff_plot(
+            df_nodiff=df_nodiff,
+            df_delta=df_delta,
+            plot_folder=PLOT_FOLDER,
+            forecast_metric=FORECAST_METRIC,
+            diff_metric=DIFF_METRIC,
+            leadtime_unit=f" {leadtime_unit}" if leadtime_unit else "",
+            region=region,
+            filters=PLOT_FILTERS,
+            shade_by=SHADE_BY,
+            shade_label=SHADE_LABEL,
+        )
+        print("Saved leadtime-vs-global-metrics plot to:", plot_path)
+    else:
+        print("Skipping diff plot: GLOBAL_KNOBS['enable_diff_plot'] is False")
 
-    leadtime_plot_paths = save_metrics_vs_leadtime_plots(
-        metrics=metrics,
-        variables=vars_from_fc,
-        plot_folder=PLOT_FOLDER,
-        leadtime_unit=f" {leadtime_unit}" if leadtime_unit else "",
-        filters=PLOT_FILTERS,
-        shade_by=SHADE_BY,
-        shade_label=SHADE_LABEL,
-    )
-    for leadtime_plot_path in leadtime_plot_paths:
-        print("Saved metric-vs-leadtime plot to:", leadtime_plot_path)
+    if GLOBAL_KNOBS["enable_leadtime_plots"]:
+        leadtime_plot_paths = save_metrics_vs_leadtime_plots(
+            metrics=metrics,
+            variables=vars_from_fc,
+            plot_folder=PLOT_FOLDER,
+            leadtime_unit=f" {leadtime_unit}" if leadtime_unit else "",
+            filters=PLOT_FILTERS,
+            shade_by=SHADE_BY,
+            shade_label=SHADE_LABEL,
+        )
+        for leadtime_plot_path in leadtime_plot_paths:
+            print("Saved metric-vs-leadtime plot to:", leadtime_plot_path)
+    else:
+        print("Skipping leadtime plots: GLOBAL_KNOBS['enable_leadtime_plots'] is False")
 
-    if SCALAR_TABLE_ENABLED:
+    if GLOBAL_KNOBS["enable_scalar_tables"]:
         raw_metrics = {
             metric
             for metric_group in (
@@ -1274,8 +1378,10 @@ def main() -> None:
         )
         for normalized_table_path in combined_normalized_table_paths:
             print("Saved combined normalized metrics table to:", normalized_table_path)
+    else:
+        print("Skipping scalar tables: GLOBAL_KNOBS['enable_scalar_tables'] is False")
 
-    if SCOREBOARD_ENABLED:
+    if GLOBAL_KNOBS["enable_scoreboard"]:
         scoreboard_path = save_scoreboard_plot(
             metrics=metrics,
             variables=vars_from_fc,
@@ -1283,6 +1389,8 @@ def main() -> None:
             leadtime_unit=leadtime_unit,
         )
         print("Saved scoreboard plot to:", scoreboard_path)
+    else:
+        print("Skipping scoreboard: GLOBAL_KNOBS['enable_scoreboard'] is False")
 
 
 if __name__ == "__main__":
