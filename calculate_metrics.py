@@ -4,10 +4,13 @@ import warnings
 import joblib
 
 import matplotlib.pyplot as plt
+from matplotlib import colors as mcolors
 import numpy as np
 import pandas as pd
 from rich import print
+from rich.style import Style
 from rich.table import Table as RichTable
+from rich.text import Text
 
 from earthml import Dask, get_runs_and_metrics
 from earthml.metrics.utils import metrics_to_df
@@ -82,8 +85,8 @@ SCOREBOARD_FILTERS = {
 SCOREBOARD_ANNOTATE = True
 
 SCALAR_TABLE_ENABLED = True
-SCALAR_TABLE_FOLDER = PLOT_FOLDER / "tables"
 SCALAR_TABLE_IMAGE_DPI = 300
+SCALAR_TABLE_BASE_COLORS = ("#3c8be4", "#c9be2c", "#bb41c6")
 SCALAR_TABLE_MODEL_ORDER = ("fc", "pr", "pr-fc")
 SCALAR_TABLE_STAT_ORDER = ("avg", "spread", "ens", "prob")
 SCALAR_TABLE_FILTERS = {
@@ -95,6 +98,7 @@ SCALAR_TABLE_ROW_INDEX = ("metric",)
 SCALAR_TABLE_COLUMN_INDEX = ("model", "variable", "stat")
 SCALAR_TABLE_GROUP_BY = ("train_period", "loss", "leadtime")
 SCALAR_TABLE_DECIMALS = 3
+NORMALIZED_METRICS = {"nrmse", "ncrmse", "nmae", "nbias", "r2"}
 
 
 def build_scalar_metric_df(
@@ -116,6 +120,55 @@ def build_scalar_metric_df(
         diff=diff,
         models=models,
     )
+
+
+def get_variable_plot_folder(*, plot_root: Path, variable: str) -> Path:
+    variable_folder = plot_root / variable
+    variable_folder.mkdir(parents=True, exist_ok=True)
+    return variable_folder
+
+
+def get_variable_table_color(*, variable: str, variables: list[str]) -> str:
+    try:
+        idx = variables.index(variable)
+    except ValueError:
+        idx = 0
+    return SCALAR_TABLE_BASE_COLORS[idx % len(SCALAR_TABLE_BASE_COLORS)]
+
+
+def _table_variables(df: pd.DataFrame) -> list[str]:
+    variables: list[str] = []
+
+    if isinstance(df.index, pd.MultiIndex) and "variable" in df.index.names:
+        for value in df.index.get_level_values("variable"):
+            variable = str(value)
+            if variable not in variables:
+                variables.append(variable)
+
+    if isinstance(df.columns, pd.MultiIndex) and "variable" in df.columns.names:
+        variable_idx = list(df.columns.names).index("variable")
+        for col in df.columns:
+            variable = str(col[variable_idx])
+            if variable not in variables:
+                variables.append(variable)
+
+    return variables
+
+
+def _variable_from_row(df: pd.DataFrame, row_pos: int) -> str | None:
+    if not isinstance(df.index, pd.MultiIndex) or "variable" not in df.index.names:
+        return None
+    variable_idx = list(df.index.names).index("variable")
+    idx_value = df.index[row_pos]
+    return str(idx_value[variable_idx])
+
+
+def _variable_from_column(df: pd.DataFrame, col_pos: int) -> str | None:
+    if not isinstance(df.columns, pd.MultiIndex) or "variable" not in df.columns.names:
+        return None
+    variable_idx = list(df.columns.names).index("variable")
+    col_value = df.columns[col_pos]
+    return str(col_value[variable_idx])
 
 
 def _apply_df_filters(df: pd.DataFrame, filters: dict | None) -> pd.DataFrame:
@@ -162,6 +215,23 @@ def _prettify_stat_label(stat: str) -> str:
     return pretty.get(stat, stat.replace("_", " "))
 
 
+def _mix_colors(color_a: str, color_b: str, weight: float) -> str:
+    rgb_a = np.array(mcolors.to_rgb(color_a))
+    rgb_b = np.array(mcolors.to_rgb(color_b))
+    mixed = (1 - weight) * rgb_a + weight * rgb_b
+    return mcolors.to_hex(mixed)
+
+
+def _metric_name_from_index(df: pd.DataFrame, row_pos: int) -> str | None:
+    idx_value = df.index[row_pos]
+    if isinstance(df.index, pd.MultiIndex):
+        index_names = list(df.index.names)
+        if "metric" in index_names:
+            metric_idx = index_names.index("metric")
+            return str(idx_value[metric_idx])
+    return str(idx_value[0] if isinstance(idx_value, tuple) else idx_value)
+
+
 def _metric_higher_is_better(metric: str) -> bool | None:
     mapping = {
         "corr": True,
@@ -181,7 +251,55 @@ def _metric_higher_is_better(metric: str) -> bool | None:
     return mapping.get(metric)
 
 
-def _print_rich_dataframe_table(df: pd.DataFrame, *, title: str, decimals: int) -> None:
+def _rich_gain_cell(
+    *,
+    raw_df: pd.DataFrame,
+    display_value: object,
+    row_pos: int,
+    col_pos: int,
+    decimals: int,
+    base_color: str,
+) -> str | Text:
+    text = _format_scalar_value(display_value, decimals)
+    if not isinstance(raw_df.columns, pd.MultiIndex):
+        return text
+
+    raw_col_key = raw_df.columns[col_pos]
+    col_name_to_value = {
+        str(name): raw_col_key[i]
+        for i, name in enumerate(raw_df.columns.names)
+    }
+    stat_name = str(col_name_to_value.get("stat", ""))
+    model_name = str(col_name_to_value.get("model", ""))
+    if model_name != "pr-fc" or stat_name not in {"avg", "ens", "prob"}:
+        return text
+
+    metric_name = _metric_name_from_index(raw_df, row_pos)
+    raw_value = raw_df.iloc[row_pos, col_pos]
+    direction = _metric_higher_is_better(metric_name)
+    if pd.isna(raw_value) or direction is None:
+        style = Style(color="bright_black", bold=True)
+    else:
+        improved = raw_value > 0 if direction else raw_value < 0
+        degraded = raw_value < 0 if direction else raw_value > 0
+        if improved:
+            style = Style(color="green", bold=True)
+        elif degraded:
+            style = Style(color="red", bold=True)
+        else:
+            style = Style(color="bright_black", bold=True)
+
+    return Text(text, style=style)
+
+
+def _print_rich_dataframe_table(
+    df: pd.DataFrame,
+    *,
+    title: str,
+    decimals: int,
+    raw_df: pd.DataFrame | None = None,
+    base_color: str | None = None,
+) -> None:
     rich_table = RichTable(title=title, show_lines=False)
     index_labels = list(df.index.names) if isinstance(df.index, pd.MultiIndex) else [df.index.name or "row"]
     index_labels = [label if label is not None else "row" for label in index_labels]
@@ -191,26 +309,67 @@ def _print_rich_dataframe_table(df: pd.DataFrame, *, title: str, decimals: int) 
     for col in df.columns:
         rich_table.add_column(_flatten_label(col), justify="right", style="cyan")
 
-    for idx, row in df.iterrows():
+    for row_pos, (idx, row) in enumerate(df.iterrows()):
         idx_parts = idx if isinstance(idx, tuple) else (idx,)
         row_cells = [str(part) for part in idx_parts]
-        row_cells.extend(_format_scalar_value(val, decimals) for val in row.tolist())
+        for col_pos, val in enumerate(row.tolist()):
+            if raw_df is not None and base_color is not None:
+                row_cells.append(
+                    _rich_gain_cell(
+                        raw_df=raw_df,
+                        display_value=val,
+                        row_pos=row_pos,
+                        col_pos=col_pos,
+                        decimals=decimals,
+                        base_color=base_color,
+                    )
+                )
+            else:
+                row_cells.append(_format_scalar_value(val, decimals))
         rich_table.add_row(*row_cells)
 
     print(rich_table)
 
 
-def _format_table_for_display(df: pd.DataFrame, *, decimals: int) -> pd.DataFrame:
+def _format_table_for_display(
+    df: pd.DataFrame,
+    *,
+    decimals: int,
+    stat_label_overrides: dict[str, str] | None = None,
+) -> pd.DataFrame:
     df_display = df.copy()
     if isinstance(df_display.columns, pd.MultiIndex):
         df_display.columns = pd.MultiIndex.from_tuples(
             [
-                tuple(_prettify_stat_label(part) if i == len(col) - 1 else part for i, part in enumerate(col))
+                tuple(
+                    (
+                        stat_label_overrides.get(str(part), _prettify_stat_label(str(part)))
+                        if stat_label_overrides is not None
+                        else _prettify_stat_label(str(part))
+                    ) if i == len(col) - 1 else part
+                    for i, part in enumerate(col)
+                )
                 for col in df_display.columns
             ],
             names=df_display.columns.names,
         )
     return df_display.round(decimals)
+
+
+def _filter_metric_rows(df: pd.DataFrame, *, metrics_keep: set[str] | None = None) -> pd.DataFrame:
+    if df.empty or metrics_keep is None:
+        return df
+    if "metric" not in df.index.names:
+        return df
+    metric_values = df.index.get_level_values("metric").astype(str)
+    return df.loc[metric_values.isin(metrics_keep)]
+
+
+def _drop_empty_table_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    keep_mask = ~df.isna().all(axis=0)
+    return df.loc[:, keep_mask]
 
 
 def _add_model_gain_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -282,9 +441,12 @@ def save_scalar_metric_table_image(
     image_path: Path,
     decimals: int,
     dpi: int = SCALAR_TABLE_IMAGE_DPI,
+    stat_label_overrides: dict[str, str] | None = None,
+    base_color: str,
 ) -> Path:
-    df_display = _format_table_for_display(df, decimals=decimals)
+    df_display = _format_table_for_display(df, decimals=decimals, stat_label_overrides=stat_label_overrides)
     n_rows, n_cols = df_display.shape
+    table_variables = _table_variables(df)
 
     fig_width = max(14.0, 2.2 + 1.75 * (n_cols + df_display.index.nlevels))
     fig_height = max(2.8, 1.4 + 0.42 * (n_rows + 2))
@@ -318,27 +480,39 @@ def save_scalar_metric_table_image(
     table.set_fontsize(10)
     table.scale(1.0, 1.5)
 
-    header_color = "#183a37"
+    header_color = base_color
     header_text = "#fdfaf3"
-    row_label_color = "#d9c7a4"
-    stripe_a = "#fbf7ef"
-    stripe_b = "#f1e7d4"
-    edge_color = "#d4c4a8"
+    edge_color = _mix_colors(base_color, "#ffffff", 0.58)
     text_color = "#1b1b1b"
     gain_good = "#d7efdc"
     gain_bad = "#f6d7d2"
-    gain_neutral = "#ede1c7"
+    gain_neutral = _mix_colors(base_color, "#ffffff", 0.76)
+
+    def _resolve_variable_color(variable: str | None) -> str:
+        if variable is None or not table_variables:
+            return base_color
+        return get_variable_table_color(variable=variable, variables=table_variables)
 
     for (row, col), cell in table.get_celld().items():
-        cell.set_edgecolor(edge_color)
+        cell_edge_color = edge_color
         cell.set_linewidth(0.8)
         if row == 0:
-            cell.set_facecolor(header_color)
+            column_color = _resolve_variable_color(_variable_from_column(df, col)) if col >= 0 else header_color
+            cell.set_height(cell.get_height() * 1.45)
+            cell.PAD = 0.08
+            cell.set_facecolor(column_color)
             cell.set_text_props(color=header_text, weight="bold")
         elif col == -1:
+            row_color = _resolve_variable_color(_variable_from_row(df, row - 1))
+            row_label_color = _mix_colors(row_color, "#ffffff", 0.50)
+            cell_edge_color = _mix_colors(row_color, "#ffffff", 0.32)
             cell.set_facecolor(row_label_color)
             cell.set_text_props(color=text_color, weight="bold")
         else:
+            row_color = _resolve_variable_color(_variable_from_row(df, row - 1))
+            stripe_a = _mix_colors(row_color, "#ffffff", 0.78)
+            stripe_b = _mix_colors(row_color, "#ffffff", 0.68)
+            cell_edge_color = _mix_colors(row_color, "#ffffff", 0.42)
             base_face = stripe_a if row % 2 else stripe_b
             cell.set_facecolor(base_face)
             cell.set_text_props(color=text_color)
@@ -352,8 +526,7 @@ def save_scalar_metric_table_image(
                 stat_name = str(col_name_to_value.get("stat", ""))
                 model_name = str(col_name_to_value.get("model", ""))
                 if model_name == "pr-fc" and stat_name in {"avg", "ens", "prob"}:
-                    metric_key = df.index[row - 1]
-                    metric_name = str(metric_key[0] if isinstance(metric_key, tuple) else metric_key)
+                    metric_name = _metric_name_from_index(df, row - 1)
                     raw_value = df.iloc[row - 1, col]
                     direction = _metric_higher_is_better(metric_name)
                     if pd.isna(raw_value) or direction is None:
@@ -368,6 +541,7 @@ def save_scalar_metric_table_image(
                         else:
                             cell.set_facecolor(gain_neutral)
                     cell.set_text_props(color=text_color, weight="bold")
+        cell.set_edgecolor(cell_edge_color)
 
     ax.text(
         0.01,
@@ -378,7 +552,7 @@ def save_scalar_metric_table_image(
         va="top",
         fontsize=16,
         fontweight="bold",
-        color="#183a37",
+        color=base_color,
     )
 
     fig.savefig(image_path, dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())
@@ -536,6 +710,13 @@ def save_scalar_metric_tables(
     output_folder: Path,
     filters: dict | None = None,
     decimals: int = SCALAR_TABLE_DECIMALS,
+    metrics_keep: set[str] | None = None,
+    filename_prefix: str = "scalar_metrics",
+    title_prefix: str | None = None,
+    row_index: tuple[str, ...] = SCALAR_TABLE_ROW_INDEX,
+    column_index: tuple[str, ...] = SCALAR_TABLE_COLUMN_INDEX,
+    stat_label_overrides: dict[str, str] | None = None,
+    base_color: str,
 ) -> list[Path]:
     output_folder.mkdir(parents=True, exist_ok=True)
 
@@ -544,21 +725,45 @@ def save_scalar_metric_tables(
         metrics=metrics,
         variables=variables,
         filters=filters,
+        row_index=row_index,
+        column_index=column_index,
     ):
         if table_df.empty:
             continue
 
-        table_df_display = _format_table_for_display(table_df, decimals=decimals)
-        _print_rich_dataframe_table(table_df_display, title=title, decimals=decimals)
+        table_df = _filter_metric_rows(table_df, metrics_keep=metrics_keep)
+        if table_df.empty:
+            continue
+        table_df = _drop_empty_table_columns(table_df)
+        if table_df.empty:
+            continue
 
-        parquet_path = output_folder / f"scalar_metrics_{filename_stem}.parquet"
-        image_path = output_folder / f"scalar_metrics_{filename_stem}.png"
+        if title_prefix:
+            title = f"{title_prefix} | {title}"
+
+        table_df_display = _format_table_for_display(
+            table_df,
+            decimals=decimals,
+            stat_label_overrides=stat_label_overrides,
+        )
+        _print_rich_dataframe_table(
+            table_df_display,
+            title=title,
+            decimals=decimals,
+            raw_df=table_df,
+            base_color=base_color,
+        )
+
+        parquet_path = output_folder / f"{filename_prefix}_{filename_stem}.parquet"
+        image_path = output_folder / f"{filename_prefix}_{filename_stem}.png"
         table_df_display.to_parquet(parquet_path)
         save_scalar_metric_table_image(
             df=table_df,
             title=title,
             image_path=image_path,
             decimals=decimals,
+            stat_label_overrides=stat_label_overrides,
+            base_color=base_color,
         )
         saved_paths.extend([parquet_path, image_path])
 
@@ -718,8 +923,6 @@ def save_metrics_vs_leadtime_plots(
     shade_by: str,
     shade_label: str,
 ) -> list[Path]:
-    plot_folder.mkdir(parents=True, exist_ok=True)
-
     saved_paths: list[Path] = []
     model_colors = MODEL_COLORS
 
@@ -743,17 +946,16 @@ def save_metrics_vs_leadtime_plots(
     ds_scalar_ens = metrics["ensemble"]["scalar"]
     ds_scalar_prob = metrics["probabilistic"]["scalar"]
 
-    for metric_name, metric_type in LEADTIME_METRICS.items():
-        fig, axs = plt.subplots(
-            nrows=len(variables),
-            ncols=1,
-            figsize=(12, max(5, 4.5 * len(variables))),
-            squeeze=False,
-        )
-        axs = axs.ravel()
+    for variable in variables:
+        variable_plot_folder = get_variable_plot_folder(plot_root=plot_folder, variable=variable)
 
-        for i, variable in enumerate(variables):
-            ax = axs[i]
+        for metric_name, metric_type in LEADTIME_METRICS.items():
+            fig, ax = plt.subplots(
+                nrows=1,
+                ncols=1,
+                figsize=(12, 5.5),
+                squeeze=True,
+            )
             ds_metric = ds_scalar_prob if metric_type == "probabilistic" else ds_scalar_ens
             da_template = ds_metric[variable].sel(metric=metric_name)
             da_template = _filter_da(da_template)
@@ -868,22 +1070,22 @@ def save_metrics_vs_leadtime_plots(
                     else:
                         raise ValueError(f"Unsupported leadtime metric plot mode {metric_type!r}")
 
-            ax.set_title(f"{metric_name} vs lead time ({variable})")
-            ax.set_xlabel(f"Lead time ({leadtime_unit.strip()})")
-            ax.set_ylabel(metric_name)
-            ax.grid(True, linestyle="--", alpha=0.35)
+                ax.set_title(f"{metric_name} vs lead time ({variable})")
+                ax.set_xlabel(f"Lead time ({leadtime_unit.strip()})")
+                ax.set_ylabel(metric_name)
+                ax.grid(True, linestyle="--", alpha=0.35)
 
-            ymin, ymax = ax.get_ylim()
-            if ymin <= 0 <= ymax:
-                ax.axhline(0.0, color="0.3", lw=1.0, ls=":")
+                ymin, ymax = ax.get_ylim()
+                if ymin <= 0 <= ymax:
+                    ax.axhline(0.0, color="0.3", lw=1.0, ls=":")
 
-            ax.legend(fontsize=9)
+                ax.legend(fontsize=9)
 
-        plt.tight_layout()
-        plot_path = plot_folder / f"{metric_name}_vs_leadtime.png"
-        fig.savefig(plot_path, bbox_inches="tight", dpi=150)
-        plt.close(fig)
-        saved_paths.append(plot_path)
+            plt.tight_layout()
+            plot_path = variable_plot_folder / f"{metric_name}_vs_leadtime.png"
+            fig.savefig(plot_path, bbox_inches="tight", dpi=150)
+            plt.close(fig)
+            saved_paths.append(plot_path)
 
     return saved_paths
 
@@ -952,14 +1154,47 @@ def main() -> None:
         print("Saved metric-vs-leadtime plot to:", leadtime_plot_path)
 
     if SCALAR_TABLE_ENABLED:
-        scalar_table_paths = save_scalar_metric_tables(
+        raw_metrics = {
+            metric
+            for metric_group in (
+                metrics.get("deterministic", {}).get("scalar"),
+                metrics.get("ensemble", {}).get("scalar"),
+                metrics.get("probabilistic", {}).get("scalar"),
+            )
+            if metric_group is not None and "metric" in metric_group.coords
+            for metric in metric_group.coords["metric"].values.tolist()
+        } - NORMALIZED_METRICS
+
+        for variable in vars_from_fc:
+            variable_plot_folder = get_variable_plot_folder(plot_root=PLOT_FOLDER, variable=variable)
+            base_color = get_variable_table_color(variable=variable, variables=vars_from_fc)
+            scalar_table_paths = save_scalar_metric_tables(
+                metrics=metrics,
+                variables=[variable],
+                output_folder=variable_plot_folder,
+                filters=SCALAR_TABLE_FILTERS,
+                metrics_keep=raw_metrics,
+                filename_prefix="scalar_metrics",
+                base_color=base_color,
+            )
+            for scalar_table_path in scalar_table_paths:
+                print("Saved scalar metrics table to:", scalar_table_path)
+
+        combined_normalized_table_paths = save_scalar_metric_tables(
             metrics=metrics,
             variables=vars_from_fc,
-            output_folder=SCALAR_TABLE_FOLDER,
+            output_folder=PLOT_FOLDER,
             filters=SCALAR_TABLE_FILTERS,
+            metrics_keep=NORMALIZED_METRICS,
+            filename_prefix="normalized_metrics",
+            title_prefix="Normalized metrics",
+            row_index=("variable", "metric"),
+            column_index=("model", "stat"),
+            stat_label_overrides={"prob": ""},
+            base_color=get_variable_table_color(variable=vars_from_fc[0], variables=vars_from_fc),
         )
-        for scalar_table_path in scalar_table_paths:
-            print("Saved scalar metrics table to:", scalar_table_path)
+        for normalized_table_path in combined_normalized_table_paths:
+            print("Saved combined normalized metrics table to:", normalized_table_path)
 
     if SCOREBOARD_ENABLED:
         scoreboard_path = save_scoreboard_plot(
