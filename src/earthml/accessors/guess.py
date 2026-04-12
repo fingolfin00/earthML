@@ -8,7 +8,7 @@ from ..base.dataclasses import Dims
 
 # Constants
 DIM_NAMES = {
-    "time":         ["valid_time", "time_counter", "source_time", "t"],
+    "time":         ["time", "valid_time", "time_counter", "source_time", "t"],
     "latitude":     ['lat', 'y', 'nav_lat'],
     "longitude":    ['lon', 'x', 'nav_lon'],
     "realization":  ["realization", "number", "ens"],
@@ -32,8 +32,10 @@ class EarthMLGuess:
                 return ds.cf.coords[cf_name].name
             else:
                 return ds.cf.data_vars[cf_name].name
-        except KeyError:
-            # print("key error")
+        except (KeyError, AttributeError, ValueError):
+            # cf_xarray can fail either because the mapping is missing or because
+            # multiple coords satisfy the same CF role (for example `time`,
+            # `valid_time`, and `source_time` coexisting in Earthkit datasets).
             pass
         # Try explicit fallback dimension names
         fallback_names = (fallback_names or []) + [cf_name]
