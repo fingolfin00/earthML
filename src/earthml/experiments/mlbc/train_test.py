@@ -23,7 +23,7 @@ from ...misc import Table
 from ...logging import get_logger, log_renderable
 from ...neural import XarrayDataset, Normalize, EpochRandomSplitDataModule
 from ...neural.nets import build_net
-from .plot import plot_stage_timeseries
+from .plot import plot_stage_timeseries, plot_stage_residual_timeseries
 
 
 class MLBCExperiment:
@@ -383,7 +383,17 @@ class MLBCExperiment:
             data_type=data_type,
             stage=stage,
             stage_kind="dataset",
-            title_prefix="",
+        )
+        plot_stage_residual_timeseries(
+            logger=self.logger,
+            plots_folder_path=self.plots_folder_path,
+            left_ds=input_ds,
+            right_ds=target_ds,
+            data_type=data_type,
+            stage=stage,
+            stage_kind="dataset",
+            residual_label="input-target",
+            residual_mean_label="input-target mean",
         )
 
     def _plot_prediction_stage(
@@ -406,7 +416,17 @@ class MLBCExperiment:
             data_type=data_type,
             stage=stage,
             stage_kind="prediction",
-            title_prefix="preds",
+        )
+        plot_stage_residual_timeseries(
+            logger=self.logger,
+            plots_folder_path=self.plots_folder_path,
+            left_ds=pred_ds,
+            right_ds=target_ds,
+            data_type=data_type,
+            stage=stage,
+            stage_kind="prediction",
+            residual_label="pred-target",
+            residual_mean_label="pred-target mean",
         )
 
     def _create_and_save_common_mask(
