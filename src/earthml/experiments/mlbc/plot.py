@@ -143,6 +143,49 @@ def _infer_period_unit(ds: xr.Dataset) -> str:
     return "timesteps"
 
 
+def _extract_requested_leadtime(ds: xr.Dataset) -> np.timedelta64 | None:
+    if "leadtime" in ds.coords and ds["leadtime"].size == 1:
+        try:
+            return np.asarray(ds["leadtime"].values).reshape(-1)[0]
+        except Exception:
+            pass
+
+    removed = ds.attrs.get("removed_metadata")
+    if isinstance(removed, dict):
+        lead_meta = removed.get("leadtime")
+        if isinstance(lead_meta, dict):
+            value = lead_meta.get("value")
+            if isinstance(value, list) and len(value) == 1:
+                try:
+                    return np.asarray(value, dtype="timedelta64[ns]")[0]
+                except Exception:
+                    pass
+
+    return None
+
+
+def _infer_lag_steps(ds: xr.Dataset, *, time_dim: str) -> int:
+    leadtime = _extract_requested_leadtime(ds)
+    if leadtime is None:
+        return 1
+
+    if time_dim not in ds.coords or ds.sizes.get(time_dim, 0) < 2:
+        return 1
+
+    try:
+        time_vals = np.asarray(ds[time_dim].values).astype("datetime64[ns]")
+        deltas = np.diff(time_vals).astype("timedelta64[ns]").astype(np.int64)
+        if deltas.size == 0:
+            return 1
+        dt_ns = int(np.median(deltas))
+        lt_ns = int(np.asarray(leadtime).astype("timedelta64[ns]").astype(np.int64))
+        if dt_ns <= 0:
+            return 1
+        return max(1, int(round(lt_ns / dt_ns)))
+    except Exception:
+        return 1
+
+
 def _format_map_cbar_label(var: str, unit: str | None) -> str:
     return f"{var} [{unit}]" if unit else var
 
@@ -548,6 +591,7 @@ def plot_stage_lag_diagnostic(
     data_type: str,
     stage: str,
     stage_kind: str,
+    lag_steps: int | None = None,
 ) -> None:
     stage_plot_folder = _get_stage_plot_folder(plots_folder_path, data_type)
     time_dim = left_ds.earthml.guessed_dims.time
@@ -591,30 +635,33 @@ def plot_stage_lag_diagnostic(
                 corr = float(np.corrcoef(av[mask], bv[mask])[0, 1]) if mask.sum() > 1 else float("nan")
                 return rmse, corr
 
-            target_prev = target_mean.shift({time_dim: 1})
-            target_next = target_mean.shift({time_dim: -1})
+            lag_steps_eff = lag_steps if lag_steps is not None else _infer_lag_steps(left_ds, time_dim=time_dim)
+            target_prev = target_mean.shift({time_dim: lag_steps_eff})
+            target_next = target_mean.shift({time_dim: -lag_steps_eff})
 
             rmse_0, corr_0 = _score(input_mean, target_mean)
             rmse_prev, corr_prev = _score(input_mean, target_prev)
             rmse_next, corr_next = _score(input_mean, target_next)
 
             logger.info(
-                "Lag diagnostic %s/%s/%s: lag0 rmse=%.3f corr=%.3f | target(t-1) rmse=%.3f corr=%.3f | target(t+1) rmse=%.3f corr=%.3f",
+                "Lag diagnostic %s/%s/%s: lag0 rmse=%.3f corr=%.3f | target(t-%s) rmse=%.3f corr=%.3f | target(t+%s) rmse=%.3f corr=%.3f",
                 data_type,
                 stage,
                 var,
                 rmse_0,
                 corr_0,
+                lag_steps_eff,
                 rmse_prev,
                 corr_prev,
+                lag_steps_eff,
                 rmse_next,
                 corr_next,
             )
 
             ax.plot(x, input_mean.values, color="tab:blue", linewidth=2.0, label="input(t)")
             ax.plot(x, target_mean.values, color="tab:orange", linewidth=2.0, label="target(t)")
-            ax.plot(x, target_prev.values, color="tab:green", linewidth=1.5, linestyle="--", label="target(t-1)")
-            ax.plot(x, target_next.values, color="tab:red", linewidth=1.5, linestyle="--", label="target(t+1)")
+            ax.plot(x, target_prev.values, color="tab:green", linewidth=1.5, linestyle="--", label=f"target(t-{lag_steps_eff})")
+            ax.plot(x, target_next.values, color="tab:red", linewidth=1.5, linestyle="--", label=f"target(t+{lag_steps_eff})")
             ax.set_xlabel("Time")
             ax.set_ylabel(_format_y_label(var, unit=_get_var_unit(left_ds, var)))
             ax.grid(True, alpha=0.3)
@@ -832,6 +879,7 @@ def run_stage_plot_bundle(
     residual_mean_label: str,
     anomaly_residual_label: str,
     anomaly_residual_mean_label: str,
+    lag_steps: int | None = None,
 ) -> None:
     shared_kwargs = dict(
         logger=logger,
@@ -880,6 +928,7 @@ def run_stage_plot_bundle(
     plot_stage_lag_diagnostic(
         left_ds=left_ds,
         right_ds=right_ds,
+        lag_steps=lag_steps,
         **shared_kwargs,
     )
     plot_stage_residual_timeseries(

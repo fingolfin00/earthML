@@ -473,6 +473,48 @@ class MLBCExperiment:
             "Refusing dangerous inner alignment on spatial coordinates."
         )
 
+    def _requested_lag_steps(
+        self,
+        mode: MLBCExperimentMode,
+        ref_ds: xr.Dataset,
+    ) -> int | None:
+        datasets_cfg = self.config.train_dataset if mode == MLBCExperimentMode.TRAIN else self.config.test_dataset
+        input_cfg = next((ds for ds in datasets_cfg if ds.role == MLBCExperimentDatasetRole.INPUT), None)
+        if input_cfg is None:
+            return None
+
+        source_configs = input_cfg.source_configs
+        if isinstance(source_configs, Sequence) and not isinstance(source_configs, (str, bytes)):
+            source_config = source_configs[0]
+        else:
+            source_config = source_configs
+
+        leadtime_rd = getattr(source_config, "leadtime", None)
+        if leadtime_rd is None:
+            return None
+
+        time_dim = ref_ds.earthml.guessed_dims.time
+        if time_dim is None or ref_ds.sizes.get(time_dim, 0) < 2:
+            return None
+
+        try:
+            time_vals = np.asarray(ref_ds[time_dim].values).astype("datetime64[ns]")
+            deltas = np.diff(time_vals).astype("timedelta64[ns]").astype(np.int64)
+            if deltas.size == 0:
+                return None
+            dt_ns = int(np.median(deltas))
+            lt_ns = int(pd.Timedelta(
+                days=leadtime_rd.days + leadtime_rd.months * 30 + leadtime_rd.years * 365,
+                hours=leadtime_rd.hours,
+                minutes=leadtime_rd.minutes,
+                seconds=leadtime_rd.seconds,
+            ).to_timedelta64().astype("timedelta64[ns]").astype(np.int64))
+            if dt_ns <= 0 or lt_ns <= 0:
+                return None
+            return max(1, int(round(lt_ns / dt_ns)))
+        except Exception:
+            return None
+
     def _plot_dataset_stage(
         self,
         input_ds: xr.Dataset,
@@ -492,6 +534,7 @@ class MLBCExperiment:
             {"ds": input_ds, "label": "input", "mean_label": "input mean", "color": "tab:blue"},
             {"ds": target_ds, "label": "target", "mean_label": "target mean", "color": "tab:orange"},
         ]
+        lag_steps = self._requested_lag_steps(mode, input_ds)
         run_stage_plot_bundle(
             logger=self.logger,
             plots_folder_path=self.plots_folder_path,
@@ -505,6 +548,7 @@ class MLBCExperiment:
             residual_mean_label="input-target mean",
             anomaly_residual_label="input-target anomaly",
             anomaly_residual_mean_label="input-target anomaly mean",
+            lag_steps=lag_steps,
         )
 
     def _plot_prediction_stage(
@@ -520,6 +564,7 @@ class MLBCExperiment:
             {"ds": input_ds, "label": "input", "mean_label": "input mean", "color": "tab:blue"},
             {"ds": target_ds, "label": "target", "mean_label": "target mean", "color": "tab:orange"},
         ]
+        lag_steps = self._requested_lag_steps(mode, input_ds)
         run_stage_plot_bundle(
             logger=self.logger,
             plots_folder_path=self.plots_folder_path,
@@ -533,6 +578,7 @@ class MLBCExperiment:
             residual_mean_label="pred-target mean",
             anomaly_residual_label="pred-target anomaly",
             anomaly_residual_mean_label="pred-target anomaly mean",
+            lag_steps=lag_steps,
         )
 
     def _create_and_save_common_mask(
