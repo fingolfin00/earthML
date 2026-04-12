@@ -32,6 +32,7 @@ def plot_scoreboard(
     metric_cmaps=None,
     metric_vlims=None,
     metric_names=None,
+    display_name_maps=None,
     metric_factor=1,
     figsize=None,
     cell_size=(0.8, 0.5),   # (width_per_score, height_per_score) in inches
@@ -86,6 +87,15 @@ def plot_scoreboard(
     metric_names = metric_names or {}
     filters = filters or {}
     panel_select = panel_select or {}
+    display_name_maps = display_name_maps or {}
+
+    def _format_display(index_name, value):
+        formatter = display_name_maps.get(index_name)
+        if callable(formatter):
+            return str(formatter(value))
+        if isinstance(formatter, dict):
+            return str(formatter.get(value, value))
+        return str(value)
 
     def _expand_degenerate_limits(vmin, vmax):
         if not (np.isfinite(vmin) and np.isfinite(vmax)):
@@ -301,17 +311,24 @@ def plot_scoreboard(
 
             if i == 0:
                 labels = outer_x.get("label")
-                ax.set_title(labels[j] if labels is not None else v, fontsize=plt_outer_fontsize)
+                title_text = labels[j] if labels is not None else _format_display(outer_x["index"], v)
+                ax.set_title(title_text, fontsize=plt_outer_fontsize)
 
             ax.set_xticks(range(len(p.columns)))
             if i == len(outer_y_vals) - 1:
-                ax.set_xticklabels(list(p.columns), fontsize=plt_inner_fontsize)
+                ax.set_xticklabels(
+                    [_format_display(inner_x["index"], value) for value in p.columns],
+                    fontsize=plt_inner_fontsize,
+                )
             else:
                 ax.set_xticklabels([])
 
             ax.set_yticks(range(len(p.index)))
             if j == 0:
-                ax.set_yticklabels(list(p.index), fontsize=plt_inner_fontsize)
+                ax.set_yticklabels(
+                    [_format_display(inner_y["index"], value) for value in p.index],
+                    fontsize=plt_inner_fontsize,
+                )
             else:
                 ax.set_yticklabels([])
 
@@ -325,8 +342,9 @@ def plot_scoreboard(
     if title:
         fig.suptitle(title, fontsize=plt_title_fontsize)
 
-    fig.supxlabel(inner_x.get("label", inner_x["index"]), fontsize=plt_outer_fontsize)
-    fig.supylabel(inner_y.get("label", inner_y["index"]), fontsize=plt_outer_fontsize)
+    fig.supxlabel(inner_x.get("label", inner_x["index"]), fontsize=plt_outer_fontsize, y=0.04)
+    fig.supylabel(inner_y.get("label", inner_y["index"]), fontsize=plt_outer_fontsize, x=0.04)
+    fig.subplots_adjust(left=0.24, right=0.92, bottom=0.12, top=0.90 if title else 0.96)
 
     if save_path:
         fig.savefig(save_path, bbox_inches="tight", dpi=150)
