@@ -1241,6 +1241,48 @@ class MLBCExperiment:
 
         R_out, T_out = self._infer_RT_from_source(dataset)
 
+        input_ds = dataset.input_ds
+        input_rdim = input_ds.earthml.guessed_dims.realization
+        input_has_matching_r = (
+            input_rdim is not None
+            and input_rdim in input_ds.dims
+            and int(input_ds.sizes[input_rdim]) == R_out
+        )
+
+        # Ensemble predictions should follow the input realization convention
+        # when the target metadata is deterministic/singleton.
+        if (
+            R_out > 1
+            and rdim is not None
+            and (
+                rdim not in meta_ds.dims
+                or int(meta_ds.sizes.get(rdim, 1)) != R_out
+            )
+        ):
+            if not input_has_matching_r:
+                raise ValueError(
+                    "Cannot reconstruct ensemble prediction coordinates: "
+                    f"target realization dim '{rdim}' has size "
+                    f"{meta_ds.sizes.get(rdim, 'missing')} but expected {R_out}, "
+                    f"and input realization dim '{input_rdim}' is unavailable."
+                )
+
+            if rdim in meta_ds.dims:
+                meta_ds = meta_ds.drop_dims(rdim)
+
+            input_rcoord = input_ds.coords.get(input_rdim)
+            if input_rcoord is not None:
+                if input_rdim != rdim:
+                    input_rcoord = input_rcoord.rename({input_rdim: rdim})
+                meta_ds = meta_ds.assign_coords({rdim: input_rcoord})
+            else:
+                meta_ds = meta_ds.assign_coords({rdim: np.arange(R_out, dtype=np.int64)})
+
+            base_order = [rdim, tdim, ydim, xdim]
+            order = [d for d in base_order if d in meta_ds.dims]
+            order += [d for d in meta_ds.dims if d not in order]
+            meta_ds = meta_ds.transpose(*order, missing_dims="ignore")
+
         data_vars, meta_ds = self._reconstruct_pred_tensor(data, meta_ds, R_out=R_out, T_out=T_out)
 
         # Use meta dim names if present; otherwise drop them safely.
