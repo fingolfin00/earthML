@@ -170,37 +170,8 @@ class MetricData:
             for ds in model_data
         ]
 
-        # Align data and mask
-        datasets = [truth_data] + model_data
-        if mask_data is not None:
-            aligned = xr.align(*datasets, mask_data, join="inner")
-            *core_aligned, mask_aligned = aligned
-            valid = mask_aligned.to_array().all("variable")
-        else:
-            core_aligned = xr.align(*datasets, join="inner")
-            masks = [np.isfinite(ds.to_array()).all("variable") for ds in core_aligned]
-            valid = masks[0]
-            for mask in masks[1:]:
-                valid = valid & mask
-
-        # Cast to avoid mixed types
-        core_aligned = [
-            ds.astype({
-                v: np.float32
-                for v in ds.data_vars
-                if np.issubdtype(ds[v].dtype, np.floating)
-            })
-            for ds in core_aligned
-        ]
-
-        masked = [ds.where(valid) for ds in core_aligned]
-
-        truth_data = masked[0]
-        model_data = masked[1:]
-
         truth_data = truth_data.earthml.normalize_dims_and_coords()
-        for i,m in enumerate(model_data):
-            model_data[i] = m.earthml.normalize_dims_and_coords()
+        model_data = [ds.earthml.normalize_dims_and_coords() for ds in model_data]
 
         time_dim, lat_dim, lon_dim, realization_dim, leadtime_dim = model_data[0].earthml.guessed_dims
 
@@ -234,16 +205,49 @@ class MetricData:
                 target_realization_values = ds[realization_dim].values
                 break
 
+        if mask_data is not None:
+            mask_data = mask_data.earthml.normalize_dims_and_coords()
+
         if target_realization_values is not None:
             truth_data = _broadcast_singleton_realization(truth_data, target_realization_values)
             model_data = [
                 _broadcast_singleton_realization(ds, target_realization_values)
                 for ds in model_data
             ]
+            if mask_data is not None:
+                mask_data = _broadcast_singleton_realization(mask_data, target_realization_values)
             clim_data = [
                 _broadcast_singleton_realization(ds, target_realization_values) if ds is not None else None
                 for ds in clim_data
             ]
+
+        # Align data and mask
+        datasets = [truth_data] + model_data
+        if mask_data is not None:
+            aligned = xr.align(*datasets, mask_data, join="inner")
+            *core_aligned, mask_aligned = aligned
+            valid = mask_aligned.to_array().all("variable")
+        else:
+            core_aligned = xr.align(*datasets, join="inner")
+            masks = [np.isfinite(ds.to_array()).all("variable") for ds in core_aligned]
+            valid = masks[0]
+            for mask in masks[1:]:
+                valid = valid & mask
+
+        # Cast to avoid mixed types
+        core_aligned = [
+            ds.astype({
+                v: np.float32
+                for v in ds.data_vars
+                if np.issubdtype(ds[v].dtype, np.floating)
+            })
+            for ds in core_aligned
+        ]
+
+        masked = [ds.where(valid) for ds in core_aligned]
+
+        truth_data = masked[0]
+        model_data = masked[1:]
 
         return cls(
             truth_data=truth_data,
