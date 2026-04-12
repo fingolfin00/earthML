@@ -83,6 +83,9 @@ SCOREBOARD_ANNOTATE = True
 
 SCALAR_TABLE_ENABLED = True
 SCALAR_TABLE_FOLDER = PLOT_FOLDER / "tables"
+SCALAR_TABLE_IMAGE_DPI = 300
+SCALAR_TABLE_MODEL_ORDER = ("fc", "pr", "pr-fc")
+SCALAR_TABLE_STAT_ORDER = ("avg", "spread", "ens", "prob")
 SCALAR_TABLE_FILTERS = {
     "train_period": None,
     "loss": None,
@@ -148,6 +151,36 @@ def _sanitize_filename_fragment(text: str) -> str:
     return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in text).strip("_") or "all"
 
 
+def _prettify_stat_label(stat: str) -> str:
+    pretty = {
+        "avg": "avg",
+        "spread": "spread",
+        "ens": "ens",
+        "gain": "gain",
+        "prob": "prob",
+    }
+    return pretty.get(stat, stat.replace("_", " "))
+
+
+def _metric_higher_is_better(metric: str) -> bool | None:
+    mapping = {
+        "corr": True,
+        "clim_acc": True,
+        "spatial_acc": True,
+        "r2": True,
+        "rmse": False,
+        "crmse": False,
+        "mae": False,
+        "bias": False,
+        "nrmse": False,
+        "ncrmse": False,
+        "nmae": False,
+        "nbias": False,
+        "crps": False,
+    }
+    return mapping.get(metric)
+
+
 def _print_rich_dataframe_table(df: pd.DataFrame, *, title: str, decimals: int) -> None:
     rich_table = RichTable(title=title, show_lines=False)
     index_labels = list(df.index.names) if isinstance(df.index, pd.MultiIndex) else [df.index.name or "row"]
@@ -165,6 +198,192 @@ def _print_rich_dataframe_table(df: pd.DataFrame, *, title: str, decimals: int) 
         rich_table.add_row(*row_cells)
 
     print(rich_table)
+
+
+def _format_table_for_display(df: pd.DataFrame, *, decimals: int) -> pd.DataFrame:
+    df_display = df.copy()
+    if isinstance(df_display.columns, pd.MultiIndex):
+        df_display.columns = pd.MultiIndex.from_tuples(
+            [
+                tuple(_prettify_stat_label(part) if i == len(col) - 1 else part for i, part in enumerate(col))
+                for col in df_display.columns
+            ],
+            names=df_display.columns.names,
+        )
+    return df_display.round(decimals)
+
+
+def _add_model_gain_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(df.columns, pd.MultiIndex) or "stat" not in df.columns.names or "model" not in df.columns.names:
+        return df
+
+    col_names = list(df.columns.names)
+    stat_idx = col_names.index("stat")
+    model_idx = col_names.index("model")
+    prefix_indices = [i for i in range(len(col_names)) if i not in {stat_idx, model_idx}]
+    prefix_stat_pairs = sorted({(tuple(col[i] for i in prefix_indices), col[stat_idx]) for col in df.columns})
+
+    out = df.copy()
+    gain_stats = {"avg", "ens", "prob"}
+    for prefix, stat in prefix_stat_pairs:
+        if stat not in gain_stats:
+            continue
+        fc_key = list(prefix)
+        fc_key.insert(model_idx, "fc")
+        fc_key.insert(stat_idx, stat)
+        pr_key = list(prefix)
+        pr_key.insert(model_idx, "pr")
+        pr_key.insert(stat_idx, stat)
+        gain_key = list(prefix)
+        gain_key.insert(model_idx, "pr-fc")
+        gain_key.insert(stat_idx, stat)
+
+        fc_key = tuple(fc_key)
+        pr_key = tuple(pr_key)
+        gain_key = tuple(gain_key)
+
+        if fc_key in out.columns and pr_key in out.columns:
+            out[gain_key] = out[pr_key] - out[fc_key]
+
+    return out
+
+
+def _order_table_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(df.columns, pd.MultiIndex) or "stat" not in df.columns.names:
+        return df
+
+    col_names = list(df.columns.names)
+    stat_idx = col_names.index("stat")
+    model_idx = col_names.index("model") if "model" in col_names else None
+
+    def _sort_key(col: tuple[object, ...]) -> tuple:
+        prefix = tuple("" if col[i] is None else str(col[i]) for i in range(len(col)) if i not in {stat_idx, model_idx})
+        model = str(col[model_idx]) if model_idx is not None else ""
+        model_order = (
+            SCALAR_TABLE_MODEL_ORDER.index(model)
+            if model in SCALAR_TABLE_MODEL_ORDER
+            else len(SCALAR_TABLE_MODEL_ORDER)
+        )
+        stat = str(col[stat_idx])
+        stat_order = (
+            SCALAR_TABLE_STAT_ORDER.index(stat)
+            if stat in SCALAR_TABLE_STAT_ORDER
+            else len(SCALAR_TABLE_STAT_ORDER)
+        )
+        return (*prefix, model_order, stat_order, model, stat)
+
+    return df.loc[:, sorted(df.columns.tolist(), key=_sort_key)]
+
+
+def save_scalar_metric_table_image(
+    *,
+    df: pd.DataFrame,
+    title: str,
+    image_path: Path,
+    decimals: int,
+    dpi: int = SCALAR_TABLE_IMAGE_DPI,
+) -> Path:
+    df_display = _format_table_for_display(df, decimals=decimals)
+    n_rows, n_cols = df_display.shape
+
+    fig_width = max(14.0, 2.2 + 1.75 * (n_cols + df_display.index.nlevels))
+    fig_height = max(2.8, 1.4 + 0.42 * (n_rows + 2))
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+    fig.patch.set_facecolor("#f6f1e8")
+    ax.axis("off")
+
+    col_labels = []
+    for col in df_display.columns:
+        parts = col if isinstance(col, tuple) else (col,)
+        col_labels.append("\n".join(map(str, parts)))
+
+    row_labels = [
+        "\n".join(map(str, idx if isinstance(idx, tuple) else (idx,)))
+        for idx in df_display.index
+    ]
+    cell_text = [
+        [_format_scalar_value(value, decimals) for value in row]
+        for row in df_display.to_numpy()
+    ]
+
+    table = ax.table(
+        cellText=cell_text,
+        rowLabels=row_labels,
+        colLabels=col_labels,
+        cellLoc="center",
+        rowLoc="center",
+        bbox=[0.01, 0.03, 0.98, 0.88],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1.0, 1.5)
+
+    header_color = "#183a37"
+    header_text = "#fdfaf3"
+    row_label_color = "#d9c7a4"
+    stripe_a = "#fbf7ef"
+    stripe_b = "#f1e7d4"
+    edge_color = "#d4c4a8"
+    text_color = "#1b1b1b"
+    gain_good = "#d7efdc"
+    gain_bad = "#f6d7d2"
+    gain_neutral = "#ede1c7"
+
+    for (row, col), cell in table.get_celld().items():
+        cell.set_edgecolor(edge_color)
+        cell.set_linewidth(0.8)
+        if row == 0:
+            cell.set_facecolor(header_color)
+            cell.set_text_props(color=header_text, weight="bold")
+        elif col == -1:
+            cell.set_facecolor(row_label_color)
+            cell.set_text_props(color=text_color, weight="bold")
+        else:
+            base_face = stripe_a if row % 2 else stripe_b
+            cell.set_facecolor(base_face)
+            cell.set_text_props(color=text_color)
+
+            if isinstance(df.columns, pd.MultiIndex):
+                raw_col_key = df.columns[col]
+                col_name_to_value = {
+                    str(name): raw_col_key[i]
+                    for i, name in enumerate(df.columns.names)
+                }
+                stat_name = str(col_name_to_value.get("stat", ""))
+                model_name = str(col_name_to_value.get("model", ""))
+                if model_name == "pr-fc" and stat_name in {"avg", "ens", "prob"}:
+                    metric_key = df.index[row - 1]
+                    metric_name = str(metric_key[0] if isinstance(metric_key, tuple) else metric_key)
+                    raw_value = df.iloc[row - 1, col]
+                    direction = _metric_higher_is_better(metric_name)
+                    if pd.isna(raw_value) or direction is None:
+                        cell.set_facecolor(gain_neutral)
+                    else:
+                        improved = raw_value > 0 if direction else raw_value < 0
+                        degraded = raw_value < 0 if direction else raw_value > 0
+                        if improved:
+                            cell.set_facecolor(gain_good)
+                        elif degraded:
+                            cell.set_facecolor(gain_bad)
+                        else:
+                            cell.set_facecolor(gain_neutral)
+                    cell.set_text_props(color=text_color, weight="bold")
+
+    ax.text(
+        0.01,
+        0.97,
+        title,
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=16,
+        fontweight="bold",
+        color="#183a37",
+    )
+
+    fig.savefig(image_path, dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.close(fig)
+    return image_path
 
 
 def print_available_scalar_metrics(*, metrics: dict) -> None:
@@ -200,19 +419,19 @@ def _build_deterministic_summary_frame(
 
     if "realization" in df_det.columns:
         df_mean = df_det.groupby(group_cols, dropna=False, as_index=False)["value"].mean()
-        df_mean["stat"] = "det_mean"
+        df_mean["stat"] = "avg"
 
         df_spread = df_det.groupby(group_cols, dropna=False, as_index=False)["value"].std(ddof=0)
         df_spread["value"] = df_spread["value"].fillna(0.0)
-        df_spread["stat"] = "det_spread"
+        df_spread["stat"] = "spread"
 
         return pd.concat([df_mean, df_spread], ignore_index=True)
 
     df_det = df_det.copy()
-    df_det["stat"] = "det_mean"
+    df_det["stat"] = "avg"
     df_spread = df_det.copy()
     df_spread["value"] = 0.0
-    df_spread["stat"] = "det_spread"
+    df_spread["stat"] = "spread"
     return pd.concat([df_det, df_spread], ignore_index=True)
 
 
@@ -236,7 +455,7 @@ def _build_metric_stat_frame(
     )
     if not df_ens.empty:
         df_ens = df_ens.copy()
-        df_ens["stat"] = "ensemble"
+        df_ens["stat"] = "ens"
         frames.append(df_ens)
 
     df_prob = build_scalar_metric_df(
@@ -294,6 +513,8 @@ def build_scalar_metric_tables(
             aggfunc="mean",
             dropna=False,
         ).sort_index(axis=0).sort_index(axis=1)
+        pivot = _add_model_gain_columns(pivot)
+        pivot = _order_table_columns(pivot)
 
         title_parts = ["Scalar metrics"]
         filename_parts: list[str] = []
@@ -327,11 +548,19 @@ def save_scalar_metric_tables(
         if table_df.empty:
             continue
 
-        _print_rich_dataframe_table(table_df, title=title, decimals=decimals)
+        table_df_display = _format_table_for_display(table_df, decimals=decimals)
+        _print_rich_dataframe_table(table_df_display, title=title, decimals=decimals)
 
-        csv_path = output_folder / f"scalar_metrics_{filename_stem}.csv"
-        table_df.round(decimals).to_csv(csv_path)
-        saved_paths.append(csv_path)
+        parquet_path = output_folder / f"scalar_metrics_{filename_stem}.parquet"
+        image_path = output_folder / f"scalar_metrics_{filename_stem}.png"
+        table_df_display.to_parquet(parquet_path)
+        save_scalar_metric_table_image(
+            df=table_df,
+            title=title,
+            image_path=image_path,
+            decimals=decimals,
+        )
+        saved_paths.extend([parquet_path, image_path])
 
     return saved_paths
 
