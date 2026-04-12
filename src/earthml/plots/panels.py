@@ -27,6 +27,33 @@ logger = get_logger(__name__)
 DEFAULT_PLOT_CONFIG = build_plot_config()
 
 
+def _continuous_lon_values(lon_values: np.ndarray) -> np.ndarray:
+    lon = np.asarray(lon_values, dtype=np.float64).copy()
+    if lon.ndim != 1 or lon.size <= 1:
+        return lon
+
+    for i in range(1, lon.size):
+        if not (np.isfinite(lon[i - 1]) and np.isfinite(lon[i])):
+            continue
+        delta = lon[i] - lon[i - 1]
+        while delta <= -180.0:
+            lon[i] += 360.0
+            delta = lon[i] - lon[i - 1]
+        while delta > 180.0:
+            lon[i] -= 360.0
+            delta = lon[i] - lon[i - 1]
+
+    finite = lon[np.isfinite(lon)]
+    if finite.size:
+        mean_lon = float(finite.mean())
+        if mean_lon > 180.0:
+            lon -= 360.0
+        elif mean_lon <= -180.0:
+            lon += 360.0
+
+    return lon
+
+
 def _extent_from_da(da: xr.DataArray, lon_name="lon", lat_name="lat", pad_deg=2.0):
     lon = np.asarray(da[lon_name].values).ravel()
     lat = np.asarray(da[lat_name].values).ravel()
@@ -37,20 +64,9 @@ def _extent_from_da(da: xr.DataArray, lon_name="lon", lat_name="lat", pad_deg=2.
     if lon.size == 0 or lat.size == 0:
         raise ValueError("Cannot infer extent from empty lon/lat coordinates.")
 
-    # Work in 0..360 to detect wrapped regional domains correctly
-    lon360 = np.where(lon < 0, lon + 360, lon)
-    lon360 = np.sort(lon360)
-
-    lon_min = float(lon360.min())
-    lon_max = float(lon360.max())
-
-    # convert back to [-180, 180] if not crossing dateline in a problematic way
-    if lon_max > 180 and lon_min > 180:
-        lon_min -= 360
-        lon_max -= 360
-    elif lon_max > 180 and lon_min < 180:
-        # keep as dateline-crossing geographic extent
-        pass
+    lon_cont = _continuous_lon_values(lon)
+    lon_min = float(lon_cont.min())
+    lon_max = float(lon_cont.max())
 
     lat_min, lat_max = float(lat.min()), float(lat.max())
 
@@ -393,7 +409,7 @@ def _sort_lon_for_plot(da: xr.DataArray) -> xr.DataArray:
     lon_name = da.earthml.guessed_dims.longitude
     lon = da[lon_name]
 
-    lon_plot = (np.asarray(lon.values) + 360) % 360
+    lon_plot = _continuous_lon_values(lon.values)
     da = da.assign_coords({lon_name: lon_plot})
     da = da.sortby(lon_name)
 

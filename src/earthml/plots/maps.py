@@ -6,6 +6,33 @@ import xarray as xr
 import cartopy.crs as ccrs
 
 
+def _continuous_lon_values(lon_values: np.ndarray) -> np.ndarray:
+    lon = np.asarray(lon_values, dtype=np.float64).copy()
+    if lon.ndim != 1 or lon.size <= 1:
+        return lon
+
+    for i in range(1, lon.size):
+        if not (np.isfinite(lon[i - 1]) and np.isfinite(lon[i])):
+            continue
+        delta = lon[i] - lon[i - 1]
+        while delta <= -180.0:
+            lon[i] += 360.0
+            delta = lon[i] - lon[i - 1]
+        while delta > 180.0:
+            lon[i] -= 360.0
+            delta = lon[i] - lon[i - 1]
+
+    finite = lon[np.isfinite(lon)]
+    if finite.size:
+        mean_lon = float(finite.mean())
+        if mean_lon > 180.0:
+            lon -= 360.0
+        elif mean_lon <= -180.0:
+            lon += 360.0
+
+    return lon
+
+
 def _reduce_for_temporal_mean_map(data: xr.Dataset | xr.DataArray) -> xr.DataArray:
     if isinstance(data, xr.Dataset):
         if len(data.data_vars) != 1:
@@ -29,8 +56,7 @@ def _sort_lon_for_plot(da: xr.DataArray) -> xr.DataArray:
     lon_name = da.earthml.guessed_dims.longitude
     if lon_name is None or lon_name not in da.coords:
         return da
-    lon = da[lon_name]
-    lon_plot = (np.asarray(lon.values) + 360) % 360
+    lon_plot = _continuous_lon_values(da[lon_name].values)
     return da.assign_coords({lon_name: lon_plot}).sortby(lon_name)
 
 
