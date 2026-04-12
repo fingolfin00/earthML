@@ -140,6 +140,13 @@ def preprocess_mfdataset(ds: xr.Dataset, data: DataSelection, var_name: str | No
         out = out.assign_coords({lon_coord: ds[lon_coord], lat_coord: ds[lat_coord]})
     out.attrs["_source"] = ds.encoding.get("source", "")
 
+    # In the Juno local workflow, `date` is the canonical sample/valid time we
+    # want to train on. NetCDF inputs may carry their own internal time stamp
+    # (often init/issue time or another provider-specific convention), which can
+    # visually and semantically shift the sample if we leave it untouched.
+    if date is not None and time_coord is not None and time_coord in out.dims and out.sizes[time_coord] == 1:
+        out = out.assign_coords({time_coord: [np.datetime64(date)]})
+
     # Drop non-dim extra "time" coord
     if "time" in out.coords and "time" not in out.dims and "time" != time_coord:
         # print("Reset extra time coordinate")
