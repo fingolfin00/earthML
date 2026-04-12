@@ -1446,127 +1446,128 @@ def save_field_timeseries_plots(
     model_order = [model_name for model_name in LOAD_MODELS if model_name in runs]
     truth_model = LOAD_MODELS[0] if LOAD_MODELS else None
 
-    for variable in variables:
-        timeseries_folder = get_variable_subfolder(
-            plot_root=plot_folder,
-            variable=variable,
-            subfolder="timeseries",
-        )
-        model_data: dict[str, xr.DataArray] = {}
-        context_reference: xr.DataArray | None = None
+    with xr.set_options(use_flox=False, use_numbagg=False):
+        for variable in variables:
+            timeseries_folder = get_variable_subfolder(
+                plot_root=plot_folder,
+                variable=variable,
+                subfolder="timeseries",
+            )
+            model_data: dict[str, xr.DataArray] = {}
+            context_reference: xr.DataArray | None = None
 
-        for model_name in model_order:
-            ds = runs.get(model_name)
-            if ds is None or variable not in ds.data_vars:
-                continue
-            da = _apply_xarray_filters(ds[variable], filters)
-            time_dim = da.earthml.guessed_dims.time
-            if time_dim is None or time_dim not in da.dims:
-                continue
-            model_data[model_name] = da
-            if context_reference is None:
-                context_reference = da
+            for model_name in model_order:
+                ds = runs.get(model_name)
+                if ds is None or variable not in ds.data_vars:
+                    continue
+                da = _apply_xarray_filters(ds[variable], filters)
+                time_dim = da.earthml.guessed_dims.time
+                if time_dim is None or time_dim not in da.dims:
+                    continue
+                model_data[model_name] = da
+                if context_reference is None:
+                    context_reference = da
 
-        if not model_data or context_reference is None:
-            continue
-
-        for selection, context_values in _context_selection_entries(context_reference):
-            selected_data = {
-                model_name: da.sel({dim: value for dim, value in selection.items() if dim in da.dims}, drop=True)
-                for model_name, da in model_data.items()
-            }
-            selected_data = {model_name: da for model_name, da in selected_data.items() if da.size > 0}
-            if not selected_data:
+            if not model_data or context_reference is None:
                 continue
 
-            fc_has_spread = _has_multi_realization(selected_data.get("fc"))
-            pr_has_spread = _has_multi_realization(selected_data.get("pr"))
-            enable_spread = fc_has_spread or pr_has_spread
-            show_legend = enable_spread
-
-            context_suffix = _context_title_suffix(context_values, leadtime_unit=leadtime_unit)
-            base_title = format_variable_display_name(variable)
-            filename_context = _context_filename_suffix(context_values)
-
-            plot_jobs: list[tuple[str, str, dict[str, xr.DataArray]]] = [
-                ("raw", f"{base_title} spatial mean timeseries", selected_data),
-            ]
-
-            try:
-                climatology_data = {
-                    model_name: _build_climatology_da(da)
-                    for model_name, da in selected_data.items()
+            for selection, context_values in _context_selection_entries(context_reference):
+                selected_data = {
+                    model_name: da.sel({dim: value for dim, value in selection.items() if dim in da.dims}, drop=True)
+                    for model_name, da in model_data.items()
                 }
-                plot_jobs.append(("climatology", f"{base_title} climatology", climatology_data))
-            except Exception:
-                climatology_data = {}
+                selected_data = {model_name: da for model_name, da in selected_data.items() if da.size > 0}
+                if not selected_data:
+                    continue
 
-            try:
-                anomaly_data = {
-                    model_name: _build_anomaly_da(da)
-                    for model_name, da in selected_data.items()
-                }
-                plot_jobs.append(("anomaly", f"{base_title} anomaly", anomaly_data))
-            except Exception:
-                anomaly_data = {}
+                fc_has_spread = _has_multi_realization(selected_data.get("fc"))
+                pr_has_spread = _has_multi_realization(selected_data.get("pr"))
+                enable_spread = fc_has_spread or pr_has_spread
+                show_legend = enable_spread
 
-            if truth_model is not None and truth_model in selected_data:
-                truth_da = selected_data[truth_model]
-                for model_name in ("fc", "pr"):
-                    if model_name not in selected_data:
-                        continue
-                    residual_da = _build_residual_da(selected_data[model_name], truth_da)
-                    plot_jobs.append(
-                        (
-                            f"residual_{model_name}_minus_{truth_model}",
-                            f"{base_title} residual ({MODEL_DISPLAY_NAMES.get(model_name, model_name)} - {MODEL_DISPLAY_NAMES.get(truth_model, truth_model)})",
-                            {model_name: residual_da},
+                context_suffix = _context_title_suffix(context_values, leadtime_unit=leadtime_unit)
+                base_title = format_variable_display_name(variable)
+                filename_context = _context_filename_suffix(context_values)
+
+                plot_jobs: list[tuple[str, str, dict[str, xr.DataArray]]] = [
+                    ("raw", f"{base_title} spatial mean timeseries", selected_data),
+                ]
+
+                try:
+                    climatology_data = {
+                        model_name: _build_climatology_da(da)
+                        for model_name, da in selected_data.items()
+                    }
+                    plot_jobs.append(("climatology", f"{base_title} climatology", climatology_data))
+                except Exception:
+                    climatology_data = {}
+
+                try:
+                    anomaly_data = {
+                        model_name: _build_anomaly_da(da)
+                        for model_name, da in selected_data.items()
+                    }
+                    plot_jobs.append(("anomaly", f"{base_title} anomaly", anomaly_data))
+                except Exception:
+                    anomaly_data = {}
+
+                if truth_model is not None and truth_model in selected_data:
+                    truth_da = selected_data[truth_model]
+                    for model_name in ("fc", "pr"):
+                        if model_name not in selected_data:
+                            continue
+                        residual_da = _build_residual_da(selected_data[model_name], truth_da)
+                        plot_jobs.append(
+                            (
+                                f"residual_{model_name}_minus_{truth_model}",
+                                f"{base_title} residual ({MODEL_DISPLAY_NAMES.get(model_name, model_name)} - {MODEL_DISPLAY_NAMES.get(truth_model, truth_model)})",
+                                {model_name: residual_da},
+                            )
                         )
-                    )
 
-            for plot_kind, title, plot_data in plot_jobs:
-                if not plot_data:
-                    continue
+                for plot_kind, title, plot_data in plot_jobs:
+                    if not plot_data:
+                        continue
 
-                sample_da = next(iter(plot_data.values()))
-                x_dim = "month" if plot_kind == "climatology" else (sample_da.earthml.guessed_dims.time or "time")
-                fig, ax = plt.subplots(figsize=(12, 5.5))
-                plotted = False
+                    sample_da = next(iter(plot_data.values()))
+                    x_dim = "month" if plot_kind == "climatology" else (sample_da.earthml.guessed_dims.time or "time")
+                    fig, ax = plt.subplots(figsize=(12, 5.5))
+                    plotted = False
 
-                for model_name, da in plot_data.items():
-                    plot_realization_timeseries(
-                        da,
-                        members=_members_arg(da, enable_spread=enable_spread),
-                        ax=ax,
-                        x_dim=x_dim,
-                        ens_dim=_realization_dim(da) or "realization",
-                        x_label="Month" if x_dim == "month" else "Time",
-                        y_label=base_title,
-                        label=MODEL_DISPLAY_NAMES.get(model_name, str(model_name)),
-                        mean_label=MODEL_DISPLAY_NAMES.get(model_name, str(model_name)),
-                        color=MODEL_COLORS.get(model_name),
-                        plot_members=False,
-                    )
-                    plotted = True
+                    for model_name, da in plot_data.items():
+                        plot_realization_timeseries(
+                            da,
+                            members=_members_arg(da, enable_spread=enable_spread),
+                            ax=ax,
+                            x_dim=x_dim,
+                            ens_dim=_realization_dim(da) or "realization",
+                            x_label="Month" if x_dim == "month" else "Time",
+                            y_label=base_title,
+                            label=MODEL_DISPLAY_NAMES.get(model_name, str(model_name)),
+                            mean_label=MODEL_DISPLAY_NAMES.get(model_name, str(model_name)),
+                            color=MODEL_COLORS.get(model_name),
+                            plot_members=False,
+                        )
+                        plotted = True
 
-                if not plotted:
+                    if not plotted:
+                        plt.close(fig)
+                        continue
+
+                    ax.set_title(f"{title} | {context_suffix}" if context_suffix else title)
+                    if plot_kind.startswith("residual_"):
+                        ax.axhline(0.0, color="0.3", lw=1.0, ls=":")
+                    if show_legend:
+                        ax.legend(fontsize=9)
+                    fig.tight_layout()
+
+                    plot_path = timeseries_folder / f"{plot_kind}_timeseries_{filename_context}.png"
+                    fig.savefig(plot_path, bbox_inches="tight", dpi=150)
                     plt.close(fig)
-                    continue
+                    saved_paths.append(plot_path)
 
-                ax.set_title(f"{title} | {context_suffix}" if context_suffix else title)
-                if plot_kind.startswith("residual_"):
-                    ax.axhline(0.0, color="0.3", lw=1.0, ls=":")
-                if show_legend:
-                    ax.legend(fontsize=9)
-                fig.tight_layout()
-
-                plot_path = timeseries_folder / f"{plot_kind}_timeseries_{filename_context}.png"
-                fig.savefig(plot_path, bbox_inches="tight", dpi=150)
-                plt.close(fig)
-                saved_paths.append(plot_path)
-
-        if progress is not None and task_id is not None:
-            progress.advance(task_id)
+            if progress is not None and task_id is not None:
+                progress.advance(task_id)
 
     return saved_paths
 
