@@ -55,6 +55,13 @@ class Normalize:
             raise ValueError("Expected pred/target shape (N,C,H,W)")
 
         device = pred.device
+        calc_dtype = (
+            torch.float32
+            if pred.dtype in (torch.float16, torch.bfloat16)
+            else pred.dtype
+        )
+        pred = pred.to(dtype=calc_dtype)
+        target = target.to(dtype=calc_dtype)
         dtype = pred.dtype
 
         def _as_bool_mask(m: Optional[torch.Tensor]) -> Optional[torch.Tensor]:

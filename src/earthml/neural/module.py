@@ -367,7 +367,12 @@ class EarthMLLightningModule(L.LightningModule):
         self.log("test_scc", self.test_scc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         # self.log("test_acc", self.test_acc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
 
-        self.test_step_outputs.append({"preds": mu.detach().cpu(), "targets": y.detach().cpu()})
+        self.test_step_outputs.append(
+            {
+                "preds": mu.detach().float().cpu(),
+                "targets": y.detach().float().cpu(),
+            }
+        )
 
     def on_train_epoch_start(self):
         # self._train_epoch_batch_time = 0.0

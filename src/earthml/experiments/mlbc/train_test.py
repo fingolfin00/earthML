@@ -1117,10 +1117,11 @@ class MLBCExperiment:
         # print(f"Available attributes in model: {dir(self.model)}")
 
         # Rescale preds with target normalization
-        preds = self.normalize_target.inverse_tensor(self.model.test_preds, self.normdata_target_path) # .squeeze()
+        preds_norm = self.model.test_preds.float()
+        preds = self.normalize_target.inverse_tensor(preds_norm, self.normdata_target_path) # .squeeze()
 
         # Print info
-        meta, var_cols = self._make_test_info_table(dataset, test_data, self.model.test_preds, preds, var_list)
+        meta, var_cols = self._make_test_info_table(dataset, test_data, preds_norm, preds, var_list)
         log_renderable(Table({f"Test on {test_data_mode.capitalize()} dataset run info": meta}, twocols=True).table, logger=self.logger)
         log_renderable(Table({f"Test on {test_data_mode.capitalize()} dataset metrics (per variable)": var_cols}).table, logger=self.logger)
 
