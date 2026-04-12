@@ -1064,12 +1064,12 @@ class MLBCExperiment:
         log_renderable(Table({f"Test on {test_data_mode.capitalize()} dataset run info": meta}, twocols=True).table, logger=self.logger)
         log_renderable(Table({f"Test on {test_data_mode.capitalize()} dataset metrics (per variable)": var_cols}).table, logger=self.logger)
 
-        pred_ds = self.save(preds, dataset, test_data, var_list, MLBCExperimentDatasetRole.INPUT, preds_store)
+        pred_ds = self.save(preds, dataset, var_list, preds_store)
         self._plot_prediction_stage(
             pred_ds=pred_ds,
             input_ds=test_input_ds,
             target_ds=test_target_ds,
-            data_type=test_data_mode,
+            mode=test_data_mode,
             stage="test_preds",
         )
 
@@ -1175,12 +1175,11 @@ class MLBCExperiment:
         self,
         data: torch.Tensor,
         dataset: XarrayDataset,
-        source_data: dict,
         var_list: Sequence,
-        metadata_source: str,
         preds_store: Path
     ):
-        meta_ds = source_data[metadata_source].load()
+        # Predictions live on the target grid, so keep target metadata/coords.
+        meta_ds = dataset.target_ds
 
         tdim = meta_ds.earthml.guessed_dims.time
         rdim = meta_ds.earthml.guessed_dims.realization
