@@ -4,8 +4,10 @@ import warnings
 import joblib
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 from rich import print
+from rich.table import Table as RichTable
 
 from earthml import Dask, get_runs_and_metrics
 from earthml.metrics.utils import metrics_to_df
@@ -79,6 +81,18 @@ SCOREBOARD_FILTERS = {
 }
 SCOREBOARD_ANNOTATE = True
 
+SCALAR_TABLE_ENABLED = True
+SCALAR_TABLE_FOLDER = PLOT_FOLDER / "tables"
+SCALAR_TABLE_FILTERS = {
+    "train_period": None,
+    "loss": None,
+    "leadtime": None,
+}
+SCALAR_TABLE_ROW_INDEX = ("metric",)
+SCALAR_TABLE_COLUMN_INDEX = ("model", "variable", "stat")
+SCALAR_TABLE_GROUP_BY = ("train_period", "loss", "leadtime")
+SCALAR_TABLE_DECIMALS = 3
+
 
 def build_scalar_metric_df(
     *,
@@ -99,6 +113,227 @@ def build_scalar_metric_df(
         diff=diff,
         models=models,
     )
+
+
+def _apply_df_filters(df: pd.DataFrame, filters: dict | None) -> pd.DataFrame:
+    if df.empty or not filters:
+        return df
+
+    out = df.copy()
+    for col, allowed in filters.items():
+        if allowed is None or col not in out.columns:
+            continue
+        values = allowed if isinstance(allowed, (list, tuple, set)) else [allowed]
+        out = out[out[col].isin(values)]
+    return out
+
+
+def _format_scalar_value(value: object, decimals: int) -> str:
+    if value is None or pd.isna(value):
+        return "-"
+    value_float = float(value)
+    if np.isinf(value_float):
+        return "inf" if value_float > 0 else "-inf"
+    return f"{value_float:.{decimals}f}"
+
+
+def _flatten_label(parts: tuple[object, ...] | object) -> str:
+    if not isinstance(parts, tuple):
+        parts = (parts,)
+    cleaned = [str(part) for part in parts if pd.notna(part) and str(part) != ""]
+    return " | ".join(cleaned) if cleaned else "-"
+
+
+def _sanitize_filename_fragment(text: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in text).strip("_") or "all"
+
+
+def _print_rich_dataframe_table(df: pd.DataFrame, *, title: str, decimals: int) -> None:
+    rich_table = RichTable(title=title, show_lines=False)
+    index_labels = list(df.index.names) if isinstance(df.index, pd.MultiIndex) else [df.index.name or "row"]
+    index_labels = [label if label is not None else "row" for label in index_labels]
+
+    for label in index_labels:
+        rich_table.add_column(str(label), style="magenta")
+    for col in df.columns:
+        rich_table.add_column(_flatten_label(col), justify="right", style="cyan")
+
+    for idx, row in df.iterrows():
+        idx_parts = idx if isinstance(idx, tuple) else (idx,)
+        row_cells = [str(part) for part in idx_parts]
+        row_cells.extend(_format_scalar_value(val, decimals) for val in row.tolist())
+        rich_table.add_row(*row_cells)
+
+    print(rich_table)
+
+
+def print_available_scalar_metrics(*, metrics: dict) -> None:
+    inventory = {}
+    for metric_type, section_dict in metrics.items():
+        ds_scalar = section_dict.get("scalar")
+        if ds_scalar is None or "metric" not in ds_scalar.coords:
+            inventory[metric_type] = []
+            continue
+        inventory[metric_type] = [str(metric) for metric in ds_scalar.coords["metric"].values.tolist()]
+
+    print("Available scalar metrics:")
+    for metric_type, metric_names in inventory.items():
+        print(f"  {metric_type}: {metric_names or 'none'}")
+
+
+def _build_deterministic_summary_frame(
+    *,
+    metrics: dict,
+    variables: list[str],
+) -> pd.DataFrame:
+    df_det = build_scalar_metric_df(
+        metrics=metrics,
+        variables=variables,
+        metric_name=None,
+        metric_type="deterministic",
+        diff="no",
+    )
+    if df_det.empty:
+        return pd.DataFrame()
+
+    group_cols = [col for col in df_det.columns if col not in {"value", "realization"}]
+
+    if "realization" in df_det.columns:
+        df_mean = df_det.groupby(group_cols, dropna=False, as_index=False)["value"].mean()
+        df_mean["stat"] = "det_mean"
+
+        df_spread = df_det.groupby(group_cols, dropna=False, as_index=False)["value"].std(ddof=0)
+        df_spread["value"] = df_spread["value"].fillna(0.0)
+        df_spread["stat"] = "det_spread"
+
+        return pd.concat([df_mean, df_spread], ignore_index=True)
+
+    df_det = df_det.copy()
+    df_det["stat"] = "det_mean"
+    df_spread = df_det.copy()
+    df_spread["value"] = 0.0
+    df_spread["stat"] = "det_spread"
+    return pd.concat([df_det, df_spread], ignore_index=True)
+
+
+def _build_metric_stat_frame(
+    *,
+    metrics: dict,
+    variables: list[str],
+) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+
+    df_det = _build_deterministic_summary_frame(metrics=metrics, variables=variables)
+    if not df_det.empty:
+        frames.append(df_det)
+
+    df_ens = build_scalar_metric_df(
+        metrics=metrics,
+        variables=variables,
+        metric_name=None,
+        metric_type="ensemble",
+        diff="no",
+    )
+    if not df_ens.empty:
+        df_ens = df_ens.copy()
+        df_ens["stat"] = "ensemble"
+        frames.append(df_ens)
+
+    df_prob = build_scalar_metric_df(
+        metrics=metrics,
+        variables=variables,
+        metric_name=None,
+        metric_type="probabilistic",
+        diff="no",
+    )
+    if not df_prob.empty:
+        df_prob = df_prob.copy()
+        df_prob["stat"] = "prob"
+        frames.append(df_prob)
+
+    if not frames:
+        return pd.DataFrame()
+
+    return pd.concat(frames, ignore_index=True)
+
+
+def build_scalar_metric_tables(
+    *,
+    metrics: dict,
+    variables: list[str],
+    filters: dict | None = None,
+    row_index: tuple[str, ...] = SCALAR_TABLE_ROW_INDEX,
+    column_index: tuple[str, ...] = SCALAR_TABLE_COLUMN_INDEX,
+    group_by: tuple[str, ...] = SCALAR_TABLE_GROUP_BY,
+) -> list[tuple[str, pd.DataFrame, str]]:
+    df_all = _build_metric_stat_frame(metrics=metrics, variables=variables)
+    df_all = _apply_df_filters(df_all, filters)
+    if df_all.empty:
+        return []
+
+    group_cols = [
+        col for col in group_by
+        if col in df_all.columns and col not in row_index and col not in column_index and df_all[col].nunique(dropna=False) > 1
+    ]
+
+    if group_cols:
+        grouped_items = list(df_all.groupby(group_cols, dropna=False, sort=True))
+    else:
+        grouped_items = [((), df_all)]
+
+    tables: list[tuple[str, pd.DataFrame, str]] = []
+    for group_key, df_group in grouped_items:
+        if not isinstance(group_key, tuple):
+            group_key = (group_key,)
+
+        pivot = pd.pivot_table(
+            df_group,
+            index=list(row_index),
+            columns=list(column_index),
+            values="value",
+            aggfunc="mean",
+            dropna=False,
+        ).sort_index(axis=0).sort_index(axis=1)
+
+        title_parts = ["Scalar metrics"]
+        filename_parts: list[str] = []
+        for col, value in zip(group_cols, group_key):
+            if pd.isna(value):
+                continue
+            title_parts.append(f"{col}={value}")
+            filename_parts.append(f"{col}_{_sanitize_filename_fragment(str(value))}")
+
+        tables.append((" | ".join(title_parts), pivot, "__".join(filename_parts) if filename_parts else "all"))
+
+    return tables
+
+
+def save_scalar_metric_tables(
+    *,
+    metrics: dict,
+    variables: list[str],
+    output_folder: Path,
+    filters: dict | None = None,
+    decimals: int = SCALAR_TABLE_DECIMALS,
+) -> list[Path]:
+    output_folder.mkdir(parents=True, exist_ok=True)
+
+    saved_paths: list[Path] = []
+    for title, table_df, filename_stem in build_scalar_metric_tables(
+        metrics=metrics,
+        variables=variables,
+        filters=filters,
+    ):
+        if table_df.empty:
+            continue
+
+        _print_rich_dataframe_table(table_df, title=title, decimals=decimals)
+
+        csv_path = output_folder / f"scalar_metrics_{filename_stem}.csv"
+        table_df.round(decimals).to_csv(csv_path)
+        saved_paths.append(csv_path)
+
+    return saved_paths
 
 
 def infer_leadtime_unit_from_configs(exp_root: Path) -> str:
@@ -444,6 +679,7 @@ def main() -> None:
     print(f"Processed vars: {vars_from_fc}")
     leadtime_unit = infer_leadtime_unit_from_configs(EXP_ROOT_FOLDER)
     print(f"Inferred leadtime unit: {leadtime_unit or 'unknown'}")
+    print_available_scalar_metrics(metrics=metrics)
 
     df_nodiff = build_scalar_metric_df(
         metrics=metrics,
@@ -485,6 +721,16 @@ def main() -> None:
     )
     for leadtime_plot_path in leadtime_plot_paths:
         print("Saved metric-vs-leadtime plot to:", leadtime_plot_path)
+
+    if SCALAR_TABLE_ENABLED:
+        scalar_table_paths = save_scalar_metric_tables(
+            metrics=metrics,
+            variables=vars_from_fc,
+            output_folder=SCALAR_TABLE_FOLDER,
+            filters=SCALAR_TABLE_FILTERS,
+        )
+        for scalar_table_path in scalar_table_paths:
+            print("Saved scalar metrics table to:", scalar_table_path)
 
     if SCOREBOARD_ENABLED:
         scoreboard_path = save_scoreboard_plot(
