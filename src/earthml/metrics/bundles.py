@@ -120,6 +120,7 @@ def build_standard_metric_bundle(
     for section, dims in reduce_dims.items():
         sm = section_metrics["deterministic"][section]
         sm["rmse"] = deterministic.rmse(metric_mean_dims=dims)
+        sm["rmse_skill_clim"] = deterministic.rmse_skill_clim(metric_mean_dims=dims, period=clim_period)
         sm["crmse"] = deterministic.crmse(metric_mean_dims=dims)
         sm["mae"] = deterministic.mae(metric_mean_dims=dims)
         sm["bias"] = deterministic.bias(metric_mean_dims=dims)
@@ -139,6 +140,7 @@ def build_standard_metric_bundle(
             sm = section_metrics["ensemble"][section]
 
             sm["rmse"] = deterministic.rmse_of_mean(rdim, dims)
+            sm["rmse_skill_clim"] = deterministic.rmse_skill_clim_of_mean(rdim, dims, period=clim_period)
             sm["crmse"] = deterministic.crmse_of_mean(rdim, dims)
             sm["mae"] = deterministic.mae_of_mean(rdim, dims)
             sm["bias"] = deterministic.bias_of_mean(rdim, dims)
@@ -155,7 +157,9 @@ def build_standard_metric_bundle(
         for section, dims in reduce_dims.items():
             sm = section_metrics["probabilistic"][section]
 
-            sm["crps"] = probabilistic.crps(full_dims)
+            sm["crps"] = probabilistic.crps(dims)
+            sm["spread"] = probabilistic.spread(dims)
+            sm["spread_error_ratio"] = probabilistic.spread_error_ratio(dims)
             # sm["crps_skill_clim"] = probabilistic.crps_skill_clim(full_dims)
 
     # ------------------
