@@ -1,6 +1,8 @@
 from typing import Literal
 from dataclasses import dataclass
 from functools import partial
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import multiprocessing
 
 import re, time, dask
 from heapq import nlargest
@@ -61,6 +63,7 @@ class JunoLocalSourceConfig:
     regrid_config               : RegridConfig
     select_area_after_request   : bool = True
     cfgrib_idx_path             : str | Path = ""
+    file_open_workers           : int | None = 1
 
 
 class JunoLocalSource(MFXarrayLocalSource):
@@ -89,6 +92,17 @@ class JunoLocalSource(MFXarrayLocalSource):
         self.cfgrib_idx_path = str(config.cfgrib_idx_path)
         if self.engine == "cfgrib" and self.cfgrib_idx_path:
             Path(self.cfgrib_idx_path).mkdir(parents=True, exist_ok=True)
+
+        self.file_open_workers = self._resolve_file_open_workers(config.file_open_workers)
+
+
+    @staticmethod
+    def _resolve_file_open_workers(file_open_workers: int | None) -> int:
+        if file_open_workers is None:
+            return max(1, multiprocessing.cpu_count())
+        if file_open_workers < 1:
+            raise ValueError("file_open_workers must be >= 1 or None")
+        return file_open_workers
 
 
     @staticmethod
@@ -179,6 +193,160 @@ class JunoLocalSource(MFXarrayLocalSource):
         if not m:
             raise ValueError(f"Could not parse realization from filename: {p.name}")
         return int(m.group(1))
+
+    def _open_sample_dataset(
+        self,
+        sample: list[Path],
+        date,
+        *,
+        realization_concat_dim: str,
+        selected_vars: list,
+        has_shifted_samples: bool,
+        lock,
+    ) -> xr.Dataset | None:
+        if len(sample) > 1:
+            sample = sorted(sample, key=self._realization_key)
+
+        common_args = {
+            "combine": "nested",
+            "coords": "minimal" if has_shifted_samples else "different",
+            "compat": "override" if has_shifted_samples else "no_conflicts",
+            "engine": self.engine,
+            "chunks": "auto",
+            "parallel": True,
+            "decode_timedelta": True,
+            "backend_kwargs": {},
+            "preprocess": partial(preprocess_mfdataset, data=self.data_selection),
+            "decode_cf": True,
+            "errors": "warn",
+            "lock": lock,
+            "concat_dim": realization_concat_dim,
+            "paths": sample,
+        }
+
+        is_var_list = isinstance(self.data_selection.variable, list)
+
+        if is_var_list:
+            var_ds_list = []
+
+            for var in selected_vars:
+                if self.engine == "cfgrib":
+                    per_file = []
+                    for path in sample:
+                        def _open_one(path=path, var_name=var.name, date=date):
+                            return self._open_one_cfgrib(path, var_name, date, lock)
+
+                        ds_one = retry_fetch_after_hdf_err(
+                            _open_one,
+                            error_re=r"Unspecified error in H5DSget_num_scales.*",
+                        )
+                        per_file.append(ds_one)
+
+                    ds_var = xr.concat(
+                        per_file,
+                        dim=realization_concat_dim,
+                        coords="minimal",
+                        compat="override",
+                        combine_attrs="drop_conflicts",
+                    )
+                    var_ds_list.append(ds_var)
+                else:
+                    var_args = dict(common_args)
+                    var_args["preprocess"] = partial(
+                        preprocess_mfdataset,
+                        data=self.data_selection,
+                        var_name=var.name,
+                        date=date,
+                    )
+
+                    def _open_mfdataset_local(local_args=var_args):
+                        return xr.open_mfdataset(**local_args)
+
+                    var_ds = retry_fetch_after_hdf_err(
+                        _open_mfdataset_local,
+                        error_re=r"Unspecified error in H5DSget_num_scales.*",
+                    )
+                    var_ds_list.append(var_ds)
+
+            ds_sample = xr.merge(var_ds_list, compat="no_conflicts", combine_attrs="no_conflicts")
+
+            if realization_concat_dim in ds_sample.coords:
+                ds_sample = ds_sample.assign_coords(
+                    {realization_concat_dim: np.asarray(ds_sample[realization_concat_dim].values)}
+                )
+        else:
+            var = selected_vars[0]
+
+            if self.engine == "cfgrib":
+                per_file = []
+                for path in sample:
+                    def _open_one(path=path, var_name=var.name, date=date):
+                        return self._open_one_cfgrib(path, var_name, date, lock)
+
+                    ds_one = retry_fetch_after_hdf_err(
+                        _open_one,
+                        error_re=r"Unspecified error in H5DSget_num_scales.*",
+                    )
+                    per_file.append(ds_one)
+
+                ds_sample = xr.concat(
+                    per_file,
+                    dim=realization_concat_dim,
+                    coords="minimal",
+                    compat="override",
+                    combine_attrs="drop_conflicts",
+                )
+            else:
+                args = dict(common_args)
+                args["preprocess"] = partial(
+                    preprocess_mfdataset,
+                    data=self.data_selection,
+                    var_name=var.name,
+                    date=date,
+                )
+
+                def _open_mfdataset_local(local_args=args):
+                    return xr.open_mfdataset(**local_args)
+
+                ds_sample = retry_fetch_after_hdf_err(
+                    _open_mfdataset_local,
+                    error_re=r"Unspecified error in H5DSget_num_scales.*",
+                )
+
+            if realization_concat_dim in ds_sample.coords:
+                ds_sample = ds_sample.assign_coords(
+                    {realization_concat_dim: np.asarray(ds_sample[realization_concat_dim].values)}
+                )
+            if realization_concat_dim in ds_sample.dims:
+                ds_sample = ds_sample.assign_coords(
+                    {realization_concat_dim: ds_sample[realization_concat_dim]}
+                )
+
+        return self._normalize_sample_dataset(ds_sample, date)
+
+    def _normalize_sample_dataset(self, ds_sample: xr.Dataset, date) -> xr.Dataset | None:
+        if "_has_var" not in ds_sample:
+            raise ValueError(f"{date}: ds_sample has no _has_var flag")
+
+        if not bool(ds_sample["_has_var"].any().item()):
+            return None
+
+        lon_name = ds_sample.earthml.guessed_coords.longitude
+        lat_name = ds_sample.earthml.guessed_coords.latitude
+
+        if lon_name is None or lat_name is None:
+            return None
+
+        lon = np.asarray(ds_sample[lon_name].values, dtype=np.float64)
+        lon = ((lon + 180.0) % 360.0) - 180.0
+        lon = np.round(lon, 10)
+        lon = np.where(np.isclose(lon, 180.0, atol=1e-8), -180.0, lon)
+
+        ds_sample = ds_sample.assign_coords({lon_name: lon}).sortby(lon_name)
+
+        vals = np.asarray(ds_sample[lon_name].values)
+        _, idx = np.unique(vals, return_index=True)
+        return ds_sample.isel({lon_name: np.sort(idx)})
 
 
     def _get_data_filenames(
@@ -288,21 +456,7 @@ class JunoLocalSource(MFXarrayLocalSource):
         lock = SerializableLock()
 
         common_args = {
-            "combine": "nested",
-            "coords": "minimal" if has_shifted_samples else "different",
-            # if minus/plus_samples time coordinate stepping might be irregular so override
-            "compat": "override" if has_shifted_samples else "no_conflicts",
-            "engine": self.engine,
-            # "chunks": {'time': -1}, ## speed-up attempt
-            "chunks": "auto",
-            "parallel": True,
-            # "parallel": False, ## speed-up attempt
-            "decode_timedelta": True,
             "backend_kwargs": {},
-            "preprocess": partial(preprocess_mfdataset, data=self.data_selection),
-            "decode_cf": True,
-            "errors": "warn",
-            "lock": lock,
         }
 
         # Prepare probe backend kwargs consistent with common_args
@@ -342,148 +496,43 @@ class JunoLocalSource(MFXarrayLocalSource):
         ) as prog:
             task = prog.add_task("Opening local Juno samples", total=len(samples))
 
-            for sample, date in zip(samples, dates):
+            def _load_for_date(sample, date):
                 assert isinstance(sample, list), f"Sample should be a list but it is {type(sample)}"
+                return self._open_sample_dataset(
+                    sample,
+                    date,
+                    realization_concat_dim=realization_concat_dim,
+                    selected_vars=selected_vars,
+                    has_shifted_samples=has_shifted_samples,
+                    lock=lock,
+                )
 
-                # Try sorting by realization "...rxx..."
-                if len(sample) > 1:
-                    sample = sorted(sample, key=self._realization_key)
-
-                args = dict(common_args) # make local copy
-                args["paths"] = sample
-
-                if is_var_list:
-                    var_ds_list = []
-
-                    for var in selected_vars:
-                        # var_args["backend_kwargs"] = {"filter_by_keys": {"cfVarName": var.name}} # not currently possible to filter with a list of keys (see https://github.com/ecmwf/cfgrib/issues/138)
-                        # Use open_dataset for grib
-                        if self.engine == "cfgrib":
-                            per_file = []
-                            for path in sample:
-                                def _open_one(path=path, var_name=var.name, date=date):
-                                    return self._open_one_cfgrib(path, var_name, date, lock)
-
-                                ds_one = retry_fetch_after_hdf_err(
-                                    _open_one,
-                                    error_re=r"Unspecified error in H5DSget_num_scales.*",
-                                )
-                                per_file.append(ds_one)
-
-                            ds_var = xr.concat(
-                                per_file,
-                                dim=realization_concat_dim,
-                                coords="minimal",
-                                compat="override",
-                                combine_attrs="drop_conflicts",
-                            )
-                            var_ds_list.append(ds_var)
-
-                        else: # use open_mfdataset if not grib
-                            var_args = dict(args) # again local copy to avoid leakage between iterations
-                            var_args["preprocess"] = partial(
-                                preprocess_mfdataset,
-                                data=self.data_selection,
-                                var_name=var.name,
-                                date=date,
-                        )
-                            def _open_mfdataset_local(local_args=var_args):
-                                return xr.open_mfdataset(**local_args)
-
-                            var_ds = retry_fetch_after_hdf_err(
-                                _open_mfdataset_local,
-                                error_re=r"Unspecified error in H5DSget_num_scales.*",
-                            )
-                            var_ds_list.append(var_ds)
-
-                    ds_sample = xr.merge(var_ds_list, compat="no_conflicts", combine_attrs="no_conflicts")
-
-                    if realization_concat_dim in ds_sample.coords:
-                        ds_sample = ds_sample.assign_coords(
-                            {realization_concat_dim: np.asarray(ds_sample[realization_concat_dim].values)}
-                        )
-                else:
-                    var = selected_vars[0]
-
-                    # Use open_dataset for grib
-                    if self.engine == "cfgrib":
-                        per_file = []
-                        for path in sample:
-                            def _open_one(path=path, var_name=var.name, date=date):
-                                return self._open_one_cfgrib(path, var_name, date, lock)
-
-                            ds_one = retry_fetch_after_hdf_err(
-                                _open_one,
-                                error_re=r"Unspecified error in H5DSget_num_scales.*",
-                            )
-                            per_file.append(ds_one)
-
-                        ds_sample = xr.concat(
-                            per_file,
-                            dim=realization_concat_dim,
-                            coords="minimal",
-                            compat="override",
-                            combine_attrs="drop_conflicts",
-                        )
-
-                    else: # use open_mfdataset if not grib
-                        args["preprocess"] = partial(
-                            preprocess_mfdataset,
-                            data=self.data_selection,
-                            var_name=var.name,
-                            date=date,
-                        )
-                        def _open_mfdataset_local(local_args=args):
-                            return xr.open_mfdataset(**local_args)
-
-                        ds_sample = retry_fetch_after_hdf_err(
-                            _open_mfdataset_local,
-                            error_re=r"Unspecified error in H5DSget_num_scales.*",
-                        )
-
-                    # Load realization coord
-                    if realization_concat_dim in ds_sample.coords:
-                        ds_sample = ds_sample.assign_coords(
-                            {realization_concat_dim: np.asarray(ds_sample[realization_concat_dim].values)}
-                        )
-                    # Promote realization to coord
-                    if realization_concat_dim in ds_sample.dims:
-                        ds_sample = ds_sample.assign_coords(
-                            {realization_concat_dim: ds_sample[realization_concat_dim]}
-                        )
-
-                # Reject placeholder / invalid samples before touching spatial coords
-                if "_has_var" not in ds_sample:
-                    raise ValueError(f"{date}: ds_sample has no _has_var flag")
-
-                if not bool(ds_sample["_has_var"].any().item()):
-                    self.elements.missed.add(date)
+            if self.file_open_workers == 1:
+                for sample, date in zip(samples, dates):
+                    ds_sample = _load_for_date(sample, date)
+                    if ds_sample is None:
+                        self.elements.missed.add(date)
+                    else:
+                        samples_d[date] = ds_sample
                     prog.advance(task)
-                    continue
+            else:
+                workers = min(self.file_open_workers, len(samples))
+                logger.info("Opening Juno local samples with %s worker threads", workers)
+                future_to_date = {}
 
-                lon_name = ds_sample.earthml.guessed_coords.longitude
-                lat_name = ds_sample.earthml.guessed_coords.latitude
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    for sample, date in zip(samples, dates):
+                        future = pool.submit(_load_for_date, sample, date)
+                        future_to_date[future] = date
 
-                if lon_name is None or lat_name is None:
-                    self.elements.missed.add(date)
-                    prog.advance(task)
-                    continue
-
-                lon = np.asarray(ds_sample[lon_name].values, dtype=np.float64)
-
-                # normalize convention
-                lon = ((lon + 180.0) % 360.0) - 180.0
-                lon = np.round(lon, 10)
-                lon = np.where(np.isclose(lon, 180.0, atol=1e-8), -180.0, lon)
-
-                ds_sample = ds_sample.assign_coords({lon_name: lon}).sortby(lon_name)
-
-                vals = np.asarray(ds_sample[lon_name].values)
-                _, idx = np.unique(vals, return_index=True)
-                ds_sample = ds_sample.isel({lon_name: np.sort(idx)})
-
-                samples_d[date] = ds_sample
-                prog.advance(task)
+                    for future in as_completed(future_to_date):
+                        date = future_to_date[future]
+                        ds_sample = future.result()
+                        if ds_sample is None:
+                            self.elements.missed.add(date)
+                        else:
+                            samples_d[date] = ds_sample
+                        prog.advance(task)
 
         # dbg_sample_k = self.date_range[10]
         # print(f"Juno local, size of ds[{dbg_sample_k}] after open_mfdataset: {samples_d[dbg_sample_k].sizes}")
