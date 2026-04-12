@@ -1,6 +1,7 @@
 from pathlib import Path
 import logging
 import warnings
+import joblib
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -39,10 +40,17 @@ LEADTIME_METRICS = {
     "bias": "deterministic_with_ensemble_overlay",
     "crps": "probabilistic",
 }
-LEADTIME_UNIT_LABEL = " months"
 PLOT_FILTERS = None
 SHADE_BY = "loss" # loss, total_months
 SHADE_LABEL = "Loss"
+
+MODEL_COLORS = {
+    "fc": "tab:green",
+    "pr": "tab:blue",
+    "an": "tab:orange",
+}
+
+DIFF_PLOT_CMAP = "magma"
 
 SCOREBOARD_ENABLED = True
 SCOREBOARD_MODE = "relative"  # "absolute" or "relative"
@@ -51,12 +59,23 @@ SCOREBOARD_METRICS = {
     "nrmse": "ensemble",
     "crps": "probabilistic",
 }
-SCOREBOARD_ROW_AXIS = "train_period"  # e.g. "train_period" or "loss"
+SCOREBOARD_METRIC_CMAPS = {
+    "r2": "Blues",
+    "nrmse": "Blues_r",
+    "crps": "Blues_r",
+}
+SCOREBOARD_METRIC_VLIMS = {
+    # "r2": (-0.4, 0.4),
+    # "nrmse": (-0.2, 0.2),
+    # "crps": (-0.2, 0.2),
+}
+SCOREBOARD_ROW_AXIS = "variable"  # e.g. "train_period", "loss", "leadtime", "variable"
 SCOREBOARD_COL_AXIS = "leadtime"
 SCOREBOARD_FILTERS = {
     "variable": None,  # e.g. ["t2m"]
-    "loss": None,      # used when not on an axis
+    "loss": "mseloss",      # used when not on an axis
     "train_period": None,  # used when not on an axis
+    "leadtime": None
 }
 SCOREBOARD_ANNOTATE = True
 
@@ -82,12 +101,47 @@ def build_scalar_metric_df(
     )
 
 
+def infer_leadtime_unit_from_configs(exp_root: Path) -> str:
+    units: set[str] = set()
+
+    for cfg_path in exp_root.rglob("experiment.cfg"):
+        experiment = joblib.load(cfg_path)
+        config = experiment["config"]
+
+        train_datasets = config.train_dataset
+        train_datasets = train_datasets if isinstance(train_datasets, (list, tuple)) else [train_datasets]
+
+        train_input = next((td for td in train_datasets if td.role == "input"), None)
+        if train_input is None:
+            continue
+
+        source_configs = train_input.source_configs
+        source_config = source_configs[0] if isinstance(source_configs, (list, tuple)) else source_configs
+        leadtime_rd = source_config.leadtime
+
+        if leadtime_rd.hours >= 1:
+            units.add("hours")
+        elif leadtime_rd.months >= 1:
+            units.add("months")
+        else:
+            raise ValueError(f"Unsupported leadtime in experiment config {cfg_path}: {leadtime_rd}")
+
+    if not units:
+        return ""
+    if len(units) > 1:
+        raise ValueError(f"Multiple leadtime units found in {exp_root}: {sorted(units)}")
+    return next(iter(units))
+
+
 def save_scoreboard_plot(
     *,
     metrics: dict,
     variables: list[str],
     plot_folder: Path,
+    leadtime_unit: str,
 ) -> Path:
+    leadtime_axis_label = f"leadtime [{leadtime_unit}]" if leadtime_unit else "leadtime"
+
     scoreboard_frames: list[pd.DataFrame] = []
     diff_mode = "delta" if SCOREBOARD_MODE == "relative" else "no"
     outer_x_values = ["pr-fc"] if SCOREBOARD_MODE == "relative" else ["fc", "pr"]
@@ -119,12 +173,21 @@ def save_scoreboard_plot(
         df=df_scoreboard,
         outer_y={"index": "metric", "values": list(SCOREBOARD_METRICS.keys())},
         outer_x={"index": "model", "values": outer_x_values},
-        inner_y={"index": SCOREBOARD_ROW_AXIS},
-        inner_x={"index": SCOREBOARD_COL_AXIS},
+        inner_y={
+            "index": SCOREBOARD_ROW_AXIS,
+            "label": leadtime_axis_label if SCOREBOARD_ROW_AXIS == "leadtime" else SCOREBOARD_ROW_AXIS,
+        },
+        inner_x={
+            "index": SCOREBOARD_COL_AXIS,
+            "label": leadtime_axis_label if SCOREBOARD_COL_AXIS == "leadtime" else SCOREBOARD_COL_AXIS,
+        },
         filters=filters,
         agg="mean",
+        metric_cmaps=SCOREBOARD_METRIC_CMAPS,
+        metric_vlims=SCOREBOARD_METRIC_VLIMS,
         annotate=SCOREBOARD_ANNOTATE,
         annotate_fmt="{:.2f}",
+        annotate_color="auto",
         save_path=plot_path,
         title=f"Scoreboard ({SCOREBOARD_MODE})",
     )
@@ -157,6 +220,7 @@ def save_leadtime_vs_global_metrics_plot(
         fit_lines=True,
         fit_ci=False,
         leadtime_unit=leadtime_unit,
+        cmap_name=DIFF_PLOT_CMAP,
         filters=filters,
         title=f"{forecast_metric} vs delta {diff_metric}",
         xlabel=f"Delta {diff_metric}",
@@ -193,7 +257,7 @@ def save_metrics_vs_leadtime_plots(
     plot_folder.mkdir(parents=True, exist_ok=True)
 
     saved_paths: list[Path] = []
-    model_colors = {"fc": "tab:green", "pr": "tab:blue", "an": "tab:gray"}
+    model_colors = MODEL_COLORS
 
     def _filter_da(da):
         if not filters:
@@ -378,6 +442,8 @@ def main() -> None:
 
     vars_from_fc = [v for v in runs["fc"].data_vars if v != "_has_var"]
     print(f"Processed vars: {vars_from_fc}")
+    leadtime_unit = infer_leadtime_unit_from_configs(EXP_ROOT_FOLDER)
+    print(f"Inferred leadtime unit: {leadtime_unit or 'unknown'}")
 
     df_nodiff = build_scalar_metric_df(
         metrics=metrics,
@@ -401,7 +467,7 @@ def main() -> None:
         plot_folder=PLOT_FOLDER,
         forecast_metric=FORECAST_METRIC,
         diff_metric=DIFF_METRIC,
-        leadtime_unit=LEADTIME_UNIT_LABEL,
+        leadtime_unit=f" {leadtime_unit}" if leadtime_unit else "",
         filters=PLOT_FILTERS,
         shade_by=SHADE_BY,
         shade_label=SHADE_LABEL,
@@ -412,7 +478,7 @@ def main() -> None:
         metrics=metrics,
         variables=vars_from_fc,
         plot_folder=PLOT_FOLDER,
-        leadtime_unit=LEADTIME_UNIT_LABEL,
+        leadtime_unit=f" {leadtime_unit}" if leadtime_unit else "",
         filters=PLOT_FILTERS,
         shade_by=SHADE_BY,
         shade_label=SHADE_LABEL,
@@ -425,6 +491,7 @@ def main() -> None:
             metrics=metrics,
             variables=vars_from_fc,
             plot_folder=PLOT_FOLDER,
+            leadtime_unit=leadtime_unit,
         )
         print("Saved scoreboard plot to:", scoreboard_path)
 
