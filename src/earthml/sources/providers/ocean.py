@@ -21,6 +21,7 @@ def juno_monthly_hindcast_ocean_netcdf(
     file_path_var_prefix: str = "00_ocean_mon_ocean2d_", # _ocean_6hr_surface_
     file_date_format: str = "%Y%m%d",
     both_data_and_previous_date_in_file: bool = False,
+    file_open_workers: int | None = 1,
 ) -> SourceConfigContainer:
     members = str(realizations) if isinstance(realizations, int) else "*"
     leadtime = relativedelta(**{leadtime_unit: leadtime_value})
@@ -31,6 +32,7 @@ def juno_monthly_hindcast_ocean_netcdf(
             leadtime=leadtime,
             root_path=root_path,
             engine=engine,
+            file_open_workers=file_open_workers,
             file_name_config=JunoLocalSourceFileNameConfig(
                 file_path_date_format=file_path_date_format,
                 file_header=file_header,
@@ -232,6 +234,7 @@ def juno_global_ocean_physics_forecast_daily_atlantic(
     file_suffix: str = ".nc",
     file_date_format: str = "%Y%m%d",
     both_data_and_previous_date_in_file: bool = True,
+    file_open_workers: int | None = 1,
 ) -> SourceConfigContainer:
     leadtime = relativedelta(**{leadtime_unit: leadtime_value})
 
@@ -242,6 +245,7 @@ def juno_global_ocean_physics_forecast_daily_atlantic(
             root_path=Path(root_path),
             engine=engine,
             cfgrib_idx_path=cfgrib_idx_path,
+            file_open_workers=file_open_workers,
             file_name_config=JunoLocalSourceFileNameConfig(
                 file_path_date_format=file_path_date_format,
                 file_header=file_header,

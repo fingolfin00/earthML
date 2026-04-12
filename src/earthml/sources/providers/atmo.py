@@ -21,6 +21,7 @@ def juno_forecast_hourly(
     both_data_and_previous_date_in_file: bool = True,
     minus_hours: int = 1,
     plus_hours: int = 1,
+    file_open_workers: int | None = 1,
 ) -> SourceConfigContainer:
     leadtime = relativedelta(**{leadtime_unit: leadtime_value})
 
@@ -31,6 +32,7 @@ def juno_forecast_hourly(
             root_path=Path(root_path),
             engine=engine,
             cfgrib_idx_path=cfgrib_idx_path,
+            file_open_workers=file_open_workers,
             file_name_config=JunoLocalSourceFileNameConfig(
                 file_path_date_format=file_path_date_format,
                 file_header=file_header,
@@ -65,6 +67,7 @@ def juno_analysis_6hourly(
     both_data_and_previous_date_in_file: bool = True,
     minus_hours: int = 1,
     plus_hours: int = 1,
+    file_open_workers: int | None = 1,
 ) -> SourceConfigContainer:
     leadtime = relativedelta(**{leadtime_unit: 0})
 
@@ -75,6 +78,7 @@ def juno_analysis_6hourly(
             root_path=Path(root_path),
             engine=engine,
             cfgrib_idx_path=cfgrib_idx_path,
+            file_open_workers=file_open_workers,
             file_name_config=JunoLocalSourceFileNameConfig(
                 file_path_date_format=file_path_date_format,
                 file_header=file_header,

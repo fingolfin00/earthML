@@ -5,6 +5,12 @@ from .. import SourceConfigContainer
 
 
 _PROVIDERS: Dict[str, Callable[..., dict]] = {}
+JUNO_LOCAL_PROVIDER_NAMES = (
+    "atmo.juno.ecmwf.analysis.6hourly",
+    "atmo.juno.ecmwf.forecast.hourly",
+    "ocean.juno.cmcc.hindcast",
+    "ocean.juno.gopaf.forecast.daily.atlantic",
+)
 
 
 def register_source_config_provider(name: str):
