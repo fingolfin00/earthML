@@ -665,6 +665,14 @@ def plot_stage_lag_diagnostic(
             ax.set_xlabel("Time")
             ax.set_ylabel(_format_y_label(var, unit=_get_var_unit(left_ds, var)))
             ax.grid(True, alpha=0.3)
+            ax.set_title(
+                " | ".join([
+                    f"lag0 rmse={rmse_0:.3f}, corr={corr_0:.3f}",
+                    f"t-{lag_steps_eff} rmse={rmse_prev:.3f}, corr={corr_prev:.3f}",
+                    f"t+{lag_steps_eff} rmse={rmse_next:.3f}, corr={corr_next:.3f}",
+                ]),
+                fontsize=10,
+            )
             ax.legend()
             fig.tight_layout()
             fig.savefig(stage_plot_folder.joinpath(f"{stage}_{var}_lag_diagnostic_timeseries.png"), dpi=200)
