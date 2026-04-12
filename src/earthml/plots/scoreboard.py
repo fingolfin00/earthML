@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 import matplotlib.colors as mcolors
 from matplotlib.colors import TwoSlopeNorm, Normalize
+import matplotlib.patheffects as pe
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 import cartopy.crs as ccrs
@@ -85,6 +86,19 @@ def plot_scoreboard(
     metric_names = metric_names or {}
     filters = filters or {}
     panel_select = panel_select or {}
+
+    def _expand_degenerate_limits(vmin, vmax):
+        if not (np.isfinite(vmin) and np.isfinite(vmax)):
+            return vmin, vmax, False
+        if vmin != vmax:
+            return vmin, vmax, False
+
+        center = float(vmin)
+        if center == 0.0:
+            delta = 1.0
+        else:
+            delta = max(abs(center) * 0.1, 1e-6)
+        return center - delta, center + delta, True
 
     data = df.copy()
 
@@ -211,12 +225,24 @@ def plot_scoreboard(
 
         if m in metric_vlims:
             vmin, vmax = metric_vlims[m]
+            print(f"[scoreboard] metric={m} limits=({vmin}, {vmax}) source=user")
         elif valid_arrays:
             vals = np.concatenate([a.ravel() for a in valid_arrays])
             vals = vals[~np.isnan(vals)]
+            if vals.size == 1:
+                print(
+                    f"[scoreboard] warning: metric={m} has only 1 displayed value; "
+                    "auto limits will be degenerate. Consider using metric_vlims "
+                    "or changing scoreboard axes/filters."
+                )
             vmin, vmax = np.nanmin(vals), np.nanmax(vals)
+            vmin_adj, vmax_adj, expanded = _expand_degenerate_limits(vmin, vmax)
+            source = "auto_degenerate" if expanded else "auto"
+            print(f"[scoreboard] metric={m} limits=({vmin_adj}, {vmax_adj}) source={source} raw=({vmin}, {vmax})")
+            vmin, vmax = vmin_adj, vmax_adj
         else:
             vmin, vmax = 0.0, 1.0
+            print(f"[scoreboard] metric={m} limits=({vmin}, {vmax}) source=default")
 
         cmap = metric_cmaps.get(m, "viridis")
         im_row = None
@@ -251,10 +277,10 @@ def plot_scoreboard(
                             continue
 
                         if annotate_color == "auto":
-                            rgba = im.cmap(im.norm(val))
+                            rgba = im.to_rgba(val)
                             r, g, b, _ = rgba
                             luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
-                            txt_color = "black" if luminance > 0.5 else "white"
+                            txt_color = "black" if luminance >= 0.55 else "white"
                         else:
                             txt_color = annotate_color
 
@@ -263,6 +289,12 @@ def plot_scoreboard(
                             ha="center", va="center",
                             fontsize=plt_inner_fontsize,
                             color=txt_color,
+                            path_effects=[
+                                pe.withStroke(
+                                    linewidth=1.25,
+                                    foreground="white" if txt_color == "black" else "black",
+                                )
+                            ],
                         )
 
             im_row = im
