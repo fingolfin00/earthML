@@ -343,16 +343,9 @@ class MLBCExperiment:
         assert "input" in exp_roles and "target" in exp_roles
         input_ds, target_ds = ds_d[MLBCExperimentDatasetRole.INPUT], ds_d[MLBCExperimentDatasetRole.TARGET]
 
-        # Align on shared sample/grid axes, but do not intersect realization axes.
-        exclude_align_dims = tuple(
-            dim
-            for dim in (
-                input_ds.earthml.guessed_dims.realization,
-                target_ds.earthml.guessed_dims.realization,
-            )
-            if dim is not None
-        )
-        input_ds, target_ds = xr.align(input_ds, target_ds, join="inner", exclude=exclude_align_dims)
+        # Align shared sample axes, but never silently inner-join spatial float coordinates.
+        input_ds, target_ds = self._align_input_target_ds(input_ds, target_ds)
+
         self._plot_dataset_stage(
             input_ds=input_ds,
             target_ds=target_ds,
@@ -361,6 +354,124 @@ class MLBCExperiment:
         )
 
         return input_ds, target_ds
+
+    def _align_input_target_ds(
+        self,
+        input_ds: xr.Dataset,
+        target_ds: xr.Dataset,
+    ) -> tuple[xr.Dataset, xr.Dataset]:
+        lat_in = input_ds.earthml.guessed_dims.latitude
+        lon_in = input_ds.earthml.guessed_dims.longitude
+        lat_tgt = target_ds.earthml.guessed_dims.latitude
+        lon_tgt = target_ds.earthml.guessed_dims.longitude
+
+        input_ds, target_ds = self._harmonize_spatial_coords(
+            input_ds=input_ds,
+            target_ds=target_ds,
+            input_dim=lat_in,
+            target_dim=lat_tgt,
+            axis_name="latitude",
+        )
+        input_ds, target_ds = self._harmonize_spatial_coords(
+            input_ds=input_ds,
+            target_ds=target_ds,
+            input_dim=lon_in,
+            target_dim=lon_tgt,
+            axis_name="longitude",
+        )
+
+        exclude_align_dims = tuple(
+            dim
+            for dim in {
+                input_ds.earthml.guessed_dims.realization,
+                target_ds.earthml.guessed_dims.realization,
+                lat_in,
+                lon_in,
+                lat_tgt,
+                lon_tgt,
+            }
+            if dim is not None
+        )
+
+        before_sizes = {"input": dict(input_ds.sizes), "target": dict(target_ds.sizes)}
+        input_ds, target_ds = xr.align(
+            input_ds,
+            target_ds,
+            join="inner",
+            exclude=exclude_align_dims,
+        )
+        self.logger.info(
+            "Aligned input/target with spatial dims excluded from inner join. "
+            "Before sizes: %s | After sizes: %s",
+            before_sizes,
+            {"input": dict(input_ds.sizes), "target": dict(target_ds.sizes)},
+        )
+        return input_ds, target_ds
+
+    def _harmonize_spatial_coords(
+        self,
+        *,
+        input_ds: xr.Dataset,
+        target_ds: xr.Dataset,
+        input_dim: str | None,
+        target_dim: str | None,
+        axis_name: str,
+        atol: float = 1e-5,
+    ) -> tuple[xr.Dataset, xr.Dataset]:
+        if input_dim is None or target_dim is None:
+            return input_ds, target_ds
+        if input_dim not in input_ds.coords or target_dim not in target_ds.coords:
+            return input_ds, target_ds
+
+        coord_in = np.asarray(input_ds[input_dim].values)
+        coord_tgt = np.asarray(target_ds[target_dim].values)
+
+        def _coord_preview(values: np.ndarray) -> dict:
+            flat = np.asarray(values, dtype=np.float64).ravel()
+            finite = flat[np.isfinite(flat)]
+            if finite.size == 0:
+                return {"shape": tuple(values.shape), "first": None, "last": None, "min": None, "max": None}
+            return {
+                "shape": tuple(values.shape),
+                "first": float(finite[0]),
+                "last": float(finite[-1]),
+                "min": float(finite.min()),
+                "max": float(finite.max()),
+            }
+
+        self.logger.info(
+            "Compare input/target %s coordinates before align: input=%s | target=%s",
+            axis_name,
+            _coord_preview(coord_in),
+            _coord_preview(coord_tgt),
+        )
+
+        if coord_in.shape != coord_tgt.shape:
+            raise ValueError(
+                f"Input and target {axis_name} coordinates have different shapes: "
+                f"{coord_in.shape} vs {coord_tgt.shape}. Refusing dangerous implicit alignment."
+            )
+
+        if np.array_equal(coord_in, coord_tgt):
+            return input_ds, target_ds
+
+        if np.allclose(coord_in, coord_tgt, atol=atol, equal_nan=True):
+            max_abs_diff = float(np.nanmax(np.abs(coord_in - coord_tgt)))
+            self.logger.warning(
+                "Input and target %s coordinates differ only numerically "
+                "(max abs diff=%s). Normalizing target coords to input coords before alignment.",
+                axis_name,
+                max_abs_diff,
+            )
+            target_ds = target_ds.assign_coords({target_dim: input_ds[input_dim].values})
+            return input_ds, target_ds
+
+        max_abs_diff = float(np.nanmax(np.abs(coord_in - coord_tgt)))
+        raise ValueError(
+            f"Input and target {axis_name} coordinates differ materially "
+            f"(shape={coord_in.shape}, max_abs_diff={max_abs_diff}). "
+            "Refusing dangerous inner alignment on spatial coordinates."
+        )
 
     def _plot_dataset_stage(
         self,
