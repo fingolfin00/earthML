@@ -249,6 +249,7 @@ def juno_global_ocean_physics_forecast_daily_atlantic(
                 file_date_format=file_date_format,
                 both_data_and_previous_date_in_file=both_data_and_previous_date_in_file,
                 date_order="current_previous",
+                date_separator="_",
                 realizations=1,
             ),
             regrid_config=RegridConfig(

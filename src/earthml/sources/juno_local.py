@@ -47,6 +47,7 @@ class JunoLocalSourceFileNameConfig:
     file_date_format                    : str
     both_data_and_previous_date_in_file : bool = True
     date_order                          : Literal["previous_current", "current_previous"] = "previous_current"
+    date_separator                      : str = ""
     realizations                        : int | Literal["all"] = 1
     minus_timedelta                     : timedelta | None = None
     plus_timedelta                      : timedelta | None = None
@@ -192,6 +193,7 @@ class JunoLocalSource(MFXarrayLocalSource):
 
         both_dates_in_name = config.both_data_and_previous_date_in_file
         date_order = config.date_order
+        date_separator = config.date_separator
         realizations = config.realizations
         file_header = config.file_header
         file_suffix = config.file_suffix
@@ -210,9 +212,9 @@ class JunoLocalSource(MFXarrayLocalSource):
 
             if both_dates_in_name:
                 if date_order == "current_previous":
-                    data_glob = f"{file_header}{date_str}{prev_str}{file_suffix}"
+                    data_glob = f"{file_header}{date_str}{date_separator}{prev_str}{file_suffix}"
                 else:
-                    data_glob = f"{file_header}{prev_str}{date_str}{file_suffix}"
+                    data_glob = f"{file_header}{prev_str}{date_separator}{date_str}{file_suffix}"
             else:
                 data_glob = f"{file_header}{prev_str}{file_suffix}"
 
@@ -229,9 +231,9 @@ class JunoLocalSource(MFXarrayLocalSource):
                 if both_dates_in_name:
                     test_date_str = test_date.strftime(file_date_format)
                     if date_order == "current_previous":
-                        test_glob = f"{file_header}{test_date_str}{prev_str}{file_suffix}"
+                        test_glob = f"{file_header}{test_date_str}{date_separator}{prev_str}{file_suffix}"
                     else:
-                        test_glob = f"{file_header}{prev_str}{test_date_str}{file_suffix}"
+                        test_glob = f"{file_header}{prev_str}{date_separator}{test_date_str}{file_suffix}"
                 else:
                     test_glob = f"{file_header}{prev_str}{file_suffix}"
 
@@ -246,9 +248,9 @@ class JunoLocalSource(MFXarrayLocalSource):
                 if both_dates_in_name:
                     test_date_str = test_date.strftime(file_date_format)
                     if date_order == "current_previous":
-                        test_glob = f"{file_header}{test_date_str}{prev_str}{file_suffix}"
+                        test_glob = f"{file_header}{test_date_str}{date_separator}{prev_str}{file_suffix}"
                     else:
-                        test_glob = f"{file_header}{prev_str}{test_date_str}{file_suffix}"
+                        test_glob = f"{file_header}{prev_str}{date_separator}{test_date_str}{file_suffix}"
                 else:
                     test_glob = f"{file_header}{prev_str}{file_suffix}"
 
