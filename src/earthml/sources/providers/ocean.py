@@ -231,7 +231,7 @@ def juno_global_ocean_physics_forecast_daily_atlantic(
     file_header: str = "cmems_mod_glo_phy_anfc_0.083deg_P1D-m_MEDATL_*",
     file_suffix: str = ".nc",
     file_date_format: str = "%Y%m%d",
-    both_data_and_previous_date_in_file: bool = False,
+    both_data_and_previous_date_in_file: bool = True,
 ) -> SourceConfigContainer:
     leadtime = relativedelta(**{leadtime_unit: leadtime_value})
 
@@ -248,6 +248,7 @@ def juno_global_ocean_physics_forecast_daily_atlantic(
                 file_suffix=file_suffix,
                 file_date_format=file_date_format,
                 both_data_and_previous_date_in_file=both_data_and_previous_date_in_file,
+                date_order="current_previous",
                 realizations=1,
             ),
             regrid_config=RegridConfig(

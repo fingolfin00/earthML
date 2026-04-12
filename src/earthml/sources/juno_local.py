@@ -46,6 +46,7 @@ class JunoLocalSourceFileNameConfig:
     file_suffix                         : str
     file_date_format                    : str
     both_data_and_previous_date_in_file : bool = True
+    date_order                          : Literal["previous_current", "current_previous"] = "previous_current"
     realizations                        : int | Literal["all"] = 1
     minus_timedelta                     : timedelta | None = None
     plus_timedelta                      : timedelta | None = None
@@ -190,6 +191,7 @@ class JunoLocalSource(MFXarrayLocalSource):
         assert config.realizations == "all" or config.realizations > 0
 
         both_dates_in_name = config.both_data_and_previous_date_in_file
+        date_order = config.date_order
         realizations = config.realizations
         file_header = config.file_header
         file_suffix = config.file_suffix
@@ -207,7 +209,10 @@ class JunoLocalSource(MFXarrayLocalSource):
             date_str = date.strftime(file_date_format)
 
             if both_dates_in_name:
-                data_glob = f"{file_header}{prev_str}{date_str}{file_suffix}"
+                if date_order == "current_previous":
+                    data_glob = f"{file_header}{date_str}{prev_str}{file_suffix}"
+                else:
+                    data_glob = f"{file_header}{prev_str}{date_str}{file_suffix}"
             else:
                 data_glob = f"{file_header}{prev_str}{file_suffix}"
 
@@ -222,7 +227,11 @@ class JunoLocalSource(MFXarrayLocalSource):
             if minus_td is not None:
                 test_date = date - minus_td
                 if both_dates_in_name:
-                    test_glob = f"{file_header}{prev_str}{test_date.strftime(file_date_format)}{file_suffix}"
+                    test_date_str = test_date.strftime(file_date_format)
+                    if date_order == "current_previous":
+                        test_glob = f"{file_header}{test_date_str}{prev_str}{file_suffix}"
+                    else:
+                        test_glob = f"{file_header}{prev_str}{test_date_str}{file_suffix}"
                 else:
                     test_glob = f"{file_header}{prev_str}{file_suffix}"
 
@@ -235,7 +244,11 @@ class JunoLocalSource(MFXarrayLocalSource):
             if not found and plus_td is not None:
                 test_date = date + plus_td
                 if both_dates_in_name:
-                    test_glob = f"{file_header}{prev_str}{test_date.strftime(file_date_format)}{file_suffix}"
+                    test_date_str = test_date.strftime(file_date_format)
+                    if date_order == "current_previous":
+                        test_glob = f"{file_header}{test_date_str}{prev_str}{file_suffix}"
+                    else:
+                        test_glob = f"{file_header}{prev_str}{test_date_str}{file_suffix}"
                 else:
                     test_glob = f"{file_header}{prev_str}{file_suffix}"
 
