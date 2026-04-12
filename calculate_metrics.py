@@ -1558,6 +1558,7 @@ def save_field_timeseries_plots(
                             mean_label=MODEL_DISPLAY_NAMES.get(model_name, str(model_name)),
                             color=MODEL_COLORS.get(model_name),
                             plot_members=False,
+                            eager_compute=disable_flox,
                         )
                         plotted = True
 
