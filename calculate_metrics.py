@@ -13,6 +13,7 @@ from rich.table import Table as RichTable
 from rich.text import Text
 
 from earthml import Dask, get_runs_and_metrics
+from earthml.experiments.mlbc.load import get_leadtime_value_and_unit
 from earthml.metrics.utils import metrics_to_df
 from earthml.plots import plot_metric_vs_diff, plot_scoreboard
 
@@ -977,12 +978,12 @@ def infer_leadtime_unit_from_configs(exp_root: Path) -> str:
         source_config = source_configs[0] if isinstance(source_configs, (list, tuple)) else source_configs
         leadtime_rd = source_config.leadtime
 
-        if leadtime_rd.hours >= 1:
-            units.add("hours")
-        elif leadtime_rd.months >= 1:
-            units.add("months")
-        else:
-            raise ValueError(f"Unsupported leadtime in experiment config {cfg_path}: {leadtime_rd}")
+        try:
+            _, leadtime_unit = get_leadtime_value_and_unit(leadtime_rd)
+        except ValueError as exc:
+            raise ValueError(f"Unsupported leadtime in experiment config {cfg_path}: {leadtime_rd}") from exc
+
+        units.add(leadtime_unit)
 
     if not units:
         return ""
@@ -1028,8 +1029,6 @@ def save_scoreboard_plot(
     plot_folder: Path,
     leadtime_unit: str,
 ) -> Path:
-    leadtime_axis_label = f"leadtime [{leadtime_unit}]" if leadtime_unit else "leadtime"
-
     scoreboard_frames: list[pd.DataFrame] = []
     diff_mode = "delta" if SCOREBOARD_MODE == "relative" else "no"
     outer_x_values = ["pr-fc"] if SCOREBOARD_MODE == "relative" else ["fc", "pr"]
@@ -1063,11 +1062,11 @@ def save_scoreboard_plot(
         outer_x={"index": "model", "values": outer_x_values},
         inner_y={
             "index": SCOREBOARD_ROW_AXIS,
-            "label": leadtime_axis_label if SCOREBOARD_ROW_AXIS == "leadtime" else SCOREBOARD_ROW_AXIS,
+            "label": format_axis_display_name(SCOREBOARD_ROW_AXIS, leadtime_unit=leadtime_unit),
         },
         inner_x={
             "index": SCOREBOARD_COL_AXIS,
-            "label": leadtime_axis_label if SCOREBOARD_COL_AXIS == "leadtime" else SCOREBOARD_COL_AXIS,
+            "label": format_axis_display_name(SCOREBOARD_COL_AXIS, leadtime_unit=leadtime_unit),
         },
         filters=filters,
         agg="mean",
