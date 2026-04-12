@@ -16,24 +16,25 @@ if __name__ == "__main__":
     # ----------------------------------------------------------------------------------
     max_retries                 = 4
     experiment_type             = "weather"                 # seasonal, weather
-    experiment_name             = "cmems_cmems"             # cmems_cmems, juno-ecmwf_juno-ecmwf
+    experiment_name             = "juno-ecmwf_juno-ecmwf"             # cmems_cmems, juno-ecmwf_juno-ecmwf, juno-cmcc_cmems
 
-    run_mode                    = "prepare"     # train_test_on_train, train_test, prepare, train, test
-    experiment_mode             = "debug"                   # full, short, debug
-    only_longest_train_period   = True                      # only train on the largest train period (if False, train on all periods, which can be much slower but allows to see variability across train periods)
-    # add_hyper_exp_name_suffix   = False                     # if True use also batch_size, max_epochs, initial_learning_rate in exp name (and resulting folder) automatically extending exp_suffix
-    extra_exp_suffix            = ""                # additional custom suffix to add to exp name (and resulting folder), e.g. "_debug" or "_try1"
+    run_mode                    = "train_test_on_train"     # train_test_on_train, train_test, prepare, train, test
+    experiment_mode             = "full"        # full, short, debug
+    only_longest_train_period   = True          # only train on the largest train period (if False, train on all periods, which can be much slower but allows to see variability across train periods)
+    # add_hyper_exp_name_suffix   = False       # if True use also batch_size, max_epochs, initial_learning_rate in exp name (and resulting folder) automatically extending exp_suffix
+    extra_exp_suffix            = ""            # additional custom suffix to add to exp name (and resulting folder), e.g. "_debug" or "_try1"
 
     exp_root_folder             = "/Users/jacopodallaglio/ML/experiments_earthML_ocean_weather"
     earthkit_cache_dir          = "/Users/jacopodallaglio/ML/.earthkit-cache"       # if using earthkit datasource
 
     if experiment_name == "juno-ecmwf_juno-ecmwf":
-        variables               = ["msl"]                   # e.g. ["msl", "t2m", "u10", "v10", "d2m", "tcc"]
-        regions                 = ["conus"]                 # e.g. ["conus", "westconus", "europe", "westeurope"]
-    if experiment_name == "cmems_cmems":
+        variables               = ["msl", "t2m", "d2m", "u10", "v10", "tcc"]                   # e.g. ["msl", "t2m", "u10", "v10", "d2m", "tcc"]
+        regions                 = ["westconus"]                 # e.g. ["conus", "westconus", "europe", "westeurope"]
+        leadtimes               = (.5, 1, 2, 3) # (.5, 1, 2, 3)
+    if experiment_name in ("cmems_cmems", "juno-cmcc_cmems"):
         variables               = ["sst", "ssh", "sss"]     # e.g. ["sst", "ssh", "sss"]
-        regions                 = ["pacific"]               # e.g. ["pacific", "natlantic", "satlantic", "indian"]
-    leadtimes                   = (.5, 1, 2, 3)
+        regions                 = ["atlanticbox"]               # e.g. ["pacific", "natlantic", "satlantic", "indian", "atlanticbox"]
+        leadtimes               = (1, 2, 3, 4, 5, 6, 7, 8, 9) # (1, 2, 3, 4, 5, 6, 7, 8, 9)
 
     inpaint_nan                 = True                      # whether to inpaint nan values in input and target datasets (after loading, before torch dataset generation)
     anomaly                     = False                     # if True, predict anomaly (i.e. remove climatology from target variable), otherwise predict absolute values
@@ -45,12 +46,21 @@ if __name__ == "__main__":
         start_test_date             = datetime(2025, 1, 1)
         end_test_date               = datetime(2025, 12, 31)
         freq                        = "12h"
+        regrid_resolution           = 0.1
     if experiment_name == "cmems_cmems":
         start_train_date            = datetime(2022, 6, 4)
         end_train_date              = datetime(2025, 12, 31)
         start_test_date             = datetime(2026, 1, 1)
         end_test_date               = datetime(2026, 3, 31)
         freq                        = "12h"
+        regrid_resolution           = 0.08
+    if experiment_name == "juno-cmcc_cmems":
+        start_train_date            = datetime(2024, 4, 23) # this needs to be adapted on the current day
+        end_train_date              = datetime(2025, 12, 31)
+        start_test_date             = datetime(2026, 1, 1)
+        end_test_date               = datetime(2026, 4, 11) # this needs to be adapted on the current day
+        freq                        = "1d"
+        regrid_resolution           = 0.08
 
     target_realization_avg      = False                     # average over realizations for target variable (if True, add _taravg suffix to exp_suffix)
     realization_as_channel      = False                     # use realization a channel dim (if True, add _rasc suffix to exp_suffix)
@@ -136,7 +146,7 @@ if __name__ == "__main__":
         if start_test_date <= juno_location_cutoff and end_test_date > juno_location_cutoff:
             test_periods = [
                 TimeRange(start=start_test_date, end=juno_location_cutoff, freq=freq),
-                TimeRange(start=juno_location_cutoff + relativedelta(days=1), end=end_test_date, freq=freq), # TODO use freq?
+                TimeRange(start=juno_location_cutoff + relativedelta(days=1), end=end_test_date, freq=freq),
             ]
             input_test_provider_kwargs = dict(
                 train=dict(root_path=root_path_forecast) | grib_indexing,
@@ -165,12 +175,13 @@ if __name__ == "__main__":
                     # test fully in new folder
                     test=dict(root_path=root_path_analysis_new, file_header="CMS") | grib_indexing,
             )
-    if experiment_name == "cmems_cmems":
-        input_test_provider_kwargs = dict(
+    if experiment_name in ("cmems_cmems", "juno-cmcc_cmems"):
+        target_test_provider_kwargs = dict(
             train=cmems_credential,
             test=cmems_credential,
         )
-        target_test_provider_kwargs = input_test_provider_kwargs
+    if experiment_name == "cmems_cmems":
+        input_test_provider_kwargs = target_test_provider_kwargs
 
     # Train period
     train_periods = TimeRange(start=start_train_date, end=end_train_date, freq=freq)
@@ -233,7 +244,7 @@ if __name__ == "__main__":
             only_longest_train_period=only_longest_train_period,
             # Providers args
             earthkit_cache_dir=earthkit_cache_dir,
-            regrid_resolution=0.1,
+            regrid_resolution=regrid_resolution,
             providers_kwargs={
                 "input": input_test_provider_kwargs,
                 "target": target_test_provider_kwargs,
