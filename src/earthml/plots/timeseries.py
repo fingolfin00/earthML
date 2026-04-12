@@ -19,9 +19,10 @@ def _reduce_for_timeseries(
     da: xr.DataArray | xr.Dataset,
     *,
     keep_dims: Sequence[str],
+    eager_compute: bool = False,
 ) -> xr.DataArray:
     da = _as_dataarray(da)
-    if np.issubdtype(da.dtype, np.floating) and da.dtype.itemsize < np.dtype(np.float32).itemsize:
+    if eager_compute and np.issubdtype(da.dtype, np.floating) and da.dtype.itemsize < np.dtype(np.float32).itemsize:
         # Flox/numbagg reductions do not support float16 inputs reliably; promote
         # plotting reductions to float32 without forcing eager computation.
         da = da.astype(np.float32)
@@ -29,9 +30,13 @@ def _reduce_for_timeseries(
     if not reduce_dims:
         return da
     with xr.set_options(use_numbagg=False):
-        # Plotting only needs one reduced timeseries at a time, so materialize
-        # first and reduce eagerly to avoid dask->flox/numbagg float16 failures.
-        reduced = da.load().earthml.geo_mean(reduce_dims)
+        if eager_compute:
+            # Plotting only needs one reduced timeseries at a time, so materialize
+            # first and reduce eagerly to avoid dask->flox/numbagg float16 failures.
+            reduced = da.load().earthml.geo_mean(reduce_dims)
+        else:
+            reduced = da.earthml.geo_mean(reduce_dims)
+            reduced = reduced.load()
     return reduced
 
 
@@ -100,6 +105,7 @@ def plot_realization_timeseries(
     extra_label: str = "",
     extra_lw: float = 1.5,
     extra_ls: str = ":",
+    eager_compute: bool = False,
 ) -> Axes:
     """
     Plot a 1D series with optional realization members and shaded spread.
@@ -125,12 +131,12 @@ def plot_realization_timeseries(
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 4))
 
-    series_mean = _reduce_for_timeseries(series_mean, keep_dims=(x_dim,))
+    series_mean = _reduce_for_timeseries(series_mean, keep_dims=(x_dim,), eager_compute=eager_compute)
     series_mean = series_mean.transpose(x_dim)
     x = _plot_x_values(series_mean, x_dim)
 
     if members is not None:
-        members = _reduce_for_timeseries(members, keep_dims=(x_dim, ens_dim))
+        members = _reduce_for_timeseries(members, keep_dims=(x_dim, ens_dim), eager_compute=eager_compute)
         members = members.transpose(x_dim, ens_dim)
 
         if plot_members:
@@ -173,7 +179,7 @@ def plot_realization_timeseries(
     )
 
     if extra is not None:
-        extra = _reduce_for_timeseries(extra, keep_dims=(x_dim,))
+        extra = _reduce_for_timeseries(extra, keep_dims=(x_dim,), eager_compute=eager_compute)
         extra = extra.transpose(x_dim)
         ax.plot(
             x,
