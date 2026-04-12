@@ -1,6 +1,7 @@
 from .utils import quickplot
 from .leadtime import plot_ensemble_leadtime
 from .timeseries import plot_realization_timeseries
+from .maps import plot_temporal_mean_map
 from .panels import create_panel_from_data, plot_metric_map_panel
 from .scatter import plot_metric_vs_diff
 from .scoreboard import plot_scoreboard
@@ -19,6 +20,8 @@ __all__ = [
     "plot_ensemble_leadtime",
     # timeseries
     "plot_realization_timeseries",
+    # maps
+    "plot_temporal_mean_map",
     # panels
     "create_panel_from_data",
     "plot_metric_map_panel",
