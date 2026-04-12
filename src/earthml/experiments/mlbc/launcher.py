@@ -94,7 +94,7 @@ class MLBCExperimentLauncher:
         # Set var categories
         self.vars_cloud_cds          = {
             "ocean": ("ssh", "sss", "t14d", "t17d", "t20d", "t26d", "t28d", "mld01", "mld03", "das300", "dat300", "sit"), # https://cds.climate.copernicus.eu/datasets/seasonal-monthly-ocean
-            "atmo" : ("sst", "t2m", "tp", "u10", "v10"), # https://cds.climate.copernicus.eu/datasets/seasonal-monthly-single-levels
+            "atmo" : ("sst", "t2m", "d2m", "msl", "tp", "u10", "v10"), # https://cds.climate.copernicus.eu/datasets/seasonal-monthly-single-levels
         }
 
         # Lead time const and experiment type check
