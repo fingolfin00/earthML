@@ -128,12 +128,28 @@ def get_variable_plot_folder(*, plot_root: Path, variable: str) -> Path:
     return variable_folder
 
 
+def _ordered_unique_variables(variables: list[str]) -> list[str]:
+    unique_variables: list[str] = []
+    for variable in variables:
+        variable_str = str(variable)
+        if variable_str not in unique_variables:
+            unique_variables.append(variable_str)
+    return unique_variables
+
+
+def get_variable_colors(*, variables: list[str]) -> dict[str, str]:
+    ordered_variables = _ordered_unique_variables(variables)
+    return {
+        variable: SCALAR_TABLE_BASE_COLORS[idx % len(SCALAR_TABLE_BASE_COLORS)]
+        for idx, variable in enumerate(ordered_variables)
+    }
+
+
 def get_variable_table_color(*, variable: str, variables: list[str]) -> str:
-    try:
-        idx = variables.index(variable)
-    except ValueError:
-        idx = 0
-    return SCALAR_TABLE_BASE_COLORS[idx % len(SCALAR_TABLE_BASE_COLORS)]
+    variable_colors = get_variable_colors(variables=variables)
+    if not variable_colors:
+        return SCALAR_TABLE_BASE_COLORS[0]
+    return variable_colors.get(str(variable), SCALAR_TABLE_BASE_COLORS[0])
 
 
 def _table_variables(df: pd.DataFrame) -> list[str]:
@@ -863,7 +879,7 @@ def save_scoreboard_plot(
     return plot_path
 
 
-def save_leadtime_vs_global_metrics_plot(
+def save_metric_vs_diff_plot(
     *,
     df_nodiff,
     df_delta,
@@ -876,6 +892,12 @@ def save_leadtime_vs_global_metrics_plot(
     shade_label: str,
 ) -> Path:
     plot_folder.mkdir(parents=True, exist_ok=True)
+    plot_variables = _ordered_unique_variables(
+        [
+            *df_nodiff.get("variable", pd.Series(dtype=object)).dropna().astype(str).tolist(),
+            *df_delta.get("variable", pd.Series(dtype=object)).dropna().astype(str).tolist(),
+        ]
+    )
 
     fig, ax, merged = plot_metric_vs_diff(
         df_nodiff,
@@ -890,10 +912,12 @@ def save_leadtime_vs_global_metrics_plot(
         fit_ci=False,
         leadtime_unit=leadtime_unit,
         cmap_name=DIFF_PLOT_CMAP,
+        variable_colors=get_variable_colors(variables=plot_variables),
         filters=filters,
         title=f"{forecast_metric} vs delta {diff_metric}",
         xlabel=f"Delta {diff_metric}",
         ylabel=forecast_metric,
+        legend_loc="lower left",
     )
 
     if merged.empty:
@@ -1128,7 +1152,7 @@ def main() -> None:
         models=MODELS_DIFF,
     )
 
-    plot_path = save_leadtime_vs_global_metrics_plot(
+    plot_path = save_metric_vs_diff_plot(
         df_nodiff=df_nodiff,
         df_delta=df_delta,
         plot_folder=PLOT_FOLDER,
