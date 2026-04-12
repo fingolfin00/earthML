@@ -1,13 +1,30 @@
-from pathlib import Path
 import logging
+import os
+from itertools import product
+from pathlib import Path
 import warnings
 import joblib
+
+# Silence Intel OpenMP deprecation/info chatter emitted by downstream libraries.
+os.environ.setdefault("KMP_WARNINGS", "0")
+os.environ.setdefault("OMP_MAX_ACTIVE_LEVELS", "1")
 
 import matplotlib.pyplot as plt
 from matplotlib import colors as mcolors
 import numpy as np
 import pandas as pd
+import xarray as xr
 from rich import print
+from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 from rich.style import Style
 from rich.table import Table as RichTable
 from rich.text import Text
@@ -15,7 +32,13 @@ from rich.text import Text
 from earthml import Dask, get_runs_and_metrics
 from earthml.experiments.mlbc.load import get_leadtime_value_and_unit
 from earthml.metrics.utils import metrics_to_df
-from earthml.plots import plot_metric_vs_diff, plot_scoreboard
+from earthml.misc import Table
+from earthml.plots import (
+    plot_metric_vs_diff,
+    plot_realization_timeseries,
+    plot_scoreboard,
+    plot_temporal_mean_map,
+)
 
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -25,6 +48,9 @@ warnings.filterwarnings("ignore", message=".*distributed.scheduler.*")
 logging.getLogger("distributed.scheduler").setLevel(logging.ERROR)
 logging.getLogger("distributed.worker").setLevel(logging.ERROR)
 logging.getLogger("distributed.nanny").setLevel(logging.ERROR)
+
+DEBUG = False
+CONSOLE = Console()
 
 
 #
@@ -50,6 +76,8 @@ GLOBAL_KNOBS = {
     "enable_diff_plot": True,
     "enable_leadtime_plots": True,
     "enable_scoreboard": True,
+    # Toggle rich table output in the terminal while still saving table files/images.
+    "print_console_tables": False,
 }
 
 COMMON_PLOT_KNOBS = {
@@ -183,6 +211,8 @@ SCALAR_TABLE_COLUMN_INDEX = TABLE_KNOBS["column_index"]
 SCALAR_TABLE_GROUP_BY = TABLE_KNOBS["group_by"]
 SCALAR_TABLE_SIGNIFICANT_DIGITS = TABLE_KNOBS["significant_digits"]
 NORMALIZED_METRICS = {"nrmse", "ncrmse", "nmae", "nbias", "r2"}
+VARIABLE_SUBFOLDERS = ("timeseries", "maps", "leadtime")
+RUN_CONTEXT_DIMS = ("leadtime", "train_period", "loss")
 
 
 METRIC_DISPLAY_NAMES = {
@@ -230,6 +260,11 @@ MODEL_DISPLAY_NAMES = {
 }
 
 
+def debug_print(*args, **kwargs) -> None:
+    if DEBUG:
+        print(*args, **kwargs)
+
+
 def build_scalar_metric_df(
     *,
     metrics,
@@ -255,6 +290,14 @@ def get_variable_plot_folder(*, plot_root: Path, variable: str) -> Path:
     variable_folder = plot_root / variable
     variable_folder.mkdir(parents=True, exist_ok=True)
     return variable_folder
+
+
+def get_variable_subfolder(*, plot_root: Path, variable: str, subfolder: str) -> Path:
+    if subfolder not in VARIABLE_SUBFOLDERS:
+        raise ValueError(f"Unsupported variable subfolder {subfolder!r}. Expected one of {VARIABLE_SUBFOLDERS}.")
+    output_folder = get_variable_plot_folder(plot_root=plot_root, variable=variable) / subfolder
+    output_folder.mkdir(parents=True, exist_ok=True)
+    return output_folder
 
 
 def _ordered_unique_variables(variables: list[str]) -> list[str]:
@@ -329,6 +372,126 @@ def _apply_df_filters(df: pd.DataFrame, filters: dict | None) -> pd.DataFrame:
     return out
 
 
+def _apply_xarray_filters(data: xr.Dataset | xr.DataArray, filters: dict | None) -> xr.Dataset | xr.DataArray:
+    if filters is None:
+        return data
+
+    out = data
+    for dim, allowed in filters.items():
+        if allowed is None or (dim not in out.dims and dim not in out.coords):
+            continue
+        values = allowed if isinstance(allowed, (list, tuple, set)) else [allowed]
+        out = out.sel({dim: list(values)})
+    return out
+
+
+def _scalar_coord_value(data: xr.Dataset | xr.DataArray, dim: str) -> object | None:
+    if dim not in data.coords and dim not in data.dims:
+        return None
+    values = np.asarray(data[dim].values)
+    if values.size != 1:
+        return None
+    value = values.reshape(-1)[0]
+    return value.item() if isinstance(value, np.generic) else value
+
+
+def _reduce_extra_map_dims(da: xr.DataArray) -> xr.DataArray:
+    lat_dim = da.earthml.guessed_dims.latitude
+    lon_dim = da.earthml.guessed_dims.longitude
+    time_dim = da.earthml.guessed_dims.time
+    realization_dim = da.earthml.guessed_dims.realization
+    keep_dims = {dim for dim in (lat_dim, lon_dim, time_dim, realization_dim) if dim is not None}
+    reduce_dims = [dim for dim in da.dims if dim not in keep_dims]
+    if reduce_dims:
+        da = da.mean(dim=reduce_dims, skipna=True)
+    return da
+
+
+def _realization_dim(da: xr.DataArray) -> str | None:
+    realization_dim = da.earthml.guessed_dims.realization
+    if realization_dim is None or realization_dim not in da.dims:
+        return None
+    return realization_dim
+
+
+def _has_multi_realization(da: xr.DataArray | None) -> bool:
+    if da is None:
+        return False
+    realization_dim = _realization_dim(da)
+    return realization_dim is not None and int(da.sizes.get(realization_dim, 1)) > 1
+
+
+def _members_arg(da: xr.DataArray, *, enable_spread: bool) -> xr.DataArray | None:
+    return da if enable_spread and _has_multi_realization(da) else None
+
+
+def _build_climatology_da(da: xr.DataArray) -> xr.DataArray:
+    time_dim = da.earthml.guessed_dims.time
+    if time_dim is None or time_dim not in da.dims:
+        raise ValueError("Cannot compute climatology without a time dimension.")
+    return da.groupby(f"{time_dim}.month").mean(dim=time_dim, skipna=True)
+
+
+def _build_anomaly_da(da: xr.DataArray) -> xr.DataArray:
+    time_dim = da.earthml.guessed_dims.time
+    if time_dim is None or time_dim not in da.dims:
+        raise ValueError("Cannot compute anomaly without a time dimension.")
+    clim = _build_climatology_da(da)
+    return da.groupby(f"{time_dim}.month") - clim
+
+
+def _build_residual_da(left: xr.DataArray, right: xr.DataArray) -> xr.DataArray:
+    left_rdim = _realization_dim(left)
+    right_rdim = _realization_dim(right)
+
+    if (
+        left_rdim is not None
+        and right_rdim is not None
+        and left_rdim == right_rdim
+        and left.sizes.get(left_rdim, 1) > 1
+        and right.sizes.get(right_rdim, 1) == 1
+    ):
+        right = right.squeeze(right_rdim, drop=True)
+        right_rdim = None
+
+    exclude_align_dims = tuple(dim for dim in (left_rdim, right_rdim) if dim is not None)
+    left, right = xr.align(left, right, join="inner", exclude=exclude_align_dims)
+    return left - right
+
+
+def _context_selection_entries(
+    data: xr.Dataset | xr.DataArray,
+    *,
+    context_dims: tuple[str, ...] = RUN_CONTEXT_DIMS,
+) -> list[tuple[dict[str, object], dict[str, object]]]:
+    dims_present = [dim for dim in context_dims if dim in data.dims]
+    if not dims_present:
+        return [({}, {})]
+
+    varying_dims = [dim for dim in dims_present if data.sizes.get(dim, 1) > 1]
+    if not varying_dims:
+        labels = {
+            dim: _scalar_coord_value(data, dim)
+            for dim in dims_present
+            if _scalar_coord_value(data, dim) is not None
+        }
+        return [({}, labels)]
+
+    entries: list[tuple[dict[str, object], dict[str, object]]] = []
+    for values in product(*[data[dim].values.tolist() for dim in varying_dims]):
+        selection = {dim: value for dim, value in zip(varying_dims, values)}
+        labels = {}
+        for dim in dims_present:
+            if dim in selection:
+                labels[dim] = selection[dim]
+            else:
+                scalar_value = _scalar_coord_value(data, dim)
+                if scalar_value is not None:
+                    labels[dim] = scalar_value
+        entries.append((selection, labels))
+    return entries
+
+
 def _format_scalar_value(value: object, significant_digits: int) -> str:
     if value is None or pd.isna(value):
         return "-"
@@ -390,6 +553,67 @@ def format_axis_display_name(axis_name: str, *, leadtime_unit: str | None = None
     if axis_name == "leadtime" and leadtime_unit:
         return f"Lead time [{leadtime_unit}]"
     return AXIS_DISPLAY_NAMES.get(axis_name, axis_name.replace("_", " ").title())
+
+
+def _format_context_label(*, field: str, value: object, leadtime_unit: str | None = None) -> str:
+    field_name = format_axis_display_name(field, leadtime_unit=leadtime_unit)
+    if field == "leadtime" and leadtime_unit:
+        return f"{field_name}={value} {leadtime_unit}"
+    return f"{field_name}={value}"
+
+
+def _context_title_suffix(context_values: dict[str, object], *, leadtime_unit: str | None = None) -> str:
+    if not context_values:
+        return ""
+    return " | ".join(
+        _format_context_label(field=field, value=value, leadtime_unit=leadtime_unit)
+        for field, value in context_values.items()
+    )
+
+
+def _context_filename_suffix(context_values: dict[str, object]) -> str:
+    if not context_values:
+        return "all"
+    return "__".join(
+        f"{field}_{_sanitize_filename_fragment(str(value))}"
+        for field, value in context_values.items()
+    )
+
+
+def print_user_config_table() -> None:
+    if not GLOBAL_KNOBS["print_console_tables"]:
+        return
+
+    config_sections = [
+        ("debug", {"value": DEBUG}),
+        ("global", GLOBAL_KNOBS),
+        ("common_plot", COMMON_PLOT_KNOBS),
+        ("diff_plot", DIFF_PLOT_KNOBS),
+        ("leadtime_plot", LEADTIME_PLOT_KNOBS),
+        ("tables", TABLE_KNOBS),
+        ("scoreboard", SCOREBOARD_KNOBS),
+    ]
+
+    chunk_size = 2
+    for chunk_idx in range(0, len(config_sections), chunk_size):
+        chunk = dict(config_sections[chunk_idx:chunk_idx + chunk_size])
+        title_suffix = f" ({chunk_idx // chunk_size + 1})"
+        CONSOLE.print(Table(chunk, title=f"Calculate Metrics Config{title_suffix}").table)
+
+
+def build_progress() -> Progress:
+    return Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        console=CONSOLE,
+        auto_refresh=True,
+        refresh_per_second=6,
+        transient=False,
+    )
 
 
 def _metric_name_from_index(df: pd.DataFrame, row_pos: int) -> str | None:
@@ -506,6 +730,9 @@ def _print_rich_dataframe_table(
     raw_df: pd.DataFrame | None = None,
     base_color: str | None = None,
 ) -> None:
+    if not GLOBAL_KNOBS["print_console_tables"]:
+        return
+
     rich_table = RichTable(title=title, show_lines=False)
     index_labels = list(df.index.names) if isinstance(df.index, pd.MultiIndex) else [df.index.name or "row"]
     index_labels = [label if label is not None else "row" for label in index_labels]
@@ -910,9 +1137,27 @@ def build_scalar_metric_tables(
         pivot = _add_model_gain_columns(pivot)
         pivot = _order_table_columns(pivot)
 
-        filename_parts: list[str] = []
+        context_values: dict[str, object] = {}
         for col, value in zip(group_cols, group_key):
             if pd.isna(value):
+                continue
+            context_values[col] = value
+
+        for col in ("train_period", "loss", "leadtime"):
+            if col in context_values or col not in df_group.columns:
+                continue
+            values = [value for value in df_group[col].dropna().unique().tolist() if str(value) != ""]
+            if len(values) == 1:
+                context_values[col] = values[0]
+
+        filename_parts = [
+            f"{col}_{_sanitize_filename_fragment(str(context_values[col]))}"
+            for col in ("train_period", "loss", "leadtime")
+            if col in context_values
+        ]
+
+        for col, value in context_values.items():
+            if col in {"train_period", "loss", "leadtime"}:
                 continue
             filename_parts.append(f"{col}_{_sanitize_filename_fragment(str(value))}")
 
@@ -1187,6 +1432,246 @@ def save_metric_vs_diff_plot(
     return plot_path
 
 
+def save_field_timeseries_plots(
+    *,
+    runs: dict[str, xr.Dataset],
+    variables: list[str],
+    plot_folder: Path,
+    leadtime_unit: str,
+    filters: dict | None,
+    progress: Progress | None = None,
+    task_id: int | None = None,
+) -> list[Path]:
+    saved_paths: list[Path] = []
+    model_order = [model_name for model_name in LOAD_MODELS if model_name in runs]
+    truth_model = LOAD_MODELS[0] if LOAD_MODELS else None
+
+    for variable in variables:
+        timeseries_folder = get_variable_subfolder(
+            plot_root=plot_folder,
+            variable=variable,
+            subfolder="timeseries",
+        )
+        model_data: dict[str, xr.DataArray] = {}
+        context_reference: xr.DataArray | None = None
+
+        for model_name in model_order:
+            ds = runs.get(model_name)
+            if ds is None or variable not in ds.data_vars:
+                continue
+            da = _apply_xarray_filters(ds[variable], filters)
+            time_dim = da.earthml.guessed_dims.time
+            if time_dim is None or time_dim not in da.dims:
+                continue
+            model_data[model_name] = da
+            if context_reference is None:
+                context_reference = da
+
+        if not model_data or context_reference is None:
+            continue
+
+        for selection, context_values in _context_selection_entries(context_reference):
+            selected_data = {
+                model_name: da.sel({dim: value for dim, value in selection.items() if dim in da.dims}, drop=True)
+                for model_name, da in model_data.items()
+            }
+            selected_data = {model_name: da for model_name, da in selected_data.items() if da.size > 0}
+            if not selected_data:
+                continue
+
+            fc_has_spread = _has_multi_realization(selected_data.get("fc"))
+            pr_has_spread = _has_multi_realization(selected_data.get("pr"))
+            enable_spread = fc_has_spread or pr_has_spread
+            show_legend = enable_spread
+
+            context_suffix = _context_title_suffix(context_values, leadtime_unit=leadtime_unit)
+            base_title = format_variable_display_name(variable)
+            filename_context = _context_filename_suffix(context_values)
+
+            plot_jobs: list[tuple[str, str, dict[str, xr.DataArray]]] = [
+                ("raw", f"{base_title} spatial mean timeseries", selected_data),
+            ]
+
+            try:
+                climatology_data = {
+                    model_name: _build_climatology_da(da)
+                    for model_name, da in selected_data.items()
+                }
+                plot_jobs.append(("climatology", f"{base_title} climatology", climatology_data))
+            except Exception:
+                climatology_data = {}
+
+            try:
+                anomaly_data = {
+                    model_name: _build_anomaly_da(da)
+                    for model_name, da in selected_data.items()
+                }
+                plot_jobs.append(("anomaly", f"{base_title} anomaly", anomaly_data))
+            except Exception:
+                anomaly_data = {}
+
+            if truth_model is not None and truth_model in selected_data:
+                truth_da = selected_data[truth_model]
+                for model_name in ("fc", "pr"):
+                    if model_name not in selected_data:
+                        continue
+                    residual_da = _build_residual_da(selected_data[model_name], truth_da)
+                    plot_jobs.append(
+                        (
+                            f"residual_{model_name}_minus_{truth_model}",
+                            f"{base_title} residual ({MODEL_DISPLAY_NAMES.get(model_name, model_name)} - {MODEL_DISPLAY_NAMES.get(truth_model, truth_model)})",
+                            {model_name: residual_da},
+                        )
+                    )
+
+            for plot_kind, title, plot_data in plot_jobs:
+                if not plot_data:
+                    continue
+
+                sample_da = next(iter(plot_data.values()))
+                x_dim = "month" if plot_kind == "climatology" else (sample_da.earthml.guessed_dims.time or "time")
+                fig, ax = plt.subplots(figsize=(12, 5.5))
+                plotted = False
+
+                for model_name, da in plot_data.items():
+                    plot_realization_timeseries(
+                        da,
+                        members=_members_arg(da, enable_spread=enable_spread),
+                        ax=ax,
+                        x_dim=x_dim,
+                        ens_dim=_realization_dim(da) or "realization",
+                        x_label="Month" if x_dim == "month" else "Time",
+                        y_label=base_title,
+                        label=MODEL_DISPLAY_NAMES.get(model_name, str(model_name)),
+                        mean_label=MODEL_DISPLAY_NAMES.get(model_name, str(model_name)),
+                        color=MODEL_COLORS.get(model_name),
+                        plot_members=False,
+                    )
+                    plotted = True
+
+                if not plotted:
+                    plt.close(fig)
+                    continue
+
+                ax.set_title(f"{title} | {context_suffix}" if context_suffix else title)
+                if plot_kind.startswith("residual_"):
+                    ax.axhline(0.0, color="0.3", lw=1.0, ls=":")
+                if show_legend:
+                    ax.legend(fontsize=9)
+                fig.tight_layout()
+
+                plot_path = timeseries_folder / f"{plot_kind}_timeseries_{filename_context}.png"
+                fig.savefig(plot_path, bbox_inches="tight", dpi=150)
+                plt.close(fig)
+                saved_paths.append(plot_path)
+
+        if progress is not None and task_id is not None:
+            progress.advance(task_id)
+
+    return saved_paths
+
+
+def save_field_and_metric_map_plots(
+    *,
+    runs: dict[str, xr.Dataset],
+    metrics: dict[str, dict[str, xr.Dataset]],
+    variables: list[str],
+    plot_folder: Path,
+    leadtime_unit: str,
+    filters: dict | None,
+    progress: Progress | None = None,
+    task_id: int | None = None,
+) -> list[Path]:
+    saved_paths: list[Path] = []
+    model_order = [model_name for model_name in LOAD_MODELS if model_name in runs]
+
+    for variable in variables:
+        maps_folder = get_variable_subfolder(
+            plot_root=plot_folder,
+            variable=variable,
+            subfolder="maps",
+        )
+
+        for model_name in model_order:
+            ds = runs.get(model_name)
+            if ds is None or variable not in ds.data_vars:
+                continue
+
+            da = _apply_xarray_filters(ds[variable], filters)
+            for selection, context_values in _context_selection_entries(da):
+                da_sel = da.sel({dim: value for dim, value in selection.items() if dim in da.dims}, drop=True)
+                if da_sel.size == 0:
+                    continue
+                da_sel = _reduce_extra_map_dims(da_sel)
+                save_path = maps_folder / (
+                    f"field_{model_name}_{_context_filename_suffix(context_values)}_temporal_mean_map.png"
+                )
+                plot_temporal_mean_map(
+                    da_sel,
+                    save_path=save_path,
+                    cbar_label=format_variable_display_name(variable),
+                )
+                saved_paths.append(save_path)
+
+        for metric_type, section_dict in metrics.items():
+            ds_map = section_dict.get("map", xr.Dataset())
+            if not isinstance(ds_map, xr.Dataset) or variable not in ds_map.data_vars:
+                continue
+
+            da_var = _apply_xarray_filters(ds_map[variable], filters)
+            if "metric" not in da_var.dims:
+                continue
+
+            metric_values = [str(value) for value in da_var["metric"].values.tolist()]
+            model_values = (
+                [str(value) for value in da_var["model"].values.tolist()]
+                if "model" in da_var.dims
+                else [None]
+            )
+
+            for metric_name in metric_values:
+                da_metric = da_var.sel(metric=metric_name, drop=True)
+
+                for model_name in model_values:
+                    da_model = da_metric.sel(model=model_name, drop=True) if model_name is not None else da_metric
+                    if da_model.size == 0:
+                        continue
+
+                    for selection, context_values in _context_selection_entries(da_model):
+                        da_sel = da_model.sel(
+                            {dim: value for dim, value in selection.items() if dim in da_model.dims},
+                            drop=True,
+                        )
+                        if da_sel.size == 0:
+                            continue
+                        da_sel = _reduce_extra_map_dims(da_sel)
+
+                        filename_parts = [metric_type, metric_name]
+                        if model_name is not None:
+                            filename_parts.append(model_name)
+                        filename_parts.append(_context_filename_suffix(context_values))
+                        save_path = maps_folder / f"{'_'.join(filename_parts)}_map.png"
+
+                        cbar_label_parts = [format_metric_display_name(metric_name)]
+                        if model_name is not None:
+                            cbar_label_parts.append(MODEL_DISPLAY_NAMES.get(model_name, str(model_name)))
+                        context_suffix = _context_title_suffix(context_values, leadtime_unit=leadtime_unit)
+                        if context_suffix:
+                            cbar_label_parts.append(context_suffix)
+
+                        plot_temporal_mean_map(
+                            da_sel,
+                            save_path=save_path,
+                            cbar_label=" | ".join(cbar_label_parts),
+                        )
+                        saved_paths.append(save_path)
+
+        if progress is not None and task_id is not None:
+            progress.advance(task_id)
+
+    return saved_paths
+
+
 def save_metrics_vs_leadtime_plots(
     *,
     metrics: dict,
@@ -1196,6 +1681,8 @@ def save_metrics_vs_leadtime_plots(
     filters: dict | None,
     shade_by: str,
     shade_label: str,
+    progress: Progress | None = None,
+    task_id: int | None = None,
 ) -> list[Path]:
     saved_paths: list[Path] = []
     model_colors = MODEL_COLORS
@@ -1221,7 +1708,11 @@ def save_metrics_vs_leadtime_plots(
     ds_scalar_prob = metrics["probabilistic"]["scalar"]
 
     for variable in variables:
-        variable_plot_folder = get_variable_plot_folder(plot_root=plot_folder, variable=variable)
+        variable_plot_folder = get_variable_subfolder(
+            plot_root=plot_folder,
+            variable=variable,
+            subfolder="leadtime",
+        )
 
         for metric_name, metric_type in LEADTIME_METRICS.items():
             fig, ax = plt.subplots(
@@ -1361,6 +1852,9 @@ def save_metrics_vs_leadtime_plots(
             plt.close(fig)
             saved_paths.append(plot_path)
 
+        if progress is not None and task_id is not None:
+            progress.advance(task_id)
+
     return saved_paths
 
 
@@ -1372,6 +1866,7 @@ def main() -> None:
     print("Dask dashboard:", client.dashboard_link.replace("http://127.0.0.1:", base_url))
 
     print(f"Loading experiments from: {EXP_ROOT_FOLDER}")
+    print_user_config_table()
 
     runs, metrics, _ = get_runs_and_metrics(
         exp_root=EXP_ROOT_FOLDER,
@@ -1381,6 +1876,7 @@ def main() -> None:
     )
 
     vars_from_fc = [v for v in runs["fc"].data_vars if v != "_has_var"]
+    PLOT_FOLDER.mkdir(parents=True, exist_ok=True)
     print(f"Processed vars: {vars_from_fc}")
     leadtime_unit = infer_leadtime_unit_from_configs(EXP_ROOT_FOLDER)
     region = infer_region_from_configs(EXP_ROOT_FOLDER)
@@ -1388,111 +1884,149 @@ def main() -> None:
     print(f"Inferred region: {region or 'unknown'}")
     print_available_scalar_metrics(metrics=metrics)
 
-    if GLOBAL_KNOBS["enable_diff_plot"]:
-        df_nodiff = build_scalar_metric_df(
-            metrics=metrics,
+    with build_progress() as progress:
+        ts_task = progress.add_task("Generating field timeseries", total=len(vars_from_fc))
+        field_timeseries_paths = save_field_timeseries_plots(
+            runs=runs,
             variables=vars_from_fc,
-            metric_name=FORECAST_METRIC,
-            metric_type=FORECAST_METRIC_TYPE,
-            diff="no",
-        )
-        df_delta = build_scalar_metric_df(
-            metrics=metrics,
-            variables=vars_from_fc,
-            metric_name=DIFF_METRIC,
-            metric_type=DIFF_METRIC_TYPE,
-            diff="delta",
-            models=MODELS_DIFF,
-        )
-
-        plot_path = save_metric_vs_diff_plot(
-            df_nodiff=df_nodiff,
-            df_delta=df_delta,
             plot_folder=PLOT_FOLDER,
-            forecast_metric=FORECAST_METRIC,
-            diff_metric=DIFF_METRIC,
-            leadtime_unit=f" {leadtime_unit}" if leadtime_unit else "",
-            region=region,
+            leadtime_unit=leadtime_unit,
             filters=PLOT_FILTERS,
-            shade_by=SHADE_BY,
-            shade_label=SHADE_LABEL,
+            progress=progress,
+            task_id=ts_task,
         )
-        print("Saved leadtime-vs-global-metrics plot to:", plot_path)
-    else:
-        print("Skipping diff plot: GLOBAL_KNOBS['enable_diff_plot'] is False")
+        for field_timeseries_path in field_timeseries_paths:
+            debug_print("Saved field timeseries plot to:", field_timeseries_path)
 
-    if GLOBAL_KNOBS["enable_leadtime_plots"]:
-        leadtime_plot_paths = save_metrics_vs_leadtime_plots(
+        map_task = progress.add_task("Generating maps", total=len(vars_from_fc))
+        field_map_paths = save_field_and_metric_map_plots(
+            runs=runs,
             metrics=metrics,
             variables=vars_from_fc,
             plot_folder=PLOT_FOLDER,
-            leadtime_unit=f" {leadtime_unit}" if leadtime_unit else "",
+            leadtime_unit=leadtime_unit,
             filters=PLOT_FILTERS,
-            shade_by=SHADE_BY,
-            shade_label=SHADE_LABEL,
+            progress=progress,
+            task_id=map_task,
         )
-        for leadtime_plot_path in leadtime_plot_paths:
-            print("Saved metric-vs-leadtime plot to:", leadtime_plot_path)
-    else:
-        print("Skipping leadtime plots: GLOBAL_KNOBS['enable_leadtime_plots'] is False")
+        for field_map_path in field_map_paths:
+            debug_print("Saved map plot to:", field_map_path)
 
-    if GLOBAL_KNOBS["enable_scalar_tables"]:
-        raw_metrics = {
-            metric
-            for metric_group in (
-                metrics.get("deterministic", {}).get("scalar"),
-                metrics.get("ensemble", {}).get("scalar"),
-                metrics.get("probabilistic", {}).get("scalar"),
-            )
-            if metric_group is not None and "metric" in metric_group.coords
-            for metric in metric_group.coords["metric"].values.tolist()
-        } - NORMALIZED_METRICS
-
-        for variable in vars_from_fc:
-            variable_plot_folder = get_variable_plot_folder(plot_root=PLOT_FOLDER, variable=variable)
-            base_color = get_variable_table_color(variable=variable, variables=vars_from_fc)
-            scalar_table_paths = save_scalar_metric_tables(
+        if GLOBAL_KNOBS["enable_diff_plot"]:
+            diff_task = progress.add_task("Generating metric-vs-delta plot", total=1)
+            df_nodiff = build_scalar_metric_df(
                 metrics=metrics,
-                variables=[variable],
-                output_folder=variable_plot_folder,
-                filters=SCALAR_TABLE_FILTERS,
-                metrics_keep=raw_metrics,
-                filename_prefix="scalar_metrics",
-                leadtime_unit=leadtime_unit,
-                base_color=base_color,
+                variables=vars_from_fc,
+                metric_name=FORECAST_METRIC,
+                metric_type=FORECAST_METRIC_TYPE,
+                diff="no",
             )
-            for scalar_table_path in scalar_table_paths:
-                print("Saved scalar metrics table to:", scalar_table_path)
+            df_delta = build_scalar_metric_df(
+                metrics=metrics,
+                variables=vars_from_fc,
+                metric_name=DIFF_METRIC,
+                metric_type=DIFF_METRIC_TYPE,
+                diff="delta",
+                models=MODELS_DIFF,
+            )
 
-        combined_normalized_table_paths = save_scalar_metric_tables(
-            metrics=metrics,
-            variables=vars_from_fc,
-            output_folder=PLOT_FOLDER,
-            filters=SCALAR_TABLE_FILTERS,
-            metrics_keep=NORMALIZED_METRICS,
-            filename_prefix="normalized_metrics",
-            title_prefix="Normalized metrics",
-            row_index=("variable", "metric"),
-            column_index=("model", "stat"),
-            stat_label_overrides={"prob": ""},
-            leadtime_unit=leadtime_unit,
-            base_color=get_variable_table_color(variable=vars_from_fc[0], variables=vars_from_fc),
-        )
-        for normalized_table_path in combined_normalized_table_paths:
-            print("Saved combined normalized metrics table to:", normalized_table_path)
-    else:
-        print("Skipping scalar tables: GLOBAL_KNOBS['enable_scalar_tables'] is False")
+            plot_path = save_metric_vs_diff_plot(
+                df_nodiff=df_nodiff,
+                df_delta=df_delta,
+                plot_folder=PLOT_FOLDER,
+                forecast_metric=FORECAST_METRIC,
+                diff_metric=DIFF_METRIC,
+                leadtime_unit=f" {leadtime_unit}" if leadtime_unit else "",
+                region=region,
+                filters=PLOT_FILTERS,
+                shade_by=SHADE_BY,
+                shade_label=SHADE_LABEL,
+            )
+            progress.advance(diff_task)
+            debug_print("Saved leadtime-vs-global-metrics plot to:", plot_path)
+        else:
+            print("Skipping diff plot: GLOBAL_KNOBS['enable_diff_plot'] is False")
 
-    if GLOBAL_KNOBS["enable_scoreboard"]:
-        scoreboard_path = save_scoreboard_plot(
-            metrics=metrics,
-            variables=vars_from_fc,
-            plot_folder=PLOT_FOLDER,
-            leadtime_unit=leadtime_unit,
-        )
-        print("Saved scoreboard plot to:", scoreboard_path)
-    else:
-        print("Skipping scoreboard: GLOBAL_KNOBS['enable_scoreboard'] is False")
+        if GLOBAL_KNOBS["enable_leadtime_plots"]:
+            leadtime_task = progress.add_task("Generating leadtime plots", total=len(vars_from_fc))
+            leadtime_plot_paths = save_metrics_vs_leadtime_plots(
+                metrics=metrics,
+                variables=vars_from_fc,
+                plot_folder=PLOT_FOLDER,
+                leadtime_unit=f" {leadtime_unit}" if leadtime_unit else "",
+                filters=PLOT_FILTERS,
+                shade_by=SHADE_BY,
+                shade_label=SHADE_LABEL,
+                progress=progress,
+                task_id=leadtime_task,
+            )
+            for leadtime_plot_path in leadtime_plot_paths:
+                debug_print("Saved metric-vs-leadtime plot to:", leadtime_plot_path)
+        else:
+            print("Skipping leadtime plots: GLOBAL_KNOBS['enable_leadtime_plots'] is False")
+
+        if GLOBAL_KNOBS["enable_scalar_tables"]:
+            raw_metrics = {
+                metric
+                for metric_group in (
+                    metrics.get("deterministic", {}).get("scalar"),
+                    metrics.get("ensemble", {}).get("scalar"),
+                    metrics.get("probabilistic", {}).get("scalar"),
+                )
+                if metric_group is not None and "metric" in metric_group.coords
+                for metric in metric_group.coords["metric"].values.tolist()
+            } - NORMALIZED_METRICS
+
+            table_task = progress.add_task("Generating scalar tables", total=len(vars_from_fc) + 1)
+            for variable in vars_from_fc:
+                variable_plot_folder = get_variable_plot_folder(plot_root=PLOT_FOLDER, variable=variable)
+                base_color = get_variable_table_color(variable=variable, variables=vars_from_fc)
+                scalar_table_paths = save_scalar_metric_tables(
+                    metrics=metrics,
+                    variables=[variable],
+                    output_folder=variable_plot_folder,
+                    filters=SCALAR_TABLE_FILTERS,
+                    metrics_keep=raw_metrics,
+                    filename_prefix="scalar_metrics",
+                    leadtime_unit=leadtime_unit,
+                    base_color=base_color,
+                )
+                progress.advance(table_task)
+                for scalar_table_path in scalar_table_paths:
+                    debug_print("Saved scalar metrics table to:", scalar_table_path)
+
+            combined_normalized_table_paths = save_scalar_metric_tables(
+                metrics=metrics,
+                variables=vars_from_fc,
+                output_folder=PLOT_FOLDER,
+                filters=SCALAR_TABLE_FILTERS,
+                metrics_keep=NORMALIZED_METRICS,
+                filename_prefix="normalized_metrics",
+                title_prefix="Normalized metrics",
+                row_index=("variable", "metric"),
+                column_index=("model", "stat"),
+                stat_label_overrides={"prob": ""},
+                leadtime_unit=leadtime_unit,
+                base_color=get_variable_table_color(variable=vars_from_fc[0], variables=vars_from_fc),
+            )
+            progress.advance(table_task)
+            for normalized_table_path in combined_normalized_table_paths:
+                debug_print("Saved combined normalized metrics table to:", normalized_table_path)
+        else:
+            print("Skipping scalar tables: GLOBAL_KNOBS['enable_scalar_tables'] is False")
+
+        if GLOBAL_KNOBS["enable_scoreboard"]:
+            scoreboard_task = progress.add_task("Generating scoreboard", total=1)
+            scoreboard_path = save_scoreboard_plot(
+                metrics=metrics,
+                variables=vars_from_fc,
+                plot_folder=PLOT_FOLDER,
+                leadtime_unit=leadtime_unit,
+            )
+            progress.advance(scoreboard_task)
+            debug_print("Saved scoreboard plot to:", scoreboard_path)
+        else:
+            print("Skipping scoreboard: GLOBAL_KNOBS['enable_scoreboard'] is False")
 
 
 if __name__ == "__main__":
