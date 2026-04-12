@@ -21,6 +21,10 @@ def _reduce_for_timeseries(
     keep_dims: Sequence[str],
 ) -> xr.DataArray:
     da = _as_dataarray(da)
+    if np.issubdtype(da.dtype, np.floating) and da.dtype.itemsize < np.dtype(np.float32).itemsize:
+        # Flox/numbagg reductions do not support float16 inputs reliably; promote
+        # plotting reductions to float32 without forcing eager computation.
+        da = da.astype(np.float32)
     reduce_dims = tuple(dim for dim in da.dims if dim not in keep_dims)
     if not reduce_dims:
         return da
