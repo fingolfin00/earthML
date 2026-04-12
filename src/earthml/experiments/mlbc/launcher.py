@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Sequence, Callable, Any, TypeAlias
 from itertools import product
+import multiprocessing
 
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from ...logging import (
     remove_experiment_file_handler,
 )
 from ...sources.providers import Provider
+from ...sources.providers.registry import JUNO_LOCAL_PROVIDER_NAMES
 
 from .dataset import MLBCDatasetGenerator
 from .dataclasses import MLBCExperimentLauncherConfig, MLBCNeuralNet, MLBCExperimentConfig
@@ -50,6 +52,7 @@ class MLBCExperimentLauncher:
     net                         : MLBCNeuralNet
     # Optional
     dask_workers                : int | None = None
+    juno_file_open_workers      : int | None = None
     only_longest_train_period   : bool = True
     # Providers args
     earthkit_cache_dir          : str | Path = Path("/tmp/.earthkit_data")
@@ -117,6 +120,9 @@ class MLBCExperimentLauncher:
         self.train_periods = self._get_train_periods()
         self.test_periods = self.test_periods if isinstance(self.test_periods, Sequence) else [self.test_periods]
 
+        if self.juno_file_open_workers is None:
+            self.juno_file_open_workers = multiprocessing.cpu_count()
+
         # If realization_as_channel is true use provided input and output channel dims, else infer from number of variables
         n_channels, n_classes = (self.net.n_channels, self.net.n_classes) if self.realization_as_channel else (len(self.variables), len(self.variables))
         # Determine output realizations from requested n_channels and n_classes
@@ -163,6 +169,7 @@ class MLBCExperimentLauncher:
             "data.train_period_groups": self._format_train_period_groups(self.train_periods),
             "data.test_periods": self._format_time_range(self.test_periods),
             "runtime.dask_workers": self.dask_workers,
+            "runtime.juno_file_open_workers": self.juno_file_open_workers,
             "runtime.regrid_resolution": self.regrid_resolution,
             "runtime.earthkit_cache_dir": str(self.earthkit_cache_dir),
             "runtime.only_longest_train_period": self.only_longest_train_period,
@@ -506,6 +513,8 @@ class MLBCExperimentLauncher:
         )
 
         for provider_name, provider_args in zip(input_provider_list, input_provider_args_list, strict=True):
+            if provider_name in JUNO_LOCAL_PROVIDER_NAMES:
+                provider_args = provider_args | {"file_open_workers": self.juno_file_open_workers}
             input_providers.append(Provider(name=provider_name, params=provider_args))
 
         for provider_name, provider_args in zip(target_provider_list, target_provider_args_list, strict=True):
@@ -514,10 +523,19 @@ class MLBCExperimentLauncher:
                     f"Target provider {provider_name} requires a list of kwargs, got {type(provider_args)}"
                 )
                 target_providers.extend(
-                    Provider(name=name, params=args)
+                    Provider(
+                        name=name,
+                        params=(
+                            args | {"file_open_workers": self.juno_file_open_workers}
+                            if name in JUNO_LOCAL_PROVIDER_NAMES
+                            else args
+                        ),
+                    )
                     for name, args in zip(provider_name, provider_args, strict=True)
                 )
             else:
+                if provider_name in JUNO_LOCAL_PROVIDER_NAMES:
+                    provider_args = provider_args | {"file_open_workers": self.juno_file_open_workers}
                 target_providers.append(Provider(name=provider_name, params=provider_args))
 
         return {
