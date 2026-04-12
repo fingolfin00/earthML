@@ -82,6 +82,21 @@ def _is_int_leadtime(ds, coord="leadtime"):
         return False
     return np.issubdtype(ds[coord].dtype, np.integer)
 
+
+def get_leadtime_value_and_unit(leadtime_rd) -> tuple[int, str]:
+    """
+    Convert a relativedelta-like leadtime into the integer/unit pair used by
+    experiment metadata.
+    """
+    if leadtime_rd.hours >= 1:
+        return leadtime_rd.hours, "hours"
+    if leadtime_rd.months >= 1:
+        return leadtime_rd.months, "months"
+    if leadtime_rd.days >= 1:
+        return leadtime_rd.days, "days"
+    raise ValueError(f"Unsupported leadtime: {leadtime_rd}")
+
+
 def harmonize_leadtime_int(*datasets, coord="leadtime", method="int_source"):
     """
     Make all datasets share the same integer leadtime coordinate, shifting each
@@ -393,14 +408,10 @@ def load_all_exp_from_folder(
         source_config = source_configs[0] if isinstance(source_configs, Sequence) else source_configs
         leadtime_rd = source_config.leadtime
 
-        if leadtime_rd.hours >= 1:
-            leadtime = leadtime_rd.hours
-            leadtime_unit = "hours"
-        elif leadtime_rd.months >= 1:
-            leadtime = leadtime_rd.months
-            leadtime_unit = "months"
-        else:
-            raise ValueError(f"Unsupported leadtime for experiment {config.name}: {leadtime_rd}")
+        try:
+            leadtime, leadtime_unit = get_leadtime_value_and_unit(leadtime_rd)
+        except ValueError as exc:
+            raise ValueError(f"Unsupported leadtime for experiment {config.name}: {leadtime_rd}") from exc
 
         var_input = datasource_input.data_selection.variable.name
 
