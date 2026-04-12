@@ -48,6 +48,7 @@ def plot_metric_vs_diff(
     agg="mean",
     figsize=(12, 12),
     cmap_name="tab10",
+    variable_colors: dict[str, str] | None = None,
     markers=("o", "s", "^", "D", "v", "P", "X"),
     point_size=20,
     edgecolor="black",
@@ -156,13 +157,18 @@ def plot_metric_vs_diff(
 
     cmap = plt.get_cmap(cmap_name)
 
+    def _base_color_for_variable(var, idx: int):
+        if variable_colors and str(var) in variable_colors:
+            return variable_colors[str(var)]
+        return cmap(idx % cmap.N)
+
     # Plot
     for vi, var in enumerate(variables):
-        base = cmap(vi % cmap.N)
+        base = _base_color_for_variable(var, vi)
         for pi, shade_value in enumerate(shade_values):
             # amount in [0, shade_strength]
             denom = max(1, len(shade_values) - 1)
-            amt = shade_strength * (1.0 - pi / denom)
+            amt = shade_strength * (pi / denom)
             shade = lighten(base, amt)
 
             for li, lt in enumerate(leadtimes):
@@ -294,7 +300,7 @@ def plot_metric_vs_diff(
                 marker="o",
                 linestyle="None",
                 markersize=7,
-                markerfacecolor=cmap(vi % cmap.N),
+                markerfacecolor=_base_color_for_variable(var, vi),
                 markeredgecolor=edgecolor,
                 label=legend_labels[vi] if legend_labels else str(var),
                 # label=str(var), # TODO fix this is too custom
@@ -358,11 +364,14 @@ def plot_metric_vs_diff(
             loc=legend_loc,
             fontsize=legend_fontsize,
             frameon=True,
+            framealpha=0.0,
             handlelength=2.2,
             handletextpad=0.8,
             borderpad=0.8,
             labelspacing=0.6,
         )
+        leg.get_frame().set_facecolor("none")
+        leg.get_frame().set_edgecolor("none")
     
         # Make section headers look like headers
         for txt in leg.get_texts():
