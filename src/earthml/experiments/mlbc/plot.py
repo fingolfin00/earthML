@@ -6,11 +6,13 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
+from scipy.signal import welch
 
-from ...plots import plot_realization_timeseries
+from ...plots import plot_realization_timeseries, build_plot_config, get_var_units
 
 
 PlotSpec = dict[str, Any]
+DEFAULT_PLOT_CONFIG = build_plot_config()
 
 
 def _get_stage_plot_folder(root: Path, data_type: str) -> Path:
@@ -30,6 +32,76 @@ def _get_plot_members(ds: xr.Dataset) -> tuple[xr.Dataset | None, str | None]:
     return None, rdim
 
 
+def _get_var_unit(ds: xr.Dataset, var: str) -> str | None:
+    ds_var = _select_plot_var(ds, var)
+    da = ds_var[var]
+    unit = da.attrs.get("units")
+    if unit:
+        return unit
+    try:
+        return get_var_units(DEFAULT_PLOT_CONFIG, var)
+    except KeyError:
+        return None
+
+
+def _format_y_label(var: str, *, unit: str | None, quantity: str = "") -> str:
+    if quantity:
+        return f"{quantity} [{unit}]" if unit else quantity
+    return f"{var} [{unit}]" if unit else var
+
+
+def _square_unit(unit: str | None) -> str | None:
+    if unit is None:
+        return None
+    return f"{unit}^2"
+
+
+def _infer_period_unit(ds: xr.Dataset) -> str:
+    time_dim = ds.earthml.guessed_dims.time
+    if time_dim is None or time_dim not in ds.coords:
+        return "timesteps"
+
+    time_vals = ds[time_dim].values
+    if len(time_vals) < 2:
+        return "timesteps"
+
+    try:
+        time_idx = xr.DataArray(time_vals, dims=(time_dim,)).to_index()
+    except Exception:
+        return "timesteps"
+
+    try:
+        freq = getattr(time_idx, "freqstr", None) or xr.infer_freq(time_idx)
+    except Exception:
+        freq = None
+
+    if freq is not None:
+        freq = str(freq).upper()
+        if "MS" in freq or freq == "M":
+            return "months"
+        if "D" in freq:
+            return "days"
+        if "H" in freq:
+            return "hours"
+
+    try:
+        diffs = np.diff(time_vals.astype("datetime64[ns]")).astype("timedelta64[s]").astype(np.int64)
+        if diffs.size == 0:
+            return "timesteps"
+        median_seconds = int(np.median(diffs))
+    except Exception:
+        return "timesteps"
+
+    day = 24 * 3600
+    if 27 * day <= median_seconds <= 32 * day:
+        return "months"
+    if median_seconds % day == 0:
+        return "days"
+    if median_seconds % 3600 == 0:
+        return "hours"
+    return "timesteps"
+
+
 def _plot_single_timeseries(
     *,
     logger,
@@ -42,6 +114,7 @@ def _plot_single_timeseries(
     label: str,
     mean_label: str,
     color: str,
+    y_label: str | None = None,
 ) -> None:
     ds_var = _select_plot_var(ds, var)
     members, rdim = _get_plot_members(ds_var)
@@ -60,6 +133,7 @@ def _plot_single_timeseries(
         ens_dim=rdim or "realization",
         ax=ax,
         x_label="Time",
+        y_label=y_label,
         label=label,
         mean_label=mean_label,
         color=color,
@@ -166,7 +240,9 @@ def _build_anomaly_autocorr_ds(ds: xr.Dataset, nlags: int | None = None) -> xr.D
             x_std = x.std(dim=time_dim, skipna=True)
             y_std = y.std(dim=time_dim, skipna=True)
             denom = x_std * y_std
-            corr = xr.where(denom > 0, cov / denom, np.nan)
+            valid = np.isfinite(denom) & (denom != 0)
+            denom_safe = denom.where(valid, other=1.0)
+            corr = (cov / denom_safe).where(valid)
             corr_list.append(corr)
         acf_vars[var_name] = xr.concat(
             corr_list,
@@ -174,6 +250,71 @@ def _build_anomaly_autocorr_ds(ds: xr.Dataset, nlags: int | None = None) -> xr.D
         )
 
     return xr.Dataset(acf_vars)
+
+
+def _build_anomaly_power_spectrum_ds(ds: xr.Dataset) -> xr.Dataset:
+    time_dim = ds.earthml.guessed_dims.time
+    if time_dim is None or time_dim not in ds.dims:
+        raise ValueError("Cannot compute anomaly power spectrum without a time dimension.")
+
+    anom_ds = _build_ds_minus_climatology_ds(ds)
+    time_len = int(anom_ds.sizes.get(time_dim, 0))
+    if time_len < 3:
+        raise ValueError("Need at least 3 timesteps to compute anomaly power spectrum.")
+
+    # Welch operates along the full time axis, so make the core dimension a
+    # single chunk when working with Dask-backed arrays.
+    try:
+        chunks = anom_ds.chunks
+    except ValueError:
+        anom_ds = anom_ds.unify_chunks()
+        chunks = anom_ds.chunks
+    if chunks is not None:
+        anom_ds = anom_ds.chunk({time_dim: -1})
+
+    nperseg = min(12, time_len)
+    if nperseg < 3:
+        raise ValueError("Need at least 3 samples per segment to compute Welch spectrum.")
+    noverlap = min(nperseg // 2, nperseg - 1)
+    nfreq = nperseg // 2 + 1
+
+    psd_vars: dict[str, xr.DataArray] = {}
+    for var_name, da in anom_ds.data_vars.items():
+        freq_ref, _ = welch(
+            np.zeros(time_len, dtype=np.float64),
+            fs=1.0,
+            nperseg=nperseg,
+            noverlap=noverlap,
+            detrend="constant",
+            scaling="density",
+            axis=-1,
+        )
+        spectrum = xr.apply_ufunc(
+            lambda x: welch(
+                x,
+                fs=1.0,
+                nperseg=nperseg,
+                noverlap=noverlap,
+                detrend="constant",
+                scaling="density",
+                axis=-1,
+            )[1],
+            da.transpose(..., time_dim),
+            input_core_dims=[[time_dim]],
+            output_core_dims=[["frequency"]],
+            exclude_dims={time_dim},
+            vectorize=False,
+            dask="parallelized",
+            output_dtypes=[np.float64],
+            dask_gufunc_kwargs={
+                "output_sizes": {"frequency": nfreq},
+                "allow_rechunk": True,
+            },
+        )
+        period_ref = np.where(freq_ref > 0, 1.0 / freq_ref, np.inf)
+        psd_vars[var_name] = spectrum.assign_coords(frequency=("frequency", period_ref))
+
+    return xr.Dataset(psd_vars)
 
 
 def plot_stage_timeseries(
@@ -187,6 +328,7 @@ def plot_stage_timeseries(
     x_dim: str | None = None,
     x_label: str = "Time",
     filename_suffix: str = "timeseries",
+    y_label_mode: str = "unit",
 ) -> None:
     stage_plot_folder = _get_stage_plot_folder(plots_folder_path, data_type)
     logger.info(
@@ -214,6 +356,17 @@ def plot_stage_timeseries(
     for var in common_vars:
         fig, ax = plt.subplots(figsize=(10, 4))
         try:
+            base_unit = _get_var_unit(base_ds, var)
+            if y_label_mode == "unit":
+                y_label = _format_y_label(var, unit=base_unit)
+            elif y_label_mode == "variance":
+                y_label = _format_y_label(var, unit=_square_unit(base_unit), quantity="Variance")
+            elif y_label_mode == "autocorr":
+                y_label = "Autocorrelation"
+            elif y_label_mode == "power_spectrum":
+                y_label = _format_y_label(var, unit=_square_unit(base_unit), quantity="Power spectral density")
+            else:
+                y_label = None
             for spec in plot_specs:
                 ds_var = _select_plot_var(spec["ds"], var)
                 members, rdim = _get_plot_members(ds_var)
@@ -232,6 +385,7 @@ def plot_stage_timeseries(
                     ens_dim=rdim or "realization",
                     ax=ax,
                     x_label=x_label,
+                    y_label=y_label,
                     label=spec["label"],
                     mean_label=spec["mean_label"],
                     color=spec["color"],
@@ -305,11 +459,12 @@ def plot_stage_residual_timeseries(
                 label=residual_label,
                 mean_label=residual_mean_label,
                 color=color,
+                y_label=_format_y_label(var, unit=_get_var_unit(left_ds, var)),
             )
             ax.axhline(0.0, color="black", linewidth=1.0, linestyle=":")
             ax.legend()
             fig.tight_layout()
-            suffix = "anomaly_residual_timeseries" if anomaly else "residual_timeseries"
+            suffix = "anomaly_residual_timeseries" if anomaly else "raw_residual_timeseries"
             fig.savefig(stage_plot_folder.joinpath(f"{stage}_{var}_{suffix}.png"), dpi=200)
         except Exception as exc:
             logger.warning(
@@ -344,6 +499,7 @@ def plot_stage_climatology_timeseries(
         x_dim="month",
         x_label="Month",
         filename_suffix="climatology_timeseries",
+        y_label_mode="unit",
     )
 
 
@@ -364,7 +520,8 @@ def plot_stage_minus_climatology_timeseries(
         data_type=data_type,
         stage=stage,
         stage_kind=f"{stage_kind} minus climatology",
-        filename_suffix="minus_climatology_timeseries",
+        filename_suffix="anomaly_timeseries",
+        y_label_mode="unit",
     )
 
 
@@ -392,7 +549,8 @@ def plot_stage_variance_timeseries(
         data_type=data_type,
         stage=stage,
         stage_kind=f"{stage_kind} anomaly variance",
-        filename_suffix="variance_timeseries",
+        filename_suffix="anomaly_variance_timeseries",
+        y_label_mode="variance",
     )
 
 
@@ -422,7 +580,39 @@ def plot_stage_autocorr_timeseries(
         stage_kind=f"{stage_kind} anomaly autocorr",
         x_dim="lag",
         x_label="Lag",
-        filename_suffix="autocorr_timeseries",
+        filename_suffix="anomaly_autocorr_timeseries",
+        y_label_mode="autocorr",
+    )
+
+
+def plot_stage_power_spectrum_timeseries(
+    *,
+    logger,
+    plots_folder_path: Path,
+    plot_specs: list[PlotSpec],
+    data_type: str,
+    stage: str,
+    stage_kind: str,
+) -> None:
+    period_unit = _infer_period_unit(plot_specs[0]["ds"])
+    power_plot_specs = [
+        {
+            **spec,
+            "ds": _build_anomaly_power_spectrum_ds(spec["ds"]),
+        }
+        for spec in plot_specs
+    ]
+    plot_stage_timeseries(
+        logger=logger,
+        plots_folder_path=plots_folder_path,
+        plot_specs=power_plot_specs,
+        data_type=data_type,
+        stage=stage,
+        stage_kind=f"{stage_kind} anomaly power spectrum",
+        x_dim="frequency",
+        x_label=f"Period [{period_unit}]",
+        filename_suffix="anomaly_power_spectrum_timeseries",
+        y_label_mode="power_spectrum",
     )
 
 
@@ -451,6 +641,7 @@ def run_stage_plot_bundle(
 
     plot_stage_timeseries(
         plot_specs=plot_specs,
+        filename_suffix="raw_timeseries",
         **shared_kwargs,
     )
     plot_stage_climatology_timeseries(
@@ -466,6 +657,10 @@ def run_stage_plot_bundle(
         **shared_kwargs,
     )
     plot_stage_autocorr_timeseries(
+        plot_specs=plot_specs,
+        **shared_kwargs,
+    )
+    plot_stage_power_spectrum_timeseries(
         plot_specs=plot_specs,
         **shared_kwargs,
     )
