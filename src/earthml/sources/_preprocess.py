@@ -4,6 +4,7 @@ import pandas as pd
 from rich import print
 
 from .dataclasses import DataSelection
+from ..base import leadtime_to_timedelta
 
 
 def _status_da(ds: xr.Dataset, time_coord: str | None, ok: bool, name: str = "_has_var"):
@@ -117,7 +118,7 @@ def preprocess_mfdataset(ds: xr.Dataset, data: DataSelection, var_name: str | No
 
     # Select leadtime if present
     if leadtime is not None and leadtime.name in da.coords: # TODO need to understand this bit better
-        td = pd.to_timedelta(f"{leadtime.value} {leadtime.unit}")
+        td = leadtime_to_timedelta(leadtime)
         coord = da[leadtime.name]
         target = td.to_numpy().astype(coord.dtype)
         if coord.ndim != 1:

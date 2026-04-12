@@ -1,4 +1,4 @@
-from .dataclasses import Region, Leadtime, Variable, TimeRange, DataSelection, Dims
+from .dataclasses import Region, Leadtime, Variable, TimeRange, DataSelection, Dims, leadtime_to_timedelta
 
 __all__ = [
     "Region",
@@ -7,4 +7,5 @@ __all__ = [
     "TimeRange",
     "DataSelection",
     "Dims",
+    "leadtime_to_timedelta",
 ]

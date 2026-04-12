@@ -20,6 +20,7 @@ import earthkit.data as ekd
 from .dataclasses import DataSource, RegridConfig
 from .utils import retry_fetch_after_hdf_err, generate_hours
 from .base import BaseSource
+from ..base import leadtime_to_timedelta
 from ..logging import get_logger
 
 
@@ -117,7 +118,7 @@ class EarthkitSource(BaseSource):
 
             # resolve timedelta
             if hasattr(lt, "value") and hasattr(lt, "unit"):
-                td = pd.to_timedelta(f"{lt.value} {lt.unit}")
+                td = leadtime_to_timedelta(lt)
             else:
                 td = pd.to_timedelta(lt)
 
