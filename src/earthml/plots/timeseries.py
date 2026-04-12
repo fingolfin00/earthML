@@ -24,7 +24,10 @@ def _reduce_for_timeseries(
     reduce_dims = tuple(dim for dim in da.dims if dim not in keep_dims)
     if not reduce_dims:
         return da
-    return da.earthml.geo_mean(reduce_dims)
+    with xr.set_options(use_numbagg=False):
+        reduced = da.earthml.geo_mean(reduce_dims)
+        reduced = reduced.load()
+    return reduced
 
 
 def _plot_x_values(da: xr.DataArray, x_dim: str):
