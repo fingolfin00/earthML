@@ -101,10 +101,16 @@ class EarthMLRegrid:
             span = abs(stop - start)
             n = int(round(span / step))
 
+            # Interpret requested region bounds as outer cell edges and build
+            # target coordinates at cell centers. This keeps a single common
+            # grid for all datasets while avoiding half-cell out-of-support
+            # interpolation at the domain border.
             if start > stop:
-                return (start - np.arange(n, dtype=np.float32) * step).astype("float32")
+                first = start - 0.5 * step
+                return (first - np.arange(n, dtype=np.float32) * step).astype("float32")
             else:
-                return (start + np.arange(n, dtype=np.float32) * step).astype("float32")
+                first = start + 0.5 * step
+                return (first + np.arange(n, dtype=np.float32) * step).astype("float32")
 
         lat_target = _build_axis(lat0, lat1, lat_res)
 
@@ -162,6 +168,19 @@ class EarthMLRegrid:
 
             src_lat_res = float(np.abs(np.diff(src_lat)).mean()) if src_lat.size > 1 else np.nan
             src_lon_res = float(np.abs(np.diff(src_lon)).mean()) if src_lon.size > 1 else np.nan
+
+            # logger.info(
+            #     "Regrid rectilinear source/target preview: "
+            #     "src_lat[%s..%s], tgt_lat[%s..%s], src_lon[%s..%s], tgt_lon[%s..%s]",
+            #     src_lat[:3].tolist(),
+            #     src_lat[-3:].tolist(),
+            #     lat_target[:3].tolist(),
+            #     lat_target[-3:].tolist(),
+            #     src_lon[:3].tolist(),
+            #     src_lon[-3:].tolist(),
+            #     lon_target[:3].tolist(),
+            #     lon_target[-3:].tolist(),
+            # )
 
             # safest no-op: same spacing, keep existing grid exactly
             same_lat = src_lat.shape == lat_target.shape and np.allclose(src_lat, lat_target, atol=1e-6)
