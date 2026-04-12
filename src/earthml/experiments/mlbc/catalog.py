@@ -77,7 +77,7 @@ def make_var(
         d2m_era5_seasonal_an=Variable(longname="2m_dewpoint_temperature", name="d2m", unit="K"),
 
         msl_cds_fc=Variable(longname="mean_sea_level_pressure", name="msl", unit="Pa", leadtime=leadtime_input),
-        msl_era5_seasonal_an=Variable(longname="2m_dewpoint_temperature", name="msl", unit="Pa"),
+        msl_era5_seasonal_an=Variable(longname="mean_sea_level_pressure", name="msl", unit="Pa"),
 
 
         # TODO not comparable, need conversion
