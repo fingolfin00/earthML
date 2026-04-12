@@ -1,5 +1,6 @@
 import logging
 import os
+from contextlib import nullcontext
 from itertools import product
 from pathlib import Path
 import warnings
@@ -86,6 +87,9 @@ COMMON_PLOT_KNOBS = {
     # Used to color/shade runs consistently across plots.
     "shade_by": "loss",  # e.g. "loss", "total_months"
     "shade_label": "Loss",
+    # Disable flox/numbagg in field-timeseries plotting. Useful on some clusters
+    # where lazy reductions on float16-backed arrays fail.
+    "disable_flox_for_field_timeseries": False,
 }
 
 DIFF_PLOT_KNOBS = {
@@ -191,6 +195,7 @@ MODEL_COLORS = LEADTIME_PLOT_KNOBS["model_colors"]
 PLOT_FILTERS = COMMON_PLOT_KNOBS["filters"]
 SHADE_BY = COMMON_PLOT_KNOBS["shade_by"]
 SHADE_LABEL = COMMON_PLOT_KNOBS["shade_label"]
+DISABLE_FLOX_FOR_FIELD_TIMESERIES = COMMON_PLOT_KNOBS["disable_flox_for_field_timeseries"]
 
 SCOREBOARD_MODE = SCOREBOARD_KNOBS["mode"]
 SCOREBOARD_METRICS = SCOREBOARD_KNOBS["metrics"]
@@ -1439,6 +1444,7 @@ def save_field_timeseries_plots(
     plot_folder: Path,
     leadtime_unit: str,
     filters: dict | None,
+    disable_flox: bool = False,
     progress: Progress | None = None,
     task_id: int | None = None,
 ) -> list[Path]:
@@ -1446,7 +1452,12 @@ def save_field_timeseries_plots(
     model_order = [model_name for model_name in LOAD_MODELS if model_name in runs]
     truth_model = LOAD_MODELS[0] if LOAD_MODELS else None
 
-    with xr.set_options(use_flox=False, use_numbagg=False):
+    options_context = (
+        xr.set_options(use_flox=False, use_numbagg=False)
+        if disable_flox
+        else nullcontext()
+    )
+    with options_context:
         for variable in variables:
             timeseries_folder = get_variable_subfolder(
                 plot_root=plot_folder,
@@ -1893,6 +1904,7 @@ def main() -> None:
             plot_folder=PLOT_FOLDER,
             leadtime_unit=leadtime_unit,
             filters=PLOT_FILTERS,
+            disable_flox=DISABLE_FLOX_FOR_FIELD_TIMESERIES,
             progress=progress,
             task_id=ts_task,
         )
