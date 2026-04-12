@@ -46,12 +46,15 @@ class Table:
                 self.table.add_column(str(k), style="cyan")
 
             row = {}
-            for i, r in enumerate(rowheads):
+            for r in rowheads:
                 row[r] = []
                 for v in data.values():
                     if isinstance(v, dict):
-                        # keep original behavior: align by index in dict values
-                        row[r].append(highligher(str(list(v.values())[i]))) if r in v.keys() else ""
+                        # Align by key instead of by positional index because
+                        # sibling dicts can have different lengths/orders.
+                        row[r].append(highligher(str(v[r])) if r in v else "")
+                    else:
+                        row[r].append("")
 
             for r in rowheads:
                 self.table.add_row(str(r), *row[r])
