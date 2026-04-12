@@ -8,7 +8,7 @@ import numpy as np
 import xarray as xr
 from scipy.signal import welch
 
-from ...plots import plot_realization_timeseries, build_plot_config, get_var_units
+from ...plots import plot_realization_timeseries, plot_temporal_mean_map, build_plot_config, get_var_units
 
 
 PlotSpec = dict[str, Any]
@@ -100,6 +100,10 @@ def _infer_period_unit(ds: xr.Dataset) -> str:
     if median_seconds % 3600 == 0:
         return "hours"
     return "timesteps"
+
+
+def _format_map_cbar_label(var: str, unit: str | None) -> str:
+    return f"{var} [{unit}]" if unit else var
 
 
 def _plot_single_timeseries(
@@ -401,7 +405,7 @@ def plot_stage_timeseries(
                 data_type,
                 stage,
                 var,
-                exc,
+                repr(exc),
             )
         finally:
             plt.close(fig)
@@ -473,7 +477,7 @@ def plot_stage_residual_timeseries(
                 data_type,
                 stage,
                 var,
-                exc,
+                repr(exc),
             )
         finally:
             plt.close(fig)
@@ -616,6 +620,53 @@ def plot_stage_power_spectrum_timeseries(
     )
 
 
+def plot_stage_temporal_mean_maps(
+    *,
+    logger,
+    plots_folder_path: Path,
+    plot_specs: list[PlotSpec],
+    data_type: str,
+    stage: str,
+    stage_kind: str,
+) -> None:
+    stage_plot_folder = _get_stage_plot_folder(plots_folder_path, data_type)
+    logger.info(
+        "Generate %s temporal mean maps for %s (%s) in %s",
+        stage_kind,
+        data_type,
+        stage,
+        stage_plot_folder,
+    )
+
+    common_vars = set(plot_specs[0]["ds"].data_vars)
+    for spec in plot_specs[1:]:
+        common_vars &= set(spec["ds"].data_vars)
+    common_vars = list(common_vars)
+    if not common_vars:
+        logger.debug("Skip %s temporal mean maps for %s: no common variables.", stage_kind, data_type)
+        return
+
+    for var in common_vars:
+        for spec in plot_specs:
+            try:
+                ds_var = _select_plot_var(spec["ds"], var)
+                unit = _get_var_unit(ds_var, var)
+                plot_temporal_mean_map(
+                    ds_var,
+                    save_path=stage_plot_folder.joinpath(f"{stage}_{var}_{spec['label']}_temporal_mean_map.png"),
+                    cbar_label=_format_map_cbar_label(var, unit),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to generate %s temporal mean map for %s/%s/%s: %s",
+                    stage_kind,
+                    data_type,
+                    stage,
+                    f"{var}_{spec['label']}",
+                    repr(exc),
+                )
+
+
 def run_stage_plot_bundle(
     *,
     logger,
@@ -661,6 +712,10 @@ def run_stage_plot_bundle(
         **shared_kwargs,
     )
     plot_stage_power_spectrum_timeseries(
+        plot_specs=plot_specs,
+        **shared_kwargs,
+    )
+    plot_stage_temporal_mean_maps(
         plot_specs=plot_specs,
         **shared_kwargs,
     )
