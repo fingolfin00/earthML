@@ -30,6 +30,20 @@ class ProbabilisticMetrics(BaseMetrics):
             )
 
 
+    def _ensemble_spread_da(
+        self,
+        model: xr.DataArray,
+    ) -> xr.DataArray:
+        realization_dim = self.dims.realization
+
+        if realization_dim not in model.dims:
+            raise ValueError(
+                f"Model data must contain realization dimension {realization_dim!r}."
+            )
+
+        return model.std(dim=realization_dim, skipna=True)
+
+
     def _crps_ensemble_da(
         self,
         model: xr.DataArray,
@@ -208,3 +222,69 @@ class ProbabilisticMetrics(BaseMetrics):
             )
 
         return xr.concat(per_model, dim="model")
+
+
+    def spread(
+        self,
+        metric_mean_dims: str | Sequence[str],
+    ) -> xr.Dataset:
+        """
+        Compute ensemble spread as the mean member standard deviation.
+
+        The ensemble standard deviation is computed pointwise over the
+        realization dimension, then averaged over `metric_mean_dims`.
+
+        Parameters
+        ----------
+        metric_mean_dims : str or Sequence[str]
+            Dimensions over which to average the pointwise spread.
+
+        Returns
+        -------
+        xr.Dataset
+            Ensemble spread for each model.
+        """
+        metric_mean_dims = self._as_tuple(metric_mean_dims)
+
+        def metric_func(model: xr.DataArray, truth: xr.DataArray) -> xr.DataArray:
+            del truth
+            spread = self._ensemble_spread_da(model)
+            return spread.earthml.geo_mean(metric_mean_dims)
+
+        return self._apply_metric_per_model(metric_func)
+
+
+    def spread_error_ratio(
+        self,
+        metric_mean_dims: str | Sequence[str],
+    ) -> xr.Dataset:
+        """
+        Compute the ratio between ensemble spread and ensemble-mean RMSE.
+
+        A value near 1 suggests the ensemble spread is commensurate with the
+        error of the ensemble mean, while values below or above 1 indicate
+        under-dispersion or over-dispersion respectively.
+
+        Parameters
+        ----------
+        metric_mean_dims : str or Sequence[str]
+            Dimensions over which to average spread and error.
+
+        Returns
+        -------
+        xr.Dataset
+            Spread-to-error ratio for each model.
+        """
+        metric_mean_dims = self._as_tuple(metric_mean_dims)
+        realization_dim = self.dims.realization
+
+        def metric_func(model: xr.DataArray, truth: xr.DataArray) -> xr.DataArray:
+            if realization_dim in truth.dims:
+                truth = truth.mean(dim=realization_dim, skipna=True)
+            spread = self._ensemble_spread_da(model).earthml.geo_mean(metric_mean_dims)
+            ens_mean = model.mean(dim=realization_dim, skipna=True)
+            rmse = np.sqrt(((ens_mean - truth) ** 2).earthml.geo_mean(metric_mean_dims))
+            rmse = rmse.where(rmse != 0)
+            return spread / rmse
+
+        return self._apply_metric_per_model(metric_func)
