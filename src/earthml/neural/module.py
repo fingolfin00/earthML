@@ -1,4 +1,5 @@
 from typing import List, Any, Optional, Callable, Literal, Dict
+import time
 import numpy as np
 
 import torch
@@ -48,6 +49,14 @@ class EarthMLLightningModule(L.LightningModule):
         self.pic_log_interval = 1 # set to 1 to log at every epoch
         self.last_val_pred = None
         self.last_val_target = None
+        self._train_epoch_batch_time = 0.0
+        self._train_epoch_batch_count = 0
+        self._val_epoch_batch_time = 0.0
+        self._val_epoch_batch_count = 0
+        self._train_batch_start_time = None
+        self._val_batch_start_time = None
+        self._logged_train_batch_info = False
+        self._logged_val_batch_info = False
 
 
     @staticmethod
@@ -360,6 +369,9 @@ class EarthMLLightningModule(L.LightningModule):
         self.test_step_outputs.append({"preds": mu.detach().cpu(), "targets": y.detach().cpu()})
 
     def on_train_epoch_start(self):
+        self._train_epoch_batch_time = 0.0
+        self._train_epoch_batch_count = 0
+        self._logged_train_batch_info = False
         # Access the optimizer's learning rate
         scheduler = self.lr_schedulers()
         current_lr = scheduler.get_last_lr()[0]  # list of LRs, usually one
@@ -368,6 +380,87 @@ class EarthMLLightningModule(L.LightningModule):
         # current_lr = optimizer.param_groups[0]['lr']
         # self.log('lr', current_lr, on_step=False, on_epoch=True)
         logger.info("Epoch %s: learning Rate = %s", self.current_epoch, current_lr)
+
+    def on_fit_start(self):
+        trainer_device = getattr(getattr(self.trainer, "strategy", None), "root_device", None)
+        try:
+            param_device = next(self.parameters()).device
+        except StopIteration:
+            param_device = "unknown"
+        logger.info(
+            "Fit start: trainer root_device=%s, parameter_device=%s, cuda_available=%s, cuda_device_count=%s",
+            trainer_device,
+            param_device,
+            torch.cuda.is_available(),
+            torch.cuda.device_count(),
+        )
+
+    def on_train_batch_start(self, batch, batch_idx):
+        self._train_batch_start_time = time.perf_counter()
+        if not self._logged_train_batch_info:
+            x = batch[0]
+            y = batch[1] if len(batch) > 1 else None
+            logger.info(
+                "First train batch epoch=%s: x.device=%s, y.device=%s, x.shape=%s, y.shape=%s, parameter_device=%s",
+                self.current_epoch,
+                x.device,
+                y.device if y is not None else "n/a",
+                tuple(x.shape),
+                tuple(y.shape) if y is not None else "n/a",
+                next(self.parameters()).device,
+            )
+            self._logged_train_batch_info = True
+
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        if self._train_batch_start_time is not None:
+            self._train_epoch_batch_time += time.perf_counter() - self._train_batch_start_time
+            self._train_epoch_batch_count += 1
+
+    def on_train_epoch_end(self):
+        if self._train_epoch_batch_count > 0:
+            logger.info(
+                "Epoch %s train timing: total_batch_time=%.2fs mean_batch_time=%.2fs batches=%s",
+                self.current_epoch,
+                self._train_epoch_batch_time,
+                self._train_epoch_batch_time / self._train_epoch_batch_count,
+                self._train_epoch_batch_count,
+            )
+
+    def on_validation_epoch_start(self):
+        self._val_epoch_batch_time = 0.0
+        self._val_epoch_batch_count = 0
+        self._logged_val_batch_info = False
+
+    def on_validation_batch_start(self, batch, batch_idx, dataloader_idx=0):
+        self._val_batch_start_time = time.perf_counter()
+        if not self._logged_val_batch_info:
+            x = batch[0]
+            y = batch[1] if len(batch) > 1 else None
+            logger.info(
+                "First val batch epoch=%s: x.device=%s, y.device=%s, x.shape=%s, y.shape=%s, parameter_device=%s",
+                self.current_epoch,
+                x.device,
+                y.device if y is not None else "n/a",
+                tuple(x.shape),
+                tuple(y.shape) if y is not None else "n/a",
+                next(self.parameters()).device,
+            )
+            self._logged_val_batch_info = True
+
+    def on_validation_batch_end(self, outputs, batch, batch_idx, dataloader_idx=0):
+        if self._val_batch_start_time is not None:
+            self._val_epoch_batch_time += time.perf_counter() - self._val_batch_start_time
+            self._val_epoch_batch_count += 1
+
+    def on_validation_epoch_end(self):
+        if self._val_epoch_batch_count > 0:
+            logger.info(
+                "Epoch %s val timing: total_batch_time=%.2fs mean_batch_time=%.2fs batches=%s",
+                self.current_epoch,
+                self._val_epoch_batch_time,
+                self._val_epoch_batch_time / self._val_epoch_batch_count,
+                self._val_epoch_batch_count,
+            )
 
     # def on_validation_epoch_end (self):
     #     """Process validation results, including logging a sample image"""
