@@ -6,6 +6,7 @@ from .base import BaseMetrics
 
 
 NormType = Literal["mean", "std", "range"]
+ClimType = Literal["month", "dayofyear", "season", "none"]
 
 
 class DeterministicMetrics(BaseMetrics):
@@ -26,6 +27,29 @@ class DeterministicMetrics(BaseMetrics):
             clim_data=clim_data,
             mask_data=mask_data,
         )
+
+
+    def _climatology_error(
+        self,
+        truth: xr.DataArray,
+        clim: xr.DataArray | None,
+        period: ClimType,
+    ) -> xr.DataArray:
+        if period == "none":
+            clim_ref = truth.mean(dim=self.dims.time, skipna=True) if clim is None else clim
+            return truth - clim_ref
+
+        if period == "month":
+            group = f"{self.dims.time}.month"
+        elif period == "dayofyear":
+            group = f"{self.dims.time}.dayofyear"
+        elif period == "season":
+            group = f"{self.dims.time}.season"
+        else:
+            raise ValueError(f"Unsupported period: {period!r}")
+
+        clim_ref = truth.groupby(group).mean(dim=self.dims.time, skipna=True) if clim is None else clim
+        return truth.groupby(group) - clim_ref
 
 
     def _normalization_factor(
@@ -710,3 +734,108 @@ class DeterministicMetrics(BaseMetrics):
             return 1.0 - mse / var_truth
 
         return self._apply_metric_per_model(metric_func)
+
+
+    def rmse_skill_clim(
+        self,
+        metric_mean_dims: str | Sequence[str],
+        period: ClimType = "month",
+    ) -> xr.Dataset:
+        """
+        Compute RMSE skill score relative to climatology.
+
+        Skill = 1 - RMSE_model / RMSE_climatology
+
+        Parameters
+        ----------
+        metric_mean_dims : str or Sequence[str]
+            Dimensions over which to average the squared error.
+        period : {"month", "dayofyear", "season", "none"}, default "month"
+            Temporal grouping used for climatology.
+
+        Returns
+        -------
+        xr.Dataset
+            RMSE skill score for each model.
+        """
+        metric_mean_dims = self._as_tuple(metric_mean_dims)
+
+        per_model = []
+
+        for i, (model_ds, model_name) in enumerate(zip(self.model_data, self.model_names)):
+            clim_ds = self.clim_data[i + 1] if self.clim_data is not None else None
+            out_vars = {}
+
+            for var in self._common_vars(model_ds, model_name):
+                model = model_ds[var]
+                truth = self.truth_data[var]
+                clim = None if clim_ds is None else clim_ds[var]
+
+                rmse_model = np.sqrt(((model - truth) ** 2).earthml.geo_mean(metric_mean_dims))
+                rmse_clim = np.sqrt((self._climatology_error(truth, clim, period) ** 2).earthml.geo_mean(metric_mean_dims))
+                rmse_clim = rmse_clim.where(rmse_clim != 0)
+
+                out_vars[var] = 1.0 - rmse_model / rmse_clim
+
+            per_model.append(xr.Dataset(out_vars).expand_dims(model=[model_name]))
+
+        return xr.concat(per_model, dim="model")
+
+
+    def rmse_skill_clim_of_mean(
+        self,
+        data_mean_dims: str | Sequence[str],
+        metric_mean_dims: str | Sequence[str],
+        period: ClimType = "month",
+    ) -> xr.Dataset:
+        """
+        Compute RMSE skill score of mean fields relative to climatology.
+
+        The data are first averaged over `data_mean_dims`, then the skill score
+        is computed as 1 - RMSE_model_mean / RMSE_climatology_mean.
+
+        Parameters
+        ----------
+        data_mean_dims : str or Sequence[str]
+            Dimensions over which to compute the mean fields.
+        metric_mean_dims : str or Sequence[str]
+            Dimensions over which to average the squared error.
+        period : {"month", "dayofyear", "season", "none"}, default "month"
+            Temporal grouping used for climatology.
+
+        Returns
+        -------
+        xr.Dataset
+            RMSE skill score of mean fields for each model.
+        """
+        data_mean_dims = self._as_tuple(data_mean_dims)
+        metric_mean_dims = self._as_tuple(metric_mean_dims)
+
+        self._check_dims_overlap(data_mean_dims, metric_mean_dims, "data_mean_dims", "metric_mean_dims")
+
+        per_model = []
+
+        for i, (model_ds, model_name) in enumerate(zip(self.model_data, self.model_names)):
+            clim_ds = self.clim_data[i + 1] if self.clim_data is not None else None
+            out_vars = {}
+
+            for var in self._common_vars(model_ds, model_name):
+                model_mean = model_ds[var].earthml.geo_mean(data_mean_dims)
+                truth_mean = self.truth_data[var].earthml.geo_mean(data_mean_dims)
+
+                clim = None
+                if clim_ds is not None:
+                    clim = clim_ds[var]
+                    clim_mean_dims = tuple(dim for dim in data_mean_dims if dim in clim.dims)
+                    if clim_mean_dims:
+                        clim = clim.earthml.geo_mean(clim_mean_dims)
+
+                rmse_model = np.sqrt(((model_mean - truth_mean) ** 2).earthml.geo_mean(metric_mean_dims))
+                rmse_clim = np.sqrt((self._climatology_error(truth_mean, clim, period) ** 2).earthml.geo_mean(metric_mean_dims))
+                rmse_clim = rmse_clim.where(rmse_clim != 0)
+
+                out_vars[var] = 1.0 - rmse_model / rmse_clim
+
+            per_model.append(xr.Dataset(out_vars).expand_dims(model=[model_name]))
+
+        return xr.concat(per_model, dim="model")
