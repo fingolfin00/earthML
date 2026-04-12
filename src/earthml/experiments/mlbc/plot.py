@@ -1118,8 +1118,6 @@ def run_stage_plot_bundle(
     stage_kind: str,
     residual_label: str,
     residual_mean_label: str,
-    anomaly_residual_label: str,
-    anomaly_residual_mean_label: str,
     lag_steps: int | None = None,
 ) -> None:
     shared_kwargs = dict(
@@ -1135,38 +1133,12 @@ def run_stage_plot_bundle(
         filename_suffix="raw_timeseries",
         **shared_kwargs,
     )
-    plot_stage_climatology_timeseries(
-        plot_specs=plot_specs,
-        **shared_kwargs,
-    )
     plot_stage_minus_climatology_timeseries(
-        plot_specs=plot_specs,
-        **shared_kwargs,
-    )
-    plot_stage_variance_timeseries(
-        plot_specs=plot_specs,
-        **shared_kwargs,
-    )
-    plot_stage_autocorr_timeseries(
-        plot_specs=plot_specs,
-        **shared_kwargs,
-    )
-    plot_stage_power_spectrum_timeseries(
         plot_specs=plot_specs,
         **shared_kwargs,
     )
     plot_stage_temporal_mean_maps(
         plot_specs=plot_specs,
-        **shared_kwargs,
-    )
-    plot_stage_metric_timeseries(
-        plot_specs=plot_specs,
-        truth_ds=right_ds,
-        **shared_kwargs,
-    )
-    plot_stage_metric_maps(
-        plot_specs=plot_specs,
-        truth_ds=right_ds,
         **shared_kwargs,
     )
     plot_stage_residual_timeseries(
@@ -1181,16 +1153,4 @@ def run_stage_plot_bundle(
         right_ds=right_ds,
         lag_steps=lag_steps,
         **shared_kwargs,
-    )
-    plot_stage_residual_timeseries(
-        left_ds=left_ds,
-        right_ds=right_ds,
-        stage_kind=f"{stage_kind} anomaly",
-        residual_label=anomaly_residual_label,
-        residual_mean_label=anomaly_residual_mean_label,
-        anomaly=True,
-        logger=logger,
-        plots_folder_path=plots_folder_path,
-        data_type=data_type,
-        stage=stage,
     )

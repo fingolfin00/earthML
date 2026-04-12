@@ -479,6 +479,76 @@ class MLBCExperiment:
             "Refusing dangerous inner alignment on spatial coordinates."
         )
 
+    def _plot_dataset_stage(
+        self,
+        input_ds: xr.Dataset,
+        target_ds: xr.Dataset,
+        mode: MLBCExperimentMode,
+        stage: str,
+    ) -> None:
+        """
+        Hook for lightweight diagnostic plots during the experiment lifecycle.
+
+        Intended use:
+        - keep all plotting calls centralized in train_test.py
+        - save artifacts under a train/test folder in the run work path
+        - remain a no-op until plotting behavior is implemented
+        """
+        if not ENABLE_STAGE_PLOTTING:
+            self.logger.info("Skip dataset-stage plotting because ENABLE_STAGE_PLOTTING=False")
+            return
+
+        plot_specs = [
+            {"ds": input_ds, "label": "input", "mean_label": "input mean", "color": "tab:blue"},
+            {"ds": target_ds, "label": "target", "mean_label": "target mean", "color": "tab:orange"},
+        ]
+        lag_steps = self._requested_lag_steps(mode, input_ds)
+        run_stage_plot_bundle(
+            logger=self.logger,
+            plots_folder_path=self.plots_folder_path,
+            plot_specs=plot_specs,
+            left_ds=input_ds,
+            right_ds=target_ds,
+            data_type=mode,
+            stage=stage,
+            stage_kind="dataset",
+            residual_label="input-target",
+            residual_mean_label="input-target mean",
+            lag_steps=lag_steps,
+        )
+
+    def _plot_prediction_stage(
+        self,
+        pred_ds: xr.Dataset,
+        input_ds: xr.Dataset,
+        target_ds: xr.Dataset,
+        mode: MLBCExperimentMode,
+        stage: str,
+    ) -> None:
+        if not ENABLE_STAGE_PLOTTING:
+            self.logger.info("Skip prediction-stage plotting because ENABLE_STAGE_PLOTTING=False")
+            return
+
+        plot_specs = [
+            {"ds": pred_ds, "label": "pred", "mean_label": "pred mean", "color": "tab:green"},
+            {"ds": input_ds, "label": "input", "mean_label": "input mean", "color": "tab:blue"},
+            {"ds": target_ds, "label": "target", "mean_label": "target mean", "color": "tab:orange"},
+        ]
+        lag_steps = self._requested_lag_steps(mode, input_ds)
+        run_stage_plot_bundle(
+            logger=self.logger,
+            plots_folder_path=self.plots_folder_path,
+            plot_specs=plot_specs,
+            left_ds=pred_ds,
+            right_ds=target_ds,
+            data_type=mode,
+            stage=stage,
+            stage_kind="prediction",
+            residual_label="pred-target",
+            residual_mean_label="pred-target mean",
+            lag_steps=lag_steps,
+        )
+
     def _requested_lag_steps(
         self,
         mode: MLBCExperimentMode,
@@ -520,80 +590,6 @@ class MLBCExperiment:
             return max(1, int(round(lt_ns / dt_ns)))
         except Exception:
             return None
-
-    def _plot_dataset_stage(
-        self,
-        input_ds: xr.Dataset,
-        target_ds: xr.Dataset,
-        mode: MLBCExperimentMode,
-        stage: str,
-    ) -> None:
-        """
-        Hook for lightweight diagnostic plots during the experiment lifecycle.
-
-        Intended use:
-        - keep all plotting calls centralized in train_test.py
-        - save artifacts under a train/test folder in the run work path
-        - remain a no-op until plotting behavior is implemented
-        """
-        if not ENABLE_STAGE_PLOTTING:
-            self.logger.info("Skip dataset-stage plotting because ENABLE_STAGE_PLOTTING=False")
-            return
-
-        plot_specs = [
-            {"ds": input_ds, "label": "input", "mean_label": "input mean", "color": "tab:blue"},
-            {"ds": target_ds, "label": "target", "mean_label": "target mean", "color": "tab:orange"},
-        ]
-        lag_steps = self._requested_lag_steps(mode, input_ds)
-        run_stage_plot_bundle(
-            logger=self.logger,
-            plots_folder_path=self.plots_folder_path,
-            plot_specs=plot_specs,
-            left_ds=input_ds,
-            right_ds=target_ds,
-            data_type=mode,
-            stage=stage,
-            stage_kind="dataset",
-            residual_label="input-target",
-            residual_mean_label="input-target mean",
-            anomaly_residual_label="input-target anomaly",
-            anomaly_residual_mean_label="input-target anomaly mean",
-            lag_steps=lag_steps,
-        )
-
-    def _plot_prediction_stage(
-        self,
-        pred_ds: xr.Dataset,
-        input_ds: xr.Dataset,
-        target_ds: xr.Dataset,
-        mode: MLBCExperimentMode,
-        stage: str,
-    ) -> None:
-        if not ENABLE_STAGE_PLOTTING:
-            self.logger.info("Skip prediction-stage plotting because ENABLE_STAGE_PLOTTING=False")
-            return
-
-        plot_specs = [
-            {"ds": pred_ds, "label": "pred", "mean_label": "pred mean", "color": "tab:green"},
-            {"ds": input_ds, "label": "input", "mean_label": "input mean", "color": "tab:blue"},
-            {"ds": target_ds, "label": "target", "mean_label": "target mean", "color": "tab:orange"},
-        ]
-        lag_steps = self._requested_lag_steps(mode, input_ds)
-        run_stage_plot_bundle(
-            logger=self.logger,
-            plots_folder_path=self.plots_folder_path,
-            plot_specs=plot_specs,
-            left_ds=pred_ds,
-            right_ds=target_ds,
-            data_type=mode,
-            stage=stage,
-            stage_kind="prediction",
-            residual_label="pred-target",
-            residual_mean_label="pred-target mean",
-            anomaly_residual_label="pred-target anomaly",
-            anomaly_residual_mean_label="pred-target anomaly mean",
-            lag_steps=lag_steps,
-        )
 
     def _create_and_save_common_mask(
         self,
