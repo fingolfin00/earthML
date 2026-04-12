@@ -147,13 +147,25 @@ class XarrayDataset(Dataset):
                 self.mask_y_np = np.any(self.mask_y_np, axis=2)                                 # valid if any realization is valid
                 self.y_np_filled = np.where(self.mask_y_np, self.y_np_filled, fill_nan_value)   # refill
 
-            # Uniform realizations: only works if one of input and target has R>1 and the other R=1
-            if len(self.x_np_filled.shape) == 5: # C,T,R,H,W
+            # Uniform realizations: if one side has a singleton realization axis and the
+            # other has multiple members, repeat the singleton side to match before
+            # flattening (T,R) into the sample dimension.
+            x_has_r = len(self.x_np_filled.shape) == 5
+            y_has_r = len(self.y_np_filled.shape) == 5
+            x_r = self.x_np_filled.shape[2] if x_has_r else 1
+            y_r = self.y_np_filled.shape[2] if y_has_r else 1
+
+            if x_has_r and x_r > 1: # C,T,R,H,W
                 self.x = torch.from_numpy(self.x_np_filled).float().flatten(start_dim=1, end_dim=2).permute(1, 0, 2, 3) # (T*R),C,H,W
                 self.x_mask = torch.from_numpy(self.mask_x_np).bool().flatten(start_dim=1, end_dim=2).permute(1, 0, 2, 3)
             else: # C,T,H,W
-                if len(self.y_np_filled.shape) == 5: # C,T,R,H,W
-                    R = self.y_np_filled.shape[2]
+                if x_has_r: # C,T,1,H,W -> squeeze singleton R
+                    x = torch.from_numpy(self.x_np_filled[:, :, 0, :, :]).float()
+                    self.x = x.permute(1, 0, 2, 3)
+                    x_mask = torch.from_numpy(self.mask_x_np[:, :, 0, :, :]).bool()
+                    self.x_mask = x_mask.permute(1, 0, 2, 3)
+                elif y_has_r and y_r > 1: # C,T,R,H,W
+                    R = y_r
                     x = torch.from_numpy(self.x_np_filled).float()      # C,T,H,W
                     x = x.unsqueeze(2).repeat(1, 1, R, 1, 1)                # C,T,R,H,W
                     self.x = x.flatten(1, 2).permute(1, 0, 2, 3)            # (T*R),C,H,W
@@ -163,12 +175,25 @@ class XarrayDataset(Dataset):
                 else:
                     self.x = torch.from_numpy(self.x_np_filled).float().permute(1, 0, 2, 3) # T,C,H,W
                     self.x_mask = torch.from_numpy(self.mask_x_np).bool().permute(1, 0, 2, 3)
-            if len(self.y_np_filled.shape) == 5:
+            if y_has_r and y_r > 1:
                 self.y = torch.from_numpy(self.y_np_filled).float().flatten(start_dim=1, end_dim=2).permute(1, 0, 2, 3)
                 self.y_mask = torch.from_numpy(self.mask_y_np).bool().flatten(start_dim=1, end_dim=2).permute(1, 0, 2, 3)
             else:
-                if len(self.x_np_filled.shape) == 5: # C,T,R,H,W
-                    R = self.x_np_filled.shape[2]
+                if y_has_r and x_r > 1: # C,T,1,H,W -> repeat singleton R to match input ensemble
+                    R = x_r
+                    y = torch.from_numpy(self.y_np_filled[:, :, 0, :, :]).float()     # C,T,H,W
+                    y = y.unsqueeze(2).repeat(1, 1, R, 1, 1)                           # C,T,R,H,W
+                    self.y = y.flatten(1, 2).permute(1, 0, 2, 3)                       # (T*R),C,H,W
+                    y_mask = torch.from_numpy(self.mask_y_np[:, :, 0, :, :]).bool()
+                    y_mask = y_mask.unsqueeze(2).repeat(1, 1, R, 1, 1)
+                    self.y_mask = y_mask.flatten(1, 2).permute(1, 0, 2, 3)
+                elif y_has_r: # C,T,1,H,W -> squeeze singleton R
+                    y = torch.from_numpy(self.y_np_filled[:, :, 0, :, :]).float()
+                    self.y = y.permute(1, 0, 2, 3)
+                    y_mask = torch.from_numpy(self.mask_y_np[:, :, 0, :, :]).bool()
+                    self.y_mask = y_mask.permute(1, 0, 2, 3)
+                elif x_has_r and x_r > 1: # C,T,R,H,W
+                    R = x_r
                     y = torch.from_numpy(self.y_np_filled).float()     # C,T,H,W
                     y = y.unsqueeze(2).repeat(1, 1, R, 1, 1)                # C,T,R,H,W
                     self.y = y.flatten(1, 2).permute(1, 0, 2, 3)            # (T*R),C,H,W
