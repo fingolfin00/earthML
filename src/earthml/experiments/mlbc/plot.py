@@ -25,6 +25,18 @@ def _select_plot_var(ds: xr.Dataset, var: str) -> xr.Dataset:
     return ds[[var]] if len(ds.data_vars) > 1 else ds
 
 
+def _resolve_plot_var_name(ds: xr.Dataset, var: str) -> str:
+    if var in ds.data_vars:
+        return var
+    if len(ds.data_vars) == 1:
+        return next(iter(ds.data_vars))
+    raise KeyError(f"Variable '{var}' not found in dataset with variables {list(ds.data_vars)}.")
+
+
+def _select_plot_var_flexible(ds: xr.Dataset, var: str) -> xr.Dataset:
+    return ds[[_resolve_plot_var_name(ds, var)]]
+
+
 def _get_plot_members(ds: xr.Dataset) -> tuple[xr.Dataset | None, str | None]:
     rdim = ds.earthml.guessed_dims.realization
     if rdim is not None and rdim in ds.dims:
@@ -33,8 +45,8 @@ def _get_plot_members(ds: xr.Dataset) -> tuple[xr.Dataset | None, str | None]:
 
 
 def _get_var_unit(ds: xr.Dataset, var: str) -> str | None:
-    ds_var = _select_plot_var(ds, var)
-    da = ds_var[var]
+    ds_var = _select_plot_var_flexible(ds, var)
+    da = next(iter(ds_var.data_vars.values()))
     unit = da.attrs.get("units")
     if unit:
         return unit
@@ -151,8 +163,8 @@ def _build_residual_ds(
     *,
     var: str,
 ) -> xr.Dataset:
-    left_var = _select_plot_var(left_ds, var)
-    right_var = _select_plot_var(right_ds, var)
+    left_var = _select_plot_var_flexible(left_ds, var)
+    right_var = _select_plot_var_flexible(right_ds, var)
 
     rdim_left = left_var.earthml.guessed_dims.realization
     rdim_right = right_var.earthml.guessed_dims.realization
@@ -350,9 +362,10 @@ def plot_stage_timeseries(
         return
 
     common_vars = set(plot_specs[0]["ds"].data_vars)
-    for spec in plot_specs[1:]:
-        common_vars &= set(spec["ds"].data_vars)
-    common_vars = list(common_vars)
+    common_vars = [
+        var for var in plot_specs[0]["ds"].data_vars
+        if all(var in spec["ds"].data_vars or len(spec["ds"].data_vars) == 1 for spec in plot_specs[1:])
+    ]
     if not common_vars:
         logger.debug("Skip %s plotting for %s: no common variables.", stage_kind, data_type)
         return
@@ -372,7 +385,7 @@ def plot_stage_timeseries(
             else:
                 y_label = None
             for spec in plot_specs:
-                ds_var = _select_plot_var(spec["ds"], var)
+                ds_var = _select_plot_var_flexible(spec["ds"], var)
                 members, rdim = _get_plot_members(ds_var)
                 logger.info(
                     "Plot %s %s/%s: %s realizations=%s",
@@ -439,7 +452,10 @@ def plot_stage_residual_timeseries(
         logger.debug("Skip %s residual plotting for %s: no common time dimension.", stage_kind, data_type)
         return
 
-    common_vars = [var for var in left_ds.data_vars if var in right_ds.data_vars]
+    common_vars = [
+        var for var in left_ds.data_vars
+        if var in right_ds.data_vars or len(right_ds.data_vars) == 1
+    ]
     if not common_vars:
         logger.debug("Skip %s residual plotting for %s: no common variables.", stage_kind, data_type)
         return
@@ -638,10 +654,10 @@ def plot_stage_temporal_mean_maps(
         stage_plot_folder,
     )
 
-    common_vars = set(plot_specs[0]["ds"].data_vars)
-    for spec in plot_specs[1:]:
-        common_vars &= set(spec["ds"].data_vars)
-    common_vars = list(common_vars)
+    common_vars = [
+        var for var in plot_specs[0]["ds"].data_vars
+        if all(var in spec["ds"].data_vars or len(spec["ds"].data_vars) == 1 for spec in plot_specs[1:])
+    ]
     if not common_vars:
         logger.debug("Skip %s temporal mean maps for %s: no common variables.", stage_kind, data_type)
         return
@@ -649,7 +665,7 @@ def plot_stage_temporal_mean_maps(
     for var in common_vars:
         for spec in plot_specs:
             try:
-                ds_var = _select_plot_var(spec["ds"], var)
+                ds_var = _select_plot_var_flexible(spec["ds"], var)
                 unit = _get_var_unit(ds_var, var)
                 plot_temporal_mean_map(
                     ds_var,
