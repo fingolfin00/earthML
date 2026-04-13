@@ -525,15 +525,15 @@ def load_all_exp_from_folder(
             ds = ds.expand_dims(leadtime=[leadtime])
 
             # set new train_period and loss dims
-            ds = ds.expand_dims({
-                "train_period": [train_period],
-                "loss": [loss],
-            })
+            ds = ds.expand_dims(
+                {
+                    "train_period": [train_period],
+                    "loss": [loss],
+                    "region": [region],
+                }
+            )
 
             ds.coords["leadtime"].attrs["unit"] = leadtime_unit
-
-            # region is metadata
-            ds.attrs["region"] = region
 
             grouped_runs[group_name].setdefault(model_name, []).append(ds)
 
