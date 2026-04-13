@@ -1,3 +1,8 @@
+from collections import OrderedDict
+import hashlib
+import os
+from pathlib import Path
+
 import numpy as np
 import cf_xarray
 import xarray as xr
@@ -8,6 +13,108 @@ from ..logging import get_logger
 
 
 logger = get_logger(__name__)
+
+
+_DEFAULT_REGRID_CACHE_DIR = ".earthml-cache/regrid"
+_REGRID_GEOMETRY_CACHE = OrderedDict()
+_REGRID_GEOMETRY_CACHE_MAX_ITEMS = max(int(os.getenv("EARTHML_REGRID_CACHE_MAX_ITEMS", "16")), 1)
+
+
+def _cache_dir() -> Path:
+    cache_dir = os.getenv("EARTHML_REGRID_CACHE_DIR")
+    if cache_dir:
+        return Path(cache_dir).expanduser()
+    return Path.cwd() / _DEFAULT_REGRID_CACHE_DIR
+
+
+def _hash_array(arr: np.ndarray) -> str:
+    arr_c = np.ascontiguousarray(arr)
+    hasher = hashlib.blake2b(digest_size=16)
+    hasher.update(str(arr_c.dtype).encode("ascii"))
+    hasher.update(np.asarray(arr_c.shape, dtype=np.int64).tobytes())
+    hasher.update(arr_c.view(np.uint8))
+    return hasher.hexdigest()
+
+
+def _build_curvilinear_cache_key(
+    lat_src_2d: np.ndarray,
+    lon_src_2d: np.ndarray,
+    lat_target: np.ndarray,
+    lon_target: np.ndarray,
+) -> str:
+    hasher = hashlib.blake2b(digest_size=16)
+    for arr in (lat_src_2d, lon_src_2d, lat_target, lon_target):
+        hasher.update(_hash_array(arr).encode("ascii"))
+    return hasher.hexdigest()
+
+
+def _remember_geometry_cache_entry(cache_key: str, entry: dict[str, np.ndarray]) -> None:
+    _REGRID_GEOMETRY_CACHE[cache_key] = entry
+    _REGRID_GEOMETRY_CACHE.move_to_end(cache_key)
+    while len(_REGRID_GEOMETRY_CACHE) > _REGRID_GEOMETRY_CACHE_MAX_ITEMS:
+        _REGRID_GEOMETRY_CACHE.popitem(last=False)
+
+
+def _load_or_build_curvilinear_geometry(
+    lat_src_2d: np.ndarray,
+    lon_src_2d: np.ndarray,
+    lat_target: np.ndarray,
+    lon_target: np.ndarray,
+) -> tuple[str, dict[str, np.ndarray]]:
+    cache_key = _build_curvilinear_cache_key(
+        lat_src_2d=lat_src_2d,
+        lon_src_2d=lon_src_2d,
+        lat_target=lat_target,
+        lon_target=lon_target,
+    )
+
+    entry = _REGRID_GEOMETRY_CACHE.get(cache_key)
+    if entry is not None:
+        _REGRID_GEOMETRY_CACHE.move_to_end(cache_key)
+        logger.info("Regrid geometry cache hit (memory): %s", cache_key)
+        return cache_key, entry
+
+    cache_path = _cache_dir() / f"{cache_key}.npz"
+    if cache_path.exists():
+        with np.load(cache_path) as cached:
+            entry = {
+                "coord_valid": cached["coord_valid"],
+                "points": cached["points"],
+                "xi": cached["xi"],
+            }
+        _remember_geometry_cache_entry(cache_key, entry)
+        logger.info("Regrid geometry cache hit (disk): %s", cache_path)
+        return cache_key, entry
+
+    lat_flat = lat_src_2d.ravel()
+    lon_flat = lon_src_2d.ravel()
+    coord_valid = np.isfinite(lat_flat) & np.isfinite(lon_flat)
+
+    points = np.column_stack([lon_flat[coord_valid], lat_flat[coord_valid]])
+    lon_out_2d, lat_out_2d = np.meshgrid(lon_target, lat_target)
+    xi = np.column_stack([lon_out_2d.ravel(), lat_out_2d.ravel()])
+
+    entry = {
+        "coord_valid": coord_valid,
+        "points": points,
+        "xi": xi,
+    }
+    _remember_geometry_cache_entry(cache_key, entry)
+
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            cache_path,
+            coord_valid=coord_valid,
+            points=points,
+            xi=xi,
+        )
+        logger.info("Regrid geometry cache stored: %s", cache_path)
+    except OSError as exc:
+        logger.warning("Failed to persist regrid geometry cache %s: %s", cache_path, exc)
+
+    logger.info("Regrid geometry cache miss: %s", cache_key)
+    return cache_key, entry
 
 
 # TODO refactor regrid in one single optimized helper, possibly adding support for xesmf or other fast lib
@@ -241,14 +348,15 @@ class EarthMLRegrid:
         Ny = lat_target.size
         Nx = lon_target.size
 
-        lat_flat = lat_src_2d.ravel()
-        lon_flat = lon_src_2d.ravel()
-
-        coord_valid = np.isfinite(lat_flat) & np.isfinite(lon_flat)
-        points = np.column_stack([lon_flat[coord_valid], lat_flat[coord_valid]])
-
-        lon_out_2d, lat_out_2d = np.meshgrid(lon_target, lat_target)
-        xi = np.column_stack([lon_out_2d.ravel(), lat_out_2d.ravel()])
+        _, geometry = _load_or_build_curvilinear_geometry(
+            lat_src_2d=lat_src_2d,
+            lon_src_2d=lon_src_2d,
+            lat_target=lat_target,
+            lon_target=lon_target,
+        )
+        coord_valid = geometry["coord_valid"]
+        points = geometry["points"]
+        xi = geometry["xi"]
 
         data_vars_out = {}
 
