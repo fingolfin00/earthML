@@ -202,7 +202,7 @@ class ProbabilisticMetrics(BaseMetrics):
                 truth = self.truth_data[var]
 
                 if clim_ds is None:
-                    clim = truth[var].groupby(f"{self.dims.time}.month").mean(dim=self.dims.time, skipna=True)
+                    clim = truth.groupby(f"{self.dims.time}.month").mean(dim=self.dims.time, skipna=True)
                 else:
                     clim = clim_ds[var]
 
