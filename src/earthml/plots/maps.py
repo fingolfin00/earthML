@@ -115,6 +115,7 @@ def plot_temporal_mean_map(
     *,
     save_path: str | Path,
     title: str | None = None,
+    extent: tuple[float, float, float, float] | None = None,
     cbar_label: str = "",
     cmap: str = "jet",
     vmin: float | None = None,
@@ -126,36 +127,31 @@ def plot_temporal_mean_map(
 ) -> None:
     da = _reduce_for_temporal_mean_map(data)
     da = _sort_lon_for_plot(da)
-    extent = _extent_from_da(da)
-    center_lon = _center_lon_from_extent(extent)
+    plot_extent = extent if extent is not None else _extent_from_da(da)
+    center_lon = _center_lon_from_extent(plot_extent)
     data_crs = ccrs.PlateCarree()
 
     fig, ax = plt.subplots(
         figsize=figsize,
         subplot_kw={"projection": ccrs.PlateCarree(central_longitude=center_lon)},
     )
+    fig.subplots_adjust(right=0.88)
     norm = None
     if vmin is not None and vmax is not None:
         norm = TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax) if vmin < 0.0 < vmax else Normalize(vmin=vmin, vmax=vmax)
-    da.plot.pcolormesh(
+    mappable = da.plot.pcolormesh(
         ax=ax,
         transform=data_crs,
         cmap=cmap,
         norm=norm,
         vmin=None if norm is not None else vmin,
         vmax=None if norm is not None else vmax,
-        add_colorbar=True,
-        cbar_kwargs={
-            "label": cbar_label,
-            "fraction": 0.035,
-            "pad": 0.02,
-            "aspect": 35,
-        },
+        add_colorbar=False,
     )
-    if extent is None:
+    if plot_extent is None:
         ax.set_global()
     else:
-        ax.set_extent(extent, crs=data_crs)
+        ax.set_extent(plot_extent, crs=data_crs)
     ax.coastlines(linewidth=0.6)
     gl = ax.gridlines(draw_labels=True, linewidth=0.35, linestyle="--", alpha=0.4)
     gl.top_labels = False
@@ -170,6 +166,11 @@ def plot_temporal_mean_map(
         gl.ylocator = mticker.MultipleLocator(lat_tick_step)
     if title:
         ax.set_title(title, fontsize=10)
-    fig.tight_layout()
+
+    ax_pos = ax.get_position()
+    cax = fig.add_axes([ax_pos.x1 + 0.02, ax_pos.y0, 0.02, ax_pos.height])
+    cbar = fig.colorbar(mappable, cax=cax, orientation="vertical")
+    cbar.set_label(cbar_label)
+
     fig.savefig(save_path, bbox_inches="tight", dpi=dpi)
     plt.close(fig)
