@@ -347,7 +347,7 @@ class EarthkitSource(BaseSource):
                     center_lt = unique_lt[idx0]
 
                     # Window around nearest center
-                    half_window = np.timedelta64(3, "D") # 3-day window is a good guess # TODO maybe improve? make it explicit?
+                    half_window = np.timedelta64(3, "D")
                     low, high = center_lt - half_window, center_lt + half_window
 
                     mask_lt = (lt_values >= low) & (lt_values <= high)
@@ -409,7 +409,6 @@ class EarthkitSource(BaseSource):
                         ds_chunk = ds_chunk.assign_coords({leadtime_name: (leadtime_name, np.array([target_np], dtype=coord_dtype))})
 
                     else:
-                        # if ds_chunk.sizes.get(leadtime_name, 0) > 1:
                         # Move leadtime first to make bfill deterministic across the step axis
                         ds_chunk = ds_chunk.transpose(leadtime_dim, ...)
 
@@ -716,7 +715,20 @@ class EarthkitSource(BaseSource):
             return pd.DatetimeIndex(values)
 
         valid_time = _extract_time_like_coord("valid_time")
-        canonical_time = valid_time if valid_time is not None else expected_canonical_time
+        use_source_time_as_canonical = (
+            self.config.request_type == "monthly"
+            and self.config.dataset == "seasonal-monthly-single-levels"
+        )
+        canonical_time = source_time if use_source_time_as_canonical else (
+            valid_time if valid_time is not None else expected_canonical_time
+        )
+
+        if use_source_time_as_canonical:
+            logger.info(
+                "Using source_time as canonical time for %s monthly forecasts; "
+                "provider valid_time remains available as auxiliary metadata.",
+                self.config.dataset,
+            )
 
         if len(source_time) != len(canonical_time):
             raise ValueError(
@@ -747,7 +759,11 @@ class EarthkitSource(BaseSource):
                 f"Expected count: {len(expected_canonical_time)}"
             )
 
-        if valid_time is not None and not canonical_time.equals(expected_canonical_time):
+        if (
+            not use_source_time_as_canonical
+            and valid_time is not None
+            and not canonical_time.equals(expected_canonical_time)
+        ):
             raise ValueError(
                 "Fetched forecast valid_time does not match expected target dates.\n"
                 f"valid_time head/tail: {canonical_time[:3].tolist()} ... {canonical_time[-3:].tolist()}\n"
