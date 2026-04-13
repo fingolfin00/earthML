@@ -1270,6 +1270,13 @@ class MLBCExperiment:
         ydim = meta_ds.earthml.guessed_dims.latitude
         xdim = meta_ds.earthml.guessed_dims.longitude
 
+        R_out, T_out = self._infer_RT_from_source(dataset)
+
+        input_ds = dataset.input_ds
+        input_rdim = input_ds.earthml.guessed_dims.realization
+        if R_out > 1 and rdim is None:
+            rdim = input_rdim or "realization"
+
         allowed_dims = {tdim, ydim, xdim, rdim, "missed_time"}
         meta_ds = meta_ds.earthml.remove_dims_and_coords(allowed_dims)
         base_order = [rdim, tdim, ydim, xdim]
@@ -1277,10 +1284,6 @@ class MLBCExperiment:
         order += [d for d in meta_ds.dims if d not in order]
         meta_ds = meta_ds.transpose(*order, missing_dims="ignore")
 
-        R_out, T_out = self._infer_RT_from_source(dataset)
-
-        input_ds = dataset.input_ds
-        input_rdim = input_ds.earthml.guessed_dims.realization
         input_has_matching_r = (
             input_rdim is not None
             and input_rdim in input_ds.dims
