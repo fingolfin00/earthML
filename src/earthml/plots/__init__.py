@@ -1,5 +1,5 @@
 from .utils import quickplot
-from .leadtime import plot_ensemble_leadtime
+from .profile import plot_ensemble_profile
 from .timeseries import plot_realization_timeseries
 from .maps import plot_temporal_mean_map
 from .panels import create_panel_from_data, plot_metric_map_panel
@@ -16,8 +16,8 @@ from .config import (
 __all__ = [
     # utils
     "quickplot",
-    # leadtime
-    "plot_ensemble_leadtime",
+    # profile
+    "plot_ensemble_profile",
     # timeseries
     "plot_realization_timeseries",
     # maps

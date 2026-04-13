@@ -7,12 +7,12 @@ from .timeseries import plot_realization_timeseries
 
 
 
-def plot_ensemble_leadtime(
+def plot_ensemble_profile(
     ens_mean: xr.DataArray,
     members: xr.DataArray | None = None,
     extra: xr.DataArray | None = None,
     *,
-    lead_dim: str = "leadtime",
+    x_dim: str = "leadtime",
     ens_dim: str = "realization",
     ax: Axes | None = None,
     label: str = "",
@@ -30,26 +30,26 @@ def plot_ensemble_leadtime(
     extra_ls: str = ":",
 ) -> Axes:
     """
-    Plot ensemble mean, optionally members and spread vs lead time.
+    Plot ensemble mean, optionally members and spread, against a chosen x-axis.
 
     Parameters
     ----------
     ens_mean : xarray.DataArray
-        Ensemble mean with dim (lead_dim,)
+        Ensemble mean with dim (x_dim,)
     members : xarray.DataArray, optional
-        Ensemble realizations with dims (lead_dim, ens_dim)
+        Ensemble realizations with dims (x_dim, ens_dim)
     extra : xarray.DataArray, optional
-        Extra line with dim (lead_dim,)
+        Extra line with dim (x_dim,)
     """
 
     ax = plot_realization_timeseries(
         ens_mean,
         members=members,
         extra=extra,
-        x_dim=lead_dim,
+        x_dim=x_dim,
         ens_dim=ens_dim,
         ax=ax,
-        x_label="Lead time",
+        x_label=x_dim.replace("_", " ").title(),
         label=label,
         mean_label=f"{label} ens mean" if label else "ens mean",
         color=color,
