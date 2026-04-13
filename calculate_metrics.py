@@ -11,7 +11,9 @@ os.environ.setdefault("KMP_WARNINGS", "0")
 os.environ.setdefault("OMP_MAX_ACTIVE_LEVELS", "1")
 
 import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
 from matplotlib import colors as mcolors
+from matplotlib.figure import Figure
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -74,7 +76,7 @@ GLOBAL_KNOBS = {
     "models_diff": ("fc", "pr"),
     # Global output switches.
     "enable_scalar_tables": True,
-    "enable_diff_plot": True,
+    "enable_diff_plot": False,
     "enable_metric_profile_plots": True,
     "enable_scoreboard": True,
     # Toggle rich table output in the terminal while still saving table files/images.
@@ -83,7 +85,11 @@ GLOBAL_KNOBS = {
 
 COMMON_PLOT_KNOBS = {
     # Applied to maps, timeseries, diff plot and the metric-profile plots.
-    "filters": None,
+    "filters": {
+        "leadtime": [1],
+        "variable": None,
+        "region": ["ConUS"], # ConUS, Europe
+    },
     # Used to color/shade runs consistently across plots.
     "shade_by": "loss",  # e.g. "loss", "total_months"
     "shade_label": "Loss",
@@ -122,14 +128,15 @@ DIFF_PLOT_KNOBS = {
 
 METRIC_PROFILE_PLOT_KNOBS = {
     # Pick the x-axis used for metric profile plots.
-    "x_axis": "leadtime",  # "leadtime", "train_period", "loss", "variable"
+    "x_axis": "variable",  # "leadtime", "train_period", "loss", "variable"
     # Each metric maps to the plotting mode expected by save_metrics_vs_parameter_plots.
     "metrics": {
         "r2": "deterministic_with_ensemble_overlay",
-        "rmse": "deterministic_with_ensemble_overlay",
-        "rmse_skill_clim": "deterministic_with_ensemble_overlay",
-        "mae": "deterministic_with_ensemble_overlay",
-        "bias": "deterministic_with_ensemble_overlay",
+        # "rmse": "deterministic_with_ensemble_overlay",
+        "nrmse": "deterministic_with_ensemble_overlay",
+        # "rmse_skill_clim": "deterministic_with_ensemble_overlay",
+        "nmae": "deterministic_with_ensemble_overlay",
+        "nbias": "deterministic_with_ensemble_overlay",
         "crps": "probabilistic",
         "spread": "probabilistic",
         "spread_error_ratio": "probabilistic",
@@ -295,6 +302,21 @@ MODEL_DISPLAY_NAMES = {
 def debug_print(*args, **kwargs) -> None:
     if DEBUG:
         print(*args, **kwargs)
+
+
+def _resolved_single_region_label(
+    data: xr.Dataset | xr.DataArray,
+    *,
+    filters: dict | None = None,
+) -> str:
+    if "region" in data.coords or "region" in data.dims:
+        values = np.asarray(data["region"].values).reshape(-1).tolist()
+        region_values = sorted({str(value) for value in values if value is not None and str(value) != ""})
+        if len(region_values) > 1:
+            raise ValueError(f"Expected a single region after filtering, got {region_values}")
+        if len(region_values) == 1:
+            return region_values[0]
+    return _single_filter_value(filters, "region")
 
 
 def build_scalar_metric_df(
@@ -516,12 +538,6 @@ def _build_residual_da(left: xr.DataArray, right: xr.DataArray) -> xr.DataArray:
     exclude_align_dims = tuple(dim for dim in (left_rdim, right_rdim) if dim is not None)
     left, right = xr.align(left, right, join="inner", exclude=exclude_align_dims)
     return left - right
-
-
-def _timeseries_plot_note(plot_kind: str) -> str:
-    if plot_kind.startswith("residual_"):
-        return "Spatial mean residual over time. Not directly comparable to full-field RMSE."
-    return "Spatial mean over time. Visual closeness here does not imply lower full-field RMSE."
 
 
 def _map_title(*parts: str | None) -> str:
@@ -791,6 +807,32 @@ def _context_title_suffix(context_values: dict[str, object], *, leadtime_unit: s
         _format_context_label(field=field, value=value, leadtime_unit=leadtime_unit)
         for field, value in context_values.items()
     )
+
+
+def _plot_context_subtitle(
+    context_values: dict[str, object] | None = None,
+    *,
+    leadtime_unit: str | None = None,
+    filters: dict | None = None,
+) -> str:
+    subtitle_values: dict[str, object] = {}
+    selected_region = _single_filter_value(filters, "region")
+    if selected_region:
+        subtitle_values["region"] = selected_region
+    if context_values:
+        subtitle_values.update(context_values)
+    return _context_title_suffix(subtitle_values, leadtime_unit=leadtime_unit)
+
+
+def _set_title_and_subtitle(
+    fig: Figure,
+    ax: Axes,
+    *,
+    title: str,
+    subtitle: str | None = None,
+) -> None:
+    fig.suptitle(title)
+    ax.set_title(subtitle or "", fontsize=10, color="0.35", pad=8)
 
 
 def _context_filename_suffix(context_values: dict[str, object]) -> str:
@@ -1535,6 +1577,54 @@ def infer_region_from_configs(exp_root: Path, *, selected_region: str = "") -> s
     return next(iter(regions))
 
 
+def infer_region_extent_from_configs(
+    exp_root: Path,
+    *,
+    selected_region: str = "",
+) -> tuple[float, float, float, float] | None:
+    extents: dict[str, tuple[float, float, float, float]] = {}
+
+    for cfg_path in exp_root.rglob("experiment.cfg"):
+        experiment = joblib.load(cfg_path)
+        config = experiment["config"]
+
+        train_datasets = config.train_dataset
+        train_datasets = train_datasets if isinstance(train_datasets, (list, tuple)) else [train_datasets]
+
+        train_input = next((td for td in train_datasets if td.role == "input"), None)
+        if train_input is None:
+            continue
+
+        datasources = train_input.datasource
+        datasources = datasources if isinstance(datasources, (list, tuple)) else [datasources]
+        if not datasources:
+            continue
+
+        region_obj = getattr(datasources[0].data_selection, "region", None)
+        region_name = getattr(region_obj, "name", None)
+        lon = getattr(region_obj, "lon", None)
+        lat = getattr(region_obj, "lat", None)
+        if not region_name or lon is None or lat is None:
+            continue
+
+        lon0, lon1 = map(float, lon)
+        lat0, lat1 = map(float, lat)
+        extents[str(region_name)] = (lon0, lon1, min(lat0, lat1), max(lat0, lat1))
+
+    if not extents:
+        return None
+    if selected_region:
+        if selected_region not in extents:
+            raise ValueError(
+                f"Selected region {selected_region!r} was not found in {exp_root}. "
+                f"Available regions: {sorted(extents)}"
+            )
+        return extents[selected_region]
+    if len(extents) > 1:
+        raise ValueError(f"Multiple regions found in {exp_root}: {sorted(extents)}")
+    return next(iter(extents.values()))
+
+
 def save_scoreboard_plot(
     *,
     metrics: dict,
@@ -1722,7 +1812,6 @@ def save_field_timeseries_plots(
                 enable_spread = fc_has_spread or pr_has_spread
                 show_legend = enable_spread
 
-                context_suffix = _context_title_suffix(context_values, leadtime_unit=leadtime_unit)
                 base_title = format_variable_display_name(variable)
                 filename_context = _context_filename_suffix(context_values)
                 base_unit = _get_da_unit(context_reference, variable)
@@ -1768,6 +1857,7 @@ def save_field_timeseries_plots(
                         continue
 
                     sample_da = next(iter(plot_data.values()))
+                    plot_region = _resolved_single_region_label(sample_da, filters=filters)
                     x_dim = "month" if plot_kind == "climatology" else (sample_da.earthml.guessed_dims.time or "time")
                     fig, ax = plt.subplots(figsize=(12, 5.5))
                     plotted = False
@@ -1793,26 +1883,27 @@ def save_field_timeseries_plots(
                         plt.close(fig)
                         continue
 
-                    ax.set_title(f"{title} | {context_suffix}" if context_suffix else title)
-                    fig.text(
-                        0.5,
-                        0.01,
-                        _timeseries_plot_note(plot_kind),
-                        ha="center",
-                        va="bottom",
-                        fontsize=9,
-                        color="0.35",
+                    _set_title_and_subtitle(
+                        fig,
+                        ax,
+                        title=title,
+                        subtitle=_plot_context_subtitle(
+                            context_values,
+                            leadtime_unit=leadtime_unit,
+                            filters=filters,
+                        ),
                     )
                     if plot_kind.startswith("residual_"):
                         ax.axhline(0.0, color="0.3", lw=1.0, ls=":")
                     if show_legend:
                         ax.legend(fontsize=9)
-                    fig.tight_layout(rect=(0.0, 0.05, 1.0, 1.0))
+                    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
 
                     plot_path = timeseries_folder / f"{plot_kind}_timeseries_{filename_context}.png"
                     fig.savefig(plot_path, bbox_inches="tight", dpi=150)
                     plt.close(fig)
                     saved_paths.append(plot_path)
+                    debug_print(f"Saved {plot_kind} timeseries for region={plot_region or 'unknown'} to:", plot_path)
 
             if progress is not None and task_id is not None:
                 progress.advance(task_id)
@@ -1828,6 +1919,7 @@ def save_field_and_metric_map_plots(
     plot_folder: Path,
     leadtime_unit: str,
     filters: dict | None,
+    region_extent: tuple[float, float, float, float] | None = None,
     progress: Progress | None = None,
     task_id: int | None = None,
 ) -> list[Path]:
@@ -1847,6 +1939,7 @@ def save_field_and_metric_map_plots(
                 continue
 
             da = _apply_xarray_filters(ds[variable], filters)
+            dataset_region = _resolved_single_region_label(da, filters=filters)
             for selection, context_values in _context_selection_entries(da):
                 da_sel = da.sel({dim: value for dim, value in selection.items() if dim in da.dims}, drop=True)
                 if da_sel.size == 0:
@@ -1865,12 +1958,14 @@ def save_field_and_metric_map_plots(
                         "Temporal mean",
                         _context_title_suffix(context_values, leadtime_unit=leadtime_unit),
                     ),
+                    extent=region_extent,
                     cbar_label=_map_cbar_label(variable=variable, unit=base_unit),
                     cmap=FIELD_MAP_CMAP,
                     lon_tick_step=MAP_LON_TICK_STEP,
                     lat_tick_step=MAP_LAT_TICK_STEP,
                 )
                 saved_paths.append(save_path)
+                debug_print(f"Saved field map for model={model_name} region={dataset_region or 'unknown'} to:", save_path)
 
         for metric_type, section_dict in metrics.items():
             ds_map = section_dict.get("map", xr.Dataset())
@@ -1918,6 +2013,7 @@ def save_field_and_metric_map_plots(
                     metric_label = format_metric_label(metric_name, base_unit=base_unit)
 
                     for model_name, da_sel in per_model_maps.items():
+                        map_region = _resolved_single_region_label(da_sel, filters=filters)
                         filename_parts = [metric_type, metric_name, model_name, _context_filename_suffix(context_values)]
                         save_path = maps_folder / f"{'_'.join(filename_parts)}_map.png"
 
@@ -1925,6 +2021,7 @@ def save_field_and_metric_map_plots(
                             da_sel,
                             save_path=save_path,
                             title=_map_title(metric_label, MODEL_DISPLAY_NAMES.get(model_name, model_name), context_suffix),
+                            extent=region_extent,
                             cbar_label=_map_cbar_label(variable=variable, unit=base_unit),
                             cmap=_resolve_metric_map_cmap(metric_name),
                             vmin=shared_vmin,
@@ -1933,9 +2030,14 @@ def save_field_and_metric_map_plots(
                             lat_tick_step=MAP_LAT_TICK_STEP,
                         )
                         saved_paths.append(save_path)
+                        debug_print(
+                            f"Saved metric map for metric={metric_name} model={model_name} region={map_region or 'unknown'} to:",
+                            save_path,
+                        )
 
                     if "fc" in per_model_maps and "pr" in per_model_maps:
                         diff_da = per_model_maps["pr"] - per_model_maps["fc"]
+                        diff_region = _resolved_single_region_label(diff_da, filters=filters)
                         diff_vmin, diff_vmax = _symmetric_map_limits(diff_da)
                         diff_save_path = maps_folder / (
                             f"{metric_type}_{metric_name}_pr-fc_{_context_filename_suffix(context_values)}_map.png"
@@ -1944,6 +2046,7 @@ def save_field_and_metric_map_plots(
                             diff_da,
                             save_path=diff_save_path,
                             title=_map_title(metric_label, MODEL_DISPLAY_NAMES["pr-fc"], context_suffix),
+                            extent=region_extent,
                             cbar_label=_map_cbar_label(variable=variable, unit=base_unit),
                             cmap="RdBu_r",
                             vmin=diff_vmin,
@@ -1952,6 +2055,10 @@ def save_field_and_metric_map_plots(
                             lat_tick_step=MAP_LAT_TICK_STEP,
                         )
                         saved_paths.append(diff_save_path)
+                        debug_print(
+                            f"Saved diff map for metric={metric_name} model=pr-fc region={diff_region or 'unknown'} to:",
+                            diff_save_path,
+                        )
 
         if progress is not None and task_id is not None:
             progress.advance(task_id)
@@ -2148,7 +2255,12 @@ def save_metrics_vs_parameter_plots(
                 metric_name,
                 base_unit=None if variable is None else (variable_units or {}).get(str(variable)),
             )
-            ax.set_title(f"{metric_label} vs {format_axis_display_name(x_axis).lower()} ({title_subject})")
+            _set_title_and_subtitle(
+                fig,
+                ax,
+                title=f"{metric_label} vs {format_axis_display_name(x_axis).lower()} ({title_subject})",
+                subtitle=_plot_context_subtitle(leadtime_unit=leadtime_unit, filters=filters),
+            )
             ax.set_xlabel(axis_label)
             ax.set_ylabel(metric_label)
             ax.set_xticks(x_positions)
@@ -2164,7 +2276,7 @@ def save_metrics_vs_parameter_plots(
                 ax.axhline(0.0, color="0.3", lw=1.0, ls=":")
 
             ax.legend(fontsize=9)
-            plt.tight_layout()
+            plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
 
             file_axis = _sanitize_filename_fragment(x_axis)
             if variable is None:
@@ -2205,8 +2317,10 @@ def main() -> None:
     leadtime_unit = infer_leadtime_unit_from_configs(EXP_ROOT_FOLDER)
     selected_region = _single_filter_value(PLOT_FILTERS, "region")
     region = infer_region_from_configs(EXP_ROOT_FOLDER, selected_region=selected_region)
+    region_extent = infer_region_extent_from_configs(EXP_ROOT_FOLDER, selected_region=selected_region)
     print(f"Inferred leadtime unit: {leadtime_unit or 'unknown'}")
     print(f"Inferred region: {region or 'unknown'}")
+    print(f"Inferred region extent: {region_extent or 'unknown'}")
     print_available_scalar_metrics(metrics=metrics)
 
     with build_progress() as progress:
@@ -2232,6 +2346,7 @@ def main() -> None:
             plot_folder=PLOT_FOLDER,
             leadtime_unit=leadtime_unit,
             filters=PLOT_FILTERS,
+            region_extent=region_extent,
             progress=progress,
             task_id=map_task,
         )
