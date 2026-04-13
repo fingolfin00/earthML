@@ -52,6 +52,7 @@ class MLBCExperimentLauncher:
     net                         : MLBCNeuralNet
     # Optional
     dask_workers                : int | None = None
+    memory_limit                : str = "auto"
     juno_file_open_workers      : int | None = None
     only_longest_train_period   : bool = True
     # Providers args
@@ -702,6 +703,7 @@ class MLBCExperimentLauncher:
             for attempt in range(self.max_retries):
                 runtime = Runtime(
                     dask_workers=self.dask_workers,
+                    memory_limit=self.memory_limit,
                     needs_ca_bundle=needs_ca_bundle,
                 )
                 dask_runtime = runtime.start()
