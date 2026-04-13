@@ -94,7 +94,7 @@ COMMON_PLOT_KNOBS = {
 
 MAP_PLOT_KNOBS = {
     # Colormap for raw field temporal-mean maps.
-    "field_cmap": "viridis",
+    "field_cmap": "jet",
     # Per-metric colormap overrides for metric maps.
     "metric_cmaps": {
         "bias": "RdBu_r",
@@ -104,7 +104,10 @@ MAP_PLOT_KNOBS = {
         "spread_error_ratio": "RdBu",
     },
     # Fallback colormap when a metric is not listed above.
-    "metric_cmap_default": "viridis",
+    "metric_cmap_default": "jet",
+    # Gridline label spacing in degrees for map plots.
+    "lon_tick_step": 10.0,
+    "lat_tick_step": 10.0,
 }
 
 DIFF_PLOT_KNOBS = {
@@ -217,6 +220,8 @@ DISABLE_FLOX_FOR_FIELD_TIMESERIES = COMMON_PLOT_KNOBS["disable_flox_for_field_ti
 FIELD_MAP_CMAP = MAP_PLOT_KNOBS["field_cmap"]
 METRIC_MAP_CMAPS = MAP_PLOT_KNOBS["metric_cmaps"]
 METRIC_MAP_CMAP_DEFAULT = MAP_PLOT_KNOBS["metric_cmap_default"]
+MAP_LON_TICK_STEP = MAP_PLOT_KNOBS["lon_tick_step"]
+MAP_LAT_TICK_STEP = MAP_PLOT_KNOBS["lat_tick_step"]
 
 SCOREBOARD_MODE = SCOREBOARD_KNOBS["mode"]
 SCOREBOARD_METRICS = SCOREBOARD_KNOBS["metrics"]
@@ -511,6 +516,51 @@ def _build_residual_da(left: xr.DataArray, right: xr.DataArray) -> xr.DataArray:
     exclude_align_dims = tuple(dim for dim in (left_rdim, right_rdim) if dim is not None)
     left, right = xr.align(left, right, join="inner", exclude=exclude_align_dims)
     return left - right
+
+
+def _timeseries_plot_note(plot_kind: str) -> str:
+    if plot_kind.startswith("residual_"):
+        return "Spatial mean residual over time. Not directly comparable to full-field RMSE."
+    return "Spatial mean over time. Visual closeness here does not imply lower full-field RMSE."
+
+
+def _map_title(*parts: str | None) -> str:
+    return " | ".join(part for part in parts if part)
+
+
+def _map_cbar_label(*, variable: str, unit: str | None) -> str:
+    return _format_label_with_unit(format_variable_display_name(variable), unit)
+
+
+def _shared_map_limits(*arrays: xr.DataArray) -> tuple[float | None, float | None]:
+    mins: list[float] = []
+    maxs: list[float] = []
+    for array in arrays:
+        values = np.asarray(array.values, dtype=np.float64)
+        finite = values[np.isfinite(values)]
+        if finite.size == 0:
+            continue
+        mins.append(float(finite.min()))
+        maxs.append(float(finite.max()))
+    if not mins or not maxs:
+        return None, None
+    vmin = min(mins)
+    vmax = max(maxs)
+    if vmin == vmax:
+        eps = abs(vmin) * 0.05 or 1e-6
+        return vmin - eps, vmax + eps
+    return vmin, vmax
+
+
+def _symmetric_map_limits(array: xr.DataArray) -> tuple[float | None, float | None]:
+    values = np.asarray(array.values, dtype=np.float64)
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return None, None
+    bound = float(np.max(np.abs(finite)))
+    if bound == 0.0:
+        bound = 1e-6
+    return -bound, bound
 
 
 def _context_selection_entries(
@@ -1744,11 +1794,20 @@ def save_field_timeseries_plots(
                         continue
 
                     ax.set_title(f"{title} | {context_suffix}" if context_suffix else title)
+                    fig.text(
+                        0.5,
+                        0.01,
+                        _timeseries_plot_note(plot_kind),
+                        ha="center",
+                        va="bottom",
+                        fontsize=9,
+                        color="0.35",
+                    )
                     if plot_kind.startswith("residual_"):
                         ax.axhline(0.0, color="0.3", lw=1.0, ls=":")
                     if show_legend:
                         ax.legend(fontsize=9)
-                    fig.tight_layout()
+                    fig.tight_layout(rect=(0.0, 0.05, 1.0, 1.0))
 
                     plot_path = timeseries_folder / f"{plot_kind}_timeseries_{filename_context}.png"
                     fig.savefig(plot_path, bbox_inches="tight", dpi=150)
@@ -1800,8 +1859,16 @@ def save_field_and_metric_map_plots(
                 plot_temporal_mean_map(
                     da_sel,
                     save_path=save_path,
-                    cbar_label=_format_label_with_unit(format_variable_display_name(variable), base_unit),
+                    title=_map_title(
+                        format_variable_display_name(variable),
+                        MODEL_DISPLAY_NAMES.get(model_name, str(model_name)),
+                        "Temporal mean",
+                        _context_title_suffix(context_values, leadtime_unit=leadtime_unit),
+                    ),
+                    cbar_label=_map_cbar_label(variable=variable, unit=base_unit),
                     cmap=FIELD_MAP_CMAP,
+                    lon_tick_step=MAP_LON_TICK_STEP,
+                    lat_tick_step=MAP_LAT_TICK_STEP,
                 )
                 saved_paths.append(save_path)
 
@@ -1823,13 +1890,15 @@ def save_field_and_metric_map_plots(
 
             for metric_name in metric_values:
                 da_metric = da_var.sel(metric=metric_name, drop=True)
+                context_source = da_metric
+                for selection, context_values in _context_selection_entries(context_source):
+                    per_model_maps: dict[str, xr.DataArray] = {}
+                    base_unit: str | None = None
 
-                for model_name in model_values:
-                    da_model = da_metric.sel(model=model_name, drop=True) if model_name is not None else da_metric
-                    if da_model.size == 0:
-                        continue
-
-                    for selection, context_values in _context_selection_entries(da_model):
+                    for model_name in model_values:
+                        da_model = da_metric.sel(model=model_name, drop=True) if model_name is not None else da_metric
+                        if da_model.size == 0:
+                            continue
                         da_sel = da_model.sel(
                             {dim: value for dim, value in selection.items() if dim in da_model.dims},
                             drop=True,
@@ -1837,28 +1906,52 @@ def save_field_and_metric_map_plots(
                         if da_sel.size == 0:
                             continue
                         da_sel = _reduce_extra_map_dims(da_sel)
-                        base_unit = _get_da_unit(da_sel) or _get_da_unit(runs.get("an", xr.Dataset()), variable)
+                        per_model_maps[str(model_name)] = da_sel
+                        if base_unit is None:
+                            base_unit = _get_da_unit(da_sel) or _get_da_unit(runs.get("an", xr.Dataset()), variable)
 
-                        filename_parts = [metric_type, metric_name]
-                        if model_name is not None:
-                            filename_parts.append(model_name)
-                        filename_parts.append(_context_filename_suffix(context_values))
+                    if not per_model_maps:
+                        continue
+
+                    shared_vmin, shared_vmax = _shared_map_limits(*per_model_maps.values())
+                    context_suffix = _context_title_suffix(context_values, leadtime_unit=leadtime_unit)
+                    metric_label = format_metric_label(metric_name, base_unit=base_unit)
+
+                    for model_name, da_sel in per_model_maps.items():
+                        filename_parts = [metric_type, metric_name, model_name, _context_filename_suffix(context_values)]
                         save_path = maps_folder / f"{'_'.join(filename_parts)}_map.png"
-
-                        cbar_label_parts = [format_metric_label(metric_name, base_unit=base_unit)]
-                        if model_name is not None:
-                            cbar_label_parts.append(MODEL_DISPLAY_NAMES.get(model_name, str(model_name)))
-                        context_suffix = _context_title_suffix(context_values, leadtime_unit=leadtime_unit)
-                        if context_suffix:
-                            cbar_label_parts.append(context_suffix)
 
                         plot_temporal_mean_map(
                             da_sel,
                             save_path=save_path,
-                            cbar_label=" | ".join(cbar_label_parts),
+                            title=_map_title(metric_label, MODEL_DISPLAY_NAMES.get(model_name, model_name), context_suffix),
+                            cbar_label=_map_cbar_label(variable=variable, unit=base_unit),
                             cmap=_resolve_metric_map_cmap(metric_name),
+                            vmin=shared_vmin,
+                            vmax=shared_vmax,
+                            lon_tick_step=MAP_LON_TICK_STEP,
+                            lat_tick_step=MAP_LAT_TICK_STEP,
                         )
                         saved_paths.append(save_path)
+
+                    if "fc" in per_model_maps and "pr" in per_model_maps:
+                        diff_da = per_model_maps["pr"] - per_model_maps["fc"]
+                        diff_vmin, diff_vmax = _symmetric_map_limits(diff_da)
+                        diff_save_path = maps_folder / (
+                            f"{metric_type}_{metric_name}_pr-fc_{_context_filename_suffix(context_values)}_map.png"
+                        )
+                        plot_temporal_mean_map(
+                            diff_da,
+                            save_path=diff_save_path,
+                            title=_map_title(metric_label, MODEL_DISPLAY_NAMES["pr-fc"], context_suffix),
+                            cbar_label=_map_cbar_label(variable=variable, unit=base_unit),
+                            cmap="RdBu_r",
+                            vmin=diff_vmin,
+                            vmax=diff_vmax,
+                            lon_tick_step=MAP_LON_TICK_STEP,
+                            lat_tick_step=MAP_LAT_TICK_STEP,
+                        )
+                        saved_paths.append(diff_save_path)
 
         if progress is not None and task_id is not None:
             progress.advance(task_id)
