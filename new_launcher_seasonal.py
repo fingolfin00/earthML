@@ -153,7 +153,8 @@ if __name__ == "__main__":
             test_periods=test_period,
             net=net,
             # Optional
-            dask_workers=None,
+            dask_workers=2,
+            memory_limit="8GB",
             only_longest_train_period=only_longest_train_period,
             # Providers args
             earthkit_cache_dir=earthkit_cache_dir,
@@ -168,4 +169,3 @@ if __name__ == "__main__":
         )
 
         launcher.run()
-
