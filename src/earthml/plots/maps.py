@@ -60,6 +60,53 @@ def _sort_lon_for_plot(da: xr.DataArray) -> xr.DataArray:
     return da.assign_coords({lon_name: lon_plot}).sortby(lon_name)
 
 
+def _extent_from_da(
+    da: xr.DataArray,
+    *,
+    pad_deg: float = 2.0,
+) -> tuple[float, float, float, float] | None:
+    lon_name = da.earthml.guessed_dims.longitude
+    lat_name = da.earthml.guessed_dims.latitude
+    if lon_name is None or lat_name is None:
+        return None
+
+    lon = np.asarray(da[lon_name].values, dtype=np.float64).ravel()
+    lat = np.asarray(da[lat_name].values, dtype=np.float64).ravel()
+
+    lon = lon[np.isfinite(lon)]
+    lat = lat[np.isfinite(lat)]
+    if lon.size == 0 or lat.size == 0:
+        return None
+
+    lon_cont = _continuous_lon_values(lon)
+    return (
+        float(lon_cont.min()) - pad_deg,
+        float(lon_cont.max()) + pad_deg,
+        float(lat.min()) - pad_deg,
+        float(lat.max()) + pad_deg,
+    )
+
+
+def _center_lon_from_extent(
+    extent: tuple[float, float, float, float] | None,
+    *,
+    global_width_threshold: float = 300.0,
+) -> float:
+    if extent is None:
+        return 0.0
+
+    lon_min, lon_max, _, _ = extent
+    if not (np.isfinite(lon_min) and np.isfinite(lon_max)):
+        return 0.0
+
+    width = lon_max - lon_min
+    if width >= global_width_threshold:
+        return 0.0
+
+    center_lon = 0.5 * (lon_min + lon_max)
+    return float(center_lon % 360.0)
+
+
 def plot_temporal_mean_map(
     data: xr.Dataset | xr.DataArray,
     *,
@@ -71,18 +118,25 @@ def plot_temporal_mean_map(
 ) -> None:
     da = _reduce_for_temporal_mean_map(data)
     da = _sort_lon_for_plot(da)
+    extent = _extent_from_da(da)
+    center_lon = _center_lon_from_extent(extent)
+    data_crs = ccrs.PlateCarree()
 
     fig, ax = plt.subplots(
         figsize=figsize,
-        subplot_kw={"projection": ccrs.PlateCarree()},
+        subplot_kw={"projection": ccrs.PlateCarree(central_longitude=center_lon)},
     )
     da.plot.pcolormesh(
         ax=ax,
-        transform=ccrs.PlateCarree(),
+        transform=data_crs,
         cmap=cmap,
         add_colorbar=True,
         cbar_kwargs={"label": cbar_label},
     )
+    if extent is None:
+        ax.set_global()
+    else:
+        ax.set_extent(extent, crs=data_crs)
     ax.coastlines(linewidth=0.6)
     ax.gridlines(draw_labels=False, linewidth=0.35, linestyle="--", alpha=0.4)
     fig.tight_layout()
