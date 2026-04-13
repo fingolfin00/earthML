@@ -62,7 +62,7 @@ CONSOLE = Console()
 
 GLOBAL_KNOBS = {
     # Main experiment folder to read from.
-    "exp_root_folder": Path("/Users/jacopodallaglio/ML/experiments_earthML_seasonal_atmo/"),
+    "exp_root_folder": Path("/Users/jacopodallaglio/ML/experiments_earthML_seasonal_ocean/"),
     # All artifacts land in exp_root_folder / plot_folder_name.
     "plot_folder_name": "plots",
     # Dataset split and model loading.
@@ -74,7 +74,7 @@ GLOBAL_KNOBS = {
     "models_diff": ("fc", "pr"),
     # Global output switches.
     "enable_scalar_tables": True,
-    "enable_diff_plot": True,
+    "enable_diff_plot": False,
     "enable_metric_profile_plots": True,
     "enable_scoreboard": True,
     # Toggle rich table output in the terminal while still saving table files/images.
@@ -83,7 +83,11 @@ GLOBAL_KNOBS = {
 
 COMMON_PLOT_KNOBS = {
     # Applied to maps, timeseries, diff plot and the metric-profile plots.
-    "filters": None,
+    "filters": {
+        "leadtime": [6],
+        "variable": ["sst"],
+        "region": ["CentralPacific"],
+    },
     # Used to color/shade runs consistently across plots.
     "shade_by": "loss",  # e.g. "loss", "total_months"
     "shade_label": "Loss",
@@ -119,7 +123,7 @@ DIFF_PLOT_KNOBS = {
 
 METRIC_PROFILE_PLOT_KNOBS = {
     # Pick the x-axis used for metric profile plots.
-    "x_axis": "leadtime",  # "leadtime", "train_period", "loss", "variable"
+    "x_axis": "loss",  # "leadtime", "train_period", "loss", "variable"
     # Each metric maps to the plotting mode expected by save_metrics_vs_parameter_plots.
     "metrics": {
         "r2": "deterministic_with_ensemble_overlay",
@@ -143,7 +147,8 @@ TABLE_KNOBS = {
     "filters": {
         "train_period": None,
         "loss": "mseloss",
-        "leadtime": 1,
+        "leadtime": 6,
+        "region": "CentralPacific",
     },
     "row_index": ("metric",),
     "column_index": ("model", "variable", "stat"),
