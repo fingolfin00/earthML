@@ -51,11 +51,15 @@ class MLBCExperiment:
         self._path_setup()
 
         # General torch and Lightning setup
-        self.accelerator = "gpu" if torch.cuda.is_available() else "cpu"
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.accelerator, self.device = self._resolve_accelerator_and_device()
+        self.trainer_precision = self._resolve_trainer_precision()
         num_cpus = multiprocessing.cpu_count()
-        num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
-        self.torch_workers = 0
+        num_gpus = (
+            torch.cuda.device_count()
+            if torch.cuda.is_available()
+            else (1 if self.accelerator == "mps" else 0)
+        )
+        self.torch_workers = self._resolve_torch_workers(num_cpus)
         self.logger.info(
             "Torch workers in use: %s (CPUs=%s, CUDA devices=%s, accelerator=%s)",
             self.torch_workers,
@@ -202,6 +206,25 @@ class MLBCExperiment:
 
     def _configure_torch_env(self):
         os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+    @staticmethod
+    def _resolve_accelerator_and_device() -> tuple[str, torch.device]:
+        if torch.cuda.is_available():
+            return "gpu", torch.device("cuda")
+        if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            return "mps", torch.device("mps")
+        return "cpu", torch.device("cpu")
+
+    def _resolve_trainer_precision(self) -> str:
+        # AMP helps on CUDA and is usually fine on MPS, but slows CPU training down.
+        return "16-mixed" if self.accelerator in {"gpu", "mps"} else "32-true"
+
+    @staticmethod
+    def _resolve_torch_workers(num_cpus: int) -> int:
+        # Keep some headroom for the main process and the OS; avoid oversubscribing small machines.
+        if num_cpus <= 2:
+            return 0
+        return min(8, max(1, num_cpus - 2))
 
     def _configure_torch_runtime(self):
         torch.set_float32_matmul_precision('medium')  # or 'high'
@@ -802,7 +825,7 @@ class MLBCExperiment:
             max_epochs=self.config.net.epochs,
             accelerator=self.accelerator,
             devices=1,
-            precision="16-mixed",
+            precision=self.trainer_precision,
             # gradient_clip_val=1.0,           # Recommended starting value (e.g., 0.5, 1.0, 5.0)
             # gradient_clip_algorithm="norm",  # "norm" for clipping by norm, "value" for clipping by value
             log_every_n_steps=1,
@@ -818,7 +841,7 @@ class MLBCExperiment:
             max_epochs=self.config.net.epochs,
             accelerator=self.accelerator,
             devices=1,
-            precision="16-mixed",
+            precision=self.trainer_precision,
             # gradient_clip_val=1.0,           # Recommended starting value (e.g., 0.5, 1.0, 5.0)
             # gradient_clip_algorithm="norm",  # "norm" for clipping by norm, "value" for clipping by value
             accumulate_grad_batches=self.config.net.accumulate_grad_batches,
