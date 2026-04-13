@@ -2,8 +2,11 @@ from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+from matplotlib.colors import Normalize, TwoSlopeNorm
 import xarray as xr
 import cartopy.crs as ccrs
+from cartopy.mpl.gridliner import LONGITUDE_FORMATTER, LATITUDE_FORMATTER
 
 
 def _continuous_lon_values(lon_values: np.ndarray) -> np.ndarray:
@@ -111,8 +114,13 @@ def plot_temporal_mean_map(
     data: xr.Dataset | xr.DataArray,
     *,
     save_path: str | Path,
+    title: str | None = None,
     cbar_label: str = "",
-    cmap: str = "viridis",
+    cmap: str = "jet",
+    vmin: float | None = None,
+    vmax: float | None = None,
+    lon_tick_step: float = 10.0,
+    lat_tick_step: float = 10.0,
     figsize: tuple[float, float] = (8, 4.5),
     dpi: int = 200,
 ) -> None:
@@ -126,19 +134,42 @@ def plot_temporal_mean_map(
         figsize=figsize,
         subplot_kw={"projection": ccrs.PlateCarree(central_longitude=center_lon)},
     )
+    norm = None
+    if vmin is not None and vmax is not None:
+        norm = TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax) if vmin < 0.0 < vmax else Normalize(vmin=vmin, vmax=vmax)
     da.plot.pcolormesh(
         ax=ax,
         transform=data_crs,
         cmap=cmap,
+        norm=norm,
+        vmin=None if norm is not None else vmin,
+        vmax=None if norm is not None else vmax,
         add_colorbar=True,
-        cbar_kwargs={"label": cbar_label},
+        cbar_kwargs={
+            "label": cbar_label,
+            "fraction": 0.035,
+            "pad": 0.02,
+            "aspect": 35,
+        },
     )
     if extent is None:
         ax.set_global()
     else:
         ax.set_extent(extent, crs=data_crs)
     ax.coastlines(linewidth=0.6)
-    ax.gridlines(draw_labels=False, linewidth=0.35, linestyle="--", alpha=0.4)
+    gl = ax.gridlines(draw_labels=True, linewidth=0.35, linestyle="--", alpha=0.4)
+    gl.top_labels = False
+    gl.right_labels = False
+    gl.xlabel_style = {"size": 8}
+    gl.ylabel_style = {"size": 8}
+    gl.xformatter = LONGITUDE_FORMATTER
+    gl.yformatter = LATITUDE_FORMATTER
+    if lon_tick_step > 0:
+        gl.xlocator = mticker.MultipleLocator(lon_tick_step)
+    if lat_tick_step > 0:
+        gl.ylocator = mticker.MultipleLocator(lat_tick_step)
+    if title:
+        ax.set_title(title, fontsize=10)
     fig.tight_layout()
     fig.savefig(save_path, bbox_inches="tight", dpi=dpi)
     plt.close(fig)
