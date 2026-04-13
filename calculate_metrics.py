@@ -75,6 +75,8 @@ GLOBAL_KNOBS = {
     # Model pair used for delta comparisons like pr - fc.
     "models_diff": ("fc", "pr"),
     # Global output switches.
+    "enable_field_timeseries": True,
+    "enable_maps": True,
     "enable_scalar_tables": True,
     "enable_diff_plot": False,
     "enable_metric_profile_plots": True,
@@ -88,7 +90,7 @@ COMMON_PLOT_KNOBS = {
     "filters": {
         "leadtime": [1],
         "variable": None,
-        "region": ["ConUS"], # ConUS, Europe
+        "region": ["Europe"], # ConUS, Europe
     },
     # Used to color/shade runs consistently across plots.
     "shade_by": "loss",  # e.g. "loss", "total_months"
@@ -163,7 +165,7 @@ TABLE_KNOBS = {
     "stat_order": ("avg", "spread", "ens", "prob"),
     "significant_digits": 3,
     "image_dpi": 300,
-    "base_colors": ("#3c8be4", "#c9be2c", "#bb41c6"),
+    "base_colors": ("#3c8be4", "#c9be2c", "#bb41c6", "#5dd6ee", "#e0a211", "#f0189a"),
 }
 
 SCOREBOARD_KNOBS = {
@@ -2324,34 +2326,40 @@ def main() -> None:
     print_available_scalar_metrics(metrics=metrics)
 
     with build_progress() as progress:
-        ts_task = progress.add_task("Generating field timeseries", total=len(vars_from_fc))
-        field_timeseries_paths = save_field_timeseries_plots(
-            runs=runs,
-            variables=vars_from_fc,
-            plot_folder=PLOT_FOLDER,
-            leadtime_unit=leadtime_unit,
-            filters=PLOT_FILTERS,
-            disable_flox=DISABLE_FLOX_FOR_FIELD_TIMESERIES,
-            progress=progress,
-            task_id=ts_task,
-        )
-        for field_timeseries_path in field_timeseries_paths:
-            debug_print("Saved field timeseries plot to:", field_timeseries_path)
+        if GLOBAL_KNOBS["enable_field_timeseries"]:
+            ts_task = progress.add_task("Generating field timeseries", total=len(vars_from_fc))
+            field_timeseries_paths = save_field_timeseries_plots(
+                runs=runs,
+                variables=vars_from_fc,
+                plot_folder=PLOT_FOLDER,
+                leadtime_unit=leadtime_unit,
+                filters=PLOT_FILTERS,
+                disable_flox=DISABLE_FLOX_FOR_FIELD_TIMESERIES,
+                progress=progress,
+                task_id=ts_task,
+            )
+            for field_timeseries_path in field_timeseries_paths:
+                debug_print("Saved field timeseries plot to:", field_timeseries_path)
+        else:
+            print("Skipping field timeseries: GLOBAL_KNOBS['enable_field_timeseries'] is False")
 
-        map_task = progress.add_task("Generating maps", total=len(vars_from_fc))
-        field_map_paths = save_field_and_metric_map_plots(
-            runs=runs,
-            metrics=metrics,
-            variables=vars_from_fc,
-            plot_folder=PLOT_FOLDER,
-            leadtime_unit=leadtime_unit,
-            filters=PLOT_FILTERS,
-            region_extent=region_extent,
-            progress=progress,
-            task_id=map_task,
-        )
-        for field_map_path in field_map_paths:
-            debug_print("Saved map plot to:", field_map_path)
+        if GLOBAL_KNOBS["enable_maps"]:
+            map_task = progress.add_task("Generating maps", total=len(vars_from_fc))
+            field_map_paths = save_field_and_metric_map_plots(
+                runs=runs,
+                metrics=metrics,
+                variables=vars_from_fc,
+                plot_folder=PLOT_FOLDER,
+                leadtime_unit=leadtime_unit,
+                filters=PLOT_FILTERS,
+                region_extent=region_extent,
+                progress=progress,
+                task_id=map_task,
+            )
+            for field_map_path in field_map_paths:
+                debug_print("Saved map plot to:", field_map_path)
+        else:
+            print("Skipping maps: GLOBAL_KNOBS['enable_maps'] is False")
 
         if GLOBAL_KNOBS["enable_diff_plot"]:
             diff_task = progress.add_task("Generating metric-vs-delta plot", total=1)
