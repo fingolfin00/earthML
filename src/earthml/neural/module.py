@@ -145,6 +145,11 @@ class EarthMLLightningModule(L.LightningModule):
                 vmin = np_img.min()
             if vmax is None:
                 vmax = np_img.max()
+            scale = vmax - vmin
+            if not np.isfinite(scale) or scale == 0:
+                normalized = np.zeros_like(np_img, dtype=np.float32)
+            else:
+                normalized = (np_img - vmin) / scale
 
             # Get the colormap
             cmap = cm.get_cmap(colormap)
@@ -152,7 +157,7 @@ class EarthMLLightningModule(L.LightningModule):
             # Apply colormap. cmap returns RGBA (H, W, 4) in float [0, 1]
             # Convert to RGB (H, W, 3) and then to uint8 (0-255)
             # TensorBoard expects uint8 for image summaries for better visualization range
-            color_mapped_np = (cmap(np_img / (vmax - vmin) - vmin / (vmax - vmin))[:, :, :3] * 255).astype(np.uint8)
+            color_mapped_np = (cmap(normalized)[:, :, :3] * 255).astype(np.uint8)
 
             # Convert back to torch.Tensor and permute to (C, H, W)
             log_tensor = torch.from_numpy(color_mapped_np).permute(2, 0, 1) # HWC -> CHW
