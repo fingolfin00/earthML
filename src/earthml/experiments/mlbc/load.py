@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import cf_xarray
+import pandas as pd
 import xarray as xr
 
 from ...logging import get_logger
@@ -206,6 +207,56 @@ def _source_with_root_path(
     return type(source)(source.datasource, root_path)
 
 
+def _snap_time_to_nearest_month_start(values: np.ndarray) -> np.ndarray:
+    arr = np.asarray(values)
+    if arr.size == 0 or not np.issubdtype(arr.dtype, np.datetime64):
+        return arr
+    idx = pd.DatetimeIndex(pd.to_datetime(arr))
+    month_start = idx.to_period("M").to_timestamp(how="start")
+    next_month = (idx.to_period("M") + 1).to_timestamp(how="start")
+    snapped = month_start.where((idx - month_start) <= (next_month - idx), next_month)
+    return snapped.to_numpy()
+
+
+def _prefer_valid_time_for_alignment(
+    input_ds: xr.Dataset,
+    target_ds: xr.Dataset,
+) -> xr.Dataset:
+    input_time_dim = input_ds.earthml.guessed_dims.time
+    target_time_dim = target_ds.earthml.guessed_dims.time
+    if input_time_dim is None or target_time_dim is None:
+        return input_ds
+    if input_time_dim not in input_ds.coords or target_time_dim not in target_ds.coords:
+        return input_ds
+    if "valid_time" not in input_ds.coords:
+        return input_ds
+
+    valid_time = input_ds["valid_time"]
+    if valid_time.dims != (input_time_dim,):
+        return input_ds
+    if valid_time.sizes.get(input_time_dim, 0) != input_ds.sizes.get(input_time_dim, 0):
+        return input_ds
+
+    input_time = np.asarray(input_ds[input_time_dim].values)
+    input_valid_time = np.asarray(valid_time.values)
+    target_time = np.asarray(target_ds[target_time_dim].values)
+
+    snapped_valid_time = _snap_time_to_nearest_month_start(input_valid_time)
+    snapped_target_time = _snap_time_to_nearest_month_start(target_time)
+
+    source_overlap = len(np.intersect1d(input_time, target_time))
+    valid_overlap = len(np.intersect1d(snapped_valid_time, snapped_target_time))
+    if valid_overlap <= source_overlap:
+        return input_ds
+
+    logger.info(
+        "Promote forecast time to valid_time while loading saved experiment: overlap %s -> %s",
+        source_overlap,
+        valid_overlap,
+    )
+    return input_ds.assign_coords({input_time_dim: snapped_valid_time})
+
+
 def _load_single_exp(
     exp_cfg: MLBCExperimentConfig | str | Path,
     type_data: str,
@@ -261,6 +312,9 @@ def _load_single_exp(
             exp_path / f"{type_data}_preds.zarr",
         )
         pr: xr.Dataset = source["prediction"].reload().earthml.normalize_dims_and_coords()
+
+    if fc is not None and an is not None:
+        fc = _prefer_valid_time_for_alignment(fc, an)
 
     mask = _source_with_root_path(
         mask_source,

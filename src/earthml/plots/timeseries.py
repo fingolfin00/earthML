@@ -7,6 +7,12 @@ import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 
 
+def _snap_to_nearest_month_start(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    month_start = idx.to_period("M").to_timestamp(how="start")
+    next_month = (idx.to_period("M") + 1).to_timestamp(how="start")
+    return month_start.where((idx - month_start) <= (next_month - idx), next_month)
+
+
 def _as_dataarray(data: xr.DataArray | xr.Dataset) -> xr.DataArray:
     if isinstance(data, xr.DataArray):
         return data
@@ -40,10 +46,10 @@ def _reduce_for_timeseries(
     return reduced
 
 
-def _plot_x_values(da: xr.DataArray, x_dim: str):
-    x = da[x_dim].values
+def _plot_x_values_raw(x):
+    x = np.asarray(x)
 
-    if not np.issubdtype(np.asarray(x).dtype, np.datetime64):
+    if not np.issubdtype(x.dtype, np.datetime64):
         return x
 
     try:
@@ -75,10 +81,27 @@ def _plot_x_values(da: xr.DataArray, x_dim: str):
     if not is_monthly:
         return x
 
-    month_start = idx.to_period("M").to_timestamp(how="start")
+    month_start = _snap_to_nearest_month_start(idx)
     next_month = (idx.to_period("M") + 1).to_timestamp(how="start")
     midpoint = month_start + (next_month - month_start) / 2
     return midpoint.to_numpy()
+
+
+def _plot_x_values(da: xr.DataArray, x_dim: str):
+    return _plot_x_values_raw(da[x_dim].values)
+
+
+def _plot_coord_name(da: xr.DataArray, x_dim: str) -> str:
+    if x_dim != "time":
+        return x_dim
+    valid_time = da.coords.get("valid_time")
+    if valid_time is None:
+        return x_dim
+    if valid_time.dims != (x_dim,):
+        return x_dim
+    if valid_time.sizes.get(x_dim, 0) != da.sizes.get(x_dim, 0):
+        return x_dim
+    return "valid_time"
 
 
 def plot_realization_timeseries(
@@ -133,7 +156,8 @@ def plot_realization_timeseries(
 
     series_mean = _reduce_for_timeseries(series_mean, keep_dims=(x_dim,), eager_compute=eager_compute)
     series_mean = series_mean.transpose(x_dim)
-    x = _plot_x_values(series_mean, x_dim)
+    x_coord = _plot_coord_name(series_mean, x_dim)
+    x = _plot_x_values_raw(series_mean[x_coord].values)
 
     if members is not None:
         members = _reduce_for_timeseries(members, keep_dims=(x_dim, ens_dim), eager_compute=eager_compute)
