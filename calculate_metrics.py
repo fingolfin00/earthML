@@ -1,5 +1,7 @@
 import logging
+import multiprocessing
 import os
+import socket
 from contextlib import nullcontext
 from itertools import product
 from pathlib import Path
@@ -480,6 +482,20 @@ def _ordered_unique_variables(variables: list[str]) -> list[str]:
     return unique_variables
 
 
+def _filter_variables_by_filters(
+    variables: list[str],
+    filters: dict | None,
+) -> list[str]:
+    ordered_variables = _ordered_unique_variables(variables)
+    if not filters or filters.get("variable") is None:
+        return ordered_variables
+
+    allowed = filters["variable"]
+    allowed_values = allowed if isinstance(allowed, (list, tuple, set)) else [allowed]
+    allowed_set = {str(value) for value in allowed_values if value is not None and str(value) != ""}
+    return [variable for variable in ordered_variables if str(variable) in allowed_set]
+
+
 def get_variable_colors(*, variables: list[str]) -> dict[str, str]:
     ordered_variables = _ordered_unique_variables(variables)
     return {
@@ -660,15 +676,24 @@ def _leadtime_values(da: xr.DataArray) -> list[object]:
     return list(da["leadtime"].values.tolist())
 
 
-def _leadtime_alpha_map(values: list[object]) -> dict[object, float]:
+def _leadtime_shade_weight_map(values: list[object]) -> dict[object, float]:
     if not values:
         return {}
     if len(values) == 1:
-        return {values[0]: 1.0}
+        return {values[0]: 0.0}
     return {
-        value: 0.3 + 0.7 * idx / (len(values) - 1)
+        value: 0.55 * (1.0 - idx / (len(values) - 1))
         for idx, value in enumerate(values)
     }
+
+
+def _shade_model_color(color: str | None, *, weight: float) -> str | None:
+    if color is None:
+        return None
+    rgb = np.array(mcolors.to_rgb(color))
+    white = np.ones(3, dtype=float)
+    shaded = (1.0 - weight) * rgb + weight * white
+    return mcolors.to_hex(shaded)
 
 
 def _combined_leadtime_legend_values(
@@ -711,14 +736,13 @@ def _set_combined_leadtime_legend(
     ]
 
     leadtime_values = _combined_leadtime_legend_values(plot_data, truth_model=truth_model)
-    alpha_map = _leadtime_alpha_map(leadtime_values)
+    shade_weight_map = _leadtime_shade_weight_map(leadtime_values)
     leadtime_handles = [
         Line2D(
             [0],
             [0],
-            color="0.25",
+            color=_shade_model_color("#4c4c4c", weight=shade_weight_map[leadtime_value]),
             linewidth=2.0,
-            alpha=alpha_map[leadtime_value],
             label=_leadtime_legend_label(leadtime_value, leadtime_unit=leadtime_unit),
         )
         for leadtime_value in leadtime_values
@@ -726,7 +750,7 @@ def _set_combined_leadtime_legend(
 
     handles = [*model_handles, *leadtime_handles]
     if handles:
-        ax.legend(handles=handles, fontsize=9) #, title="Color = model, alpha = leadtime")
+        ax.legend(handles=handles, fontsize=9, title="Color = model, shade = leadtime")
 
 
 def _metric_output_group(metric_type: str) -> str:
@@ -2194,6 +2218,111 @@ def save_field_timeseries_plots(
     model_order = [model_name for model_name in LOAD_MODELS if model_name in runs]
     truth_model = LOAD_MODELS[0] if LOAD_MODELS else None
 
+    def _count_total_timeseries_plots() -> int:
+        total = 0
+        for variable in variables:
+            model_data: dict[str, xr.DataArray] = {}
+            context_reference: xr.DataArray | None = None
+
+            for model_name in model_order:
+                ds = runs.get(model_name)
+                if ds is None or variable not in ds.data_vars:
+                    continue
+                da = _apply_xarray_filters(ds[variable], filters)
+                time_dim = da.earthml.guessed_dims.time
+                if time_dim is None or time_dim not in da.dims:
+                    continue
+                model_data[model_name] = da
+                if context_reference is None:
+                    context_reference = da
+
+            if model_data and context_reference is not None:
+                context_dims = tuple(
+                    dim for dim in RUN_CONTEXT_DIMS
+                    if not (combine_leadtimes and dim == "leadtime")
+                )
+                for selection, context_values in _context_selection_entries(context_reference, context_dims=context_dims):
+                    selected_data = {
+                        model_name: da.sel({dim: value for dim, value in selection.items() if dim in da.dims}, drop=True)
+                        for model_name, da in model_data.items()
+                    }
+                    selected_data = {model_name: da for model_name, da in selected_data.items() if da.size > 0}
+                    if not selected_data:
+                        continue
+
+                    total += 1  # raw
+
+                    try:
+                        climatology_data = {
+                            model_name: _build_climatology_da(da)
+                            for model_name, da in selected_data.items()
+                        }
+                        if climatology_data:
+                            total += 1
+                    except Exception:
+                        pass
+
+                    try:
+                        anomaly_data = {
+                            model_name: _build_anomaly_da(da)
+                            for model_name, da in selected_data.items()
+                        }
+                        if anomaly_data:
+                            total += 1
+                    except Exception:
+                        pass
+
+                    if truth_model is not None and truth_model in selected_data:
+                        truth_da = selected_data[truth_model]
+                        residual_plot_data: dict[str, xr.DataArray] = {}
+                        for model_name in PLOT_MODELS:
+                            if model_name not in selected_data:
+                                continue
+                            residual_plot_data[model_name] = _build_residual_da(selected_data[model_name], truth_da)
+                        if residual_plot_data:
+                            total += 1
+
+            for metric_type, section_dict in metrics.items():
+                ds_ts = section_dict.get("timeseries", xr.Dataset())
+                if not isinstance(ds_ts, xr.Dataset) or variable not in ds_ts.data_vars:
+                    continue
+
+                da_var = _apply_xarray_filters(ds_ts[variable], filters)
+                if "metric" not in da_var.dims:
+                    continue
+
+                for metric_name in [str(value) for value in da_var["metric"].values.tolist()]:
+                    da_metric = da_var.sel(metric=metric_name, drop=True)
+                    context_dims = tuple(
+                        dim for dim in RUN_CONTEXT_DIMS
+                        if not (combine_leadtimes and dim == "leadtime")
+                    )
+                    for selection, context_values in _context_selection_entries(da_metric, context_dims=context_dims):
+                        da_sel = da_metric.sel(
+                            {dim: value for dim, value in selection.items() if dim in da_metric.dims},
+                            drop=True,
+                        )
+                        if da_sel.size == 0 or "model" not in da_sel.dims:
+                            continue
+
+                        per_model_ts: dict[str, xr.DataArray] = {}
+                        for model_name in [str(value) for value in da_sel["model"].values.tolist()]:
+                            da_model = da_sel.sel(model=model_name, drop=True)
+                            if da_model.size == 0:
+                                continue
+                            per_model_ts[model_name] = da_model
+
+                        sample_da = next(iter(per_model_ts.values()), None)
+                        time_dim = sample_da.earthml.guessed_dims.time if sample_da is not None else None
+                        if per_model_ts and time_dim is not None and time_dim in sample_da.dims:
+                            total += 1
+
+        return total
+
+    total_plots = _count_total_timeseries_plots()
+    if progress is not None and task_id is not None:
+        progress.update(task_id, total=total_plots, completed=0, description="Generating field timeseries")
+
     options_context = (
         xr.set_options(use_flox=False, use_numbagg=False)
         if disable_flox
@@ -2201,8 +2330,6 @@ def save_field_timeseries_plots(
     )
     with options_context:
         for variable in variables:
-            if progress is not None and task_id is not None:
-                progress.update(task_id, description=f"Generating {variable} field timeseries")
             # print(f"Field timeseries variable: {variable}")
             _ensure_grouped_output_folders(
                 plot_root=plot_folder,
@@ -2299,12 +2426,6 @@ def save_field_timeseries_plots(
                 for plot_kind, title, plot_data in plot_jobs:
                     if not plot_data:
                         continue
-                    if progress is not None and task_id is not None:
-                        progress.update(
-                            task_id,
-                            description=f"Generating {variable} field timeseries: {plot_kind}",
-                        )
-
                     sample_da = next(iter(plot_data.values()))
                     plot_region = _resolved_single_region_label(sample_da, filters=filters)
                     x_dim = "month" if plot_kind == "climatology" else (sample_da.earthml.guessed_dims.time or "time")
@@ -2314,7 +2435,7 @@ def save_field_timeseries_plots(
                     for model_name, da in plot_data.items():
                         leadtime_values = _leadtime_values(da) if combine_leadtimes else []
                         if combine_leadtimes and "leadtime" in da.dims and leadtime_values:
-                            alpha_map = _leadtime_alpha_map(leadtime_values)
+                            shade_weight_map = _leadtime_shade_weight_map(leadtime_values)
                             truth_drawn = False
                             for leadtime_value in leadtime_values:
                                 da_lt = da.sel(leadtime=leadtime_value, drop=True)
@@ -2325,10 +2446,15 @@ def save_field_timeseries_plots(
                                     label = MODEL_DISPLAY_NAMES.get(model_name, str(model_name))
                                     mean_label = label
                                     mean_alpha = 1.0
+                                    line_color = MODEL_COLORS.get(model_name)
                                 else:
                                     label = MODEL_DISPLAY_NAMES.get(model_name, str(model_name))
                                     mean_label = label if leadtime_value == leadtime_values[-1] else None
-                                    mean_alpha = alpha_map[leadtime_value]
+                                    mean_alpha = 1.0
+                                    line_color = _shade_model_color(
+                                        MODEL_COLORS.get(model_name),
+                                        weight=shade_weight_map[leadtime_value],
+                                    )
 
                                 plot_realization_timeseries(
                                     da_lt,
@@ -2340,11 +2466,11 @@ def save_field_timeseries_plots(
                                     y_label=_format_label_with_unit(base_title, base_unit),
                                     label=label,
                                     mean_label=mean_label,
-                                    color=MODEL_COLORS.get(model_name),
+                                    color=line_color,
                                     plot_members=plot_realization_members,
-                                    members_alpha=0.08 * mean_alpha,
+                                    members_alpha=0.08,
                                     mean_alpha=mean_alpha,
-                                    spread_alpha=0.12 * mean_alpha,
+                                    spread_alpha=0.12,
                                     eager_compute=disable_flox,
                                 )
                                 plotted = True
@@ -2396,9 +2522,16 @@ def save_field_timeseries_plots(
                     if combine_leadtimes and "leadtime" not in context_values:
                         filename = f"{filename}_combined_leadtime"
                     plot_path = timeseries_folder / f"{filename}.png"
+                    if progress is not None and task_id is not None:
+                        progress.update(
+                            task_id,
+                            description=f"Timeseries | {variable} | field | {plot_kind}",
+                        )
                     fig.savefig(plot_path, bbox_inches="tight", dpi=150)
                     plt.close(fig)
                     saved_paths.append(plot_path)
+                    if progress is not None and task_id is not None:
+                        progress.advance(task_id)
                     debug_print(f"Saved {plot_kind} timeseries for region={plot_region or 'unknown'} to:", plot_path)
 
             for metric_type, section_dict in metrics.items():
@@ -2412,13 +2545,6 @@ def save_field_timeseries_plots(
 
                 metric_values = [str(value) for value in da_var["metric"].values.tolist()]
                 for metric_name in metric_values:
-                    if progress is not None and task_id is not None:
-                        progress.update(
-                            task_id,
-                            description=(
-                                f"Generating {variable} {metric_type} metric timeseries: {metric_name}"
-                            ),
-                        )
                     metric_folder = get_variable_output_item_folder(
                         plot_root=plot_folder,
                         variable=variable,
@@ -2468,7 +2594,7 @@ def save_field_timeseries_plots(
                         for model_name, da in per_model_ts.items():
                             leadtime_values = _leadtime_values(da) if combine_leadtimes else []
                             if combine_leadtimes and "leadtime" in da.dims and leadtime_values:
-                                alpha_map = _leadtime_alpha_map(leadtime_values)
+                                shade_weight_map = _leadtime_shade_weight_map(leadtime_values)
                                 truth_drawn = False
                                 for leadtime_value in leadtime_values:
                                     da_lt = da.sel(leadtime=leadtime_value, drop=True)
@@ -2478,13 +2604,18 @@ def save_field_timeseries_plots(
                                         truth_drawn = True
                                         mean_label = MODEL_DISPLAY_NAMES.get(model_name, str(model_name))
                                         mean_alpha = 1.0
+                                        line_color = MODEL_COLORS.get(model_name)
                                     else:
                                         mean_label = (
                                             MODEL_DISPLAY_NAMES.get(model_name, str(model_name))
                                             if leadtime_value == leadtime_values[-1]
                                             else None
                                         )
-                                        mean_alpha = alpha_map[leadtime_value]
+                                        mean_alpha = 1.0
+                                        line_color = _shade_model_color(
+                                            MODEL_COLORS.get(model_name),
+                                            weight=shade_weight_map[leadtime_value],
+                                        )
 
                                     plot_realization_timeseries(
                                         da_lt,
@@ -2496,11 +2627,11 @@ def save_field_timeseries_plots(
                                         y_label=metric_label,
                                         label=MODEL_DISPLAY_NAMES.get(model_name, str(model_name)),
                                         mean_label=mean_label,
-                                        color=MODEL_COLORS.get(model_name),
+                                        color=line_color,
                                         plot_members=plot_realization_members,
-                                        members_alpha=0.08 * mean_alpha,
+                                        members_alpha=0.08,
                                         mean_alpha=mean_alpha,
-                                        spread_alpha=0.12 * mean_alpha,
+                                        spread_alpha=0.12,
                                         eager_compute=disable_flox,
                                     )
                                     plotted = True
@@ -2550,16 +2681,20 @@ def save_field_timeseries_plots(
                         if combine_leadtimes and "leadtime" not in context_values:
                             filename = f"{filename}_combined_leadtime"
                         plot_path = metric_folder / f"{filename}.png"
+                        if progress is not None and task_id is not None:
+                            progress.update(
+                                task_id,
+                                description=f"Timeseries | {variable} | {metric_type} | {metric_name}",
+                            )
                         fig.savefig(plot_path, bbox_inches="tight", dpi=150)
                         plt.close(fig)
                         saved_paths.append(plot_path)
+                        if progress is not None and task_id is not None:
+                            progress.advance(task_id)
                         debug_print(
                             f"Saved metric timeseries for metric={metric_name} type={metric_type} region={plot_region or 'unknown'} to:",
                             plot_path,
                         )
-
-            if progress is not None and task_id is not None:
-                progress.advance(task_id)
 
     return saved_paths
 
@@ -2584,9 +2719,84 @@ def save_field_and_metric_map_plots(
             f"Unsupported map realization mode {realization_mode!r}. Expected 'mean' or 'members'."
         )
 
+    def _count_total_map_plots() -> int:
+        total = 0
+        for variable in variables:
+            for model_name in model_order:
+                ds = runs.get(model_name)
+                if ds is None or variable not in ds.data_vars:
+                    continue
+
+                da = _apply_xarray_filters(ds[variable], filters)
+                for selection, context_values in _context_selection_entries(da):
+                    da_sel = da.sel({dim: value for dim, value in selection.items() if dim in da.dims}, drop=True)
+                    if da_sel.size == 0:
+                        continue
+                    da_sel = _reduce_extra_map_dims(da_sel)
+                    total += sum(1 for _ in _map_realization_slices(da_sel, realization_mode=realization_mode))
+
+            for metric_type, section_dict in metrics.items():
+                ds_map = section_dict.get("map", xr.Dataset())
+                if not isinstance(ds_map, xr.Dataset) or variable not in ds_map.data_vars:
+                    continue
+
+                da_var = _apply_xarray_filters(ds_map[variable], filters)
+                if "metric" not in da_var.dims:
+                    continue
+
+                metric_values = [str(value) for value in da_var["metric"].values.tolist()]
+                model_values = (
+                    [str(value) for value in da_var["model"].values.tolist()]
+                    if "model" in da_var.dims
+                    else [None]
+                )
+
+                for metric_name in metric_values:
+                    da_metric = da_var.sel(metric=metric_name, drop=True)
+                    for selection, context_values in _context_selection_entries(da_metric):
+                        per_model_maps: dict[str, dict[object | None, xr.DataArray]] = {}
+
+                        for model_name in model_values:
+                            da_model = da_metric.sel(model=model_name, drop=True) if model_name is not None else da_metric
+                            if da_model.size == 0:
+                                continue
+                            da_sel = da_model.sel(
+                                {dim: value for dim, value in selection.items() if dim in da_model.dims},
+                                drop=True,
+                            )
+                            if da_sel.size == 0:
+                                continue
+                            da_sel = _reduce_extra_map_dims(da_sel)
+                            per_model_maps[str(model_name)] = dict(
+                                _map_realization_slices(
+                                    da_sel,
+                                    realization_mode=realization_mode,
+                                )
+                            )
+
+                        if not per_model_maps:
+                            continue
+
+                        total += sum(len(realization_maps) for realization_maps in per_model_maps.values())
+
+                        reference_model = MODEL_KNOBS["reference_model"]
+                        corrected_model = MODEL_KNOBS["corrected_model"]
+                        if reference_model in per_model_maps and corrected_model in per_model_maps:
+                            reference_realizations = per_model_maps[reference_model]
+                            corrected_realizations = per_model_maps[corrected_model]
+                            total += sum(
+                                1
+                                for realization_value in corrected_realizations
+                                if realization_value in reference_realizations
+                            )
+
+        return total
+
+    total_plots = _count_total_map_plots()
+    if progress is not None and task_id is not None:
+        progress.update(task_id, total=total_plots, completed=0, description="Generating maps")
+
     for variable in variables:
-        if progress is not None and task_id is not None:
-            progress.update(task_id, description=f"Generating {variable} maps")
         print(f"Map variable: {variable}")
         _ensure_grouped_output_folders(
             plot_root=plot_folder,
@@ -2622,6 +2832,11 @@ def save_field_and_metric_map_plots(
                         f"field_{model_name}_{_context_filename_suffix(context_values)}"
                         f"{_realization_filename_fragment(realization_value)}_temporal_mean_map.png"
                     )
+                    if progress is not None and task_id is not None:
+                        progress.update(
+                            task_id,
+                            description=f"Maps | {variable} | field | {model_name}",
+                        )
                     plot_temporal_mean_map(
                         da_plot,
                         save_path=save_path,
@@ -2638,6 +2853,8 @@ def save_field_and_metric_map_plots(
                         lat_tick_step=MAP_PLOT_KNOBS["lat_tick_step"],
                     )
                     saved_paths.append(save_path)
+                    if progress is not None and task_id is not None:
+                        progress.advance(task_id)
                     debug_print(
                         f"Saved field map for model={model_name} region={dataset_region or 'unknown'} to:",
                         save_path,
@@ -2713,6 +2930,11 @@ def save_field_and_metric_map_plots(
                                 f"{'_'.join(filename_parts)}{_realization_filename_fragment(realization_value)}_map.png"
                             )
 
+                            if progress is not None and task_id is not None:
+                                progress.update(
+                                    task_id,
+                                    description=f"Maps | {variable} | {metric_type} | {metric_name}",
+                                )
                             plot_temporal_mean_map(
                                 da_sel,
                                 save_path=save_path,
@@ -2730,6 +2952,8 @@ def save_field_and_metric_map_plots(
                                 lat_tick_step=MAP_PLOT_KNOBS["lat_tick_step"],
                             )
                             saved_paths.append(save_path)
+                            if progress is not None and task_id is not None:
+                                progress.advance(task_id)
                             debug_print(
                                 f"Saved metric map for metric={metric_name} model={model_name} region={map_region or 'unknown'} to:",
                                 save_path,
@@ -2770,6 +2994,11 @@ def save_field_and_metric_map_plots(
                                     f"{metric_type}_{metric_name}_{difference_model}_{_context_filename_suffix(context_values)}"
                                     f"{_realization_filename_fragment(realization_value)}_map.png"
                                 )
+                                if progress is not None and task_id is not None:
+                                    progress.update(
+                                        task_id,
+                                        description=f"Maps | {variable} | diff | {metric_name}",
+                                    )
                                 plot_temporal_mean_map(
                                     diff_da,
                                     save_path=diff_save_path,
@@ -2787,13 +3016,12 @@ def save_field_and_metric_map_plots(
                                     lat_tick_step=MAP_PLOT_KNOBS["lat_tick_step"],
                                 )
                                 saved_paths.append(diff_save_path)
+                                if progress is not None and task_id is not None:
+                                    progress.advance(task_id)
                                 debug_print(
                                     f"Saved diff map for metric={metric_name} model={difference_model} region={diff_region or 'unknown'} to:",
                                     diff_save_path,
                                 )
-
-        if progress is not None and task_id is not None:
-            progress.advance(task_id)
 
     return saved_paths
 
@@ -3067,8 +3295,28 @@ def save_metrics_vs_parameter_plots(
     return saved_paths
 
 
+def _guess_dask_workers_for_host() -> tuple[int | None, str]:
+    hostname = socket.gethostname().lower()
+    cpu_count = os.cpu_count() or multiprocessing.cpu_count() or 1
+
+    # Keep a few known machine classes on stable defaults for interactive use.
+    host_overrides = (
+        (("mac-studio",), 5, "Mac Studio default"),
+        (("macbook", "mbp", "air"), min(4, cpu_count), "laptop default"),
+        (("juno", "login", "node", "hpc", "cluster"), min(max(8, cpu_count // 2), 16), "shared cluster default"),
+    )
+    for patterns, workers, reason in host_overrides:
+        if any(pattern in hostname for pattern in patterns):
+            return max(1, min(workers, cpu_count)), f"{reason} for host {hostname}"
+
+    # Unknown hosts fall back to the generic heuristic inside earthml.misc.Dask.
+    return None, f"using Dask auto sizing for host {hostname}"
+
+
 def main() -> None:
-    dask_earthml = Dask(n_workers=5, memory_limit="100GiB")
+    dask_workers, dask_worker_reason = _guess_dask_workers_for_host()
+    print(f"Dask worker guess: {dask_workers if dask_workers is not None else 'auto'} ({dask_worker_reason})")
+    dask_earthml = Dask(n_workers=dask_workers, memory_limit="100GiB")
     dask_earthml.start()
     client = dask_earthml.client
     base_url = "http://localhost:"
@@ -3082,6 +3330,7 @@ def main() -> None:
         type_data=GLOBAL_KNOBS["type_data"],
         load_models=LOAD_MODELS,
         metric_names=GLOBAL_KNOBS["metric_names"],
+        show_progress=True,
     )
 
     reference_model = MODEL_KNOBS["reference_model"]
@@ -3097,6 +3346,11 @@ def main() -> None:
     scalar_table_filters = _merge_filters(BASE_FILTERS, TABLE_KNOBS["scalar_filters"])
     normalized_table_filters = _merge_filters(BASE_FILTERS, TABLE_KNOBS["normalized_filters"])
     scoreboard_filters = SCOREBOARD_KNOBS["filters"]
+    field_timeseries_variables = _filter_variables_by_filters(variables, field_timeseries_filters)
+    map_variables = _filter_variables_by_filters(variables, map_filters)
+    metric_profile_variables = _filter_variables_by_filters(variables, metric_profile_filters)
+    scalar_table_variables = _filter_variables_by_filters(variables, scalar_table_filters)
+    normalized_table_variables = _filter_variables_by_filters(variables, normalized_table_filters)
     map_selected_region = _single_filter_value(map_filters, "region")
     diff_selected_region = _single_filter_value(diff_filters, "region")
     map_region = infer_region_from_configs(GLOBAL_KNOBS["exp_root_folder"], selected_region=map_selected_region)
@@ -3116,11 +3370,11 @@ def main() -> None:
 
     with build_progress() as progress:
         if GLOBAL_KNOBS["enable_field_timeseries"]:
-            ts_task = progress.add_task("Generating field timeseries", total=len(variables))
+            ts_task = progress.add_task("Generating field timeseries", total=len(field_timeseries_variables))
             field_timeseries_paths = save_field_timeseries_plots(
                 runs=runs,
                 metrics=metrics,
-                variables=variables,
+                variables=field_timeseries_variables,
                 plot_folder=PLOT_FOLDER,
                 leadtime_unit=leadtime_unit,
                 filters=field_timeseries_filters,
@@ -3136,11 +3390,11 @@ def main() -> None:
             print("Skipping field timeseries: GLOBAL_KNOBS['enable_field_timeseries'] is False")
 
         if GLOBAL_KNOBS["enable_maps"]:
-            map_task = progress.add_task("Generating maps", total=len(variables))
+            map_task = progress.add_task("Generating maps", total=len(map_variables))
             field_map_paths = save_field_and_metric_map_plots(
                 runs=runs,
                 metrics=metrics,
-                variables=variables,
+                variables=map_variables,
                 plot_folder=PLOT_FOLDER,
                 leadtime_unit=leadtime_unit,
                 filters=map_filters,
@@ -3191,14 +3445,14 @@ def main() -> None:
             print("Skipping diff plot: GLOBAL_KNOBS['enable_diff_plot'] is False")
 
         if GLOBAL_KNOBS["enable_metric_profile_plots"]:
-            profile_total = 1 if METRIC_PROFILE_PLOT_KNOBS["x_axis"] == "variable" else len(variables)
+            profile_total = 1 if METRIC_PROFILE_PLOT_KNOBS["x_axis"] == "variable" else len(metric_profile_variables)
             profile_task = progress.add_task(
                 f"Generating metric profiles ({METRIC_PROFILE_PLOT_KNOBS['x_axis']})",
                 total=profile_total,
             )
             profile_plot_paths = save_metrics_vs_parameter_plots(
                 metrics=metrics,
-                variables=variables,
+                variables=metric_profile_variables,
                 plot_folder=PLOT_FOLDER,
                 leadtime_unit=f" {leadtime_unit}" if leadtime_unit else "",
                 variable_units=variable_units,
@@ -3226,8 +3480,8 @@ def main() -> None:
                 for metric in metric_group.coords["metric"].values.tolist()
             } - NORMALIZED_METRICS
 
-            table_task = progress.add_task("Generating scalar tables", total=len(variables) + 1)
-            for variable in variables:
+            table_task = progress.add_task("Generating scalar tables", total=len(scalar_table_variables) + 1)
+            for variable in scalar_table_variables:
                 progress.update(table_task, description=f"Generating {variable} scalar tables")
                 print(f"Scalar table variable: {variable}")
                 variable_plot_folder = _table_output_folder(plot_root=PLOT_FOLDER, variable=variable)
@@ -3250,7 +3504,7 @@ def main() -> None:
             combined_normalized_table_paths = save_scalar_metric_tables(
                 # Combined normalized tables live under all_variables/tables.
                 metrics=metrics,
-                variables=variables,
+                variables=normalized_table_variables,
                 output_folder=_table_output_folder(plot_root=PLOT_FOLDER, variable=None),
                 filters=normalized_table_filters,
                 metrics_keep=NORMALIZED_METRICS,
