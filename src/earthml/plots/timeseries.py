@@ -125,6 +125,7 @@ def plot_realization_timeseries(
     members_ls: str = "--",
     spread_alpha: float = 0.25,
     mean_lw: float = 1.8,
+    mean_alpha: float = 1.0,
     extra_label: str = "",
     extra_lw: float = 1.5,
     extra_ls: str = ":",
@@ -198,6 +199,7 @@ def plot_realization_timeseries(
         x,
         series_mean.values,
         linewidth=mean_lw,
+        alpha=mean_alpha,
         color=color,
         label=mean_label if mean_label is not None else (f"{label} mean" if label else "mean"),
     )
