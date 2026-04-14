@@ -2,6 +2,7 @@ from typing import Sequence, Literal
 from dataclasses import asdict
 
 import os
+import shutil
 import time, multiprocessing, joblib
 from copy import deepcopy
 from pathlib import Path
@@ -1105,7 +1106,17 @@ class MLBCExperiment:
 
         return meta, var_cols
 
-    def train(self):
+    def _clear_training_artifacts(self):
+        for path in (self.ckpt_folder_path, self.weights_folder_path, self.tl_logger.log_dir):
+            path = Path(path)
+            if path.exists():
+                self.logger.info("Removing training artifact path: %s", path)
+                shutil.rmtree(path)
+
+        self.ckpt_folder_path.mkdir(parents=True, exist_ok=True)
+        self.weights_folder_path.mkdir(parents=True, exist_ok=True)
+
+    def train(self, force_retrain: bool = False):
         # Generate torch train dataset
         train_dataset = self._generate_torch_dataset(self.train_input_ds, self.train_target_ds, self.source_train_data, MLBCExperimentMode.TRAIN)
 
@@ -1127,8 +1138,12 @@ class MLBCExperiment:
         )
 
         # Train
+        if force_retrain:
+            self.logger.info("force_retrain=True: clearing checkpoints, weights, and tensorboard logs before training")
+            self._clear_training_artifacts()
+
         trainer = self._init_train_trainer()
-        ckpt_path = Path(self.ckpt_path) if Path(self.ckpt_path).exists() else None
+        ckpt_path = None if force_retrain else (Path(self.ckpt_path) if Path(self.ckpt_path).exists() else None)
         if ckpt_path is None:
             self.logger.info("Starting training from scratch")
         trainer.fit(

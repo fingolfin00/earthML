@@ -68,6 +68,7 @@ class MLBCExperimentLauncher:
     torch_preprocess_fn         : Callable | None = None
     target_realization_avg      : bool = False  # whether to average over target realizations when loading target data to torch
     realization_as_channel      : bool = False  # whether to use realization a channel dimension
+    force_retrain               : bool = False  # whether to ignore previous training artifacts and restart from scratch
 
 
     def __post_init__(self):
@@ -180,6 +181,7 @@ class MLBCExperimentLauncher:
             "options.target_realization_avg": self.target_realization_avg,
             "options.realization_as_channel": self.realization_as_channel,
             "options.output_realizations": self.output_realizations,
+            "options.force_retrain": self.force_retrain,
             "options.torch_preprocess_fn": getattr(self.torch_preprocess_fn, "__name__", None) if self.torch_preprocess_fn else None,
             "net.name": self.net.name,
             "net.loss": self.net.loss,
@@ -701,7 +703,7 @@ class MLBCExperimentLauncher:
         if mode not in ("prepare", "train", "test", "train_test", "train_test_on_train"):
             raise ValueError(f"Invalid run mode {mode}")
         if mode in ("train", "train_test", "train_test_on_train"):
-            exp.train()
+            exp.train(force_retrain=self.force_retrain)
         if mode in ("test", "train_test", "train_test_on_train"):
             exp.test()
         if mode == "train_test_on_train":
