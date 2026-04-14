@@ -43,6 +43,8 @@ def plot_metric_vs_diff(
     fit_bootstrap_seed: int | None = 0,
     # Visual
     group_cols=None,
+    color_by: str = "variable",
+    marker_by: str = "leadtime",
     shade_by: str = "total_months",
     shade_label: str | None = None,
     agg="mean",
@@ -72,21 +74,29 @@ def plot_metric_vs_diff(
 ):
     """
     Scatter plot: x = diff_metric, y = forecast_metric.
-    Colors encode variable, markers encode leadtime, and lighter shades encode
-    the selected ``shade_by`` grouping column.
+    Color, marker and shade encodings are controlled by ``color_by``,
+    ``marker_by`` and ``shade_by``.
 
     Returns (fig, ax, merged_df).
     """
 
+    encoding_fields = [color_by, marker_by, shade_by]
+
     if group_cols is None:
-        group_cols = (shade_by, "variable", "leadtime")
+        group_cols = tuple(dict.fromkeys(field for field in encoding_fields if field))
     else:
-        group_cols = tuple(group_cols)
+        group_cols = tuple(dict.fromkeys(group_cols))
 
     if shade_by not in group_cols:
         raise ValueError(f"shade_by={shade_by!r} must be included in group_cols={group_cols!r}")
+    if color_by not in group_cols:
+        raise ValueError(f"color_by={color_by!r} must be included in group_cols={group_cols!r}")
+    if marker_by not in group_cols:
+        raise ValueError(f"marker_by={marker_by!r} must be included in group_cols={group_cols!r}")
 
     shade_label = shade_label or shade_by.replace("_", " ").title()
+    color_label = color_by.replace("_", " ").title()
+    marker_label = marker_by.replace("_", " ").title()
 
     def lighten(color, amount):
         r, g, b = mcolors.to_rgb(color)
@@ -154,31 +164,36 @@ def plot_metric_vs_diff(
         ax.grid(alpha=grid_alpha)
         return fig, ax, df
 
-    variables = sorted(df["variable"].unique())
-    leadtimes = sorted(df["leadtime"].unique())
+    color_values = sorted(df[color_by].dropna().unique())
+    marker_values = sorted(df[marker_by].dropna().unique())
     shade_values = sorted(df[shade_by].unique())
 
     cmap = plt.get_cmap(cmap_name)
 
-    def _base_color_for_variable(var, idx: int):
-        if variable_colors and str(var) in variable_colors:
-            return variable_colors[str(var)]
+    def _format_legend_value(field: str, value: object) -> str:
+        if field == "leadtime":
+            return f"{value}{leadtime_unit}" if leadtime_unit else str(value)
+        return str(value)
+
+    def _base_color_for_group(group_value, idx: int):
+        if color_by == "variable" and variable_colors and str(group_value) in variable_colors:
+            return variable_colors[str(group_value)]
         return cmap(idx % cmap.N)
 
     # Plot
-    for vi, var in enumerate(variables):
-        base = _base_color_for_variable(var, vi)
+    for ci, color_value in enumerate(color_values):
+        base = _base_color_for_group(color_value, ci)
         for pi, shade_value in enumerate(shade_values):
             # amount in [0, shade_strength]
             denom = max(1, len(shade_values) - 1)
             amt = shade_strength * (pi / denom)
             shade = lighten(base, amt)
 
-            for li, lt in enumerate(leadtimes):
+            for mi, marker_value in enumerate(marker_values):
                 dsub = df[
-                    (df["variable"] == var)
+                    (df[color_by] == color_value)
                     & (df[shade_by] == shade_value)
-                    & (df["leadtime"] == lt)
+                    & (df[marker_by] == marker_value)
                 ]
                 if dsub.empty:
                     continue
@@ -187,7 +202,7 @@ def plot_metric_vs_diff(
                     dsub[x_metric_name],
                     dsub[y_metric_name],
                     color=shade,
-                    marker=markers[li % len(markers)],
+                    marker=markers[mi % len(markers)],
                     s=point_size,
                     edgecolor=edgecolor,
                     linewidth=linewidth,
@@ -212,8 +227,8 @@ def plot_metric_vs_diff(
             else:
                 raise ValueError("fit_color_mode must be 'period' or 'black'")
 
-            for li, lt in enumerate(leadtimes):
-                dsub = df[(df[shade_by] == shade_value) & (df["leadtime"] == lt)]
+            for mi, marker_value in enumerate(marker_values):
+                dsub = df[(df[shade_by] == shade_value) & (df[marker_by] == marker_value)]
 
                 if len(dsub) < fit_min_points:
                     continue
@@ -236,9 +251,9 @@ def plot_metric_vs_diff(
                     ys = a * xs + b
 
                     ls = (
-                        _ls_cycle[li % len(_ls_cycle)]
+                        _ls_cycle[mi % len(_ls_cycle)]
                         if fit_linestyles is None
-                        else fit_linestyles.get(lt, "-")
+                        else fit_linestyles.get(marker_value, "-")
                     )
 
                     ax.plot(
@@ -295,22 +310,21 @@ def plot_metric_vs_diff(
             # dummy, invisible handle used as a section header
             handles.append(Line2D([], [], linestyle="None", label=title))
     
-        # 1) VARIABLES
-        _section("Variable")
-        var_handles = [
+        # 1) COLOR GROUP
+        _section(color_label)
+        color_handles = [
             Line2D(
                 [0], [0],
                 marker="o",
                 linestyle="None",
                 markersize=7,
-                markerfacecolor=_base_color_for_variable(var, vi),
+                markerfacecolor=_base_color_for_group(group_value, ci),
                 markeredgecolor=edgecolor,
-                label=legend_labels[vi] if legend_labels else str(var),
-                # label=str(var), # TODO fix this is too custom
+                label=legend_labels[ci] if legend_labels else _format_legend_value(color_by, group_value),
             )
-            for vi, var in enumerate(variables)
+            for ci, group_value in enumerate(color_values)
         ]
-        handles.extend(var_handles)
+        handles.extend(color_handles)
     
         # 2) SHADED GROUP
         _section(shade_label)
@@ -334,32 +348,38 @@ def plot_metric_vs_diff(
             )
         handles.extend(shade_handles)
     
-        # 3) LEADTIME (marker for points + linestyle for fits)
-        _section("Lead time")
+        # 3) MARKER GROUP
+        _section(marker_label)
         if fit_lines:
             if fit_linestyles is None:
                 _ls_cycle = ["-", "--", ":", "-."]
-                ls_for_lt = {lt: _ls_cycle[i % len(_ls_cycle)] for i, lt in enumerate(leadtimes)}
+                ls_for_marker = {
+                    marker_value: _ls_cycle[i % len(_ls_cycle)]
+                    for i, marker_value in enumerate(marker_values)
+                }
             else:
-                ls_for_lt = {lt: fit_linestyles.get(lt, "-") for lt in leadtimes}
+                ls_for_marker = {
+                    marker_value: fit_linestyles.get(marker_value, "-")
+                    for marker_value in marker_values
+                }
         else:
-            ls_for_lt = {lt: "None" for lt in leadtimes}
-    
-        lt_handles = [
+            ls_for_marker = {marker_value: "None" for marker_value in marker_values}
+
+        marker_handles = [
             Line2D(
                 [0], [0],
                 marker=markers[i % len(markers)],
-                linestyle=ls_for_lt[lt],
+                linestyle=ls_for_marker[marker_value],
                 color="black",
                 markersize=7,
                 markerfacecolor="white",
                 markeredgecolor="black",
                 lw=fit_lw if fit_lines else 0,
-                label=str(lt)+leadtime_unit,
+                label=_format_legend_value(marker_by, marker_value),
             )
-            for i, lt in enumerate(leadtimes)
+            for i, marker_value in enumerate(marker_values)
         ]
-        handles.extend(lt_handles)
+        handles.extend(marker_handles)
     
         # Create ONE legend
         leg = ax.legend(
@@ -379,7 +399,7 @@ def plot_metric_vs_diff(
         # Make section headers look like headers
         for txt in leg.get_texts():
             label = txt.get_text()
-            if label in {"Variable", shade_label, "Lead time"}:
+            if label in {color_label, shade_label, marker_label}:
                 txt.set_weight("bold")
     
         ax.add_artist(leg)
