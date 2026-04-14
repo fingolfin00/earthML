@@ -1,3 +1,4 @@
+from typing import Sequence
 import logging
 import multiprocessing
 import os
@@ -84,10 +85,10 @@ GLOBAL_KNOBS = {
     # Keep None to load every scalar metric available.
     "metric_names": None,
     # Global output switches.
-    "enable_field_timeseries": True,
-    "enable_maps": True,
+    "enable_field_timeseries": False,
+    "enable_maps": False,
     "enable_scalar_tables": True,
-    "enable_diff_plot": True,
+    "enable_metric_vs_deltametric_plot": True,
     "enable_metric_profile_plots": True,
     "enable_scoreboard": True,
     # Print the user config summary table at startup.
@@ -98,7 +99,7 @@ GLOBAL_KNOBS = {
 
 BASE_FILTERS = {
     # Default analysis slice shared across timeseries, maps, tables and profiles unless overridden below.
-    # For scoreboard and diff plots, use dedicated filters below
+    # For scoreboard and metric-vs-delta-metric plots, use dedicated filters below
     "leadtime": [1, 2, 3, 4, 5],
     "variable": ["t2m"], # None, ["t2m"]
     "region": ["ConUS"], # ConUS, Europe
@@ -199,6 +200,22 @@ METRIC_PROFILE_PLOT_KNOBS = {
     },
 }
 
+VARIABLE_COLOR_KNOBS = {
+    # Single source of truth for variable colors across tables and profile plots.
+    "base_colors": (
+        "#1b9e77",
+        "#d95f02",
+        "#7570b3",
+        "#e7298a",
+        "#66a61e",
+        "#e6ab02",
+        "#a6761d",
+        "#1f78b4",
+    ),
+    # Optional fixed per-variable overrides.
+    "overrides": {},
+}
+
 TABLE_KNOBS = {
     # Per-variable raw scalar tables overrides on top of BASE_FILTERS.
     "scalar_filters": {
@@ -222,30 +239,27 @@ TABLE_KNOBS = {
     "significant_digits": 3,
     "image_dpi": 300,
     "background_color": "#ffffff",
-    "base_colors": ("#b5cfec", "#eeeaac", "#eab9ef", "#b1eaf5", "#fadc96", "#dd98c2"),
 }
 
 
-DIFF_PLOT_KNOBS = {
+METRIC_VS_DELTAMETRIC_PLOT_KNOBS = {
     "filters": {
         "variable": None,
-        "leadtime": [1, 2, 3, 4],
+        "leadtime": [1, 2, 3, 4, 5],
         "region": ["ConUS"], # ConUS, Europe
         # "region": ["CentralPacific"], # CentralPacific, NorthAtlantic
         "train_period": None,
         "loss": None,
     },
     # x-axis: how much the ML correction changes the chosen metric.
-    "diff_metric": "nrmse",
-    "diff_metric_type": "ensemble",
+    "delta_metric": "nrmse",
+    "delta_metric_type": "ensemble",
     # y-axis: the forecast quality to compare against.
     "forecast_metric": "corr",
     "forecast_metric_type": "ensemble",
     "shade_by": "loss",  # e.g. "loss", "total_months"
     "shade_label": "Loss",
     "point_size": 20,
-    # use tabular colormaps to differentiate variables
-    "cmap": "Set2", # tab10, tab20, tab20b, tab20c, Set1
 }
 
 SCOREBOARD_KNOBS = {
@@ -254,7 +268,7 @@ SCOREBOARD_KNOBS = {
         "variable": None,
         "loss": "mseloss",
         "train_period": None,
-        "leadtime": [1, 2, 3, 4],
+        "leadtime": [1, 2, 3, 4, 5],
         "region": ["ConUS"], # ConUS, Europe
         # "region": ["CentralPacific"], # CentralPacific, NorthAtlantic
     },
@@ -304,6 +318,7 @@ MODEL_KNOBS = {
     "model_colors": {
         "fc": "tab:green",
         "pr": "tab:blue",
+        "pr-fc": "tab:red",
         "an": "tab:orange",
     },
 }
@@ -555,19 +570,36 @@ def _build_load_selection(*filter_sets: dict | None) -> dict[str, object]:
     return selection
 
 
-def get_variable_colors(*, variables: list[str]) -> dict[str, str]:
+def get_variable_colors(
+    *,
+    variables: list[str],
+    base_colors: Sequence[str] | None = None,
+    overrides: dict[str, str] | None = None,
+) -> dict[str, str]:
     ordered_variables = _ordered_unique_variables(variables)
-    return {
-        variable: TABLE_KNOBS["base_colors"][idx % len(TABLE_KNOBS["base_colors"])]
+    palette = tuple(base_colors or VARIABLE_COLOR_KNOBS["base_colors"])
+    if not palette:
+        return {}
+
+    color_map = {
+        variable: palette[idx % len(palette)]
         for idx, variable in enumerate(ordered_variables)
     }
+    merged_overrides = VARIABLE_COLOR_KNOBS["overrides"].copy()
+    if overrides:
+        merged_overrides.update(overrides)
+    if merged_overrides:
+        for variable, color in merged_overrides.items():
+            if variable in color_map:
+                color_map[variable] = color
+    return color_map
 
 
 def get_variable_table_color(*, variable: str, variables: list[str]) -> str:
     variable_colors = get_variable_colors(variables=variables)
     if not variable_colors:
-        return TABLE_KNOBS["base_colors"][0]
-    return variable_colors.get(str(variable), TABLE_KNOBS["base_colors"][0])
+        return VARIABLE_COLOR_KNOBS["base_colors"][0]
+    return variable_colors.get(str(variable), VARIABLE_COLOR_KNOBS["base_colors"][0])
 
 
 def _table_variables(df: pd.DataFrame) -> list[str]:
@@ -856,6 +888,184 @@ def _set_combined_leadtime_legend(
         ax.legend(handles=handles, fontsize=9) #, title=legend_title)
 
 
+def _set_combined_variable_profile_legend(
+    ax: Axes,
+    *,
+    variables: list[str],
+    variable_colors: dict[str, str],
+    model_values: list[object],
+    metric_type: str,
+    shade_values: list[object],
+    shade_by: str,
+    shade_label: str,
+) -> None:
+    handles: list[Line2D] = []
+
+    def _section(title: str) -> None:
+        handles.append(Line2D([], [], linestyle="None", label=title))
+
+    visible_variables = [variable for variable in variables if variable in variable_colors]
+    if visible_variables:
+        _section("Variable")
+        handles.extend(
+            [
+                Line2D(
+                    [0],
+                    [0],
+                    color=variable_colors[variable],
+                    marker="o",
+                    linestyle="-",
+                    linewidth=2.0,
+                    markersize=5,
+                    label=format_variable_display_name(str(variable)),
+                )
+                for variable in visible_variables
+            ]
+        )
+
+    visible_models = [str(model_name) for model_name in model_values if pd.notna(model_name)]
+    if visible_models:
+        _section("Series")
+        handles.extend(
+            [
+                Line2D(
+                    [0],
+                    [0],
+                    color="0.25",
+                    linestyle=_model_linestyle(model_name, probabilistic=(metric_type == "probabilistic")),
+                    linewidth=2.0,
+                    marker="o",
+                    markersize=5,
+                    label=MODEL_DISPLAY_NAMES.get(model_name, model_name),
+                )
+                for model_name in visible_models
+            ]
+        )
+        if metric_type == "deterministic_with_ensemble_overlay":
+            handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    color="0.25",
+                    linestyle=":",
+                    linewidth=2.0,
+                    marker="o",
+                    markersize=5,
+                    label="Ensemble mean",
+                )
+            )
+
+    if len(shade_values) > 1:
+        _section(shade_label)
+        shade_count = max(1, len(shade_values))
+        for idx, shade_value in enumerate(shade_values):
+            alpha = 0.35 + 0.55 * (idx + 1) / shade_count
+            label = f"{shade_value}M" if shade_by == "total_months" else str(shade_value)
+            handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    color=(0.15, 0.15, 0.15, alpha),
+                    linestyle="-",
+                    linewidth=3.0,
+                    label=label,
+                )
+            )
+
+    if handles:
+        legend = ax.legend(handles=handles, fontsize=8, loc="best", frameon=True, ncol=1)
+        for text in legend.get_texts():
+            label = text.get_text()
+            if label in {"Variable", "Series", shade_label}:
+                text.set_fontweight("bold")
+
+
+def _set_transformed_combined_variable_profile_legend(
+    ax: Axes,
+    *,
+    variables: list[str],
+    variable_colors: dict[str, str],
+    metric_type: str,
+    shade_values: list[object],
+    shade_by: str,
+    shade_label: str,
+) -> None:
+    handles: list[Line2D] = []
+
+    def _section(title: str) -> None:
+        handles.append(Line2D([], [], linestyle="None", label=title))
+
+    visible_variables = [variable for variable in variables if variable in variable_colors]
+    if visible_variables:
+        _section("Variable")
+        handles.extend(
+            [
+                Line2D(
+                    [0],
+                    [0],
+                    color=variable_colors[variable],
+                    marker="o",
+                    linestyle="-",
+                    linewidth=2.0,
+                    markersize=5,
+                    label=format_variable_display_name(str(variable)),
+                )
+                for variable in visible_variables
+            ]
+        )
+
+    _section("Series")
+    handles.append(
+        Line2D(
+            [0],
+            [0],
+            color=MODEL_COLORS.get(DIFFERENCE_MODEL, "0.25"),
+            linestyle="-",
+            linewidth=2.0,
+            marker="o",
+            markersize=5,
+            label=MODEL_DISPLAY_NAMES.get(DIFFERENCE_MODEL, DIFFERENCE_MODEL),
+        )
+    )
+    if metric_type == "deterministic_with_ensemble_overlay":
+        handles.append(
+            Line2D(
+                [0],
+                [0],
+                color=MODEL_COLORS.get(DIFFERENCE_MODEL, "0.25"),
+                linestyle=":",
+                linewidth=2.0,
+                marker="o",
+                markersize=5,
+                label="Ensemble mean",
+            )
+        )
+
+    if len(shade_values) > 1:
+        _section(shade_label)
+        shade_count = max(1, len(shade_values))
+        for idx, shade_value in enumerate(shade_values):
+            alpha = 0.35 + 0.55 * (idx + 1) / shade_count
+            label = f"{shade_value}M" if shade_by == "total_months" else str(shade_value)
+            handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    color=(0.15, 0.15, 0.15, alpha),
+                    linestyle="-",
+                    linewidth=3.0,
+                    label=label,
+                )
+            )
+
+    if handles:
+        legend = ax.legend(handles=handles, fontsize=8, loc="best", frameon=True, ncol=1)
+        for text in legend.get_texts():
+            label = text.get_text()
+            if label in {"Variable", "Series", shade_label}:
+                text.set_fontweight("bold")
+
+
 def _metric_output_group(metric_type: str) -> str:
     return "deterministic" if metric_type == "deterministic" else "ensemble"
 
@@ -1103,6 +1313,15 @@ def _build_strict_member_matrix(
     return members if not members.empty else None
 
 
+def _safe_relative_change(
+    values: pd.Series | pd.DataFrame,
+    baseline: pd.Series | pd.DataFrame,
+) -> pd.Series | pd.DataFrame:
+    baseline_safe = baseline.where(~np.isclose(baseline, 0.0), np.nan)
+    result = values / baseline_safe
+    return result.where(np.isfinite(result), np.nan)
+
+
 def _profile_output_folder(
     *,
     plot_root: Path,
@@ -1347,7 +1566,7 @@ def print_user_config_table() -> None:
         ("base_filters", BASE_FILTERS),
         ("field_timeseries", FIELD_TIMESERIES_KNOBS),
         ("map_plot", MAP_PLOT_KNOBS),
-        ("diff_plot", DIFF_PLOT_KNOBS),
+        ("metric_vs_deltametric_plot", METRIC_VS_DELTAMETRIC_PLOT_KNOBS),
         ("metric_profile_plot", METRIC_PROFILE_PLOT_KNOBS),
         ("tables", TABLE_KNOBS),
         ("scoreboard", SCOREBOARD_KNOBS),
@@ -1510,7 +1729,11 @@ def _print_rich_dataframe_table(
     if not GLOBAL_KNOBS["print_console_tables"]:
         return
 
-    rich_table = RichTable(title=title, show_lines=False)
+    rich_table = RichTable(
+        title=title,
+        show_lines=False,
+        footer_style="bold white",
+    )
     index_labels = list(df.index.names) if isinstance(df.index, pd.MultiIndex) else [df.index.name or "row"]
     index_labels = [label if label is not None else "row" for label in index_labels]
 
@@ -1540,7 +1763,7 @@ def _print_rich_dataframe_table(
 
     CONSOLE.print(rich_table)
     if subtitle:
-        CONSOLE.print(Text(subtitle, style="italic bright_black"))
+        CONSOLE.print(Text(subtitle, style="italic grey70"))
 
 
 def _format_table_for_display(
@@ -1946,9 +2169,20 @@ def build_scalar_metric_tables(
     if df_all.empty:
         return []
 
+    single_variable = len(variables) == 1
+    effective_column_index = tuple(
+        col for col in column_index
+        if not (single_variable and col == "variable")
+    )
+
     context_cols = [
         col for col in TABLE_CONTEXT_FIELDS
-        if col in df_all.columns and col not in row_index and col not in column_index and df_all[col].nunique(dropna=False) > 1
+        if (
+            col in df_all.columns
+            and col not in row_index
+            and col not in effective_column_index
+            and df_all[col].nunique(dropna=False) > 1
+        )
     ]
 
     if context_cols:
@@ -1964,7 +2198,7 @@ def build_scalar_metric_tables(
         pivot = _build_strict_scalar_table_pivot(
             df_group,
             row_index=row_index,
-            column_index=column_index,
+            column_index=effective_column_index,
         )
         pivot = _add_model_gain_columns(pivot)
         pivot = _order_table_columns(pivot)
@@ -1982,9 +2216,13 @@ def build_scalar_metric_tables(
             if len(values) == 1:
                 context_values[col] = values[0]
 
+        title = "Scalar metrics"
+        if single_variable:
+            title = f"{title} ({format_variable_display_name(str(variables[0]))})"
+
         tables.append(
             (
-                "Scalar metrics",
+                title,
                 _table_context_subtitle(df_group, leadtime_unit=leadtime_unit),
                 pivot,
                 _ordered_context_filename_suffix(context_values),
@@ -2255,13 +2493,13 @@ def save_scoreboard_plot(
     return plot_path
 
 
-def save_metric_vs_diff_plot(
+def save_metric_vs_deltametric_plot(
     *,
     df_nodiff,
     df_delta,
     plot_folder: Path,
     forecast_metric: str,
-    diff_metric: str,
+    delta_metric: str,
     leadtime_unit: str,
     region: str,
     filters: dict | None,
@@ -2278,27 +2516,26 @@ def save_metric_vs_diff_plot(
         ]
     )
     forecast_metric_label = format_metric_label(forecast_metric, base_unit=variable_unit)
-    diff_metric_label = format_metric_label(diff_metric, base_unit=variable_unit)
+    delta_metric_label = format_metric_label(delta_metric, base_unit=variable_unit)
     region_suffix = f" - {region}" if region else ""
 
     fig, ax, merged = plot_metric_vs_diff(
         df_nodiff,
         df_delta,
         forecast_metric=forecast_metric,
-        diff_metric=diff_metric,
-        x_metric_name=f"delta_{diff_metric}",
+        diff_metric=delta_metric,
+        x_metric_name=f"delta_{delta_metric}",
         y_metric_name=forecast_metric,
         shade_by=shade_by,
         shade_label=shade_label,
         fit_lines=False,
         fit_ci=False,
         leadtime_unit=leadtime_unit,
-        cmap_name=DIFF_PLOT_KNOBS["cmap"],
-        point_size=DIFF_PLOT_KNOBS["point_size"],
+        point_size=METRIC_VS_DELTAMETRIC_PLOT_KNOBS["point_size"],
         variable_colors=get_variable_colors(variables=plot_variables),
         filters=filters,
-        title=f"Forecast {forecast_metric_label} vs Δ {diff_metric_label} (ML-corrected - forecast){region_suffix}",
-        xlabel=f"Δ {diff_metric_label} (ML-corrected - forecast)",
+        title=f"Forecast {forecast_metric_label} vs Δ {delta_metric_label} (ML-corrected - forecast){region_suffix}",
+        xlabel=f"Δ {delta_metric_label} (ML-corrected - forecast)",
         ylabel=f"Forecast {forecast_metric_label}",
         legend_loc="lower left",
     )
@@ -2308,12 +2545,12 @@ def save_metric_vs_diff_plot(
         available_x = sorted(df_delta["metric"].dropna().astype(str).unique())
         raise ValueError(
             "Plot dataframe is empty after merging. "
-            f"Requested forecast_metric={forecast_metric!r}, diff_metric={diff_metric!r}. "
+            f"Requested forecast_metric={forecast_metric!r}, delta_metric={delta_metric!r}. "
             f"Available no-diff metrics={available_y}. "
             f"Available delta metrics={available_x}."
         )
 
-    filename = f"{forecast_metric}_vs_delta_{diff_metric}"
+    filename = f"{forecast_metric}_vs_deltametric_{delta_metric}"
     if filename_context_suffix:
         filename = f"{filename}_{filename_context_suffix}"
     plot_path = plot_folder / f"{filename}.png"
@@ -3293,6 +3530,8 @@ def save_metrics_vs_parameter_plots(
                     continue
 
                 fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 5.5), squeeze=True)
+                diff_fig, diff_ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 5.5), squeeze=True)
+                rel_fig, rel_ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 5.5), squeeze=True)
                 x_positions = np.arange(len(x_values))
 
                 if shade_by != x_axis and shade_by in df_context_template.columns:
@@ -3302,6 +3541,12 @@ def save_metrics_vs_parameter_plots(
 
                 model_values = [value for value in pd.unique(df_context_template["model"]) if pd.notna(value)]
                 plotted = False
+                diff_plotted = False
+                rel_plotted = False
+                probabilistic_series: dict[tuple[str, object], pd.Series] = {}
+                deterministic_mean_series: dict[tuple[str, object], pd.Series] = {}
+                deterministic_member_matrices: dict[tuple[str, object], pd.DataFrame] = {}
+                deterministic_ensemble_series: dict[tuple[str, object], pd.Series] = {}
 
                 for model_name in model_values:
                     base_color = model_colors.get(str(model_name), None)
@@ -3323,6 +3568,7 @@ def save_metrics_vs_parameter_plots(
                             if not pd.notna(y_series).any():
                                 continue
                             plotted = True
+                            probabilistic_series[(str(model_name), shade_value)] = y_series
                             ax.plot(
                                 x_positions,
                                 y_series.values,
@@ -3357,6 +3603,22 @@ def save_metrics_vs_parameter_plots(
                                 if pd.notna(y_member_values).any():
                                     y_mean = np.nanmean(y_member_values, axis=1)
                                     plotted = True
+                                    deterministic_mean_series[(str(model_name), shade_value)] = pd.Series(
+                                        y_mean,
+                                        index=pd.Index(x_values, name=x_axis),
+                                        dtype=float,
+                                    )
+                                    deterministic_member_matrices[(str(model_name), shade_value)] = y_members
+                                    y_min = np.nanmin(y_member_values, axis=1)
+                                    y_max = np.nanmax(y_member_values, axis=1)
+                                    ax.fill_between(
+                                        x_positions,
+                                        y_min,
+                                        y_max,
+                                        color=base_color,
+                                        alpha=0.16 * alpha,
+                                        linewidth=0.0,
+                                    )
                                     for member_idx in range(y_member_values.shape[1]):
                                         ax.plot(
                                             x_positions,
@@ -3382,6 +3644,7 @@ def save_metrics_vs_parameter_plots(
 
                             if pd.notna(y_ens).any():
                                 plotted = True
+                                deterministic_ensemble_series[(str(model_name), shade_value)] = y_ens
                                 ax.plot(
                                     x_positions,
                                     y_ens.values,
@@ -3398,7 +3661,150 @@ def save_metrics_vs_parameter_plots(
 
                 if not plotted:
                     plt.close(fig)
+                    plt.close(diff_fig)
+                    plt.close(rel_fig)
                     continue
+
+                difference_color = model_colors.get(
+                    DIFFERENCE_MODEL,
+                    model_colors.get(MODEL_KNOBS["corrected_model"], "tab:blue"),
+                )
+                for j, shade_value in enumerate(shade_values):
+                    alpha = 0.35 + 0.55 * (j + 1) / max(1, len(shade_values))
+                    shade_suffix = f", {shade_label}={shade_value}" if shade_value is not None else ""
+
+                    if metric_type == "probabilistic":
+                        ref_series = probabilistic_series.get((MODEL_KNOBS["reference_model"], shade_value))
+                        corr_series = probabilistic_series.get((MODEL_KNOBS["corrected_model"], shade_value))
+                        if ref_series is not None and corr_series is not None:
+                            diff_series = corr_series - ref_series
+                            if pd.notna(diff_series).any():
+                                diff_plotted = True
+                                diff_ax.plot(
+                                    x_positions,
+                                    diff_series.values,
+                                    marker="o",
+                                    linewidth=2.0,
+                                    alpha=alpha,
+                                    color=difference_color,
+                                    label=f"{MODEL_DISPLAY_NAMES[DIFFERENCE_MODEL]}{shade_suffix}",
+                                )
+
+                                rel_series = _safe_relative_change(diff_series, ref_series)
+                                if pd.notna(rel_series).any():
+                                    rel_plotted = True
+                                    rel_ax.plot(
+                                        x_positions,
+                                        rel_series.values,
+                                        marker="o",
+                                        linewidth=2.0,
+                                        alpha=alpha,
+                                        color=difference_color,
+                                        label=f"{MODEL_DISPLAY_NAMES[DIFFERENCE_MODEL]}{shade_suffix}",
+                                    )
+                    elif metric_type == "deterministic_with_ensemble_overlay":
+                        ref_mean = deterministic_mean_series.get((MODEL_KNOBS["reference_model"], shade_value))
+                        corr_mean = deterministic_mean_series.get((MODEL_KNOBS["corrected_model"], shade_value))
+                        ref_members = deterministic_member_matrices.get((MODEL_KNOBS["reference_model"], shade_value))
+                        corr_members = deterministic_member_matrices.get((MODEL_KNOBS["corrected_model"], shade_value))
+                        if ref_mean is not None and corr_mean is not None:
+                            diff_mean = corr_mean - ref_mean
+                            if pd.notna(diff_mean).any():
+                                diff_plotted = True
+                                if ref_members is not None and corr_members is not None:
+                                    common_members = [
+                                        col for col in corr_members.columns
+                                        if col in ref_members.columns
+                                    ]
+                                    if common_members:
+                                        diff_members = corr_members[common_members] - ref_members[common_members]
+                                        diff_values = diff_members.to_numpy()
+                                        if pd.notna(diff_values).any():
+                                            diff_ax.fill_between(
+                                                x_positions,
+                                                np.nanmin(diff_values, axis=1),
+                                                np.nanmax(diff_values, axis=1),
+                                                color=difference_color,
+                                                alpha=0.16 * alpha,
+                                                linewidth=0.0,
+                                            )
+                                diff_ax.plot(
+                                    x_positions,
+                                    diff_mean.values,
+                                    color=difference_color,
+                                    linewidth=2.0,
+                                    alpha=alpha,
+                                    marker="o",
+                                    markersize=5,
+                                    label=f"{MODEL_DISPLAY_NAMES[DIFFERENCE_MODEL]}{shade_suffix}",
+                                )
+
+                                rel_mean = _safe_relative_change(diff_mean, ref_mean)
+                                if pd.notna(rel_mean).any():
+                                    rel_plotted = True
+                                    if ref_members is not None and corr_members is not None:
+                                        common_members = [
+                                            col for col in corr_members.columns
+                                            if col in ref_members.columns
+                                        ]
+                                        if common_members:
+                                            diff_members = corr_members[common_members] - ref_members[common_members]
+                                            rel_members = _safe_relative_change(diff_members, ref_members[common_members])
+                                            rel_values = rel_members.to_numpy()
+                                            if pd.notna(rel_values).any():
+                                                rel_ax.fill_between(
+                                                    x_positions,
+                                                    np.nanmin(rel_values, axis=1),
+                                                    np.nanmax(rel_values, axis=1),
+                                                    color=difference_color,
+                                                    alpha=0.16 * alpha,
+                                                    linewidth=0.0,
+                                                )
+                                    rel_ax.plot(
+                                        x_positions,
+                                        rel_mean.values,
+                                        color=difference_color,
+                                        linewidth=2.0,
+                                        alpha=alpha,
+                                        marker="o",
+                                        markersize=5,
+                                        label=f"{MODEL_DISPLAY_NAMES[DIFFERENCE_MODEL]}{shade_suffix}",
+                                    )
+
+                        ref_ens = deterministic_ensemble_series.get((MODEL_KNOBS["reference_model"], shade_value))
+                        corr_ens = deterministic_ensemble_series.get((MODEL_KNOBS["corrected_model"], shade_value))
+                        if ref_ens is not None and corr_ens is not None:
+                            diff_ens = corr_ens - ref_ens
+                            if pd.notna(diff_ens).any():
+                                diff_plotted = True
+                                diff_ax.plot(
+                                    x_positions,
+                                    diff_ens.values,
+                                    color=difference_color,
+                                    linewidth=2.0,
+                                    alpha=alpha,
+                                    linestyle=":",
+                                    marker="o",
+                                    markersize=5,
+                                    label=f"{MODEL_DISPLAY_NAMES[DIFFERENCE_MODEL]} ensemble{shade_suffix}",
+                                )
+
+                                rel_ens = _safe_relative_change(diff_ens, ref_ens)
+                                if pd.notna(rel_ens).any():
+                                    rel_plotted = True
+                                    rel_ax.plot(
+                                        x_positions,
+                                        rel_ens.values,
+                                        color=difference_color,
+                                        linewidth=2.0,
+                                        alpha=alpha,
+                                        linestyle=":",
+                                        marker="o",
+                                        markersize=5,
+                                        label=f"{MODEL_DISPLAY_NAMES[DIFFERENCE_MODEL]} ensemble{shade_suffix}",
+                                    )
+                    else:
+                        raise ValueError(f"Unsupported metric profile plot mode {metric_type!r}")
 
                 axis_label = format_axis_display_name(x_axis, leadtime_unit=leadtime_unit.strip() if leadtime_unit else None)
                 title_subject = (
@@ -3410,32 +3816,58 @@ def save_metrics_vs_parameter_plots(
                     metric_name,
                     base_unit=None if variable is None else (variable_units or {}).get(str(variable)),
                 )
-                _set_title_and_subtitle(
-                    fig,
-                    ax,
-                    title=f"{metric_label} vs {format_axis_display_name(x_axis).lower()} ({title_subject})",
-                    subtitle=_plot_context_subtitle(
-                        context_values,
-                        leadtime_unit=leadtime_unit,
-                        filters=filters,
+                context_subtitle = _plot_context_subtitle(
+                    context_values,
+                    leadtime_unit=leadtime_unit,
+                    filters=filters,
+                )
+
+                for current_fig, current_ax, current_title, current_ylabel, show_legend in [
+                    (
+                        fig,
+                        ax,
+                        f"{metric_label} vs {format_axis_display_name(x_axis).lower()} ({title_subject})",
+                        metric_label,
+                        True,
                     ),
-                )
-                ax.set_xlabel(axis_label)
-                ax.set_ylabel(metric_label)
-                ax.set_xticks(x_positions)
-                ax.set_xticklabels(
-                    [_format_profile_axis_tick(value, x_axis=x_axis) for value in x_values],
-                    rotation=30 if x_axis in {"train_period", "loss", "variable"} else 0,
-                    ha="right" if x_axis in {"train_period", "loss", "variable"} else "center",
-                )
-                ax.grid(True, linestyle="--", alpha=0.35)
+                    (
+                        diff_fig,
+                        diff_ax,
+                        f"Delta {metric_label} vs {format_axis_display_name(x_axis).lower()} ({title_subject})",
+                        f"Delta {metric_label}",
+                        diff_plotted,
+                    ),
+                    (
+                        rel_fig,
+                        rel_ax,
+                        f"Relative change in {metric_label} vs {format_axis_display_name(x_axis).lower()} ({title_subject})",
+                        f"Relative change in {metric_label}",
+                        rel_plotted,
+                    ),
+                ]:
+                    _set_title_and_subtitle(
+                        current_fig,
+                        current_ax,
+                        title=current_title,
+                        subtitle=context_subtitle,
+                    )
+                    current_ax.set_xlabel(axis_label)
+                    current_ax.set_ylabel(current_ylabel)
+                    current_ax.set_xticks(x_positions)
+                    current_ax.set_xticklabels(
+                        [_format_profile_axis_tick(value, x_axis=x_axis) for value in x_values],
+                        rotation=30 if x_axis in {"train_period", "loss", "variable"} else 0,
+                        ha="right" if x_axis in {"train_period", "loss", "variable"} else "center",
+                    )
+                    current_ax.grid(True, linestyle="--", alpha=0.35)
 
-                ymin, ymax = ax.get_ylim()
-                if ymin <= 0 <= ymax:
-                    ax.axhline(0.0, color="0.3", lw=1.0, ls=":")
+                    ymin, ymax = current_ax.get_ylim()
+                    if ymin <= 0 <= ymax:
+                        current_ax.axhline(0.0, color="0.3", lw=1.0, ls=":")
 
-                ax.legend(fontsize=9)
-                plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
+                    if show_legend:
+                        current_ax.legend(fontsize=9)
+                    current_fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
 
                 file_axis = _sanitize_filename_fragment(x_axis)
                 filename = f"{metric_name}_vs_{file_axis}"
@@ -3446,6 +3878,18 @@ def save_metrics_vs_parameter_plots(
                 fig.savefig(plot_path, bbox_inches="tight", dpi=150)
                 plt.close(fig)
                 saved_paths.append(plot_path)
+
+                if diff_plotted:
+                    diff_path = output_folder / f"{filename}_diff.png"
+                    diff_fig.savefig(diff_path, bbox_inches="tight", dpi=150)
+                    saved_paths.append(diff_path)
+                plt.close(diff_fig)
+
+                if rel_plotted:
+                    rel_path = output_folder / f"{filename}_relative_change.png"
+                    rel_fig.savefig(rel_path, bbox_inches="tight", dpi=150)
+                    saved_paths.append(rel_path)
+                plt.close(rel_fig)
 
         if progress is not None and task_id is not None:
             progress.advance(task_id)
@@ -3553,6 +3997,8 @@ def save_combined_variable_metric_profiles(
                 continue
 
             fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 5.5), squeeze=True)
+            diff_fig, diff_ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 5.5), squeeze=True)
+            rel_fig, rel_ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 5.5), squeeze=True)
             x_positions = np.arange(len(x_values))
 
             if shade_by != x_axis and shade_by in df_context_template.columns:
@@ -3561,6 +4007,17 @@ def save_combined_variable_metric_profiles(
                 shade_values = [None]
 
             plotted = False
+            diff_plotted = False
+            rel_plotted = False
+            plotted_variables: list[str] = []
+            plotted_models: list[object] = []
+            plotted_shade_values: list[object] = []
+            transformed_variables: list[str] = []
+            transformed_shade_values: list[object] = []
+            probabilistic_series: dict[tuple[str, str, object], pd.Series] = {}
+            deterministic_mean_series: dict[tuple[str, str, object], pd.Series] = {}
+            deterministic_member_matrices: dict[tuple[str, str, object], pd.DataFrame] = {}
+            deterministic_ensemble_series: dict[tuple[str, str, object], pd.Series] = {}
 
             for variable in variables:
                 variable_color = variable_colors.get(variable)
@@ -3580,9 +4037,6 @@ def save_combined_variable_metric_profiles(
                 for model_name in model_values:
                     for j, shade_value in enumerate(shade_values):
                         alpha = 0.35 + 0.55 * (j + 1) / max(1, len(shade_values))
-                        shade_suffix = f", {shade_label}={shade_value}" if shade_value is not None else ""
-                        variable_label = format_variable_display_name(str(variable))
-                        model_label = MODEL_DISPLAY_NAMES.get(str(model_name), str(model_name))
 
                         if metric_type == "probabilistic":
                             df_model = df_var_prob[df_var_prob["model"] == model_name]
@@ -3596,6 +4050,13 @@ def save_combined_variable_metric_profiles(
                             if not pd.notna(y_series).any():
                                 continue
                             plotted = True
+                            probabilistic_series[(str(variable), str(model_name), shade_value)] = y_series
+                            if variable not in plotted_variables:
+                                plotted_variables.append(variable)
+                            if model_name not in plotted_models:
+                                plotted_models.append(model_name)
+                            if shade_value is not None and shade_value not in plotted_shade_values:
+                                plotted_shade_values.append(shade_value)
                             ax.plot(
                                 x_positions,
                                 y_series.values,
@@ -3604,7 +4065,7 @@ def save_combined_variable_metric_profiles(
                                 alpha=alpha,
                                 color=variable_color,
                                 linestyle=_model_linestyle(str(model_name), probabilistic=True),
-                                label=f"{variable_label} | {model_label}{shade_suffix}",
+                                label="_nolegend_",
                             )
                         elif metric_type == "deterministic_with_ensemble_overlay":
                             df_model_ens = df_var_ens[df_var_ens["model"] == model_name]
@@ -3631,6 +4092,38 @@ def save_combined_variable_metric_profiles(
                                 if pd.notna(y_member_values).any():
                                     y_mean = np.nanmean(y_member_values, axis=1)
                                     plotted = True
+                                    deterministic_mean_series[(str(variable), str(model_name), shade_value)] = pd.Series(
+                                        y_mean,
+                                        index=pd.Index(x_values, name=x_axis),
+                                        dtype=float,
+                                    )
+                                    deterministic_member_matrices[(str(variable), str(model_name), shade_value)] = y_members
+                                    if variable not in plotted_variables:
+                                        plotted_variables.append(variable)
+                                    if model_name not in plotted_models:
+                                        plotted_models.append(model_name)
+                                    if shade_value is not None and shade_value not in plotted_shade_values:
+                                        plotted_shade_values.append(shade_value)
+                                    ax.fill_between(
+                                        x_positions,
+                                        np.nanmin(y_member_values, axis=1),
+                                        np.nanmax(y_member_values, axis=1),
+                                        color=variable_color,
+                                        alpha=0.16 * alpha,
+                                        linewidth=0.0,
+                                    )
+                                    for member_idx in range(y_member_values.shape[1]):
+                                        ax.plot(
+                                            x_positions,
+                                            y_member_values[:, member_idx],
+                                            color=variable_color,
+                                            alpha=0.06 * alpha,
+                                            linewidth=0.8,
+                                            linestyle="--",
+                                            marker="o",
+                                            markersize=2.5,
+                                            label="_nolegend_",
+                                        )
                                     ax.plot(
                                         x_positions,
                                         y_mean,
@@ -3640,11 +4133,18 @@ def save_combined_variable_metric_profiles(
                                         linestyle=_model_linestyle(str(model_name)),
                                         marker="o",
                                         markersize=5,
-                                        label=f"{variable_label} | {model_label}{shade_suffix}",
+                                        label="_nolegend_",
                                     )
 
                             if pd.notna(y_ens).any():
                                 plotted = True
+                                deterministic_ensemble_series[(str(variable), str(model_name), shade_value)] = y_ens
+                                if variable not in plotted_variables:
+                                    plotted_variables.append(variable)
+                                if model_name not in plotted_models:
+                                    plotted_models.append(model_name)
+                                if shade_value is not None and shade_value not in plotted_shade_values:
+                                    plotted_shade_values.append(shade_value)
                                 ax.plot(
                                     x_positions,
                                     y_ens.values,
@@ -3654,43 +4154,257 @@ def save_combined_variable_metric_profiles(
                                     linestyle=":",
                                     marker="o",
                                     markersize=5,
-                                    label=f"{variable_label} | {model_label} ensemble{shade_suffix}",
+                                    label="_nolegend_",
                                 )
                         else:
                             raise ValueError(f"Unsupported combined variable profile mode {metric_type!r}")
 
             if not plotted:
                 plt.close(fig)
+                plt.close(diff_fig)
+                plt.close(rel_fig)
                 continue
+
+            for variable in variables:
+                variable_color = variable_colors.get(variable)
+                if variable_color is None:
+                    continue
+
+                for j, shade_value in enumerate(shade_values):
+                    alpha = 0.35 + 0.55 * (j + 1) / max(1, len(shade_values))
+
+                    if metric_type == "probabilistic":
+                        ref_series = probabilistic_series.get((str(variable), MODEL_KNOBS["reference_model"], shade_value))
+                        corr_series = probabilistic_series.get((str(variable), MODEL_KNOBS["corrected_model"], shade_value))
+                        if ref_series is not None and corr_series is not None:
+                            diff_series = corr_series - ref_series
+                            if pd.notna(diff_series).any():
+                                diff_plotted = True
+                                if variable not in transformed_variables:
+                                    transformed_variables.append(variable)
+                                if shade_value is not None and shade_value not in transformed_shade_values:
+                                    transformed_shade_values.append(shade_value)
+                                diff_ax.plot(
+                                    x_positions,
+                                    diff_series.values,
+                                    marker="o",
+                                    linewidth=2.0,
+                                    alpha=alpha,
+                                    color=variable_color,
+                                    linestyle="-",
+                                    label="_nolegend_",
+                                )
+
+                                rel_series = _safe_relative_change(diff_series, ref_series)
+                                if pd.notna(rel_series).any():
+                                    rel_plotted = True
+                                    rel_ax.plot(
+                                        x_positions,
+                                        rel_series.values,
+                                        marker="o",
+                                        linewidth=2.0,
+                                        alpha=alpha,
+                                        color=variable_color,
+                                        linestyle="-",
+                                        label="_nolegend_",
+                                    )
+                    elif metric_type == "deterministic_with_ensemble_overlay":
+                        ref_mean = deterministic_mean_series.get((str(variable), MODEL_KNOBS["reference_model"], shade_value))
+                        corr_mean = deterministic_mean_series.get((str(variable), MODEL_KNOBS["corrected_model"], shade_value))
+                        ref_members = deterministic_member_matrices.get((str(variable), MODEL_KNOBS["reference_model"], shade_value))
+                        corr_members = deterministic_member_matrices.get((str(variable), MODEL_KNOBS["corrected_model"], shade_value))
+                        if ref_mean is not None and corr_mean is not None:
+                            diff_mean = corr_mean - ref_mean
+                            if pd.notna(diff_mean).any():
+                                diff_plotted = True
+                                if variable not in transformed_variables:
+                                    transformed_variables.append(variable)
+                                if shade_value is not None and shade_value not in transformed_shade_values:
+                                    transformed_shade_values.append(shade_value)
+                                if ref_members is not None and corr_members is not None:
+                                    common_members = [
+                                        col for col in corr_members.columns
+                                        if col in ref_members.columns
+                                    ]
+                                    if common_members:
+                                        diff_members = corr_members[common_members] - ref_members[common_members]
+                                        diff_values = diff_members.to_numpy()
+                                        if pd.notna(diff_values).any():
+                                            diff_ax.fill_between(
+                                                x_positions,
+                                                np.nanmin(diff_values, axis=1),
+                                                np.nanmax(diff_values, axis=1),
+                                                color=variable_color,
+                                                alpha=0.16 * alpha,
+                                                linewidth=0.0,
+                                            )
+                                diff_ax.plot(
+                                    x_positions,
+                                    diff_mean.values,
+                                    color=variable_color,
+                                    linewidth=2.0,
+                                    alpha=alpha,
+                                    linestyle="-",
+                                    marker="o",
+                                    markersize=5,
+                                    label="_nolegend_",
+                                )
+
+                                rel_mean = _safe_relative_change(diff_mean, ref_mean)
+                                if pd.notna(rel_mean).any():
+                                    rel_plotted = True
+                                    if ref_members is not None and corr_members is not None:
+                                        common_members = [
+                                            col for col in corr_members.columns
+                                            if col in ref_members.columns
+                                        ]
+                                        if common_members:
+                                            diff_members = corr_members[common_members] - ref_members[common_members]
+                                            rel_members = _safe_relative_change(diff_members, ref_members[common_members])
+                                            rel_values = rel_members.to_numpy()
+                                            if pd.notna(rel_values).any():
+                                                rel_ax.fill_between(
+                                                    x_positions,
+                                                    np.nanmin(rel_values, axis=1),
+                                                    np.nanmax(rel_values, axis=1),
+                                                    color=variable_color,
+                                                    alpha=0.16 * alpha,
+                                                    linewidth=0.0,
+                                                )
+                                    rel_ax.plot(
+                                        x_positions,
+                                        rel_mean.values,
+                                        color=variable_color,
+                                        linewidth=2.0,
+                                        alpha=alpha,
+                                        linestyle="-",
+                                        marker="o",
+                                        markersize=5,
+                                        label="_nolegend_",
+                                    )
+
+                        ref_ens = deterministic_ensemble_series.get((str(variable), MODEL_KNOBS["reference_model"], shade_value))
+                        corr_ens = deterministic_ensemble_series.get((str(variable), MODEL_KNOBS["corrected_model"], shade_value))
+                        if ref_ens is not None and corr_ens is not None:
+                            diff_ens = corr_ens - ref_ens
+                            if pd.notna(diff_ens).any():
+                                diff_plotted = True
+                                if variable not in transformed_variables:
+                                    transformed_variables.append(variable)
+                                if shade_value is not None and shade_value not in transformed_shade_values:
+                                    transformed_shade_values.append(shade_value)
+                                diff_ax.plot(
+                                    x_positions,
+                                    diff_ens.values,
+                                    color=variable_color,
+                                    linewidth=2.0,
+                                    alpha=alpha,
+                                    linestyle=":",
+                                    marker="o",
+                                    markersize=5,
+                                    label="_nolegend_",
+                                )
+
+                                rel_ens = _safe_relative_change(diff_ens, ref_ens)
+                                if pd.notna(rel_ens).any():
+                                    rel_plotted = True
+                                    rel_ax.plot(
+                                        x_positions,
+                                        rel_ens.values,
+                                        color=variable_color,
+                                        linewidth=2.0,
+                                        alpha=alpha,
+                                        linestyle=":",
+                                        marker="o",
+                                        markersize=5,
+                                        label="_nolegend_",
+                                    )
+                    else:
+                        raise ValueError(f"Unsupported combined variable profile mode {metric_type!r}")
 
             axis_label = format_axis_display_name(x_axis, leadtime_unit=leadtime_unit.strip() if leadtime_unit else None)
             metric_label = format_metric_label(metric_name, base_unit=None)
-            _set_title_and_subtitle(
-                fig,
-                ax,
-                title=f"{metric_label} vs {format_axis_display_name(x_axis).lower()} (all variables)",
-                subtitle=_plot_context_subtitle(
-                    context_values,
-                    leadtime_unit=leadtime_unit,
-                    filters=filters,
+            context_subtitle = _plot_context_subtitle(
+                context_values,
+                leadtime_unit=leadtime_unit,
+                filters=filters,
+            )
+
+            for current_fig, current_ax, current_title, current_ylabel in [
+                (
+                    fig,
+                    ax,
+                    f"{metric_label} vs {format_axis_display_name(x_axis).lower()} (all variables)",
+                    metric_label,
                 ),
-            )
-            ax.set_xlabel(axis_label)
-            ax.set_ylabel(metric_label)
-            ax.set_xticks(x_positions)
-            ax.set_xticklabels(
-                [_format_profile_axis_tick(value, x_axis=x_axis) for value in x_values],
-                rotation=30 if x_axis in {"train_period", "loss", "variable"} else 0,
-                ha="right" if x_axis in {"train_period", "loss", "variable"} else "center",
-            )
-            ax.grid(True, linestyle="--", alpha=0.35)
+                (
+                    diff_fig,
+                    diff_ax,
+                    f"Delta {metric_label} vs {format_axis_display_name(x_axis).lower()} (all variables)",
+                    f"Delta {metric_label}",
+                ),
+                (
+                    rel_fig,
+                    rel_ax,
+                    f"Relative change in {metric_label} vs {format_axis_display_name(x_axis).lower()} (all variables)",
+                    f"Relative change in {metric_label}",
+                ),
+            ]:
+                _set_title_and_subtitle(
+                    current_fig,
+                    current_ax,
+                    title=current_title,
+                    subtitle=context_subtitle,
+                )
+                current_ax.set_xlabel(axis_label)
+                current_ax.set_ylabel(current_ylabel)
+                current_ax.set_xticks(x_positions)
+                current_ax.set_xticklabels(
+                    [_format_profile_axis_tick(value, x_axis=x_axis) for value in x_values],
+                    rotation=30 if x_axis in {"train_period", "loss", "variable"} else 0,
+                    ha="right" if x_axis in {"train_period", "loss", "variable"} else "center",
+                )
+                current_ax.grid(True, linestyle="--", alpha=0.35)
 
-            ymin, ymax = ax.get_ylim()
-            if ymin <= 0 <= ymax:
-                ax.axhline(0.0, color="0.3", lw=1.0, ls=":")
+                ymin, ymax = current_ax.get_ylim()
+                if ymin <= 0 <= ymax:
+                    current_ax.axhline(0.0, color="0.3", lw=1.0, ls=":")
 
-            ax.legend(fontsize=8)
-            plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
+            _set_combined_variable_profile_legend(
+                ax,
+                variables=plotted_variables,
+                variable_colors=variable_colors,
+                model_values=plotted_models,
+                metric_type=metric_type,
+                shade_values=plotted_shade_values,
+                shade_by=shade_by,
+                shade_label=shade_label,
+            )
+            fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
+
+            if diff_plotted:
+                _set_transformed_combined_variable_profile_legend(
+                    diff_ax,
+                    variables=transformed_variables,
+                    variable_colors=variable_colors,
+                    metric_type=metric_type,
+                    shade_values=transformed_shade_values,
+                    shade_by=shade_by,
+                    shade_label=shade_label,
+                )
+                diff_fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
+
+            if rel_plotted:
+                _set_transformed_combined_variable_profile_legend(
+                    rel_ax,
+                    variables=transformed_variables,
+                    variable_colors=variable_colors,
+                    metric_type=metric_type,
+                    shade_values=transformed_shade_values,
+                    shade_by=shade_by,
+                    shade_label=shade_label,
+                )
+                rel_fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
 
             filename = f"all_variables_{metric_name}_vs_{_sanitize_filename_fragment(x_axis)}"
             context_suffix = _context_filename_suffix(context_values)
@@ -3700,6 +4414,18 @@ def save_combined_variable_metric_profiles(
             fig.savefig(plot_path, bbox_inches="tight", dpi=150)
             plt.close(fig)
             saved_paths.append(plot_path)
+
+            if diff_plotted:
+                diff_path = output_folder / f"{filename}_diff.png"
+                diff_fig.savefig(diff_path, bbox_inches="tight", dpi=150)
+                saved_paths.append(diff_path)
+            plt.close(diff_fig)
+
+            if rel_plotted:
+                rel_path = output_folder / f"{filename}_relative_change.png"
+                rel_fig.savefig(rel_path, bbox_inches="tight", dpi=150)
+                saved_paths.append(rel_path)
+            plt.close(rel_fig)
 
     if progress is not None and task_id is not None:
         progress.advance(task_id)
@@ -3739,7 +4465,7 @@ def main() -> None:
 
     field_timeseries_filters = _merge_filters(BASE_FILTERS, FIELD_TIMESERIES_KNOBS["filters"])
     map_filters = _merge_filters(BASE_FILTERS, MAP_PLOT_KNOBS["filters"])
-    diff_filters = DIFF_PLOT_KNOBS["filters"]
+    metric_vs_deltametric_filters = METRIC_VS_DELTAMETRIC_PLOT_KNOBS["filters"]
     metric_profile_filters = _merge_filters(BASE_FILTERS, METRIC_PROFILE_PLOT_KNOBS["filters"])
     scalar_table_filters = _merge_filters(BASE_FILTERS, TABLE_KNOBS["scalar_filters"])
     normalized_table_filters = _merge_filters(BASE_FILTERS, TABLE_KNOBS["normalized_filters"])
@@ -3750,8 +4476,8 @@ def main() -> None:
         enabled_filter_sets.append(field_timeseries_filters)
     if GLOBAL_KNOBS["enable_maps"]:
         enabled_filter_sets.append(map_filters)
-    if GLOBAL_KNOBS["enable_diff_plot"]:
-        enabled_filter_sets.append(diff_filters)
+    if GLOBAL_KNOBS["enable_metric_vs_deltametric_plot"]:
+        enabled_filter_sets.append(metric_vs_deltametric_filters)
     if GLOBAL_KNOBS["enable_metric_profile_plots"]:
         enabled_filter_sets.append(metric_profile_filters)
     if GLOBAL_KNOBS["enable_scalar_tables"]:
@@ -3790,12 +4516,15 @@ def main() -> None:
     scalar_table_variables = _filter_variables_by_filters(variables, scalar_table_filters)
     normalized_table_variables = _filter_variables_by_filters(variables, normalized_table_filters)
     map_selected_region = _single_filter_value(map_filters, "region")
-    diff_selected_region = _single_filter_value(diff_filters, "region")
+    metric_vs_deltametric_selected_region = _single_filter_value(metric_vs_deltametric_filters, "region")
     map_region = infer_region_from_configs(GLOBAL_KNOBS["exp_root_folder"], selected_region=map_selected_region)
-    diff_region = infer_region_from_configs(GLOBAL_KNOBS["exp_root_folder"], selected_region=diff_selected_region)
+    diff_region = infer_region_from_configs(
+        GLOBAL_KNOBS["exp_root_folder"],
+        selected_region=metric_vs_deltametric_selected_region,
+    )
     region_extent = infer_region_extent_from_configs(GLOBAL_KNOBS["exp_root_folder"], selected_region=map_selected_region)
-    diff_filename_context = _merge_filename_contexts(
-        _filters_filename_context(diff_filters),
+    metric_vs_deltametric_filename_context = _merge_filename_contexts(
+        _filters_filename_context(metric_vs_deltametric_filters),
     )
     scoreboard_filename_context = _merge_filename_contexts(
         _filters_filename_context(scoreboard_filters),
@@ -3845,42 +4574,45 @@ def main() -> None:
         else:
             CONSOLE.print("Skipping maps: GLOBAL_KNOBS['enable_maps'] is False")
 
-        if GLOBAL_KNOBS["enable_diff_plot"]:
-            diff_task = progress.add_task("Generating metric-vs-delta plot", total=1)
+        if GLOBAL_KNOBS["enable_metric_vs_deltametric_plot"]:
+            diff_task = progress.add_task("Generating metric-vs-delta-metric plot", total=1)
             df_nodiff = build_scalar_metric_df(
                 metrics=metrics,
                 variables=variables,
-                metric_name=DIFF_PLOT_KNOBS["forecast_metric"],
-                metric_type=DIFF_PLOT_KNOBS["forecast_metric_type"],
+                metric_name=METRIC_VS_DELTAMETRIC_PLOT_KNOBS["forecast_metric"],
+                metric_type=METRIC_VS_DELTAMETRIC_PLOT_KNOBS["forecast_metric_type"],
                 diff="no",
             )
             df_delta = build_scalar_metric_df(
                 metrics=metrics,
                 variables=variables,
-                metric_name=DIFF_PLOT_KNOBS["diff_metric"],
-                metric_type=DIFF_PLOT_KNOBS["diff_metric_type"],
+                metric_name=METRIC_VS_DELTAMETRIC_PLOT_KNOBS["delta_metric"],
+                metric_type=METRIC_VS_DELTAMETRIC_PLOT_KNOBS["delta_metric_type"],
                 diff="delta",
                 models=COMPARISON_MODELS,
             )
 
-            plot_path = save_metric_vs_diff_plot(
+            plot_path = save_metric_vs_deltametric_plot(
                 df_nodiff=df_nodiff,
                 df_delta=df_delta,
                 plot_folder=PLOT_FOLDER,
-                forecast_metric=DIFF_PLOT_KNOBS["forecast_metric"],
-                diff_metric=DIFF_PLOT_KNOBS["diff_metric"],
+                forecast_metric=METRIC_VS_DELTAMETRIC_PLOT_KNOBS["forecast_metric"],
+                delta_metric=METRIC_VS_DELTAMETRIC_PLOT_KNOBS["delta_metric"],
                 leadtime_unit=f" {leadtime_unit}" if leadtime_unit else "",
                 region=diff_region,
-                filters=diff_filters,
-                variable_unit=variable_units.get(_single_filter_value(diff_filters, "variable")),
-                shade_by=DIFF_PLOT_KNOBS["shade_by"],
-                shade_label=DIFF_PLOT_KNOBS["shade_label"],
-                filename_context_suffix=diff_filename_context,
+                filters=metric_vs_deltametric_filters,
+                variable_unit=variable_units.get(_single_filter_value(metric_vs_deltametric_filters, "variable")),
+                shade_by=METRIC_VS_DELTAMETRIC_PLOT_KNOBS["shade_by"],
+                shade_label=METRIC_VS_DELTAMETRIC_PLOT_KNOBS["shade_label"],
+                filename_context_suffix=metric_vs_deltametric_filename_context,
             )
             progress.advance(diff_task)
             debug_print("Saved leadtime-vs-global-metrics plot to:", plot_path)
         else:
-            CONSOLE.print("Skipping diff plot: GLOBAL_KNOBS['enable_diff_plot'] is False")
+            CONSOLE.print(
+                "Skipping metric-vs-delta-metric plot: "
+                "GLOBAL_KNOBS['enable_metric_vs_deltametric_plot'] is False"
+            )
 
         if GLOBAL_KNOBS["enable_metric_profile_plots"]:
             profile_total = 1 if METRIC_PROFILE_PLOT_KNOBS["x_axis"] == "variable" else len(metric_profile_variables)
