@@ -255,10 +255,13 @@ METRIC_VS_DELTAMETRIC_PLOT_KNOBS = {
     "delta_metric": "nrmse",
     "delta_metric_type": "ensemble",
     # y-axis: the forecast quality to compare against.
-    "forecast_metric": "corr",
+    "forecast_metric": "r2",
     "forecast_metric_type": "ensemble",
-    "shade_by": "loss",  # e.g. "loss", "total_months"
-    "shade_label": "Loss",
+    # Visual encodings for the scatter plot.
+    "color_by": "variable",
+    "marker_by": "loss",
+    "shade_by": "leadtime",  # e.g. "loss", "total_months"
+    "shade_label": "Leadtime",
     "point_size": 20,
 }
 
@@ -1363,6 +1366,10 @@ def format_metric_display_name(metric: str) -> str:
 
 def format_variable_display_name(variable: str) -> str:
     return VARIABLE_DISPLAY_NAMES.get(variable, str(variable))
+
+
+def format_variable_short_name(variable: str) -> str:
+    return str(variable)
 
 def _format_label_with_unit(label: str, unit: str | None) -> str:
     return f"{label} [{unit}]" if unit else label
@@ -2484,6 +2491,11 @@ def save_scoreboard_plot(
             "model": MODEL_DISPLAY_NAMES,
             "metric": METRIC_DISPLAY_NAMES,
         },
+        inner_y_display_name_map=(
+            format_variable_short_name
+            if SCOREBOARD_KNOBS["row_axis"] == "variable"
+            else None
+        ),
         annotate=SCOREBOARD_KNOBS["annotate"],
         annotate_fmt="{:.2f}",
         annotate_color="auto",
@@ -2526,6 +2538,8 @@ def save_metric_vs_deltametric_plot(
         diff_metric=delta_metric,
         x_metric_name=f"delta_{delta_metric}",
         y_metric_name=forecast_metric,
+        color_by=METRIC_VS_DELTAMETRIC_PLOT_KNOBS["color_by"],
+        marker_by=METRIC_VS_DELTAMETRIC_PLOT_KNOBS["marker_by"],
         shade_by=shade_by,
         shade_label=shade_label,
         fit_lines=False,
