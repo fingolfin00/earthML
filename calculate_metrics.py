@@ -86,7 +86,7 @@ GLOBAL_KNOBS = {
     "metric_names": None,
     # Global output switches.
     "enable_field_timeseries": True,
-    "enable_maps": False,
+    "enable_maps": True,
     "enable_scalar_tables": True,
     "enable_diff_plot": True,
     "enable_metric_profile_plots": True,
@@ -119,8 +119,12 @@ FIELD_TIMESERIES_KNOBS = {
         "train_period": None,
         "loss": None,
     },
-    # When True, plot all available leadtimes in the same figure with alpha encoding leadtime.
+    # When True, plot all available leadtimes in the same figure.
     "combine_leadtimes": True,
+    # Visual encoding for leadtime when combine_leadtimes is enabled.
+    # "shade" uses lighter/darker shades of the model color.
+    # "linestyle" uses different line styles while keeping the model color fixed.
+    "leadtime_style": "linestyle",
     # When True, draw individual realization members in field-timeseries plots.
     "plot_realization_members": True,
     # Disable flox/numbagg in field-timeseries plotting. Useful on some clusters
@@ -159,22 +163,25 @@ MAP_PLOT_KNOBS = {
 METRIC_PROFILE_PLOT_KNOBS = {
     # Per-output overrides on top of BASE_FILTERS.
     "filters": {
-        "variable": None,
+        "variable": ["t2m"],
         "leadtime": None,
         "region": None,
         "train_period": None,
         "loss": None,
     },
     # Pick the x-axis used for metric profile plots.
-    "x_axis": "variable",  # "leadtime", "train_period", "loss", "variable"
+    "x_axis": "leadtime",  # "leadtime", "train_period", "loss", "variable"
     # Each metric maps to the plotting mode expected by save_metrics_vs_parameter_plots.
     "metrics": {
         "r2": "deterministic_with_ensemble_overlay",
-        # "rmse": "deterministic_with_ensemble_overlay",
-        "nrmse": "deterministic_with_ensemble_overlay",
+        "rmse": "deterministic_with_ensemble_overlay",
+        # "nrmse": "deterministic_with_ensemble_overlay",
         # "rmse_skill_clim": "deterministic_with_ensemble_overlay",
-        "nmae": "deterministic_with_ensemble_overlay",
-        "nbias": "deterministic_with_ensemble_overlay",
+        "mae": "deterministic_with_ensemble_overlay",
+        # "nmae": "deterministic_with_ensemble_overlay",
+        "bias": "deterministic_with_ensemble_overlay",
+        "clim_acc": "deterministic_with_ensemble_overlay",
+        # "nbias": "deterministic_with_ensemble_overlay",
         "crps": "probabilistic",
         "spread": "probabilistic",
         "spread_error_ratio": "probabilistic",
@@ -496,6 +503,49 @@ def _filter_variables_by_filters(
     return [variable for variable in ordered_variables if str(variable) in allowed_set]
 
 
+def _merge_selection_values(existing: object | None, new_value: object | None) -> object | None:
+    if new_value is None:
+        return None
+    new_values = new_value if isinstance(new_value, (list, tuple, set)) else [new_value]
+    normalized_new = [value for value in new_values if value is not None and str(value) != ""]
+    if not normalized_new:
+        return existing
+    if existing is None:
+        return list(dict.fromkeys(normalized_new))
+
+    existing_values = existing if isinstance(existing, (list, tuple, set)) else [existing]
+    merged = [value for value in existing_values if value is not None and str(value) != ""]
+    for value in normalized_new:
+        if str(value) not in {str(item) for item in merged}:
+            merged.append(value)
+    return merged
+
+
+def _build_load_selection(*filter_sets: dict | None) -> dict[str, object]:
+    selection: dict[str, object] = {}
+    tracked_keys = ("variable", "leadtime", "train_period", "loss", "region")
+
+    for key in tracked_keys:
+        merged_value: object | None = []
+        saw_filters = False
+
+        for filters in filter_sets:
+            if not filters:
+                continue
+            saw_filters = True
+            merged_value = _merge_selection_values(merged_value, filters.get(key))
+            if merged_value is None:
+                break
+
+        if saw_filters and merged_value is not None:
+            values = merged_value if isinstance(merged_value, (list, tuple, set)) else [merged_value]
+            cleaned = [value for value in values if value is not None and str(value) != ""]
+            if cleaned:
+                selection[key] = cleaned
+
+    return selection
+
+
 def get_variable_colors(*, variables: list[str]) -> dict[str, str]:
     ordered_variables = _ordered_unique_variables(variables)
     return {
@@ -621,6 +671,10 @@ def _reduce_extra_map_dims(da: xr.DataArray) -> xr.DataArray:
     return da
 
 
+def _materialize_map_array(da: xr.DataArray) -> xr.DataArray:
+    return da.load()
+
+
 def _collapse_realization_for_map(da: xr.DataArray) -> xr.DataArray:
     realization_dim = _realization_dim(da)
     if realization_dim is not None and realization_dim in da.dims:
@@ -636,10 +690,13 @@ def _map_realization_slices(
     realization_dim = _realization_dim(da)
     if realization_mode == "members" and realization_dim is not None and da.sizes.get(realization_dim, 1) > 1:
         return [
-            (value.item() if isinstance(value, np.generic) else value, da.sel({realization_dim: value}, drop=True))
+            (
+                value.item() if isinstance(value, np.generic) else value,
+                _materialize_map_array(da.sel({realization_dim: value}, drop=True)),
+            )
             for value in da[realization_dim].values.tolist()
         ]
-    return [(None, _collapse_realization_for_map(da))]
+    return [(None, _materialize_map_array(_collapse_realization_for_map(da)))]
 
 
 def _realization_label(realization_value: object | None) -> str:
@@ -687,6 +744,24 @@ def _leadtime_shade_weight_map(values: list[object]) -> dict[object, float]:
     }
 
 
+def _leadtime_linestyle_map(values: list[object]) -> dict[object, str]:
+    linestyles = [
+        "-",
+        "--",
+        ":",
+        "-.",
+        (0, (5, 1)),
+        (0, (3, 1, 1, 1)),
+        (0, (1, 1)),
+    ]
+    if not values:
+        return {}
+    return {
+        value: linestyles[idx % len(linestyles)]
+        for idx, value in enumerate(values)
+    }
+
+
 def _shade_model_color(color: str | None, *, weight: float) -> str | None:
     if color is None:
         return None
@@ -722,6 +797,7 @@ def _set_combined_leadtime_legend(
     plot_data: dict[str, xr.DataArray],
     truth_model: str | None,
     leadtime_unit: str,
+    leadtime_style: str,
 ) -> None:
     model_handles = [
         Line2D(
@@ -736,21 +812,39 @@ def _set_combined_leadtime_legend(
     ]
 
     leadtime_values = _combined_leadtime_legend_values(plot_data, truth_model=truth_model)
-    shade_weight_map = _leadtime_shade_weight_map(leadtime_values)
-    leadtime_handles = [
-        Line2D(
-            [0],
-            [0],
-            color=_shade_model_color("#4c4c4c", weight=shade_weight_map[leadtime_value]),
-            linewidth=2.0,
-            label=_leadtime_legend_label(leadtime_value, leadtime_unit=leadtime_unit),
-        )
-        for leadtime_value in leadtime_values
-    ]
+    if leadtime_style == "shade":
+        shade_weight_map = _leadtime_shade_weight_map(leadtime_values)
+        leadtime_handles = [
+            Line2D(
+                [0],
+                [0],
+                color=_shade_model_color("#4c4c4c", weight=shade_weight_map[leadtime_value]),
+                linewidth=2.0,
+                label=_leadtime_legend_label(leadtime_value, leadtime_unit=leadtime_unit),
+            )
+            for leadtime_value in leadtime_values
+        ]
+        legend_title = "Color = model, shade = leadtime"
+    elif leadtime_style == "linestyle":
+        linestyle_map = _leadtime_linestyle_map(leadtime_values)
+        leadtime_handles = [
+            Line2D(
+                [0],
+                [0],
+                color="0.25",
+                linewidth=2.0,
+                linestyle=linestyle_map[leadtime_value],
+                label=_leadtime_legend_label(leadtime_value, leadtime_unit=leadtime_unit),
+            )
+            for leadtime_value in leadtime_values
+        ]
+        legend_title = "Color = model, linestyle = leadtime"
+    else:
+        raise ValueError(f"Unsupported leadtime style {leadtime_style!r}. Expected 'shade' or 'linestyle'.")
 
     handles = [*model_handles, *leadtime_handles]
     if handles:
-        ax.legend(handles=handles, fontsize=9, title="Color = model, shade = leadtime")
+        ax.legend(handles=handles, fontsize=9) #, title=legend_title)
 
 
 def _metric_output_group(metric_type: str) -> str:
@@ -1206,10 +1300,20 @@ def _ordered_context_filename_suffix(
     return _context_filename_suffix(dict(ordered_items))
 
 
-def _profile_context_columns(df: pd.DataFrame, *, x_axis: str) -> list[str]:
+def _profile_context_columns(
+    df: pd.DataFrame,
+    *,
+    x_axis: str,
+    shade_by: str | None = None,
+) -> list[str]:
     return [
         col for col in RUN_CONTEXT_DIMS
-        if col in df.columns and col != x_axis and df[col].nunique(dropna=False) > 1
+        if (
+            col in df.columns
+            and col != x_axis
+            and col != shade_by
+            and df[col].nunique(dropna=False) > 1
+        )
     ]
 
 
@@ -2217,6 +2321,11 @@ def save_field_timeseries_plots(
     saved_paths: list[Path] = []
     model_order = [model_name for model_name in LOAD_MODELS if model_name in runs]
     truth_model = LOAD_MODELS[0] if LOAD_MODELS else None
+    leadtime_style = FIELD_TIMESERIES_KNOBS["leadtime_style"]
+    if leadtime_style not in {"shade", "linestyle"}:
+        raise ValueError(
+            f"Unsupported leadtime style {leadtime_style!r}. Expected 'shade' or 'linestyle'."
+        )
 
     def _count_total_timeseries_plots() -> int:
         total = 0
@@ -2436,6 +2545,7 @@ def save_field_timeseries_plots(
                         leadtime_values = _leadtime_values(da) if combine_leadtimes else []
                         if combine_leadtimes and "leadtime" in da.dims and leadtime_values:
                             shade_weight_map = _leadtime_shade_weight_map(leadtime_values)
+                            linestyle_map = _leadtime_linestyle_map(leadtime_values)
                             truth_drawn = False
                             for leadtime_value in leadtime_values:
                                 da_lt = da.sel(leadtime=leadtime_value, drop=True)
@@ -2447,14 +2557,23 @@ def save_field_timeseries_plots(
                                     mean_label = label
                                     mean_alpha = 1.0
                                     line_color = MODEL_COLORS.get(model_name)
+                                    mean_ls = "-"
+                                    members_ls = "--"
                                 else:
                                     label = MODEL_DISPLAY_NAMES.get(model_name, str(model_name))
                                     mean_label = label if leadtime_value == leadtime_values[-1] else None
                                     mean_alpha = 1.0
-                                    line_color = _shade_model_color(
-                                        MODEL_COLORS.get(model_name),
-                                        weight=shade_weight_map[leadtime_value],
-                                    )
+                                    if leadtime_style == "shade":
+                                        line_color = _shade_model_color(
+                                            MODEL_COLORS.get(model_name),
+                                            weight=shade_weight_map[leadtime_value],
+                                        )
+                                        mean_ls = "-"
+                                        members_ls = "--"
+                                    else:
+                                        line_color = MODEL_COLORS.get(model_name)
+                                        mean_ls = linestyle_map[leadtime_value]
+                                        members_ls = mean_ls
 
                                 plot_realization_timeseries(
                                     da_lt,
@@ -2468,7 +2587,9 @@ def save_field_timeseries_plots(
                                     mean_label=mean_label,
                                     color=line_color,
                                     plot_members=plot_realization_members,
+                                    members_ls=members_ls,
                                     members_alpha=0.08,
+                                    mean_ls=mean_ls,
                                     mean_alpha=mean_alpha,
                                     spread_alpha=0.12,
                                     eager_compute=disable_flox,
@@ -2513,6 +2634,7 @@ def save_field_timeseries_plots(
                             plot_data=plot_data,
                             truth_model=truth_model,
                             leadtime_unit=leadtime_unit,
+                            leadtime_style=leadtime_style,
                         )
                     elif show_legend:
                         ax.legend(fontsize=9)
@@ -2595,6 +2717,7 @@ def save_field_timeseries_plots(
                             leadtime_values = _leadtime_values(da) if combine_leadtimes else []
                             if combine_leadtimes and "leadtime" in da.dims and leadtime_values:
                                 shade_weight_map = _leadtime_shade_weight_map(leadtime_values)
+                                linestyle_map = _leadtime_linestyle_map(leadtime_values)
                                 truth_drawn = False
                                 for leadtime_value in leadtime_values:
                                     da_lt = da.sel(leadtime=leadtime_value, drop=True)
@@ -2605,6 +2728,8 @@ def save_field_timeseries_plots(
                                         mean_label = MODEL_DISPLAY_NAMES.get(model_name, str(model_name))
                                         mean_alpha = 1.0
                                         line_color = MODEL_COLORS.get(model_name)
+                                        mean_ls = "-"
+                                        members_ls = "--"
                                     else:
                                         mean_label = (
                                             MODEL_DISPLAY_NAMES.get(model_name, str(model_name))
@@ -2612,10 +2737,17 @@ def save_field_timeseries_plots(
                                             else None
                                         )
                                         mean_alpha = 1.0
-                                        line_color = _shade_model_color(
-                                            MODEL_COLORS.get(model_name),
-                                            weight=shade_weight_map[leadtime_value],
-                                        )
+                                        if leadtime_style == "shade":
+                                            line_color = _shade_model_color(
+                                                MODEL_COLORS.get(model_name),
+                                                weight=shade_weight_map[leadtime_value],
+                                            )
+                                            mean_ls = "-"
+                                            members_ls = "--"
+                                        else:
+                                            line_color = MODEL_COLORS.get(model_name)
+                                            mean_ls = linestyle_map[leadtime_value]
+                                            members_ls = mean_ls
 
                                     plot_realization_timeseries(
                                         da_lt,
@@ -2629,7 +2761,9 @@ def save_field_timeseries_plots(
                                         mean_label=mean_label,
                                         color=line_color,
                                         plot_members=plot_realization_members,
+                                        members_ls=members_ls,
                                         members_alpha=0.08,
+                                        mean_ls=mean_ls,
                                         mean_alpha=mean_alpha,
                                         spread_alpha=0.12,
                                         eager_compute=disable_flox,
@@ -2672,6 +2806,7 @@ def save_field_timeseries_plots(
                                 plot_data=per_model_ts,
                                 truth_model=truth_model,
                                 leadtime_unit=leadtime_unit,
+                                leadtime_style=leadtime_style,
                             )
                         elif show_legend:
                             ax.legend(fontsize=9)
@@ -3104,7 +3239,11 @@ def save_metrics_vs_parameter_plots(
             if df_template.empty or x_axis not in df_template.columns:
                 continue
 
-            context_columns = _profile_context_columns(df_template, x_axis=x_axis)
+            context_columns = _profile_context_columns(
+                df_template,
+                x_axis=x_axis,
+                shade_by=None if shade_by == x_axis else shade_by,
+            )
             grouped_items = (
                 list(df_template.groupby(context_columns, dropna=False, sort=True))
                 if context_columns
@@ -3325,10 +3464,43 @@ def main() -> None:
     print(f"Loading experiments from: {GLOBAL_KNOBS['exp_root_folder']}")
     print_user_config_table()
 
+    field_timeseries_filters = _merge_filters(BASE_FILTERS, FIELD_TIMESERIES_KNOBS["filters"])
+    map_filters = _merge_filters(BASE_FILTERS, MAP_PLOT_KNOBS["filters"])
+    diff_filters = DIFF_PLOT_KNOBS["filters"]
+    metric_profile_filters = _merge_filters(BASE_FILTERS, METRIC_PROFILE_PLOT_KNOBS["filters"])
+    scalar_table_filters = _merge_filters(BASE_FILTERS, TABLE_KNOBS["scalar_filters"])
+    normalized_table_filters = _merge_filters(BASE_FILTERS, TABLE_KNOBS["normalized_filters"])
+    scoreboard_filters = SCOREBOARD_KNOBS["filters"]
+
+    enabled_filter_sets: list[dict | None] = []
+    if GLOBAL_KNOBS["enable_field_timeseries"]:
+        enabled_filter_sets.append(field_timeseries_filters)
+    if GLOBAL_KNOBS["enable_maps"]:
+        enabled_filter_sets.append(map_filters)
+    if GLOBAL_KNOBS["enable_diff_plot"]:
+        enabled_filter_sets.append(diff_filters)
+    if GLOBAL_KNOBS["enable_metric_profile_plots"]:
+        enabled_filter_sets.append(metric_profile_filters)
+    if GLOBAL_KNOBS["enable_scalar_tables"]:
+        enabled_filter_sets.extend((scalar_table_filters, normalized_table_filters))
+    if GLOBAL_KNOBS["enable_scoreboard"]:
+        enabled_filter_sets.append(scoreboard_filters)
+
+    load_selection = _build_load_selection(*enabled_filter_sets)
+    load_variables = load_selection.get("variable")
+    load_run_filters = {
+        key: value
+        for key, value in load_selection.items()
+        if key != "variable"
+    }
+    print(f"Load selection: variables={load_variables or 'all'}, run_filters={load_run_filters or 'all'}")
+
     runs, metrics, _ = get_runs_and_metrics(
         exp_root=GLOBAL_KNOBS["exp_root_folder"],
         type_data=GLOBAL_KNOBS["type_data"],
         load_models=LOAD_MODELS,
+        variables=load_variables,
+        run_filters=load_run_filters,
         metric_names=GLOBAL_KNOBS["metric_names"],
         show_progress=True,
     )
@@ -3339,13 +3511,6 @@ def main() -> None:
     PLOT_FOLDER.mkdir(parents=True, exist_ok=True)
     print(f"Processed vars: {variables}")
     leadtime_unit = infer_leadtime_unit_from_configs(GLOBAL_KNOBS["exp_root_folder"])
-    field_timeseries_filters = _merge_filters(BASE_FILTERS, FIELD_TIMESERIES_KNOBS["filters"])
-    map_filters = _merge_filters(BASE_FILTERS, MAP_PLOT_KNOBS["filters"])
-    diff_filters = DIFF_PLOT_KNOBS["filters"]
-    metric_profile_filters = _merge_filters(BASE_FILTERS, METRIC_PROFILE_PLOT_KNOBS["filters"])
-    scalar_table_filters = _merge_filters(BASE_FILTERS, TABLE_KNOBS["scalar_filters"])
-    normalized_table_filters = _merge_filters(BASE_FILTERS, TABLE_KNOBS["normalized_filters"])
-    scoreboard_filters = SCOREBOARD_KNOBS["filters"]
     field_timeseries_variables = _filter_variables_by_filters(variables, field_timeseries_filters)
     map_variables = _filter_variables_by_filters(variables, map_filters)
     metric_profile_variables = _filter_variables_by_filters(variables, metric_profile_filters)
