@@ -2430,6 +2430,24 @@ def infer_region_extent_from_configs(
     *,
     selected_region: str = "",
 ) -> tuple[float, float, float, float] | None:
+    extents = infer_region_extents_from_configs(
+        exp_root,
+        selected_regions=[selected_region] if selected_region else None,
+    )
+    if not extents:
+        return None
+    if selected_region:
+        return extents[selected_region]
+    if len(extents) > 1:
+        raise ValueError(f"Multiple regions found in {exp_root}: {sorted(extents)}")
+    return next(iter(extents.values()))
+
+
+def infer_region_extents_from_configs(
+    exp_root: Path,
+    *,
+    selected_regions: Sequence[str] | None = None,
+) -> dict[str, tuple[float, float, float, float]]:
     extents: dict[str, tuple[float, float, float, float]] = {}
 
     for cfg_path in exp_root.rglob("experiment.cfg"):
@@ -2459,18 +2477,43 @@ def infer_region_extent_from_configs(
         lat0, lat1 = map(float, lat)
         extents[str(region_name)] = (lon0, lon1, min(lat0, lat1), max(lat0, lat1))
 
-    if not extents:
+    if selected_regions is None:
+        return extents
+
+    normalized_selected = [str(region) for region in selected_regions if region is not None and str(region) != ""]
+    if not normalized_selected:
+        return extents
+
+    missing = [region for region in normalized_selected if region not in extents]
+    if missing:
+        raise ValueError(
+            f"Selected region(s) {missing!r} were not found in {exp_root}. "
+            f"Available regions: {sorted(extents)}"
+        )
+
+    return {region: extents[region] for region in normalized_selected}
+
+
+def _region_extent_for_plot(
+    *,
+    data: xr.DataArray,
+    context_values: dict[str, object] | None,
+    filters: dict | None,
+    region_extents: dict[str, tuple[float, float, float, float]] | None,
+) -> tuple[float, float, float, float] | None:
+    if not region_extents:
         return None
-    if selected_region:
-        if selected_region not in extents:
-            raise ValueError(
-                f"Selected region {selected_region!r} was not found in {exp_root}. "
-                f"Available regions: {sorted(extents)}"
-            )
-        return extents[selected_region]
-    if len(extents) > 1:
-        raise ValueError(f"Multiple regions found in {exp_root}: {sorted(extents)}")
-    return next(iter(extents.values()))
+
+    region_name = ""
+    if context_values and context_values.get("region") is not None:
+        region_name = str(context_values["region"])
+    if not region_name:
+        region_name = _resolved_single_region_label(data, filters=filters)
+    if region_name and region_name in region_extents:
+        return region_extents[region_name]
+    if len(region_extents) == 1:
+        return next(iter(region_extents.values()))
+    return None
 
 
 def save_scoreboard_plot(
@@ -3170,7 +3213,7 @@ def save_field_and_metric_map_plots(
     plot_folder: Path,
     leadtime_unit: str,
     filters: dict | None,
-    region_extent: tuple[float, float, float, float] | None = None,
+    region_extents: dict[str, tuple[float, float, float, float]] | None = None,
     progress: Progress | None = None,
     task_id: int | None = None,
 ) -> list[Path]:
@@ -3280,7 +3323,6 @@ def save_field_and_metric_map_plots(
                 continue
 
             da = _apply_xarray_filters(ds[variable], filters)
-            dataset_region = _resolved_single_region_label(da, filters=filters)
             for selection, context_values in _context_selection_entries(da):
                 da_sel = da.sel({dim: value for dim, value in selection.items() if dim in da.dims}, drop=True)
                 if da_sel.size == 0:
@@ -3291,6 +3333,13 @@ def save_field_and_metric_map_plots(
                     da_sel,
                     realization_mode=realization_mode,
                 ):
+                    plot_region = _resolved_single_region_label(da_plot, filters=filters)
+                    extent = _region_extent_for_plot(
+                        data=da_plot,
+                        context_values=context_values,
+                        filters=filters,
+                        region_extents=region_extents,
+                    )
                     save_path = field_maps_folder / (
                         f"field_{model_name}_{_context_filename_suffix(context_values)}"
                         f"{_realization_filename_fragment(realization_value)}_temporal_mean_map.png"
@@ -3309,7 +3358,7 @@ def save_field_and_metric_map_plots(
                             f"Temporal mean{_realization_label(realization_value)}",
                             _context_title_suffix(context_values, leadtime_unit=leadtime_unit),
                         ),
-                        extent=region_extent,
+                        extent=extent,
                         cbar_label=_map_cbar_label(variable=variable, unit=base_unit),
                         cmap=MAP_PLOT_KNOBS["field_cmap"],
                         lon_tick_step=MAP_PLOT_KNOBS["lon_tick_step"],
@@ -3319,7 +3368,7 @@ def save_field_and_metric_map_plots(
                     if progress is not None and task_id is not None:
                         progress.advance(task_id)
                     debug_print(
-                        f"Saved field map for model={model_name} region={dataset_region or 'unknown'} to:",
+                        f"Saved field map for model={model_name} region={plot_region or 'unknown'} to:",
                         save_path,
                     )
 
@@ -3373,6 +3422,13 @@ def save_field_and_metric_map_plots(
                         continue
 
                     context_suffix = _context_title_suffix(context_values, leadtime_unit=leadtime_unit)
+                    sample_da = next(iter(next(iter(per_model_maps.values())).values()))
+                    extent = _region_extent_for_plot(
+                        data=sample_da,
+                        context_values=context_values,
+                        filters=filters,
+                        region_extents=region_extents,
+                    )
                     metric_label = format_metric_label(metric_name, base_unit=base_unit)
                     shared_vmin, shared_vmax = _shared_map_limits(
                         *(da for per_model in per_model_maps.values() for da in per_model.values())
@@ -3406,7 +3462,7 @@ def save_field_and_metric_map_plots(
                                     MODEL_DISPLAY_NAMES.get(model_name, model_name),
                                     f"{context_suffix}{_realization_label(realization_value)}" if context_suffix else _realization_label(realization_value).lstrip(" |"),
                                 ),
-                                extent=region_extent,
+                                extent=extent,
                                 cbar_label=_map_cbar_label(variable=variable, unit=base_unit),
                                 cmap=_resolve_metric_map_cmap(metric_name),
                                 vmin=shared_vmin,
@@ -3470,7 +3526,7 @@ def save_field_and_metric_map_plots(
                                         MODEL_DISPLAY_NAMES[difference_model],
                                         f"{context_suffix}{_realization_label(realization_value)}" if context_suffix else _realization_label(realization_value).lstrip(" |"),
                                     ),
-                                    extent=region_extent,
+                                    extent=extent,
                                     cbar_label=_map_cbar_label(variable=variable, unit=base_unit),
                                     cmap="RdBu_r",
                                     vmin=diff_vmin,
@@ -4587,14 +4643,17 @@ def main() -> None:
     metric_profile_variables = _filter_variables_by_filters(variables, metric_profile_filters)
     scalar_table_variables = _filter_variables_by_filters(variables, scalar_table_filters)
     normalized_table_variables = _filter_variables_by_filters(variables, normalized_table_filters)
-    map_selected_region = _single_filter_value(map_filters, "region")
-    metric_vs_deltametric_selected_region = _single_filter_value(metric_vs_deltametric_filters, "region")
-    map_region = infer_region_from_configs(GLOBAL_KNOBS["exp_root_folder"], selected_region=map_selected_region)
-    diff_region = infer_region_from_configs(
-        GLOBAL_KNOBS["exp_root_folder"],
-        selected_region=metric_vs_deltametric_selected_region,
+    map_region_filters = map_filters.get("region") if map_filters else None
+    map_region_values = (
+        list(map_region_filters)
+        if isinstance(map_region_filters, (list, tuple, set))
+        else ([map_region_filters] if map_region_filters is not None else [])
     )
-    region_extent = infer_region_extent_from_configs(GLOBAL_KNOBS["exp_root_folder"], selected_region=map_selected_region)
+    region_extents = infer_region_extents_from_configs(
+        GLOBAL_KNOBS["exp_root_folder"],
+        selected_regions=map_region_values or None,
+    )
+    diff_region = _single_filter_value(metric_vs_deltametric_filters, "region")
     metric_vs_deltametric_filename_context = _merge_filename_contexts(
         _filters_filename_context(metric_vs_deltametric_filters),
     )
@@ -4602,9 +4661,8 @@ def main() -> None:
         _filters_filename_context(scoreboard_filters),
     )
     CONSOLE.print(f"Inferred leadtime unit: {leadtime_unit or 'unknown'}")
-    CONSOLE.print(f"Inferred map region: {map_region or 'unknown'}")
-    CONSOLE.print(f"Inferred diff region: {diff_region or 'unknown'}")
-    CONSOLE.print(f"Inferred region extent: {region_extent or 'unknown'}")
+    CONSOLE.print(f"Inferred map regions: {sorted(region_extents) if region_extents else 'unknown'}")
+    CONSOLE.print(f"Inferred region extents: {region_extents or 'unknown'}")
     print_available_scalar_metrics(metrics=metrics)
 
     with build_progress() as progress:
@@ -4637,7 +4695,7 @@ def main() -> None:
                 plot_folder=PLOT_FOLDER,
                 leadtime_unit=leadtime_unit,
                 filters=map_filters,
-                region_extent=region_extent,
+                region_extents=region_extents,
                 progress=progress,
                 task_id=map_task,
             )
