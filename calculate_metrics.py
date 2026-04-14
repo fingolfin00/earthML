@@ -85,8 +85,8 @@ GLOBAL_KNOBS = {
     # Keep None to load every scalar metric available.
     "metric_names": None,
     # Global output switches.
-    "enable_field_timeseries": False,
-    "enable_maps": False,
+    "enable_field_timeseries": True,
+    "enable_maps": True,
     "enable_scalar_tables": True,
     "enable_metric_vs_deltametric_plot": True,
     "enable_metric_profile_plots": True,
@@ -100,9 +100,9 @@ GLOBAL_KNOBS = {
 BASE_FILTERS = {
     # Default analysis slice shared across timeseries, maps, tables and profiles unless overridden below.
     # For scoreboard and metric-vs-delta-metric plots, use dedicated filters below
-    "leadtime": [1, 2, 3, 4, 5],
+    "leadtime": [1, 2, 3, 4, 5, 6],
     "variable": ["t2m"], # None, ["t2m"]
-    "region": ["ConUS"], # ConUS, Europe
+    "region": ["ConUS", "Europe"], # ConUS, Europe
     # "leadtime": [6],
     # "variable": ["sst"],
     # "region": ["CentralPacific"], # CentralPacific, NorthAtlantic
@@ -245,8 +245,8 @@ TABLE_KNOBS = {
 METRIC_VS_DELTAMETRIC_PLOT_KNOBS = {
     "filters": {
         "variable": None,
-        "leadtime": [1, 2, 3, 4, 5],
-        "region": ["ConUS"], # ConUS, Europe
+        "leadtime": [1, 2, 3, 4, 5, 6],
+        "region": ["ConUS", "Europe"], # ConUS, Europe
         # "region": ["CentralPacific"], # CentralPacific, NorthAtlantic
         "train_period": None,
         "loss": None,
@@ -259,10 +259,10 @@ METRIC_VS_DELTAMETRIC_PLOT_KNOBS = {
     "forecast_metric_type": "ensemble",
     # Visual encodings for the scatter plot.
     "color_by": "variable",
-    "marker_by": "loss",
+    "marker_by": "region",
     "shade_by": "leadtime",  # e.g. "loss", "total_months"
     "shade_label": "Leadtime",
-    "point_size": 20,
+    "point_size": 30,
 }
 
 SCOREBOARD_KNOBS = {
@@ -271,7 +271,7 @@ SCOREBOARD_KNOBS = {
         "variable": None,
         "loss": "mseloss",
         "train_period": None,
-        "leadtime": [1, 2, 3, 4, 5],
+        "leadtime": [1, 2, 3, 4, 5, 6],
         "region": ["ConUS"], # ConUS, Europe
         # "region": ["CentralPacific"], # CentralPacific, NorthAtlantic
     },
@@ -279,16 +279,24 @@ SCOREBOARD_KNOBS = {
     "metrics": {
         "r2": "ensemble",
         "nrmse": "ensemble",
-        "crps": "probabilistic",
+        "ncrmse": "ensemble",
+        "nmae": "ensemble",
+        "nbias": "ensemble",
+        # "crps": "probabilistic",
         "rmse_skill_clim": "ensemble",
+        "clim_acc": "ensemble",
+        "spatial_acc": "ensemble",
         "spread_error_ratio": "probabilistic",
     },
     "metric_cmaps": {
         "r2": "RdBu",
         "nrmse": "RdBu_r",
+        "ncrmse": "RdBu_r",
         "nmae": "RdBu_r",
         "nbias": "RdBu_r",
         "rmse_skill_clim": "RdBu",
+        "clim_acc": "RdBu",
+        "spatial_acc": "RdBu",
         "spread_error_ratio": "RdBu",
     },
     "metric_vlims": {
@@ -441,6 +449,45 @@ def build_scalar_metric_df(
         diff=diff,
         models=models,
     )
+
+
+def _build_relative_abs_improvement_df(
+    *,
+    metrics,
+    variables: list[str],
+    metric_name: str,
+    metric_type: str,
+    models: tuple[str, str],
+) -> pd.DataFrame:
+    raw_df = build_scalar_metric_df(
+        metrics=metrics,
+        variables=variables,
+        metric_name=metric_name,
+        metric_type=metric_type,
+        diff="no",
+        models=models,
+    )
+    if raw_df.empty:
+        return raw_df
+
+    model_a, model_b = models
+    id_cols = [col for col in raw_df.columns if col not in {"model", "value"}]
+    pivot = raw_df.pivot_table(index=id_cols, columns="model", values="value", aggfunc="first")
+
+    if model_a not in pivot.columns or model_b not in pivot.columns:
+        return pd.DataFrame(columns=raw_df.columns)
+
+    baseline = pivot[model_a].abs()
+    corrected = pivot[model_b].abs()
+    baseline_safe = baseline.where(~np.isclose(baseline, 0.0), np.nan)
+    relative_improvement = (baseline - corrected) / baseline_safe
+
+    result = relative_improvement.rename("value").reset_index()
+    result["model"] = f"{model_b}-{model_a}"
+
+    ordered_cols = [col for col in raw_df.columns if col in result.columns]
+    extra_cols = [col for col in result.columns if col not in ordered_cols]
+    return result[ordered_cols + extra_cols]
 
 
 def get_variable_plot_folder(*, plot_root: Path, variable: str) -> Path:
@@ -2444,16 +2491,27 @@ def save_scoreboard_plot(
     )
 
     for metric_name, metric_type in SCOREBOARD_KNOBS["metrics"].items():
-        scoreboard_frames.append(
-            build_scalar_metric_df(
-                metrics=metrics,
-                variables=variables,
-                metric_name=metric_name,
-                metric_type=metric_type,
-                diff=diff_mode,
-                models=COMPARISON_MODELS if diff_mode == "delta" else None,
+        if SCOREBOARD_KNOBS["mode"] == "relative" and metric_name in {"bias", "nbias"}:
+            scoreboard_frames.append(
+                _build_relative_abs_improvement_df(
+                    metrics=metrics,
+                    variables=variables,
+                    metric_name=metric_name,
+                    metric_type=metric_type,
+                    models=COMPARISON_MODELS,
+                )
             )
-        )
+        else:
+            scoreboard_frames.append(
+                build_scalar_metric_df(
+                    metrics=metrics,
+                    variables=variables,
+                    metric_name=metric_name,
+                    metric_type=metric_type,
+                    diff=diff_mode,
+                    models=COMPARISON_MODELS if diff_mode == "delta" else None,
+                )
+            )
 
     df_scoreboard = pd.concat(scoreboard_frames, ignore_index=True)
 
