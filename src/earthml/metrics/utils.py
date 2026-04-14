@@ -1,4 +1,5 @@
 from typing import Any, Sequence
+from contextlib import nullcontext
 from itertools import product
 
 from pathlib import Path
@@ -7,6 +8,15 @@ from dateutil.relativedelta import relativedelta
 from datetime import datetime
 
 from rich import print
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 
 import numpy as np
 import pandas as pd
@@ -280,6 +290,7 @@ def get_runs_and_metrics(
     metric_names: str | Sequence[str] | None = None,
     metric_sections: str | Sequence[str] = ("scalar", "map", "timeseries"),
     metric_types: str | Sequence[str] | None = None,
+    show_progress: bool = True,
 ) -> tuple[
     dict[str, xr.Dataset],
     dict[str, dict[str, xr.Dataset]],
@@ -297,6 +308,7 @@ def get_runs_and_metrics(
         type_data=type_data,
         load_train_preds=(type_data == "train"),
         load_models=models,
+        show_progress=show_progress,
     )
 
     if isinstance(metric_types, str):
@@ -343,6 +355,7 @@ def get_runs_and_metrics(
             type_data="train",
             load_train_preds=use_train_prediction_clim,
             load_models=models,
+            show_progress=show_progress,
         )
 
         for model_name in models:
@@ -367,155 +380,215 @@ def get_runs_and_metrics(
     }
 
     last_clim_by_model = {model_name: None for model_name in models}
+    progress_cm = (
+        Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            auto_refresh=True,
+            refresh_per_second=6,
+            transient=False,
+        )
+        if show_progress else nullcontext()
+    )
 
-    for indexers in run_indexers:
-        truth_data = truth_runs.sel(indexers, drop=True) if indexers else truth_runs
-        if not truth_data.data_vars:
-            continue
+    with progress_cm as prog:
+        run_task = prog.add_task("Computing metric bundles", total=len(run_indexers)) if show_progress else None
 
-        # Skip empty truth slices
-        truth_arr = truth_data.to_array()
-        if not bool(truth_arr.notnull().any()):
-            continue
+        for indexers in run_indexers:
+            if show_progress:
+                indexer_str = ", ".join(f"{dim}={value}" for dim, value in indexers.items()) or "all runs"
+                prog.update(run_task, description=f"Computing metrics | {indexer_str}")
 
-        model_names_this_run = []
-        model_data = []
-        for model_name in available_model_names:
-            ds = loaded_runs[model_name]
-            ds = ds.sel(indexers, drop=True) if indexers else ds
-            if not ds.data_vars:
+            truth_data = truth_runs.sel(indexers, drop=True) if indexers else truth_runs
+            if not truth_data.data_vars:
+                if show_progress:
+                    prog.advance(run_task)
                 continue
-            if not bool(ds.to_array().notnull().any()):
+
+            # Skip empty truth slices
+            truth_arr = truth_data.to_array()
+            if not bool(truth_arr.notnull().any()):
+                if show_progress:
+                    prog.advance(run_task)
                 continue
-            model_names_this_run.append(model_name)
-            model_data.append(ds)
 
-        if not model_data:
-            continue
-
-        mask_data = None
-        if mask_runs is not None:
-            mask_data = mask_runs.sel(indexers, drop=True) if indexers else mask_runs
-            if mask_data is not None and mask_data.data_vars and not bool(mask_data.to_array().notnull().any()):
-                mask_data = None
-
-        clim_by_model = {truth_model: None, **{m: None for m in model_names_this_run}}
-
-        if calculate_clim_from_train_period and train_loaded_runs is not None:
-            if truth_model in train_loaded_runs:
-                truth_train = train_loaded_runs[truth_model]
-                truth_train = truth_train.sel(indexers, drop=True) if indexers else truth_train
-                if truth_train.data_vars and bool(truth_train.to_array().notnull().any()):
-                    clim_by_model[truth_model] = truth_train.earthml.climatology(groupby="month")
-
-            for model_name in model_names_this_run:
-                if model_name == "pr" and not use_train_prediction_clim:
-                    clim_by_model[model_name] = clim_by_model[truth_model]
+            model_names_this_run = []
+            model_data = []
+            for model_name in available_model_names:
+                ds = loaded_runs[model_name]
+                ds = ds.sel(indexers, drop=True) if indexers else ds
+                if not ds.data_vars:
                     continue
+                if not bool(ds.to_array().notnull().any()):
+                    continue
+                model_names_this_run.append(model_name)
+                model_data.append(ds)
 
-                if model_name in train_loaded_runs:
-                    train_model = train_loaded_runs[model_name]
-                    train_model = train_model.sel(indexers, drop=True) if indexers else train_model
-                    if train_model.data_vars and bool(train_model.to_array().notnull().any()):
-                        clim_by_model[model_name] = train_model.earthml.climatology(groupby="month")
+            if not model_data:
+                if show_progress:
+                    prog.advance(run_task)
+                continue
 
-            if "pr" in clim_by_model and clim_by_model["pr"] is None:
-                clim_by_model["pr"] = clim_by_model[truth_model]
+            mask_data = None
+            if mask_runs is not None:
+                mask_data = mask_runs.sel(indexers, drop=True) if indexers else mask_runs
+                if mask_data is not None and mask_data.data_vars and not bool(mask_data.to_array().notnull().any()):
+                    mask_data = None
 
-        clim_data = [clim_by_model[truth_model], *[clim_by_model[m] for m in model_names_this_run]]
+            clim_by_model = {truth_model: None, **{m: None for m in model_names_this_run}}
 
-        # Harmonize leadtime coordinates across truth / models / mask
-        to_harmonize = [truth_data, *model_data]
-        has_mask = mask_data is not None and "leadtime" in mask_data.coords
-        if has_mask:
-            to_harmonize.append(mask_data)
+            if calculate_clim_from_train_period and train_loaded_runs is not None:
+                if truth_model in train_loaded_runs:
+                    truth_train = train_loaded_runs[truth_model]
+                    truth_train = truth_train.sel(indexers, drop=True) if indexers else truth_train
+                    if truth_train.data_vars and bool(truth_train.to_array().notnull().any()):
+                        clim_by_model[truth_model] = truth_train.earthml.climatology(groupby="month")
 
-        try:
-            harmonized = harmonize_leadtime_int(*to_harmonize, coord="leadtime", method="int_source")
-            truth_data = harmonized[0]
-            model_data = harmonized[1:1 + len(model_data)]
+                for model_name in model_names_this_run:
+                    if model_name == "pr" and not use_train_prediction_clim:
+                        clim_by_model[model_name] = clim_by_model[truth_model]
+                        continue
+
+                    if model_name in train_loaded_runs:
+                        train_model = train_loaded_runs[model_name]
+                        train_model = train_model.sel(indexers, drop=True) if indexers else train_model
+                        if train_model.data_vars and bool(train_model.to_array().notnull().any()):
+                            clim_by_model[model_name] = train_model.earthml.climatology(groupby="month")
+
+                if "pr" in clim_by_model and clim_by_model["pr"] is None:
+                    clim_by_model["pr"] = clim_by_model[truth_model]
+
+            clim_data = [clim_by_model[truth_model], *[clim_by_model[m] for m in model_names_this_run]]
+
+            # Harmonize leadtime coordinates across truth / models / mask
+            to_harmonize = [truth_data, *model_data]
+            has_mask = mask_data is not None and "leadtime" in mask_data.coords
             if has_mask:
-                mask_data = harmonized[-1]
-        except Exception:
-            # If leadtime is already aligned or cannot be normalized this way, continue as-is.
-            pass
+                to_harmonize.append(mask_data)
 
-        # Same idea for climatologies if they exist and carry leadtime
-        valid_clim = [ds for ds in clim_data if ds is not None and "leadtime" in ds.coords]
-        if len(valid_clim) >= 2:
             try:
-                harmonized_clim = harmonize_leadtime_int(*valid_clim, coord="leadtime", method="int_source")
-                it = iter(harmonized_clim)
-                clim_data = [
-                    next(it) if ds is not None and "leadtime" in ds.coords else ds
-                    for ds in clim_data
-                ]
+                harmonized = harmonize_leadtime_int(*to_harmonize, coord="leadtime", method="int_source")
+                truth_data = harmonized[0]
+                model_data = harmonized[1:1 + len(model_data)]
+                if has_mask:
+                    mask_data = harmonized[-1]
             except Exception:
+                # If leadtime is already aligned or cannot be normalized this way, continue as-is.
                 pass
 
-        dm = DeterministicMetrics(
-            truth_data=truth_data,
-            model_data=model_data,
-            truth_name=truth_model,
-            model_names=model_names_this_run,
-            clim_data=clim_data,
-            mask_data=mask_data,
-        )
+            # Same idea for climatologies if they exist and carry leadtime
+            valid_clim = [ds for ds in clim_data if ds is not None and "leadtime" in ds.coords]
+            if len(valid_clim) >= 2:
+                try:
+                    harmonized_clim = harmonize_leadtime_int(*valid_clim, coord="leadtime", method="int_source")
+                    it = iter(harmonized_clim)
+                    clim_data = [
+                        next(it) if ds is not None and "leadtime" in ds.coords else ds
+                        for ds in clim_data
+                    ]
+                except Exception:
+                    pass
 
-        cm = CorrelationMetrics(
-            truth_data=truth_data,
-            model_data=model_data,
-            truth_name=truth_model,
-            model_names=model_names_this_run,
-            clim_data=clim_data,
-            mask_data=mask_data,
-        )
+            dm = DeterministicMetrics(
+                truth_data=truth_data,
+                model_data=model_data,
+                truth_name=truth_model,
+                model_names=model_names_this_run,
+                clim_data=clim_data,
+                mask_data=mask_data,
+            )
 
-        pm = ProbabilisticMetrics(
-            truth_data=truth_data,
-            model_data=model_data,
-            truth_name=truth_model,
-            model_names=model_names_this_run,
-            clim_data=clim_data,
-            mask_data=mask_data,
-        )
+            cm = CorrelationMetrics(
+                truth_data=truth_data,
+                model_data=model_data,
+                truth_name=truth_model,
+                model_names=model_names_this_run,
+                clim_data=clim_data,
+                mask_data=mask_data,
+            )
 
-        metric_bundle = _compute_metric_bundle(
-            dm,
-            cm,
-            pm,
-            norm="std",
-            clim_period="month",
-            metric_names=metric_names,
-            metric_sections=metric_sections,
-            metric_types=metric_types,
-        )
+            pm = ProbabilisticMetrics(
+                truth_data=truth_data,
+                model_data=model_data,
+                truth_name=truth_model,
+                model_names=model_names_this_run,
+                clim_data=clim_data,
+                mask_data=mask_data,
+            )
 
-        for metric_type, section_dict in metric_bundle.items():
-            for section, ds in section_dict.items():
-                if ds is None or not ds.data_vars:
-                    continue
+            metric_bundle = _compute_metric_bundle(
+                dm,
+                cm,
+                pm,
+                norm="std",
+                clim_period="month",
+                metric_names=metric_names,
+                metric_sections=metric_sections,
+                metric_types=metric_types,
+            )
 
-                if indexers:
-                    ds = ds.expand_dims({
-                        dim: [value] for dim, value in indexers.items()
-                    })
+            for metric_type, section_dict in metric_bundle.items():
+                for section, ds in section_dict.items():
+                    if ds is None or not ds.data_vars:
+                        continue
 
-                metric_runs[metric_type][section].append(ds)
+                    if indexers:
+                        ds = ds.expand_dims({
+                            dim: [value] for dim, value in indexers.items()
+                        })
 
-        last_clim_by_model.update(clim_by_model)
+                    metric_runs[metric_type][section].append(ds)
+
+            last_clim_by_model.update(clim_by_model)
+
+            if show_progress:
+                prog.advance(run_task)
 
     metrics: dict[str, dict[str, xr.Dataset]] = {}
+    combine_steps = sum(
+        1
+        for section_dict in metric_runs.values()
+        for runs_list in section_dict.values()
+        if runs_list
+    )
 
-    for metric_type, section_dict in metric_runs.items():
-        metrics[metric_type] = {}
+    progress_cm = (
+        Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            auto_refresh=True,
+            refresh_per_second=6,
+            transient=False,
+        )
+        if show_progress else nullcontext()
+    )
 
-        for section, runs_list in section_dict.items():
-            metrics[metric_type][section] = (
-                xr.combine_by_coords(runs_list, combine_attrs="drop_conflicts")
-                if runs_list
-                else xr.Dataset()
-            )
+    with progress_cm as prog:
+        combine_task = prog.add_task("Combining metric sections", total=combine_steps) if show_progress else None
+
+        for metric_type, section_dict in metric_runs.items():
+            metrics[metric_type] = {}
+
+            for section, runs_list in section_dict.items():
+                if show_progress and runs_list:
+                    prog.update(combine_task, description=f"Combining {metric_type}/{section}")
+
+                metrics[metric_type][section] = (
+                    xr.combine_by_coords(runs_list, combine_attrs="drop_conflicts")
+                    if runs_list
+                    else xr.Dataset()
+                )
+
+                if show_progress and runs_list:
+                    prog.advance(combine_task)
 
     return runs, metrics, tuple(last_clim_by_model.get(model_name) for model_name in models)
 
