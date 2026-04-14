@@ -61,17 +61,34 @@ class Dask:
         self.client = Client(self.cluster)
 
         info = self.client.scheduler_info()
-        n_active_workers = len(info["workers"])
+        scheduler_workers = sorted(info["workers"])
+        n_scheduler_workers = len(scheduler_workers)
         workers_mem_limit_gb = []
         for w in info["workers"].values():
             workers_mem_limit_gb.append(w["memory_limit"] / 1024**3)
         workers_mem_limit_gb = np.array(workers_mem_limit_gb)
+
+        # On some cluster setups scheduler_info() can under-report workers
+        # compared to actual execution reachability. Probe the scheduler with
+        # a tiny run() call and prefer that count for the summary log.
+        reachable_workers = sorted(self.client.run(lambda: "alive"))
+        n_active_workers = len(reachable_workers)
 
         # Register cf_xarray
         self.client.run(lambda: __import__("cf_xarray"))
 
         import socket
         logger.info("Dask dashboard running on %s:%s", socket.gethostname(), self.cluster.scheduler.services["dashboard"].port)
+        logger.info(
+            "Dask scheduler-visible workers: %s -> %s",
+            n_scheduler_workers,
+            scheduler_workers,
+        )
+        logger.info(
+            "Dask reachable workers via client.run(): %s -> %s",
+            n_active_workers,
+            reachable_workers,
+        )
         logger.info(
             "Cores: %s, Mem: %.2f GB -> Dask active workers: %s (requested: %s)",
             n_cores,
