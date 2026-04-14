@@ -24,13 +24,18 @@ class Runtime:
     """Utility class for setting up MLBC manager's runtime"""
     dask_workers: int | None = None
     memory_limit: str = "auto"
+    nanny: bool = True
     needs_ca_bundle: bool = False
 
     def start(self) -> Dask:
         configure_warnings_and_logging()
         if self.needs_ca_bundle:
             configure_ca_bundle()
-        d = Dask(n_workers=self.dask_workers, memory_limit=self.memory_limit)
+        d = Dask(
+            n_workers=self.dask_workers,
+            memory_limit=self.memory_limit,
+            nanny=self.nanny,
+        )
         d.start()
         get_logger().info("Dask dashboard: %s", d.client.dashboard_link)
         return d
