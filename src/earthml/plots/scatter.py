@@ -97,7 +97,10 @@ def plot_metric_vs_diff(
             return df
         out = df
         for col, allowed in filters.items():
-            out = out[out[col].isin(allowed)]
+            if allowed is None or col not in out.columns:
+                continue
+            values = allowed if isinstance(allowed, (list, tuple, set)) else [allowed]
+            out = out[out[col].isin(values)]
         return out
 
     # Aggregate forecast metric

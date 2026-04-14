@@ -87,6 +87,35 @@ def _canonicalize_dataset_variable_names(ds: xr.Dataset, dataset_name: str | Non
     return ds
 
 
+def _normalize_selection_values(values: object) -> list[object]:
+    if values is None:
+        return []
+    if isinstance(values, (list, tuple, set)):
+        return [value for value in values if value is not None and str(value) != ""]
+    return [values]
+
+
+def _matches_selection(value: object, allowed: object) -> bool:
+    allowed_values = _normalize_selection_values(allowed)
+    if not allowed_values:
+        return True
+    value_str = str(value)
+    return any(str(candidate) == value_str for candidate in allowed_values)
+
+
+def _subset_dataset_variables(ds: xr.Dataset, variables: Sequence[str] | None) -> xr.Dataset:
+    if variables is None:
+        return ds
+
+    selected = []
+    requested = {str(variable) for variable in variables}
+    for variable in ds.data_vars:
+        if str(variable) in requested:
+            selected.append(variable)
+
+    return ds[selected] if selected else xr.Dataset(coords=ds.coords, attrs=ds.attrs)
+
+
 def _is_int_leadtime(ds, coord="leadtime"):
     if coord not in ds.coords:
         return False
@@ -271,6 +300,7 @@ def _load_single_exp(
     type_data: str,
     load_train_preds: bool = False,
     load_models: Sequence[str] | None = None,
+    variables: Sequence[str] | None = None,
     only_sizes: bool = False,
     show_dask_progress: bool = True,
 ) -> tuple[dict[str, xr.Dataset], dict]:
@@ -344,6 +374,7 @@ def _load_single_exp(
     for model_name, ds in (("fc", fc), ("an", an), ("pr", pr)):
         if ds is None:
             continue
+        ds = _subset_dataset_variables(ds, variables)
         allowed_dims = ds.earthml.guessed_dims
         ds = ds.earthml.remove_dims_and_coords(allowed_dims, drop_non_dim_coords=True)
         out[model_name] = ds
@@ -359,6 +390,7 @@ def load_exp(
     type_data: str,
     load_train_preds: bool = False,
     load_models: Sequence[str] | None = None,
+    variables: Sequence[str] | None = None,
     only_sizes: bool = False,
 ) -> tuple[dict[str, xr.Dataset], dict]:
     if isinstance(exp_configs, (MLBCExperimentConfig, str, Path)):
@@ -367,6 +399,7 @@ def load_exp(
             type_data=type_data,
             load_train_preds=load_train_preds,
             load_models=load_models,
+            variables=variables,
             only_sizes=only_sizes,
         )
 
@@ -379,6 +412,7 @@ def load_exp(
                 type_data=type_data,
                 load_train_preds=load_train_preds,
                 load_models=load_models,
+                variables=variables,
                 only_sizes=only_sizes,
             )
             out[key] = runs
@@ -393,6 +427,8 @@ def load_all_exp_from_folder(
     type_data: str,
     load_train_preds: bool = False,
     load_models: Sequence[str] | None = None,
+    variables: Sequence[str] | None = None,
+    run_filters: Mapping[str, object] | None = None,
     only_sizes: bool = False,
     cfg_name: str = "experiment.cfg",
     show_progress: bool = True,
@@ -521,11 +557,33 @@ def load_all_exp_from_folder(
                     ),
                 )
 
+            if not _matches_selection(group_name, (run_filters or {}).get("variable", variables)):
+                if show_progress:
+                    prog.advance(task)
+                continue
+            if not _matches_selection(leadtime, (run_filters or {}).get("leadtime")):
+                if show_progress:
+                    prog.advance(task)
+                continue
+            if not _matches_selection(train_period, (run_filters or {}).get("train_period")):
+                if show_progress:
+                    prog.advance(task)
+                continue
+            if not _matches_selection(region, (run_filters or {}).get("region")):
+                if show_progress:
+                    prog.advance(task)
+                continue
+            if not _matches_selection(loss, (run_filters or {}).get("loss")):
+                if show_progress:
+                    prog.advance(task)
+                continue
+
             run_dict, size = _load_single_exp(
                 exp_cfg=config,
                 type_data=type_data,
                 load_train_preds=load_train_preds,
                 load_models=load_models,
+                variables=variables,
                 only_sizes=only_sizes,
                 show_dask_progress=not show_progress,
             )

@@ -284,6 +284,8 @@ def get_runs_and_metrics(
     exp_root: str | Path,
     type_data: str = "test",
     load_models: Sequence[str] = ("an", "fc", "pr"),
+    variables: Sequence[str] | None = None,
+    run_filters: dict[str, object] | None = None,
     calculate_clim_from_train_period: bool = False,
     use_train_prediction_clim: bool = False,  # only used if calculate_clim_from_train_period is True
     use_saved_mask: bool = True,
@@ -308,6 +310,8 @@ def get_runs_and_metrics(
         type_data=type_data,
         load_train_preds=(type_data == "train"),
         load_models=models,
+        variables=variables,
+        run_filters=run_filters,
         show_progress=show_progress,
     )
 
@@ -355,6 +359,8 @@ def get_runs_and_metrics(
             type_data="train",
             load_train_preds=use_train_prediction_clim,
             load_models=models,
+            variables=variables,
+            run_filters=run_filters,
             show_progress=show_progress,
         )
 
@@ -372,7 +378,7 @@ def get_runs_and_metrics(
     # These are the experiment axes created by load_all_exp_from_folder
     run_dims = [dim for dim in ("leadtime", "train_period", "loss") if dim in truth_runs.dims]
 
-    run_indexers = _build_run_indexers(truth_runs, run_dims)
+    run_indexers = _build_run_indexers(truth_runs, run_dims, run_filters=run_filters)
 
     metric_runs: dict[str, dict[str, list[xr.Dataset]]] = {
         mt: {ms: [] for ms in requested_metric_sections}
@@ -596,11 +602,24 @@ def get_runs_and_metrics(
 def _build_run_indexers(
     truth_runs: xr.Dataset,
     run_dims: Sequence[str],
+    run_filters: dict[str, object] | None = None,
 ) -> list[dict[str, Any]]:
     if not run_dims:
         return [{}]
 
-    coord_values = [truth_runs.coords[dim].values.tolist() for dim in run_dims]
+    coord_values = []
+    for dim in run_dims:
+        values = truth_runs.coords[dim].values.tolist()
+        allowed = None if run_filters is None else run_filters.get(dim)
+        if allowed is not None:
+            allowed_values = allowed if isinstance(allowed, (list, tuple, set)) else [allowed]
+            allowed_strings = {str(value) for value in allowed_values if value is not None and str(value) != ""}
+            values = [value for value in values if str(value) in allowed_strings]
+        coord_values.append(values)
+
+    if any(len(values) == 0 for values in coord_values):
+        return []
+
     out = []
 
     for values in product(*coord_values):
