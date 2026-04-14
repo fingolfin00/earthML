@@ -71,6 +71,51 @@ class DeterministicMetrics(BaseMetrics):
         return factor
 
 
+    def error(self) -> xr.Dataset:
+        """
+        Compute the raw signed error field (model minus truth).
+
+        Returns
+        -------
+        xr.Dataset
+            Signed error for each model with the original data dimensions preserved.
+        """
+        def metric_func(model: xr.DataArray, truth: xr.DataArray) -> xr.DataArray:
+            return model - truth
+
+        return self._apply_metric_per_model(metric_func)
+
+
+    def error_of_mean(
+        self,
+        data_mean_dims: str | Sequence[str],
+    ) -> xr.Dataset:
+        """
+        Compute the signed error of mean fields (model minus truth).
+
+        The data are first averaged over `data_mean_dims`, then the signed error
+        is computed without any additional reduction.
+
+        Parameters
+        ----------
+        data_mean_dims : str or Sequence[str]
+            Dimensions over which to compute the mean fields.
+
+        Returns
+        -------
+        xr.Dataset
+            Signed error of mean fields for each model.
+        """
+        data_mean_dims = self._as_tuple(data_mean_dims)
+
+        def metric_func(model: xr.DataArray, truth: xr.DataArray) -> xr.DataArray:
+            model_mean = model.earthml.geo_mean(data_mean_dims)
+            truth_mean = truth.earthml.geo_mean(data_mean_dims)
+            return model_mean - truth_mean
+
+        return self._apply_metric_per_model(metric_func)
+
+
     def rmse(
         self,
         metric_mean_dims: str | Sequence[str],
@@ -338,6 +383,139 @@ class DeterministicMetrics(BaseMetrics):
             truth_mean = truth.earthml.geo_mean(data_mean_dims)
             err = model_mean - truth_mean
             return err.earthml.geo_mean(metric_mean_dims)
+
+        return self._apply_metric_per_model(metric_func)
+
+
+    def error_std(
+        self,
+        metric_mean_dims: str | Sequence[str],
+    ) -> xr.Dataset:
+        """
+        Compute the standard deviation of the signed error (model minus truth).
+
+        Parameters
+        ----------
+        metric_mean_dims : str or Sequence[str]
+            Dimensions over which to compute the error standard deviation.
+
+        Returns
+        -------
+        xr.Dataset
+            Error standard deviation for each model.
+        """
+        metric_mean_dims = self._as_tuple(metric_mean_dims)
+
+        def metric_func(model: xr.DataArray, truth: xr.DataArray) -> xr.DataArray:
+            err = model - truth
+            return err.earthml.geo_std(metric_mean_dims)
+
+        return self._apply_metric_per_model(metric_func)
+
+
+    def error_std_of_mean(
+        self,
+        data_mean_dims: str | Sequence[str],
+        metric_mean_dims: str | Sequence[str],
+    ) -> xr.Dataset:
+        """
+        Compute the standard deviation of the signed error of mean fields.
+
+        The data are first averaged over `data_mean_dims`, then the error
+        standard deviation is computed over `metric_mean_dims`.
+
+        Parameters
+        ----------
+        data_mean_dims : str or Sequence[str]
+            Dimensions over which to compute the mean fields.
+        metric_mean_dims : str or Sequence[str]
+            Dimensions over which to compute the error standard deviation.
+
+        Returns
+        -------
+        xr.Dataset
+            Error standard deviation of mean fields for each model.
+        """
+        data_mean_dims = self._as_tuple(data_mean_dims)
+        metric_mean_dims = self._as_tuple(metric_mean_dims)
+
+        self._check_dims_overlap(data_mean_dims, metric_mean_dims, "data_mean_dims", "metric_mean_dims")
+
+        def metric_func(model: xr.DataArray, truth: xr.DataArray) -> xr.DataArray:
+            model_mean = model.earthml.geo_mean(data_mean_dims)
+            truth_mean = truth.earthml.geo_mean(data_mean_dims)
+            err = model_mean - truth_mean
+            return err.earthml.geo_std(metric_mean_dims)
+
+        return self._apply_metric_per_model(metric_func)
+
+
+    def variance_ratio(
+        self,
+        metric_mean_dims: str | Sequence[str],
+    ) -> xr.Dataset:
+        """
+        Compute the ratio between model and truth standard deviation.
+
+        Values below 1 indicate under-variability, while values above 1 indicate
+        over-variability relative to the truth.
+
+        Parameters
+        ----------
+        metric_mean_dims : str or Sequence[str]
+            Dimensions over which to compute the standard deviations.
+
+        Returns
+        -------
+        xr.Dataset
+            Ratio of model standard deviation to truth standard deviation.
+        """
+        metric_mean_dims = self._as_tuple(metric_mean_dims)
+
+        def metric_func(model: xr.DataArray, truth: xr.DataArray) -> xr.DataArray:
+            model_std = model.earthml.geo_std(metric_mean_dims)
+            truth_std = truth.earthml.geo_std(metric_mean_dims)
+            truth_std = truth_std.where(truth_std != 0)
+            return model_std / truth_std
+
+        return self._apply_metric_per_model(metric_func)
+
+
+    def variance_ratio_of_mean(
+        self,
+        data_mean_dims: str | Sequence[str],
+        metric_mean_dims: str | Sequence[str],
+    ) -> xr.Dataset:
+        """
+        Compute the ratio between model and truth standard deviation of mean fields.
+
+        The data are first averaged over `data_mean_dims`, then the standard
+        deviation ratio is computed over `metric_mean_dims`.
+
+        Parameters
+        ----------
+        data_mean_dims : str or Sequence[str]
+            Dimensions over which to compute the mean fields.
+        metric_mean_dims : str or Sequence[str]
+            Dimensions over which to compute the standard deviations.
+
+        Returns
+        -------
+        xr.Dataset
+            Variance ratio of mean fields for each model.
+        """
+        data_mean_dims = self._as_tuple(data_mean_dims)
+        metric_mean_dims = self._as_tuple(metric_mean_dims)
+
+        self._check_dims_overlap(data_mean_dims, metric_mean_dims, "data_mean_dims", "metric_mean_dims")
+
+        def metric_func(model: xr.DataArray, truth: xr.DataArray) -> xr.DataArray:
+            model_mean = model.earthml.geo_mean(data_mean_dims)
+            truth_mean = truth.earthml.geo_mean(data_mean_dims)
+            model_std = model_mean.earthml.geo_std(metric_mean_dims)
+            truth_std = truth_mean.earthml.geo_std(metric_mean_dims)
+            truth_std = truth_std.where(truth_std != 0)
+            return model_std / truth_std
 
         return self._apply_metric_per_model(metric_func)
 
