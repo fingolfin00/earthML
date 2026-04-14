@@ -726,7 +726,7 @@ def _set_combined_leadtime_legend(
 
     handles = [*model_handles, *leadtime_handles]
     if handles:
-        ax.legend(handles=handles, fontsize=9, title="Color = model, alpha = leadtime")
+        ax.legend(handles=handles, fontsize=9) #, title="Color = model, alpha = leadtime")
 
 
 def _metric_output_group(metric_type: str) -> str:
