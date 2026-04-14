@@ -400,7 +400,7 @@ class MLBCExperimentLauncher:
                     target_provider = "ocean.copernicusmarine.gopaf.analysis.hourly"
 
                 if self.experiment.name == MLBCExperimentName.JUNO_CMCC__CMEMS: # ocean weather Juno local + cloud for analysis (daily)
-                    input_provider = "ocean.juno.gopaf.forecast.daily.atlantic"
+                    input_provider = "ocean.juno.gopaf.forecast.daily"
                     target_provider = "ocean.copernicusmarine.gopaf.analysis.daily"
 
             return input_provider, target_provider

@@ -9,7 +9,7 @@ JUNO_LOCAL_PROVIDER_NAMES = (
     "atmo.juno.ecmwf.analysis.6hourly",
     "atmo.juno.ecmwf.forecast.hourly",
     "ocean.juno.cmcc.hindcast",
-    "ocean.juno.gopaf.forecast.daily.atlantic",
+    "ocean.juno.gopaf.forecast.daily",
 )
 
 

@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pathlib import Path
 from dateutil.relativedelta import relativedelta
 
@@ -220,17 +222,18 @@ def copernicusmarine_global_ocean_physics_analysis_daily(
     )
 
 # Weather ocean, local Juno, Atlantic box lon: [-18, 1], lat: [30, 46]
-@register_provider("ocean.juno.gopaf.forecast.daily.atlantic")
-def juno_global_ocean_physics_forecast_daily_atlantic(
+@register_provider("ocean.juno.gopaf.forecast.daily")
+def juno_global_ocean_physics_forecast_daily(
     var_name: str,
     leadtime_value: int,
     leadtime_unit: str,
-    root_path: str | Path = "/data/inputs/METOCEAN/rolling/model/ocean/CMS/GlobOce/MERCATOR/1.0forecast/day/",
+    root_path: str | Path = "/work/cmcc/jd19424/test-ML/dataML/mercator/1.0forecast/day/",
     engine: str = "h5netcdf",
     cfgrib_idx_path: str = "",
     regrid_resolution: float = 0.08,
     file_path_date_format: str = "%Y%m%d",
-    file_header: str = "cmems_mod_glo_phy_anfc_0.083deg_P1D-m_MEDATL_*",
+    region_str: Literal["MEDATL", "MEDDRD"] = "MEDATL",
+    file_header: str = "cmems_mod_glo_phy_anfc_0.083deg_P1D-m",
     file_suffix: str = ".nc",
     file_date_format: str = "%Y%m%d",
     both_data_and_previous_date_in_file: bool = True,
@@ -248,7 +251,7 @@ def juno_global_ocean_physics_forecast_daily_atlantic(
             file_open_workers=file_open_workers,
             file_name_config=JunoLocalSourceFileNameConfig(
                 file_path_date_format=file_path_date_format,
-                file_header=file_header,
+                file_header=f"{file_header}_{region_str}_*",
                 file_suffix=file_suffix,
                 file_date_format=file_date_format,
                 both_data_and_previous_date_in_file=both_data_and_previous_date_in_file,
