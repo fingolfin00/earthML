@@ -2203,7 +2203,7 @@ def save_field_timeseries_plots(
         for variable in variables:
             if progress is not None and task_id is not None:
                 progress.update(task_id, description=f"Generating {variable} field timeseries")
-            print(f"Field timeseries variable: {variable}")
+            # print(f"Field timeseries variable: {variable}")
             _ensure_grouped_output_folders(
                 plot_root=plot_folder,
                 variable=variable,
@@ -2299,6 +2299,11 @@ def save_field_timeseries_plots(
                 for plot_kind, title, plot_data in plot_jobs:
                     if not plot_data:
                         continue
+                    if progress is not None and task_id is not None:
+                        progress.update(
+                            task_id,
+                            description=f"Generating {variable} field timeseries: {plot_kind}",
+                        )
 
                     sample_da = next(iter(plot_data.values()))
                     plot_region = _resolved_single_region_label(sample_da, filters=filters)
@@ -2407,6 +2412,13 @@ def save_field_timeseries_plots(
 
                 metric_values = [str(value) for value in da_var["metric"].values.tolist()]
                 for metric_name in metric_values:
+                    if progress is not None and task_id is not None:
+                        progress.update(
+                            task_id,
+                            description=(
+                                f"Generating {variable} {metric_type} metric timeseries: {metric_name}"
+                            ),
+                        )
                     metric_folder = get_variable_output_item_folder(
                         plot_root=plot_folder,
                         variable=variable,
