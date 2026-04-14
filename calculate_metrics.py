@@ -176,7 +176,7 @@ METRIC_PROFILE_PLOT_KNOBS = {
         "r2": "deterministic_with_ensemble_overlay",
         "rmse": "deterministic_with_ensemble_overlay",
         # "nrmse": "deterministic_with_ensemble_overlay",
-        # "rmse_skill_clim": "deterministic_with_ensemble_overlay",
+        "rmse_skill_clim": "deterministic_with_ensemble_overlay",
         "mae": "deterministic_with_ensemble_overlay",
         # "nmae": "deterministic_with_ensemble_overlay",
         "bias": "deterministic_with_ensemble_overlay",
@@ -188,6 +188,16 @@ METRIC_PROFILE_PLOT_KNOBS = {
     },
     "shade_by": "loss",  # e.g. "loss", "total_months"
     "shade_label": "Loss",
+    # Optional cross-variable profile family saved under all_variables/profiles.
+    "enable_combined_variable_profiles": True,
+    # Normalized metrics to compare across variables with variable encoded by color.
+    "combined_variable_metrics": {
+        "nbias": "deterministic_with_ensemble_overlay",
+        "nrmse": "deterministic_with_ensemble_overlay",
+        "nmae": "deterministic_with_ensemble_overlay",
+        "r2": "deterministic_with_ensemble_overlay",
+        "clim_acc": "deterministic_with_ensemble_overlay",
+    },
 }
 
 TABLE_KNOBS = {
@@ -1315,6 +1325,16 @@ def _profile_context_columns(
             and df[col].nunique(dropna=False) > 1
         )
     ]
+
+
+def _model_linestyle(model_name: str, *, probabilistic: bool = False) -> str:
+    if model_name == MODEL_KNOBS["truth_model"]:
+        return "-"
+    if model_name == MODEL_KNOBS["reference_model"]:
+        return ":" if probabilistic else "--"
+    if model_name == MODEL_KNOBS["corrected_model"]:
+        return "-." if probabilistic else "-"
+    return "-"
 
 
 def print_user_config_table() -> None:
@@ -3434,6 +3454,260 @@ def save_metrics_vs_parameter_plots(
     return saved_paths
 
 
+def save_combined_variable_metric_profiles(
+    *,
+    metrics: dict,
+    variables: list[str],
+    plot_folder: Path,
+    leadtime_unit: str,
+    x_axis: str,
+    filters: dict | None,
+    shade_by: str,
+    shade_label: str,
+    progress: Progress | None = None,
+    task_id: int | None = None,
+) -> list[Path]:
+    if x_axis == "variable":
+        raise ValueError("Combined variable metric profiles do not support x_axis='variable'.")
+
+    saved_paths: list[Path] = []
+    variable_colors = get_variable_colors(variables=variables)
+    metric_modes = METRIC_PROFILE_PLOT_KNOBS["combined_variable_metrics"]
+    metric_names = list(metric_modes)
+
+    df_det = build_scalar_metric_df(
+        metrics=metrics,
+        variables=variables,
+        metric_name=None,
+        metric_type="deterministic",
+        diff="no",
+    )
+    df_ens = build_scalar_metric_df(
+        metrics=metrics,
+        variables=variables,
+        metric_name=None,
+        metric_type="ensemble",
+        diff="no",
+    )
+    df_prob = build_scalar_metric_df(
+        metrics=metrics,
+        variables=variables,
+        metric_name=None,
+        metric_type="probabilistic",
+        diff="no",
+    )
+
+    df_det = df_det[df_det["metric"].isin(metric_names)]
+    df_ens = df_ens[df_ens["metric"].isin(metric_names)]
+    df_prob = df_prob[df_prob["metric"].isin(metric_names)]
+
+    df_det = _apply_df_filters_except_axis(df_det, filters=filters, x_axis=x_axis)
+    df_ens = _apply_df_filters_except_axis(df_ens, filters=filters, x_axis=x_axis)
+    df_prob = _apply_df_filters_except_axis(df_prob, filters=filters, x_axis=x_axis)
+
+    output_folder = _profile_output_folder(plot_root=plot_folder, variable=None)
+
+    for metric_name, metric_type in metric_modes.items():
+        if progress is not None and task_id is not None:
+            progress.update(task_id, description=f"Generating all_variables combined profile: {metric_name}")
+
+        df_plot_ens = df_ens[df_ens["metric"] == metric_name]
+        df_plot_det = df_det[df_det["metric"] == metric_name]
+        df_plot_prob = df_prob[df_prob["metric"] == metric_name]
+
+        df_template = df_plot_prob if metric_type == "probabilistic" else df_plot_ens
+        if df_template.empty or x_axis not in df_template.columns:
+            continue
+
+        context_columns = _profile_context_columns(
+            df_template,
+            x_axis=x_axis,
+            shade_by=None if shade_by == x_axis else shade_by,
+        )
+        grouped_items = (
+            list(df_template.groupby(context_columns, dropna=False, sort=True))
+            if context_columns
+            else [((), df_template)]
+        )
+
+        for group_key, _ in grouped_items:
+            if not isinstance(group_key, tuple):
+                group_key = (group_key,)
+
+            context_values = {
+                col: value
+                for col, value in zip(context_columns, group_key)
+                if not pd.isna(value)
+            }
+
+            df_context_ens = df_plot_ens.copy()
+            df_context_det = df_plot_det.copy()
+            df_context_prob = df_plot_prob.copy()
+            for col, value in context_values.items():
+                df_context_ens = df_context_ens[df_context_ens[col] == value]
+                df_context_det = df_context_det[df_context_det[col] == value]
+                df_context_prob = df_context_prob[df_context_prob[col] == value]
+
+            df_context_template = df_context_prob if metric_type == "probabilistic" else df_context_ens
+            x_values = _ordered_profile_axis_values(df_context_template, x_axis=x_axis, variables=variables)
+            if not x_values:
+                continue
+
+            fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 5.5), squeeze=True)
+            x_positions = np.arange(len(x_values))
+
+            if shade_by != x_axis and shade_by in df_context_template.columns:
+                shade_values = [value for value in pd.unique(df_context_template[shade_by]) if pd.notna(value)]
+            else:
+                shade_values = [None]
+
+            plotted = False
+
+            for variable in variables:
+                variable_color = variable_colors.get(variable)
+                df_var_ens = df_context_ens[df_context_ens["variable"] == variable]
+                df_var_det = df_context_det[df_context_det["variable"] == variable]
+                df_var_prob = df_context_prob[df_context_prob["variable"] == variable]
+
+                if df_var_ens.empty and df_var_det.empty and df_var_prob.empty:
+                    continue
+
+                model_values = [
+                    value for value in pd.unique(
+                        (df_var_prob if metric_type == "probabilistic" else df_var_ens)["model"]
+                    ) if pd.notna(value)
+                ]
+
+                for model_name in model_values:
+                    for j, shade_value in enumerate(shade_values):
+                        alpha = 0.35 + 0.55 * (j + 1) / max(1, len(shade_values))
+                        shade_suffix = f", {shade_label}={shade_value}" if shade_value is not None else ""
+                        variable_label = format_variable_display_name(str(variable))
+                        model_label = MODEL_DISPLAY_NAMES.get(str(model_name), str(model_name))
+
+                        if metric_type == "probabilistic":
+                            df_model = df_var_prob[df_var_prob["model"] == model_name]
+                            if shade_value is not None:
+                                df_model = df_model[df_model[shade_by] == shade_value]
+                            y_series = _build_strict_profile_series(
+                                df_model,
+                                x_axis=x_axis,
+                                x_values=x_values,
+                            )
+                            if not pd.notna(y_series).any():
+                                continue
+                            plotted = True
+                            ax.plot(
+                                x_positions,
+                                y_series.values,
+                                marker="o",
+                                linewidth=2.0,
+                                alpha=alpha,
+                                color=variable_color,
+                                linestyle=_model_linestyle(str(model_name), probabilistic=True),
+                                label=f"{variable_label} | {model_label}{shade_suffix}",
+                            )
+                        elif metric_type == "deterministic_with_ensemble_overlay":
+                            df_model_ens = df_var_ens[df_var_ens["model"] == model_name]
+                            df_model_det = df_var_det[df_var_det["model"] == model_name]
+                            if shade_value is not None:
+                                df_model_ens = df_model_ens[df_model_ens[shade_by] == shade_value]
+                                df_model_det = df_model_det[df_model_det[shade_by] == shade_value]
+
+                            y_ens = _build_strict_profile_series(
+                                df_model_ens,
+                                x_axis=x_axis,
+                                x_values=x_values,
+                            )
+                            y_members = _build_strict_member_matrix(
+                                df_model_det,
+                                x_axis=x_axis,
+                                x_values=x_values,
+                            )
+                            if y_members is None and not pd.notna(y_ens).any():
+                                continue
+
+                            if y_members is not None:
+                                y_member_values = y_members.to_numpy()
+                                if pd.notna(y_member_values).any():
+                                    y_mean = np.nanmean(y_member_values, axis=1)
+                                    plotted = True
+                                    ax.plot(
+                                        x_positions,
+                                        y_mean,
+                                        color=variable_color,
+                                        linewidth=2.0,
+                                        alpha=alpha,
+                                        linestyle=_model_linestyle(str(model_name)),
+                                        marker="o",
+                                        markersize=5,
+                                        label=f"{variable_label} | {model_label}{shade_suffix}",
+                                    )
+
+                            if pd.notna(y_ens).any():
+                                plotted = True
+                                ax.plot(
+                                    x_positions,
+                                    y_ens.values,
+                                    color=variable_color,
+                                    linewidth=2.0,
+                                    alpha=alpha,
+                                    linestyle=":",
+                                    marker="o",
+                                    markersize=5,
+                                    label=f"{variable_label} | {model_label} ensemble{shade_suffix}",
+                                )
+                        else:
+                            raise ValueError(f"Unsupported combined variable profile mode {metric_type!r}")
+
+            if not plotted:
+                plt.close(fig)
+                continue
+
+            axis_label = format_axis_display_name(x_axis, leadtime_unit=leadtime_unit.strip() if leadtime_unit else None)
+            metric_label = format_metric_label(metric_name, base_unit=None)
+            _set_title_and_subtitle(
+                fig,
+                ax,
+                title=f"{metric_label} vs {format_axis_display_name(x_axis).lower()} (all variables)",
+                subtitle=_plot_context_subtitle(
+                    context_values,
+                    leadtime_unit=leadtime_unit,
+                    filters=filters,
+                ),
+            )
+            ax.set_xlabel(axis_label)
+            ax.set_ylabel(metric_label)
+            ax.set_xticks(x_positions)
+            ax.set_xticklabels(
+                [_format_profile_axis_tick(value, x_axis=x_axis) for value in x_values],
+                rotation=30 if x_axis in {"train_period", "loss", "variable"} else 0,
+                ha="right" if x_axis in {"train_period", "loss", "variable"} else "center",
+            )
+            ax.grid(True, linestyle="--", alpha=0.35)
+
+            ymin, ymax = ax.get_ylim()
+            if ymin <= 0 <= ymax:
+                ax.axhline(0.0, color="0.3", lw=1.0, ls=":")
+
+            ax.legend(fontsize=8)
+            plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
+
+            filename = f"all_variables_{metric_name}_vs_{_sanitize_filename_fragment(x_axis)}"
+            context_suffix = _context_filename_suffix(context_values)
+            if context_suffix != "all":
+                filename = f"{filename}_{context_suffix}"
+            plot_path = output_folder / f"{filename}.png"
+            fig.savefig(plot_path, bbox_inches="tight", dpi=150)
+            plt.close(fig)
+            saved_paths.append(plot_path)
+
+    if progress is not None and task_id is not None:
+        progress.advance(task_id)
+
+    return saved_paths
+
+
 def _guess_dask_workers_for_host() -> tuple[int | None, str]:
     hostname = socket.gethostname().lower()
     cpu_count = os.cpu_count() or multiprocessing.cpu_count() or 1
@@ -3632,6 +3906,26 @@ def main() -> None:
                 debug_print("Saved metric profile plot to:", profile_plot_path)
         else:
             print("Skipping metric profile plots: GLOBAL_KNOBS['enable_metric_profile_plots'] is False")
+
+        if METRIC_PROFILE_PLOT_KNOBS["enable_combined_variable_profiles"]:
+            combined_profile_task = progress.add_task(
+                f"Generating combined variable profiles ({METRIC_PROFILE_PLOT_KNOBS['x_axis']})",
+                total=1,
+            )
+            combined_profile_paths = save_combined_variable_metric_profiles(
+                metrics=metrics,
+                variables=metric_profile_variables,
+                plot_folder=PLOT_FOLDER,
+                leadtime_unit=f" {leadtime_unit}" if leadtime_unit else "",
+                x_axis=METRIC_PROFILE_PLOT_KNOBS["x_axis"],
+                filters=metric_profile_filters,
+                shade_by=METRIC_PROFILE_PLOT_KNOBS["shade_by"],
+                shade_label=METRIC_PROFILE_PLOT_KNOBS["shade_label"],
+                progress=progress,
+                task_id=combined_profile_task,
+            )
+            for combined_profile_path in combined_profile_paths:
+                debug_print("Saved combined variable profile plot to:", combined_profile_path)
 
         if GLOBAL_KNOBS["enable_scalar_tables"]:
             raw_metrics = {
