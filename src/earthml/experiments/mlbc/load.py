@@ -9,6 +9,14 @@ from pathlib import Path
 import numpy as np
 import cf_xarray
 import pandas as pd
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 import xarray as xr
 
 from ...logging import get_logger
@@ -442,104 +450,117 @@ def load_all_exp_from_folder(
     grouped_runs: dict[str, dict[str, list[xr.Dataset]]] = {}
     grouped_sizes: dict[str, dict[tuple, dict]] = {}
 
-    for config in configs:
-        train_datasets = config.train_dataset
-        train_datasets = train_datasets if isinstance(train_datasets, Sequence) else [train_datasets]
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+    ) as prog:
+        task = prog.add_task("Loading experiments", total=len(configs))
 
-        idx_input = None
-        for i, td in enumerate(train_datasets):
-            if td.role == "input":
-                idx_input = i
-                break
-        if idx_input is None:
-            continue
+        for config in configs:
+            train_datasets = config.train_dataset
+            train_datasets = train_datasets if isinstance(train_datasets, Sequence) else [train_datasets]
 
-        train_ds_input = train_datasets[idx_input]
-        datasource_input = train_ds_input.datasource
-        datasource_input = datasource_input[0] if isinstance(datasource_input, Sequence) else datasource_input
-
-        source_configs = train_ds_input.source_configs
-        source_config = source_configs[0] if isinstance(source_configs, Sequence) else source_configs
-        leadtime_rd = source_config.leadtime
-
-        try:
-            leadtime, leadtime_unit = get_leadtime_value_and_unit(leadtime_rd)
-        except ValueError as exc:
-            raise ValueError(f"Unsupported leadtime for experiment {config.name}: {leadtime_rd}") from exc
-
-        var_input = datasource_input.data_selection.variable.name
-
-        train_periods = datasource_input.data_selection.period
-        train_periods = train_periods if isinstance(train_periods, Sequence) else [train_periods]
-        train_period = f"{train_periods[0].start:%Y%m%d}-{train_periods[-1].end:%Y%m%d}"
-
-        region = datasource_input.data_selection.region.name
-        loss = config.net.loss.lower()
-
-        group_name = _CANONICAL_VARIABLE_NAMES.get(var_input, var_input)
-
-        run_dict, size = _load_single_exp(
-            exp_cfg=config,
-            type_data=type_data,
-            load_train_preds=load_train_preds,
-            load_models=load_models,
-            only_sizes=only_sizes,
-        )
-
-        if not only_sizes:
-            run_dict = {
-                model_name: (
-                    _canonicalize_dataset_variable_names(ds, dataset_name=model_name)
-                    if ds is not None and model_name in {"fc", "an", "pr"} else ds
-                )
-                for model_name, ds in run_dict.items()
-            }
-
-        size_key = (leadtime, train_period, region, loss)
-        grouped_sizes.setdefault(group_name, {})[size_key] = size
-
-        if only_sizes:
-            continue
-
-        grouped_runs.setdefault(group_name, {})
-
-        for model_name, ds in run_dict.items():
-            if ds is None:
+            idx_input = None
+            for i, td in enumerate(train_datasets):
+                if td.role == "input":
+                    idx_input = i
+                    break
+            if idx_input is None:
+                prog.advance(task)
                 continue
 
-            for dim in ["train_period", "loss", "region"]:
-                if dim in ds.dims or dim in ds.coords:
-                    raise ValueError(f"{dim} already exists in dataset")
+            train_ds_input = train_datasets[idx_input]
+            datasource_input = train_ds_input.datasource
+            datasource_input = datasource_input[0] if isinstance(datasource_input, Sequence) else datasource_input
 
-            # leadtime may be already present in dataset
-            if "leadtime" in ds.dims:
-                if ds.sizes["leadtime"] != 1:
-                    raise ValueError(
-                        f"Expected singleton leadtime dimension, got {ds.sizes['leadtime']}"
-                    )
-                ds = ds.squeeze("leadtime", drop=True)
+            source_configs = train_ds_input.source_configs
+            source_config = source_configs[0] if isinstance(source_configs, Sequence) else source_configs
+            leadtime_rd = source_config.leadtime
 
-            if "leadtime" in ds.coords:
-                ds = ds.drop_vars("leadtime")
+            try:
+                leadtime, leadtime_unit = get_leadtime_value_and_unit(leadtime_rd)
+            except ValueError as exc:
+                raise ValueError(f"Unsupported leadtime for experiment {config.name}: {leadtime_rd}") from exc
 
-            ds = ds.expand_dims(leadtime=[leadtime])
+            var_input = datasource_input.data_selection.variable.name
 
-            # set new train_period and loss dims
-            ds = ds.expand_dims(
-                {
-                    "train_period": [train_period],
-                    "loss": [loss],
-                    "region": [region],
-                }
+            train_periods = datasource_input.data_selection.period
+            train_periods = train_periods if isinstance(train_periods, Sequence) else [train_periods]
+            train_period = f"{train_periods[0].start:%Y%m%d}-{train_periods[-1].end:%Y%m%d}"
+
+            region = datasource_input.data_selection.region.name
+            loss = config.net.loss.lower()
+
+            group_name = _CANONICAL_VARIABLE_NAMES.get(var_input, var_input)
+
+            run_dict, size = _load_single_exp(
+                exp_cfg=config,
+                type_data=type_data,
+                load_train_preds=load_train_preds,
+                load_models=load_models,
+                only_sizes=only_sizes,
             )
 
-            ds.coords["leadtime"].attrs["unit"] = leadtime_unit
+            if not only_sizes:
+                run_dict = {
+                    model_name: (
+                        _canonicalize_dataset_variable_names(ds, dataset_name=model_name)
+                        if ds is not None and model_name in {"fc", "an", "pr"} else ds
+                    )
+                    for model_name, ds in run_dict.items()
+                }
 
-            grouped_runs[group_name].setdefault(model_name, []).append(ds)
+            size_key = (leadtime, train_period, region, loss)
+            grouped_sizes.setdefault(group_name, {})[size_key] = size
 
-            # print(model_name, group_name, ds.dims, ds.coords)
-            # for v in ds.data_vars:
-            #     print("   ", v, ds[v].dims)
+            if only_sizes:
+                prog.advance(task)
+                continue
+
+            grouped_runs.setdefault(group_name, {})
+
+            for model_name, ds in run_dict.items():
+                if ds is None:
+                    continue
+
+                for dim in ["train_period", "loss", "region"]:
+                    if dim in ds.dims or dim in ds.coords:
+                        raise ValueError(f"{dim} already exists in dataset")
+
+                # leadtime may be already present in dataset
+                if "leadtime" in ds.dims:
+                    if ds.sizes["leadtime"] != 1:
+                        raise ValueError(
+                            f"Expected singleton leadtime dimension, got {ds.sizes['leadtime']}"
+                        )
+                    ds = ds.squeeze("leadtime", drop=True)
+
+                if "leadtime" in ds.coords:
+                    ds = ds.drop_vars("leadtime")
+
+                ds = ds.expand_dims(leadtime=[leadtime])
+
+                # set new train_period and loss dims
+                ds = ds.expand_dims(
+                    {
+                        "train_period": [train_period],
+                        "loss": [loss],
+                        "region": [region],
+                    }
+                )
+
+                ds.coords["leadtime"].attrs["unit"] = leadtime_unit
+
+                grouped_runs[group_name].setdefault(model_name, []).append(ds)
+
+                # print(model_name, group_name, ds.dims, ds.coords)
+                # for v in ds.data_vars:
+                #     print("   ", v, ds[v].dims)
+
+            prog.advance(task)
 
     if only_sizes:
         return {}, grouped_sizes
