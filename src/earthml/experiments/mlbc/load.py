@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+from contextlib import nullcontext
 from dataclasses import is_dataclass, replace
 from typing import Sequence
 
@@ -394,6 +395,7 @@ def load_all_exp_from_folder(
     load_models: Sequence[str] | None = None,
     only_sizes: bool = False,
     cfg_name: str = "experiment.cfg",
+    show_progress: bool = True,
 ) -> tuple[dict[str, xr.Dataset], dict]:
     """
     Fetch all experiments in a provided folder.
@@ -459,14 +461,19 @@ def load_all_exp_from_folder(
     grouped_runs: dict[str, dict[str, list[xr.Dataset]]] = {}
     grouped_sizes: dict[str, dict[tuple, dict]] = {}
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TimeElapsedColumn(),
-    ) as prog:
-        task = prog.add_task("Loading experiments", total=len(configs))
+    progress_cm = (
+        Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+        )
+        if show_progress else nullcontext()
+    )
+
+    with progress_cm as prog:
+        task = prog.add_task("Loading experiments", total=len(configs)) if show_progress else None
 
         for config in configs:
             train_datasets = config.train_dataset
@@ -478,7 +485,8 @@ def load_all_exp_from_folder(
                     idx_input = i
                     break
             if idx_input is None:
-                prog.advance(task)
+                if show_progress:
+                    prog.advance(task)
                 continue
 
             train_ds_input = train_datasets[idx_input]
@@ -504,13 +512,14 @@ def load_all_exp_from_folder(
             loss = config.net.loss.lower()
 
             group_name = _CANONICAL_VARIABLE_NAMES.get(var_input, var_input)
-            prog.update(
-                task,
-                description=(
-                    f"Loading {group_name} | leadtime={leadtime} {leadtime_unit} | "
-                    f"region={region} | loss={loss}"
-                ),
-            )
+            if show_progress:
+                prog.update(
+                    task,
+                    description=(
+                        f"Loading {group_name} | leadtime={leadtime} {leadtime_unit} | "
+                        f"region={region} | loss={loss}"
+                    ),
+                )
 
             run_dict, size = _load_single_exp(
                 exp_cfg=config,
@@ -518,7 +527,7 @@ def load_all_exp_from_folder(
                 load_train_preds=load_train_preds,
                 load_models=load_models,
                 only_sizes=only_sizes,
-                show_dask_progress=False,
+                show_dask_progress=not show_progress,
             )
 
             if not only_sizes:
@@ -534,7 +543,8 @@ def load_all_exp_from_folder(
             grouped_sizes.setdefault(group_name, {})[size_key] = size
 
             if only_sizes:
-                prog.advance(task)
+                if show_progress:
+                    prog.advance(task)
                 continue
 
             grouped_runs.setdefault(group_name, {})
@@ -577,45 +587,74 @@ def load_all_exp_from_folder(
                 # for v in ds.data_vars:
                 #     print("   ", v, ds[v].dims)
 
-            prog.advance(task)
+            if show_progress:
+                prog.advance(task)
 
     if only_sizes:
         return {}, grouped_sizes
 
+    combine_steps = sum(
+        1
+        for model_map in grouped_runs.values()
+        for runs in model_map.values()
+        if runs
+    )
     combined_by_group_and_model: dict[str, dict[str, xr.Dataset]] = {}
-    for group_name, model_map in grouped_runs.items():
-        combined_by_group_and_model[group_name] = {}
-        for model_name, runs in model_map.items():
-            if not runs:
-                continue
-
-            combined_by_group_and_model[group_name][model_name] = xr.combine_by_coords(
-                runs,
-                combine_attrs="drop_conflicts",
-            )
-
     runs_out: dict[str, xr.Dataset] = {}
     all_model_names = {
         model_name
-        for model_map in combined_by_group_and_model.values()
+        for model_map in grouped_runs.values()
         for model_name in model_map
     }
+    merge_steps = len(all_model_names)
 
-    for model_name in all_model_names:
-        model_datasets = [
-            model_map[model_name]
-            for model_map in combined_by_group_and_model.values()
-            if model_name in model_map
-        ]
-        if not model_datasets:
-            continue
-
-        runs_out[model_name] = xr.merge(
-            model_datasets,
-            join="outer",
-            compat="no_conflicts",
-            combine_attrs="drop_conflicts",
+    progress_cm = (
+        Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
         )
+        if show_progress else nullcontext()
+    )
+
+    with progress_cm as prog:
+        combine_task = prog.add_task("Combining grouped runs", total=combine_steps) if show_progress else None
+        merge_task = prog.add_task("Merging models", total=merge_steps) if show_progress else None
+
+        for group_name, model_map in grouped_runs.items():
+            combined_by_group_and_model[group_name] = {}
+            for model_name, runs in model_map.items():
+                if not runs:
+                    continue
+
+                combined_by_group_and_model[group_name][model_name] = xr.combine_by_coords(
+                    runs,
+                    combine_attrs="drop_conflicts",
+                )
+                if show_progress:
+                    prog.advance(combine_task)
+
+        for model_name in all_model_names:
+            model_datasets = [
+                model_map[model_name]
+                for model_map in combined_by_group_and_model.values()
+                if model_name in model_map
+            ]
+            if not model_datasets:
+                if show_progress:
+                    prog.advance(merge_task)
+                continue
+
+            runs_out[model_name] = xr.merge(
+                model_datasets,
+                join="outer",
+                compat="no_conflicts",
+                combine_attrs="drop_conflicts",
+            )
+            if show_progress:
+                prog.advance(merge_task)
 
     return runs_out, grouped_sizes
 
