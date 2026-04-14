@@ -99,7 +99,7 @@ GLOBAL_KNOBS = {
 BASE_FILTERS = {
     # Default analysis slice shared across timeseries, maps, tables and profiles unless overridden below.
     # For scoreboard and diff plots, use dedicated filters below
-    "leadtime": [1, 2, 3, 4],
+    "leadtime": [1, 2, 3, 4, 5],
     "variable": ["t2m"], # None, ["t2m"]
     "region": ["ConUS"], # ConUS, Europe
     # "leadtime": [6],
@@ -162,7 +162,7 @@ MAP_PLOT_KNOBS = {
 METRIC_PROFILE_PLOT_KNOBS = {
     # Per-output overrides on top of BASE_FILTERS.
     "filters": {
-        "variable": ["t2m"],
+        "variable": ["t2m", "msl", "d2m", "u10", "v10", "msl"],
         "leadtime": None,
         "region": None,
         "train_period": None,
