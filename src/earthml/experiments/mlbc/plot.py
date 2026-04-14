@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/earthml-matplotlib")
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -34,6 +37,80 @@ def _get_stage_plot_folder(root: Path, data_type: str) -> Path:
     stage_plot_folder = root.joinpath(data_type)
     stage_plot_folder.mkdir(parents=True, exist_ok=True)
     return stage_plot_folder
+
+
+def _sanitize_plot_name(name: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in name)
+
+
+def export_lightning_curves(
+    *,
+    logger,
+    log_dir: str | Path,
+    plots_folder_path: Path,
+) -> None:
+    log_dir = Path(log_dir)
+    if not log_dir.exists():
+        logger.warning("Skip Lightning curve export: log dir does not exist: %s", log_dir)
+        return
+
+    training_curves_folder_path = plots_folder_path.joinpath("training_curves")
+    training_curves_folder_path.mkdir(parents=True, exist_ok=True)
+
+    try:
+        from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+    except ImportError:
+        logger.warning("Skip Lightning curve export: tensorboard is not installed.")
+        return
+
+    try:
+        event_accumulator = EventAccumulator(str(log_dir))
+        event_accumulator.Reload()
+        scalar_tags = event_accumulator.Tags().get("scalars", [])
+    except Exception as exc:
+        logger.warning("Skip Lightning curve export: failed to read TensorBoard events in %s (%s)", log_dir, exc)
+        return
+
+    if not scalar_tags:
+        logger.info("Skip Lightning curve export: no scalar tags found in %s", log_dir)
+        return
+
+    exported = 0
+    for tag in scalar_tags:
+        try:
+            scalar_events = event_accumulator.Scalars(tag)
+        except Exception as exc:
+            logger.warning("Skip Lightning scalar tag %s: %s", tag, exc)
+            continue
+
+        if not scalar_events:
+            continue
+
+        steps = [event.step for event in scalar_events]
+        values = [event.value for event in scalar_events]
+
+        fig, ax = plt.subplots(figsize=(9, 4.5))
+        ax.plot(steps, values, linewidth=2)
+        ax.set_title(tag.replace("_", " "))
+        ax.set_xlabel("step")
+        ax.set_ylabel(tag)
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+
+        out_path = training_curves_folder_path / f"{_sanitize_plot_name(tag)}.png"
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        exported += 1
+
+    if exported == 0:
+        logger.info("Skip Lightning curve export: scalar tags were found in %s but no plots were written.", log_dir)
+        return
+
+    logger.info(
+        "Saved %s Lightning curve plot(s) to %s",
+        exported,
+        training_curves_folder_path,
+    )
 
 
 def _select_plot_var(ds: xr.Dataset, var: str) -> xr.Dataset:

@@ -7,10 +7,10 @@ from copy import deepcopy
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import xarray as xr
 from zarr.codecs import BloscCodec
 
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 import lightning as L
@@ -26,6 +26,7 @@ from ...logging import get_logger, log_renderable
 from ...neural import XarrayDataset, Normalize, EpochRandomSplitDataModule
 from ...neural.nets import build_net
 from .plot import (
+    export_lightning_curves,
     run_stage_plot_bundle,
 )
 
@@ -1135,6 +1136,11 @@ class MLBCExperiment:
             datamodule=self.train_datamodule,
             ckpt_path=ckpt_path,
         )
+        export_lightning_curves(
+            logger=self.logger,
+            log_dir=self.tl_logger.log_dir,
+            plots_folder_path=self.plots_folder_path,
+        )
 
     def _test(
         self,
@@ -1189,6 +1195,11 @@ class MLBCExperiment:
 
         # Test
         self._init_test_trainer().test(self.model, dataloaders=dataloader)
+        export_lightning_curves(
+            logger=self.logger,
+            log_dir=self.tl_logger.log_dir,
+            plots_folder_path=self.plots_folder_path,
+        )
         # print(f"Available attributes in model: {dir(self.model)}")
 
         # Rescale preds with target normalization
