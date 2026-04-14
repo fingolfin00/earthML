@@ -271,6 +271,7 @@ def _load_single_exp(
     load_train_preds: bool = False,
     load_models: Sequence[str] | None = None,
     only_sizes: bool = False,
+    show_dask_progress: bool = True,
 ) -> tuple[dict[str, xr.Dataset], dict]:
     exp_path, experiment = _load_saved_experiment(exp_cfg)
 
@@ -305,21 +306,27 @@ def _load_single_exp(
             source["input"],
             exp_path / f"{type_data}_input.zarr",
         )
-        fc: xr.Dataset = source["input"].reload().earthml.normalize_dims_and_coords()
+        fc: xr.Dataset = source["input"].reload(
+            show_dask_progress=show_dask_progress,
+        ).earthml.normalize_dims_and_coords()
 
     if need_an:
         source["target"] = _source_with_root_path(
             source["target"],
             exp_path / f"{type_data}_target.zarr",
         )
-        an: xr.Dataset = source["target"].reload().earthml.normalize_dims_and_coords()
+        an: xr.Dataset = source["target"].reload(
+            show_dask_progress=show_dask_progress,
+        ).earthml.normalize_dims_and_coords()
 
     if need_pr and (type_data == "test" or load_train_preds) and "prediction" in source:
         source["prediction"] = _source_with_root_path(
             source["prediction"],
             exp_path / f"{type_data}_preds.zarr",
         )
-        pr: xr.Dataset = source["prediction"].reload().earthml.normalize_dims_and_coords()
+        pr: xr.Dataset = source["prediction"].reload(
+            show_dask_progress=show_dask_progress,
+        ).earthml.normalize_dims_and_coords()
 
     if fc is not None and an is not None:
         fc = _prefer_valid_time_for_alignment(fc, an)
@@ -327,7 +334,9 @@ def _load_single_exp(
     mask = _source_with_root_path(
         mask_source,
         exp_path / f"mask/{type_data}_mask.zarr",
-    ).reload()
+    ).reload(
+        show_dask_progress=show_dask_progress,
+    )
     mask: xr.Dataset = mask.earthml.normalize_dims_and_coords()
 
     out = {}
@@ -495,6 +504,13 @@ def load_all_exp_from_folder(
             loss = config.net.loss.lower()
 
             group_name = _CANONICAL_VARIABLE_NAMES.get(var_input, var_input)
+            prog.update(
+                task,
+                description=(
+                    f"Loading {group_name} | leadtime={leadtime} {leadtime_unit} | "
+                    f"region={region} | loss={loss}"
+                ),
+            )
 
             run_dict, size = _load_single_exp(
                 exp_cfg=config,
@@ -502,6 +518,7 @@ def load_all_exp_from_folder(
                 load_train_preds=load_train_preds,
                 load_models=load_models,
                 only_sizes=only_sizes,
+                show_dask_progress=False,
             )
 
             if not only_sizes:
