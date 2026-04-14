@@ -23,7 +23,6 @@ from matplotlib.lines import Line2D
 import numpy as np
 import pandas as pd
 import xarray as xr
-from rich import print
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -387,7 +386,7 @@ AXIS_DISPLAY_NAMES = {
 
 def debug_print(*args, **kwargs) -> None:
     if DEBUG:
-        print(*args, **kwargs)
+        CONSOLE.print(*args, **kwargs)
 
 
 def _resolved_single_region_label(
@@ -1539,9 +1538,9 @@ def _print_rich_dataframe_table(
                 row_cells.append(_format_scalar_value(val, significant_digits))
         rich_table.add_row(*row_cells)
 
-    print(rich_table)
+    CONSOLE.print(rich_table)
     if subtitle:
-        print(Text(subtitle, style="italic bright_black"))
+        CONSOLE.print(Text(subtitle, style="italic bright_black"))
 
 
 def _format_table_for_display(
@@ -1800,9 +1799,9 @@ def print_available_scalar_metrics(*, metrics: dict) -> None:
             continue
         inventory[metric_type] = [str(metric) for metric in ds_scalar.coords["metric"].values.tolist()]
 
-    print("Available scalar metrics:")
+    CONSOLE.print("Available scalar metrics:")
     for metric_type, metric_names in inventory.items():
-        print(f"  {metric_type}: {metric_names or 'none'}")
+        CONSOLE.print(f"  {metric_type}: {metric_names or 'none'}")
 
 
 def _build_deterministic_summary_frame(
@@ -2952,7 +2951,7 @@ def save_field_and_metric_map_plots(
         progress.update(task_id, total=total_plots, completed=0, description="Generating maps")
 
     for variable in variables:
-        print(f"Map variable: {variable}")
+        CONSOLE.print(f"Map variable: {variable}")
         _ensure_grouped_output_folders(
             plot_root=plot_folder,
             variable=variable,
@@ -3241,7 +3240,7 @@ def save_metrics_vs_parameter_plots(
                 task_id,
                 description=f"Generating {profile_variable} metric profiles ({x_axis})",
             )
-        print(f"Metric profile variable: {variable if variable is not None else 'all_variables'}")
+        CONSOLE.print(f"Metric profile variable: {variable if variable is not None else 'all_variables'}")
         output_folder = _profile_output_folder(plot_root=plot_folder, variable=variable)
         variable_mask = slice(None) if variable is None else variable
 
@@ -3728,14 +3727,14 @@ def _guess_dask_workers_for_host() -> tuple[int | None, str]:
 
 def main() -> None:
     dask_workers, dask_worker_reason = _guess_dask_workers_for_host()
-    print(f"Dask worker guess: {dask_workers if dask_workers is not None else 'auto'} ({dask_worker_reason})")
+    CONSOLE.print(f"Dask worker guess: {dask_workers if dask_workers is not None else 'auto'} ({dask_worker_reason})")
     dask_earthml = Dask(n_workers=dask_workers, memory_limit="100GiB")
     dask_earthml.start()
     client = dask_earthml.client
     base_url = "http://localhost:"
-    print("Dask dashboard:", client.dashboard_link.replace("http://127.0.0.1:", base_url))
+    CONSOLE.print("Dask dashboard:", client.dashboard_link.replace("http://127.0.0.1:", base_url))
 
-    print(f"Loading experiments from: {GLOBAL_KNOBS['exp_root_folder']}")
+    CONSOLE.print(f"Loading experiments from: {GLOBAL_KNOBS['exp_root_folder']}")
     print_user_config_table()
 
     field_timeseries_filters = _merge_filters(BASE_FILTERS, FIELD_TIMESERIES_KNOBS["filters"])
@@ -3767,7 +3766,7 @@ def main() -> None:
         for key, value in load_selection.items()
         if key != "variable"
     }
-    print(f"Load selection: variables={load_variables or 'all'}, run_filters={load_run_filters or 'all'}")
+    CONSOLE.print(f"Load selection: variables={load_variables or 'all'}, run_filters={load_run_filters or 'all'}")
 
     runs, metrics, _ = get_runs_and_metrics(
         exp_root=GLOBAL_KNOBS["exp_root_folder"],
@@ -3783,7 +3782,7 @@ def main() -> None:
     variables = [v for v in runs[reference_model].data_vars if v != "_has_var"]
     variable_units = _get_variable_units_from_runs(runs, variables)
     PLOT_FOLDER.mkdir(parents=True, exist_ok=True)
-    print(f"Processed vars: {variables}")
+    CONSOLE.print(f"Processed vars: {variables}")
     leadtime_unit = infer_leadtime_unit_from_configs(GLOBAL_KNOBS["exp_root_folder"])
     field_timeseries_variables = _filter_variables_by_filters(variables, field_timeseries_filters)
     map_variables = _filter_variables_by_filters(variables, map_filters)
@@ -3801,10 +3800,10 @@ def main() -> None:
     scoreboard_filename_context = _merge_filename_contexts(
         _filters_filename_context(scoreboard_filters),
     )
-    print(f"Inferred leadtime unit: {leadtime_unit or 'unknown'}")
-    print(f"Inferred map region: {map_region or 'unknown'}")
-    print(f"Inferred diff region: {diff_region or 'unknown'}")
-    print(f"Inferred region extent: {region_extent or 'unknown'}")
+    CONSOLE.print(f"Inferred leadtime unit: {leadtime_unit or 'unknown'}")
+    CONSOLE.print(f"Inferred map region: {map_region or 'unknown'}")
+    CONSOLE.print(f"Inferred diff region: {diff_region or 'unknown'}")
+    CONSOLE.print(f"Inferred region extent: {region_extent or 'unknown'}")
     print_available_scalar_metrics(metrics=metrics)
 
     with build_progress() as progress:
@@ -3826,7 +3825,7 @@ def main() -> None:
             for field_timeseries_path in field_timeseries_paths:
                 debug_print("Saved field timeseries plot to:", field_timeseries_path)
         else:
-            print("Skipping field timeseries: GLOBAL_KNOBS['enable_field_timeseries'] is False")
+            CONSOLE.print("Skipping field timeseries: GLOBAL_KNOBS['enable_field_timeseries'] is False")
 
         if GLOBAL_KNOBS["enable_maps"]:
             map_task = progress.add_task("Generating maps", total=len(map_variables))
@@ -3844,7 +3843,7 @@ def main() -> None:
             for field_map_path in field_map_paths:
                 debug_print("Saved map plot to:", field_map_path)
         else:
-            print("Skipping maps: GLOBAL_KNOBS['enable_maps'] is False")
+            CONSOLE.print("Skipping maps: GLOBAL_KNOBS['enable_maps'] is False")
 
         if GLOBAL_KNOBS["enable_diff_plot"]:
             diff_task = progress.add_task("Generating metric-vs-delta plot", total=1)
@@ -3881,7 +3880,7 @@ def main() -> None:
             progress.advance(diff_task)
             debug_print("Saved leadtime-vs-global-metrics plot to:", plot_path)
         else:
-            print("Skipping diff plot: GLOBAL_KNOBS['enable_diff_plot'] is False")
+            CONSOLE.print("Skipping diff plot: GLOBAL_KNOBS['enable_diff_plot'] is False")
 
         if GLOBAL_KNOBS["enable_metric_profile_plots"]:
             profile_total = 1 if METRIC_PROFILE_PLOT_KNOBS["x_axis"] == "variable" else len(metric_profile_variables)
@@ -3905,7 +3904,7 @@ def main() -> None:
             for profile_plot_path in profile_plot_paths:
                 debug_print("Saved metric profile plot to:", profile_plot_path)
         else:
-            print("Skipping metric profile plots: GLOBAL_KNOBS['enable_metric_profile_plots'] is False")
+            CONSOLE.print("Skipping metric profile plots: GLOBAL_KNOBS['enable_metric_profile_plots'] is False")
 
         if METRIC_PROFILE_PLOT_KNOBS["enable_combined_variable_profiles"]:
             combined_profile_task = progress.add_task(
@@ -3942,7 +3941,7 @@ def main() -> None:
             table_task = progress.add_task("Generating scalar tables", total=len(scalar_table_variables) + 1)
             for variable in scalar_table_variables:
                 progress.update(table_task, description=f"Generating {variable} scalar tables")
-                print(f"Scalar table variable: {variable}")
+                CONSOLE.print(f"Scalar table variable: {variable}")
                 variable_plot_folder = _table_output_folder(plot_root=PLOT_FOLDER, variable=variable)
                 base_color = get_variable_table_color(variable=variable, variables=variables)
                 scalar_table_paths = save_scalar_metric_tables(
@@ -3975,12 +3974,12 @@ def main() -> None:
                 leadtime_unit=leadtime_unit,
                 base_color=get_variable_table_color(variable=variables[0], variables=variables),
             )
-            print("Scalar table variable: all_variables")
+            CONSOLE.print("Scalar table variable: all_variables")
             progress.advance(table_task)
             for normalized_table_path in combined_normalized_table_paths:
                 debug_print("Saved combined normalized metrics table to:", normalized_table_path)
         else:
-            print("Skipping scalar tables: GLOBAL_KNOBS['enable_scalar_tables'] is False")
+            CONSOLE.print("Skipping scalar tables: GLOBAL_KNOBS['enable_scalar_tables'] is False")
 
         if GLOBAL_KNOBS["enable_scoreboard"]:
             scoreboard_task = progress.add_task("Generating scoreboard", total=1)
@@ -3995,7 +3994,7 @@ def main() -> None:
             progress.advance(scoreboard_task)
             debug_print("Saved scoreboard plot to:", scoreboard_path)
         else:
-            print("Skipping scoreboard: GLOBAL_KNOBS['enable_scoreboard'] is False")
+            CONSOLE.print("Skipping scoreboard: GLOBAL_KNOBS['enable_scoreboard'] is False")
 
 
 if __name__ == "__main__":
