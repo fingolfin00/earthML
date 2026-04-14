@@ -14,6 +14,7 @@ if __name__ == "__main__":
     # User params
     # ----------------------------------------------------------------------------------
     max_retries                 = 4
+    force_retrain               = False
 
     experiment_type             = "seasonal"                # seasonal, weather
     experiment_name             = "cds-cmcc_era5"          # cds-cmcc_oras5, cds-cmcc_era5
@@ -156,6 +157,7 @@ if __name__ == "__main__":
             dask_workers=2,
             memory_limit="8GB",
             only_longest_train_period=only_longest_train_period,
+            force_retrain=force_retrain,
             # Providers args
             earthkit_cache_dir=earthkit_cache_dir,
             regrid_resolution=1,

@@ -15,6 +15,8 @@ if __name__ == "__main__":
     # User params
     # ----------------------------------------------------------------------------------
     max_retries                 = 4
+    force_retrain               = False
+
     experiment_type             = "weather"                 # seasonal, weather
     experiment_name             = "juno-ecmwf_juno-ecmwf"             # cmems_cmems, juno-ecmwf_juno-ecmwf, juno-cmcc_cmems
 
@@ -241,7 +243,9 @@ if __name__ == "__main__":
             net=net,
             # Optional
             dask_workers=None,
+            memory_limit="8GB",
             only_longest_train_period=only_longest_train_period,
+            force_retrain=force_retrain,
             # Providers args
             earthkit_cache_dir=earthkit_cache_dir,
             regrid_resolution=regrid_resolution,
