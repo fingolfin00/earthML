@@ -195,7 +195,10 @@ class BaseSource(ABC):
         return ds
 
 
-    def load(self) -> xr.Dataset:
+    def load(
+        self,
+        show_dask_progress: bool = True,
+    ) -> xr.Dataset:
         """Get data only if it hasn't loaded yet"""
         if self.ds is None:
             logger.info("Load data from %s...", self.source_name)
@@ -220,7 +223,8 @@ class BaseSource(ABC):
                 logger.info("  3/3 materializing on cluster...")
                 ds = ds.chunk() # ensure it's dask-backed (no-op if already)
                 ds = ds.persist()
-                progress(ds) # show progress bar
+                if show_dask_progress:
+                    progress(ds) # show progress bar
                 wait(ds) # block load() until materialised
 
             self.ds = ds
@@ -230,10 +234,13 @@ class BaseSource(ABC):
         return self.ds
 
 
-    def reload(self) -> xr.Dataset:
+    def reload(
+        self,
+        show_dask_progress: bool = True,
+    ) -> xr.Dataset:
         """Force data reload"""
         self.ds = None
-        return self.load()
+        return self.load(show_dask_progress=show_dask_progress)
 
 
     def save(
