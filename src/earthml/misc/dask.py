@@ -79,12 +79,12 @@ class Dask:
 
         import socket
         logger.info("Dask dashboard running on %s:%s", socket.gethostname(), self.cluster.scheduler.services["dashboard"].port)
-        logger.info(
+        logger.debug(
             "Dask scheduler-visible workers: %s -> %s",
             n_scheduler_workers,
             scheduler_workers,
         )
-        logger.info(
+        logger.debug(
             "Dask reachable workers via client.run(): %s -> %s",
             n_active_workers,
             reachable_workers,
