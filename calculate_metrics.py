@@ -377,6 +377,8 @@ METRIC_DISPLAY_NAMES = {
     "crmse": "CRMSE",
     "mae": "MAE",
     "bias": "Bias",
+    "error_std": "Error Std",
+    "variance_ratio": "Variance Ratio",
     "nrmse": "nRMSE",
     "ncrmse": "nCRMSE",
     "nmae": "nMAE",
@@ -1453,7 +1455,7 @@ def _get_variable_units_from_runs(runs: dict[str, xr.Dataset], variables: list[s
 
 
 def _metric_unit(metric_name: str, base_unit: str | None) -> str | None:
-    if metric_name in {"rmse", "crmse", "mae", "bias", "crps", "spread"}:
+    if metric_name in {"rmse", "crmse", "mae", "bias", "error_std", "crps", "spread"}:
         return base_unit
     return None
 
@@ -1675,12 +1677,14 @@ def _metric_higher_is_better(metric: str) -> bool | None:
         "crmse": False,
         "mae": False,
         "bias": False,
+        "error_std": False,
         "nrmse": False,
         "ncrmse": False,
         "nmae": False,
         "nbias": False,
         "crps": False,
         "spread": None,
+        "variance_ratio": None,
         "spread_error_ratio": None,
     }
     return mapping.get(metric)
@@ -1691,6 +1695,8 @@ def _metric_gain_value(metric_name: str | None, reference_value: float, correcte
         return np.nan
     if metric_name in {"bias", "nbias"}:
         return abs(reference_value) - abs(corrected_value)
+    if metric_name == "variance_ratio":
+        return abs(reference_value - 1.0) - abs(corrected_value - 1.0)
     if metric_name == "spread_error_ratio":
         return abs(reference_value - 1.0) - abs(corrected_value - 1.0)
 
