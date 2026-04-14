@@ -33,6 +33,8 @@ def plot_scoreboard(
     metric_vlims=None,
     metric_names=None,
     display_name_maps=None,
+    inner_x_display_name_map=None,
+    inner_y_display_name_map=None,
     metric_factor=1,
     figsize=None,
     cell_size=(0.8, 0.5),   # (width_per_score, height_per_score) in inches
@@ -97,6 +99,15 @@ def plot_scoreboard(
             return str(formatter.get(value, value))
         return str(value)
 
+    def _format_inner_display(display_map, index_name, value):
+        if display_map is None:
+            return _format_display(index_name, value)
+        if callable(display_map):
+            return str(display_map(value))
+        if isinstance(display_map, dict):
+            return str(display_map.get(value, value))
+        return str(value)
+
     def _expand_degenerate_limits(vmin, vmax):
         if not (np.isfinite(vmin) and np.isfinite(vmax)):
             return vmin, vmax, False
@@ -109,6 +120,17 @@ def plot_scoreboard(
         else:
             delta = max(abs(center) * 0.1, 1e-6)
         return center - delta, center + delta, True
+
+    def _make_symmetric_limits(vmin, vmax):
+        if not (np.isfinite(vmin) and np.isfinite(vmax)):
+            return vmin, vmax, False
+        if not (vmin < 0.0 < vmax):
+            return vmin, vmax, False
+
+        bound = max(abs(float(vmin)), abs(float(vmax)))
+        if bound == 0.0:
+            return -1.0, 1.0, True
+        return -bound, bound, True
 
     data = df.copy()
 
@@ -254,6 +276,11 @@ def plot_scoreboard(
             vmin, vmax = 0.0, 1.0
             print(f"[scoreboard] metric={m} limits=({vmin}, {vmax}) source=default")
 
+        vmin_sym, vmax_sym, symmetric = _make_symmetric_limits(vmin, vmax)
+        if symmetric:
+            print(f"[scoreboard] metric={m} symmetric_limits=({vmin_sym}, {vmax_sym}) center=0.0")
+            vmin, vmax = vmin_sym, vmax_sym
+
         cmap = metric_cmaps.get(m, "viridis")
         im_row = None
 
@@ -315,18 +342,21 @@ def plot_scoreboard(
                 ax.set_title(title_text, fontsize=plt_outer_fontsize)
 
             ax.set_xticks(range(len(p.columns)))
-            if i == len(outer_y_vals) - 1:
-                ax.set_xticklabels(
-                    [_format_display(inner_x["index"], value) for value in p.columns],
-                    fontsize=plt_inner_fontsize,
-                )
-            else:
-                ax.set_xticklabels([])
+            ax.set_xticklabels(
+                [
+                    _format_inner_display(inner_x_display_name_map, inner_x["index"], value)
+                    for value in p.columns
+                ],
+                fontsize=plt_inner_fontsize,
+            )
 
             ax.set_yticks(range(len(p.index)))
             if j == 0:
                 ax.set_yticklabels(
-                    [_format_display(inner_y["index"], value) for value in p.index],
+                    [
+                        _format_inner_display(inner_y_display_name_map, inner_y["index"], value)
+                        for value in p.index
+                    ],
                     fontsize=plt_inner_fontsize,
                 )
             else:
