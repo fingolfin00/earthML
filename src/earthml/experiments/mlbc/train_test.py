@@ -1226,13 +1226,20 @@ class MLBCExperiment:
         log_renderable(Table({f"Test on {test_data_mode.capitalize()} dataset run info": meta}, twocols=True).table, logger=self.logger)
         log_renderable(Table({f"Test on {test_data_mode.capitalize()} dataset metrics (per variable)": var_cols}).table, logger=self.logger)
 
-        pred_ds = self.save(preds, dataset, var_list, preds_store)
+        pred_ds_raw, pred_ds_masked = self.save(preds, dataset, var_list, preds_store)
         self._plot_prediction_stage(
-            pred_ds=pred_ds,
+            pred_ds=pred_ds_raw,
             input_ds=test_input_ds,
             target_ds=test_target_ds,
             mode=test_data_mode,
-            stage="test_preds",
+            stage="test_preds_unmasked",
+        )
+        self._plot_prediction_stage(
+            pred_ds=pred_ds_masked,
+            input_ds=test_input_ds,
+            target_ds=test_target_ds,
+            mode=test_data_mode,
+            stage="test_preds_masked",
         )
 
         return dataloader
@@ -1414,7 +1421,7 @@ class MLBCExperiment:
         if rdim not in meta_ds.dims:
             data_vars = data_vars.squeeze(1)  # (C,T,H,W)
 
-        ds = xr.Dataset(
+        pred_ds_raw = xr.Dataset(
             {
                 var.name: (dims, data_vars[i].cpu().numpy())
                 for i, var in enumerate(var_list)
@@ -1428,22 +1435,22 @@ class MLBCExperiment:
         if self.config.anomaly:
             # print("TARGET CLIM vars:", self.target_clim_ts.data_vars)
             # Rename clim vars
-            assert len(self.target_clim_ts.data_vars) == len(ds.data_vars)
+            assert len(self.target_clim_ts.data_vars) == len(pred_ds_raw.data_vars)
             clim_ds = self.target_clim_ts.rename({
                 var_clim: var
-                for var_clim, var in zip(self.target_clim_ts.data_vars, ds.data_vars)
+                for var_clim, var in zip(self.target_clim_ts.data_vars, pred_ds_raw.data_vars)
             })
-            ds = ds.groupby(f"{tdim}.month") + clim_ds
+            pred_ds_raw = pred_ds_raw.groupby(f"{tdim}.month") + clim_ds
 
         if "test" in str(preds_store):
             mask_ds = self.test_mask_ds
         else:
             mask_ds = self.train_mask_ds
-        ds = ds.where(mask_ds["common_mask"] == 1)
+        pred_ds_masked = pred_ds_raw.where(mask_ds["common_mask"] == 1)
 
         compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
         encoding_zarr = {v.name: {"compressors": compressor} for v in var_list}
 
         self.logger.info("Save preds to %s", preds_store)
-        ds.to_zarr(preds_store, encoding=encoding_zarr, mode="w", consolidated=self.consolidated_zarr)
-        return ds
+        pred_ds_masked.to_zarr(preds_store, encoding=encoding_zarr, mode="w", consolidated=self.consolidated_zarr)
+        return pred_ds_raw, pred_ds_masked
