@@ -1442,10 +1442,12 @@ class MLBCExperiment:
             })
             pred_ds_raw = pred_ds_raw.groupby(f"{tdim}.month") + clim_ds
 
-        if "test" in str(preds_store):
+        if preds_store == self.test_preds_store:
             mask_ds = self.test_mask_ds
-        else:
+        elif preds_store == self.train_preds_store:
             mask_ds = self.train_mask_ds
+        else:
+            raise ValueError(f"Unknown predictions store for mask selection: {preds_store}")
         pred_ds_masked = pred_ds_raw.where(mask_ds["common_mask"] == 1)
 
         compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
