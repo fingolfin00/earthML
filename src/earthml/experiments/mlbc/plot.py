@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/earthml-matplotlib")
+# os.environ.setdefault("MPLCONFIGDIR", "/tmp/earthml-matplotlib")
 
 import matplotlib.pyplot as plt
 import numpy as np
