@@ -1435,6 +1435,12 @@ class MLBCExperiment:
             })
             ds = ds.groupby(f"{tdim}.month") + clim_ds
 
+        if "test" in str(preds_store):
+            mask_ds = self.test_mask_ds
+        else:
+            mask_ds = self.train_mask_ds
+        ds = ds.where(mask_ds["common_mask"] == 1)
+
         compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
         encoding_zarr = {v.name: {"compressors": compressor} for v in var_list}
 
