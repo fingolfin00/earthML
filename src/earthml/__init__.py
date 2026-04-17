@@ -10,6 +10,7 @@ __all__ = [
     "DataSelection",
     "TimeRange",
     "Leadtime",
+    "Region",
     # misc
     "Dask",
     "Table",
@@ -30,6 +31,7 @@ _EXPORTS = {
     "DataSelection": (".base", "DataSelection"),
     "TimeRange": (".base", "TimeRange"),
     "Leadtime": (".base", "Leadtime"),
+    "Region": (".base", "Region"),
     "DataSource": (".sources", "DataSource"),
     "Dask": (".misc", "Dask"),
     "Table": (".misc", "Table"),
