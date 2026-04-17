@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import field
-from typing import Callable
+from typing import Sequence
 
 from copy import deepcopy
 from pathlib import Path
@@ -46,7 +46,8 @@ class BaseSource(ABC):
         # Init
         self.elements = Sample()
         self.ds = None
-        self.var_name_list = [v.name for v in self.data_selection.variable] if isinstance(self.data_selection.variable, list) else [self.data_selection.variable.name]
+        variables = self.data_selection.variable
+        self.var_name_list = [v.name for v in variables] if isinstance(variables, Sequence) else [variables.name]
         self.select_area_after_request = False
         self.regrid_resolution = None
         self.convert_unit = None
@@ -65,7 +66,7 @@ class BaseSource(ABC):
 
 
     @staticmethod
-    def generate_date_range(period: TimeRange):
+    def generate_date_range(period: TimeRange) -> pd.DatetimeIndex | xr.CFTimeIndex | list[pd.Timestamp]:
         freq = period.freq
         start = period.start
         end = period.end
