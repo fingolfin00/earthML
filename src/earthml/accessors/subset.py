@@ -1,3 +1,5 @@
+from typing import Sequence
+
 import numpy as np
 import cf_xarray
 import xarray as xr
@@ -162,11 +164,14 @@ class EarthMLSubset:
             and lat_coord in ds.coords
         )
 
-    def _build_extra_selection(self, ds: xr.Dataset, data_selection) -> dict:
+    def _build_extra_selection(self, ds: xr.Dataset, data_selection: DataSelection) -> dict:
         """
         Build non-horizontal selections: vertical level and leadtime.
         """
         selection_d = {}
+
+        if isinstance(data_selection.variable, Sequence):
+            raise ValueError(f"EarthMLSubset accessor does not yet support multivariable DataSelection")
 
         # Leadtime
         leadtime = data_selection.variable.leadtime
