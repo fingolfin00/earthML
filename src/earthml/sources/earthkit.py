@@ -384,6 +384,7 @@ class EarthkitSource(BaseSource):
         start: pd.Timedelta | datetime,
         end: pd.Timedelta | datetime,
         leadtime: Leadtime, # leadtime in the dataset, "dataset" in self.leadtime_d
+        leadtime_req: Leadtime, # conceptual/request leadtime, "request" in self.leadtime_d
         request_other_args: dict,
         total_chunks: int | None = None,
         chunk_offset: int = 0,
@@ -393,6 +394,35 @@ class EarthkitSource(BaseSource):
         """
         Helper to fetch chunked datasets using ekd
         """
+        def _ensure_leadtime_axis(
+            ds_chunk: xr.Dataset,
+            *,
+            leadtime_name: str,
+            leadtime_value: Any,
+            coord_dtype: np.dtype | None = None,
+        ) -> xr.Dataset:
+            current_dim = ds_chunk.earthml.guessed_dims.leadtime
+            current_coord = ds_chunk.earthml.guessed_coords.leadtime
+            target_arr = (
+                np.array([leadtime_value], dtype=coord_dtype)
+                if coord_dtype is not None
+                else np.array([leadtime_value])
+            )
+
+            if current_dim is not None:
+                if current_dim != leadtime_name:
+                    ds_chunk = ds_chunk.rename({current_dim: leadtime_name})
+                if coord_dtype is not None and leadtime_name in ds_chunk.coords:
+                    ds_chunk = ds_chunk.assign_coords({
+                        leadtime_name: (leadtime_name, np.asarray(ds_chunk[leadtime_name].values, dtype=coord_dtype))
+                    })
+                return ds_chunk
+
+            if current_coord is not None:
+                ds_chunk = ds_chunk.drop_vars(current_coord, errors="ignore")
+
+            return ds_chunk.expand_dims({leadtime_name: target_arr})
+
         total_chunks = len(request_args_list) if total_chunks is None else total_chunks
         ds_chunks = []
         xarray_concat_dim = None
@@ -615,13 +645,7 @@ class EarthkitSource(BaseSource):
 
             # Make sure leadtime dim is named leadtime.name="leadtime"
             # At this point potentially after realization inference, leadtime_dim may be None
-            if leadtime_dim is None:
-                if leadtime_coord is None:
-                    # Assign the coordinate to the requested target (ensures uniform coord across chunks)
-                    ds_chunk = ds_chunk.expand_dims({leadtime.name: np.array([leadtime_target_np], dtype=coord_dtype)})
-                else:
-                    ds_chunk = ds_chunk.rename({leadtime_coord: leadtime.name})
-            else:
+            if leadtime_dim is not None:
                 logger.debug(f"   {SOURCE_CTX} Leadtime values found: {ds_chunk[leadtime_dim].values}")
                 # Move leadtime first to make bfill deterministic across the step axis
                 ds_chunk = ds_chunk.transpose(leadtime_dim, ...)
@@ -636,9 +660,14 @@ class EarthkitSource(BaseSource):
                 )
                 # Since at most one is non-NaN, bfill then take leadtime=0 gives the only valid value
                 # ds_chunk = ds_chunk.bfill(leadtime_dim).isel({leadtime_dim: 0})
-                if leadtime_coord is None:
-                    # Restore a length-1 leadtime dimension with the requested conceptual value
-                    ds_chunk = ds_chunk.expand_dims({leadtime.name: np.array([leadtime_target_np], dtype=coord_dtype)})
+
+            ds_chunk = _ensure_leadtime_axis(
+                ds_chunk,
+                leadtime_name=leadtime.name,
+                leadtime_value=leadtime_target_np,
+                coord_dtype=coord_dtype,
+            )
+            leadtime_dim = ds_chunk.earthml.guessed_dims.leadtime
 
             # Collapse monthly atmo forecast step -> one valid time and one data slice per sample.
             if self.config.dataset == "seasonal-monthly-single-levels" and leadtime_dim is not None:
@@ -677,10 +706,16 @@ class EarthkitSource(BaseSource):
                 if coords_to_drop:
                     ds_chunk = ds_chunk.drop_vars(coords_to_drop, errors="ignore")
 
-                # If step is still present as a scalar/size-1 coord, remove it.
-                if leadtime_dim in ds_chunk.dims and ds_chunk.sizes.get(leadtime_dim, 0) == 1:
-                    ds_chunk = ds_chunk.squeeze(leadtime_dim, drop=True)
-                ds_chunk = ds_chunk.drop_vars(leadtime_dim, errors="ignore")
+                # Preserve a singleton conceptual leadtime axis after collapsing the
+                # forecast step into one valid monthly target per sample.
+                if leadtime_dim in ds_chunk.dims:
+                    ds_chunk = ds_chunk.isel({leadtime_dim: [0]})
+
+                ds_chunk = _ensure_leadtime_axis(
+                    ds_chunk,
+                    leadtime_name=leadtime_req.name,
+                    leadtime_value=leadtime_req.value,
+                )
 
 
             logger.debug("   %s Size after all processing: %s", SOURCE_CTX, ds_chunk.sizes)
@@ -999,14 +1034,15 @@ class EarthkitSource(BaseSource):
 
                         for chunk_start, chunk_end, request_args_list in year_chunk_requests:
                             c_dim, ds_chunks = self._fetch_chunks(
-                                request_args_list=request_args_list,
-                                start=chunk_start,
-                                end=chunk_end,
-                                leadtime=leadtime_var,
-                                request_other_args=self.config.request_extra_args,
-                                total_chunks=total_chunks,
-                                chunk_offset=offset,
-                                progress=prog,
+                            request_args_list=request_args_list,
+                            start=chunk_start,
+                            end=chunk_end,
+                            leadtime=leadtime_var,
+                            leadtime_req=leadtime_req,
+                            request_other_args=self.config.request_extra_args,
+                            total_chunks=total_chunks,
+                            chunk_offset=offset,
+                            progress=prog,
                                 progress_task_id=task,
                             )
                             offset += len(request_args_list)
@@ -1019,6 +1055,7 @@ class EarthkitSource(BaseSource):
                             start=chunk_start,
                             end=chunk_end,
                             leadtime=leadtime_var,
+                            leadtime_req=leadtime_req,
                             request_other_args=self.config.request_extra_args,
                             total_chunks=total_chunks,
                             chunk_offset=offset,
@@ -1059,6 +1096,7 @@ class EarthkitSource(BaseSource):
                                 start=start,
                                 end=end,
                                 leadtime=leadtime_var, # used to filter leadtime in actual dataset
+                                leadtime_req=leadtime_req,
                                 request_other_args=self.config.request_extra_args,
                                 progress=prog,
                                 progress_task_id=task,
@@ -1069,6 +1107,7 @@ class EarthkitSource(BaseSource):
                             start=start,
                             end=end,
                             leadtime=leadtime_var, # used to filter leadtime in actual dataset
+                            leadtime_req=leadtime_req,
                             request_other_args=self.config.request_extra_args,
                         )
                 else:
