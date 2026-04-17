@@ -1,5 +1,5 @@
 from typing import Literal
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import multiprocessing
@@ -54,6 +54,15 @@ class JunoLocalSourceFileNameConfig:
     minus_timedelta                     : timedelta | None = None
     plus_timedelta                      : timedelta | None = None
 
+
+@dataclass
+class JunoLocalSourcePathConfig:
+    start_date                  : str | pd.Timestamp
+    end_date                    : str | pd.Timestamp | None = None
+    root_path                   : str | Path | None = None
+    file_name_config            : JunoLocalSourceFileNameConfig | None = None
+
+
 @dataclass
 class JunoLocalSourceConfig:
     leadtime                    : relativedelta # TODO move to Leadtime?
@@ -61,6 +70,7 @@ class JunoLocalSourceConfig:
     engine                      : str
     file_name_config            : JunoLocalSourceFileNameConfig
     regrid_config               : RegridConfig
+    path_configs                : list[JunoLocalSourcePathConfig] = field(default_factory=list)
     select_area_after_request   : bool = True
     cfgrib_idx_path             : str | Path = ""
     file_open_workers           : int | None = 1
@@ -193,6 +203,51 @@ class JunoLocalSource(MFXarrayLocalSource):
         if not m:
             raise ValueError(f"Could not parse realization from filename: {p.name}")
         return int(m.group(1))
+
+    @staticmethod
+    def _build_data_glob(
+        *,
+        config: JunoLocalSourceFileNameConfig,
+        previous_date,
+        current_date,
+    ) -> str:
+        prev_str = previous_date.strftime(config.file_date_format)
+        date_str = current_date.strftime(config.file_date_format)
+
+        if config.both_data_and_previous_date_in_file:
+            if config.date_order == "current_previous":
+                return f"{config.file_header}{date_str}{config.date_separator}{prev_str}{config.file_suffix}"
+            return f"{config.file_header}{prev_str}{config.date_separator}{date_str}{config.file_suffix}"
+
+        return f"{config.file_header}{prev_str}{config.file_suffix}"
+
+    @staticmethod
+    def _as_timestamp(value) -> pd.Timestamp | None:
+        return None if value is None else pd.Timestamp(value)
+
+    def _resolve_path_config(
+        self,
+        previous_date,
+    ) -> tuple[Path, JunoLocalSourceFileNameConfig]:
+        ts = pd.Timestamp(previous_date)
+
+        for path_config in self.config.path_configs:
+            start_date = self._as_timestamp(path_config.start_date)
+            end_date = self._as_timestamp(path_config.end_date)
+            if ts < start_date:
+                continue
+            if end_date is not None and ts > end_date:
+                continue
+
+            root_path = self.path if path_config.root_path is None else Path(path_config.root_path)
+            file_name_config = (
+                self.config.file_name_config
+                if path_config.file_name_config is None
+                else path_config.file_name_config
+            )
+            return root_path, file_name_config
+
+        return self.path, self.config.file_name_config
 
     def _open_sample_dataset(
         self,
@@ -359,32 +414,19 @@ class JunoLocalSource(MFXarrayLocalSource):
         s = Sample(extra={"plus_samples": [], "minus_samples": []})
         assert config.realizations == "all" or config.realizations > 0
 
-        both_dates_in_name = config.both_data_and_previous_date_in_file
-        date_order = config.date_order
-        date_separator = config.date_separator
-        realizations = config.realizations
-        file_header = config.file_header
-        file_suffix = config.file_suffix
-        file_date_format = config.file_date_format
-        file_path_date_format = config.file_path_date_format
-
-        minus_td = config.minus_timedelta
-        plus_td = config.plus_timedelta
-
         for date in self.date_range:
             previous_date = date - leadtime
-            data_path = self.path.joinpath(previous_date.strftime(file_path_date_format))
+            root_path, date_config = self._resolve_path_config(previous_date)
+            data_path = root_path.joinpath(previous_date.strftime(date_config.file_path_date_format))
 
-            prev_str = previous_date.strftime(file_date_format)
-            date_str = date.strftime(file_date_format)
-
-            if both_dates_in_name:
-                if date_order == "current_previous":
-                    data_glob = f"{file_header}{date_str}{date_separator}{prev_str}{file_suffix}"
-                else:
-                    data_glob = f"{file_header}{prev_str}{date_separator}{date_str}{file_suffix}"
-            else:
-                data_glob = f"{file_header}{prev_str}{file_suffix}"
+            realizations = date_config.realizations
+            minus_td = date_config.minus_timedelta
+            plus_td = date_config.plus_timedelta
+            data_glob = self._build_data_glob(
+                config=date_config,
+                previous_date=previous_date,
+                current_date=date,
+            )
 
             files_exact = self._latest_matching_files(data_path, data_glob, realizations)
 
@@ -396,14 +438,11 @@ class JunoLocalSource(MFXarrayLocalSource):
 
             if minus_td is not None:
                 test_date = date - minus_td
-                if both_dates_in_name:
-                    test_date_str = test_date.strftime(file_date_format)
-                    if date_order == "current_previous":
-                        test_glob = f"{file_header}{test_date_str}{date_separator}{prev_str}{file_suffix}"
-                    else:
-                        test_glob = f"{file_header}{prev_str}{date_separator}{test_date_str}{file_suffix}"
-                else:
-                    test_glob = f"{file_header}{prev_str}{file_suffix}"
+                test_glob = self._build_data_glob(
+                    config=date_config,
+                    previous_date=previous_date,
+                    current_date=test_date,
+                )
 
                 test_files = self._latest_matching_files(data_path, test_glob, realizations)
                 if test_files:
@@ -413,14 +452,11 @@ class JunoLocalSource(MFXarrayLocalSource):
 
             if not found and plus_td is not None:
                 test_date = date + plus_td
-                if both_dates_in_name:
-                    test_date_str = test_date.strftime(file_date_format)
-                    if date_order == "current_previous":
-                        test_glob = f"{file_header}{test_date_str}{date_separator}{prev_str}{file_suffix}"
-                    else:
-                        test_glob = f"{file_header}{prev_str}{date_separator}{test_date_str}{file_suffix}"
-                else:
-                    test_glob = f"{file_header}{prev_str}{file_suffix}"
+                test_glob = self._build_data_glob(
+                    config=date_config,
+                    previous_date=previous_date,
+                    current_date=test_date,
+                )
 
                 test_files = self._latest_matching_files(data_path, test_glob, realizations)
                 if test_files:
