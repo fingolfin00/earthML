@@ -120,13 +120,29 @@ def retry_fetch_after_hdf_err(
 
         time.sleep(base_sleep * (2 ** (attempt - 1)))
 
-    if manage_earthkit_cache:
+    if orig_ekd_cache_dir:
         _set_ekd_cache_dir(orig_ekd_cache_dir)
     raise RuntimeError(f"Failed after {tries} attempts; last error: {last_e!r}") from last_e
 
 
-def generate_hours(freq_str, output_type='string') -> list:
-    """A list of strings of hours""" # TODO extend description
+def generate_hours(
+    freq_str: str,
+    output_type='string'
+) -> list:
+    """
+    Generate the list of hourly times within a day implied by an hourly frequency.
+
+    The sequence starts at ``00:00`` and advances by the number of hours encoded
+    in ``freq_str`` until the next step would wrap to the following day.
+    Output can be returned either as ``"HH:MM"`` strings or integer hours.
+
+    Examples:
+        ``"6h"`` -> ``["00:00", "06:00", "12:00", "18:00"]``
+        ``"3h"`` with ``output_type="int"`` -> ``[0, 3, 6, 9, 12, 15, 18, 21]``
+
+    Raises:
+        ValueError: If ``freq_str`` does not use the ``"h"`` hourly suffix.
+    """
     value = int(freq_str[:-1])
     if freq_str[-1] != 'h':
         raise ValueError("Only 'h' (hours) frequency supported")
