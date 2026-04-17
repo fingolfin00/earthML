@@ -12,7 +12,7 @@ DIM_NAMES = {
     "latitude":     ['lat', 'y', 'nav_lat'],
     "longitude":    ['lon', 'x', 'nav_lon'],
     "realization":  ["realization", "number", "ens"],
-    "leadtime":     ["lead_time", "leadtime", "step"],
+    "leadtime":     ["lead_time", "leadtime", "step", "forecastMonth"],
 }
 
 
