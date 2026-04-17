@@ -45,7 +45,8 @@ class MLBCExperimentLauncher:
     # Exp settings
     variables_input             : str | Sequence[str]
     variables_target            : str | Sequence[str]
-    leadtimes                   : Leadtime | Sequence[Leadtime]
+    leadtimes                   : int | float | Sequence[int | float]
+    leadtime_unit               : str
     regions                     : str | Sequence[str]
     train_periods               : TimeRange | Sequence[TimeRange]
     test_periods                : TimeRange | Sequence[TimeRange]
@@ -84,9 +85,9 @@ class MLBCExperimentLauncher:
             raise ValueError(f"MLBC experiment {self.experiment.name} not supported, choose between {available_exps()}")
 
         # Init variables as list
-        self.leadtimes          = [self.leadtimes] if isinstance(self.leadtimes, Leadtime) else self.leadtimes
-        self.variables_input    = [self.variables_input] if isinstance(self.variables_input, str) else self.variables_input
-        self.variables_target   = [self.variables_target] if isinstance(self.variables_target, str) else self.variables_target
+        self.leadtimes: list[int | float] = [self.leadtimes] if isinstance(self.leadtimes, int | float) else self.leadtimes
+        self.variables_input: list[str] = [self.variables_input] if isinstance(self.variables_input, str) else self.variables_input
+        self.variables_target: list[str] = [self.variables_target] if isinstance(self.variables_target, str) else self.variables_target
         self.variables = [
             {"input": var_in, "target": var_tg} for var_in, var_tg in zip(
                 self.variables_input,
@@ -94,10 +95,10 @@ class MLBCExperimentLauncher:
                 strict=True
             )
         ]
-        self.regions            = [self.regions] if isinstance(self.regions, str) else self.regions
+        self.regions: list[str] = [self.regions] if isinstance(self.regions, str) else self.regions
 
         # Set var categories
-        self.vars_cloud_cds          = {
+        self.vars_cloud_cds = {
             "ocean": ("ssh", "sss", "t14d", "t17d", "t20d", "t26d", "t28d", "mld01", "mld03", "das300", "dat300", "sit"), # https://cds.climate.copernicus.eu/datasets/seasonal-monthly-ocean
             "atmo" : ("sst", "t2m", "d2m", "msl", "tp", "u10", "v10"), # https://cds.climate.copernicus.eu/datasets/seasonal-monthly-single-levels
         }
@@ -155,7 +156,7 @@ class MLBCExperimentLauncher:
             lines.append(f"{idx}: input={input_period}; target={target_period}")
         return "\n".join(lines)
 
-    def _summary_table_data(self, exp_gen_cfgs: Sequence[dict]) -> dict[str, dict[str, Any]]:
+    def _summary_table_data(self, exp_gen_cfgs: Sequence[dict]) -> dict[str, Any | dict[str, Any]]:
         return {
             "experiment.type": self.experiment.type,
             "experiment.name": self.experiment.name,
@@ -167,7 +168,8 @@ class MLBCExperimentLauncher:
             "data.variables_input": list(self.variables_input),
             "data.variables_target": list(self.variables_target),
             "data.regions": list(self.regions),
-            "data.leadtimes": [f"{lt.value} {lt.unit}" for lt in self.leadtimes],
+            "data.leadtimes": [f"{cfg["leadtime_input"].value} {cfg["leadtime_input"].unit}" for cfg in exp_gen_cfgs],
+            "data.leadtimes vars": [f"{cfg["leadtime_var_input"].value} {cfg["leadtime_var_input"].unit}" for cfg in exp_gen_cfgs],
             "data.train_period_groups": self._format_train_period_groups(self.train_periods),
             "data.test_periods": self._format_time_range(self.test_periods),
             "runtime.dask_workers": self.dask_workers,
@@ -199,7 +201,7 @@ class MLBCExperimentLauncher:
     def _handle_sequence_of_train_periods(
         self,
         train_periods: TimeRange | Sequence[TimeRange]
-    ) -> list[list[TimeRange]]:
+    ) -> Sequence[Sequence[TimeRange]]:
         if isinstance(train_periods, Sequence):
             inner_train_periods = train_periods
         else:
@@ -600,19 +602,19 @@ class MLBCExperimentLauncher:
             var_input, var_target = variable["input"], variable["target"]
             var_input_key, var_target_key = self._get_experiment_vars(var_input, var_target)
 
+            leadtime_dim_name = "leadtime"
             if self.experiment.name == MLBCExperimentName.CDS_CMCC__ORAS5: # ocean seasonal experiment, except SST for forecasts
                 if var_input in self.vars_cloud_cds["ocean"]:
                     try:
-                        leadtime_var_value = self.all_leadtimes_vars["ocean"][leadtime.value]
+                        leadtime_var_value = self.all_leadtimes_vars["ocean"][leadtime] # in days
                     except KeyError as exc:
-                        raise ValueError(f"Unsupported ocean seasonal leadtime: {leadtime.value} {leadtime.unit}") from exc
-                    leadtime_var_input = Leadtime(leadtime.name, self.leadtime_var_unit, leadtime_var_value)
+                        raise ValueError(f"Unsupported ocean seasonal leadtime: {leadtime} {self.leadtime_unit}") from exc
                 elif var_input in self.vars_cloud_cds["atmo"]:
+                    leadtime_dim_name = "forecastMonth"
                     try:
-                        leadtime_var_value = self.all_leadtimes_vars["atmo"][leadtime.value]
+                        leadtime_var_value = self.all_leadtimes_vars["atmo"][leadtime] # in days
                     except KeyError as exc:
-                        raise ValueError(f"Unsupported atmo seasonal leadtime: {leadtime.value} {leadtime.unit}") from exc
-                    leadtime_var_input = Leadtime(leadtime.name, self.leadtime_var_unit, leadtime_var_value)
+                        raise ValueError(f"Unsupported atmo seasonal leadtime: {leadtime} {self.leadtime_unit}") from exc
                 else:
                     raise ValueError(f"Input variable {var_input} for MLBC experiment {self.experiment.name} not supported")
 
@@ -620,21 +622,22 @@ class MLBCExperimentLauncher:
                 MLBCExperimentName.JUNO_ECMWF__JUNO_ECMWF,
                 MLBCExperimentName.CDS_CMCC__ERA5,
             ): # atmo experiments
+                if self.experiment.name == MLBCExperimentName.CDS_CMCC__ERA5:
+                    leadtime_dim_name = "forecastMonth"
                 try:
-                    leadtime_var_value = self.all_leadtimes_vars["atmo"][leadtime.value]
+                    leadtime_var_value = self.all_leadtimes_vars["atmo"][leadtime]
                 except KeyError as exc:
-                    raise ValueError(f"Unsupported atmo seasonal leadtime: {leadtime.value} {leadtime.unit}") from exc
-                leadtime_var_input = Leadtime(leadtime.name, self.leadtime_var_unit, leadtime_var_value)
+                    raise ValueError(f"Unsupported atmo seasonal leadtime: {leadtime} {self.leadtime_unit}") from exc
 
             if self.experiment.name in (
                 MLBCExperimentName.JUNO_CMCC__CMEMS,
                 MLBCExperimentName.CMEMS__CMEMS,
             ): # ocean weather experiment from cloud (cmems_cmems) cannot work currently (no past forecasts)
-                leadtime_var_input = Leadtime(leadtime.name, self.leadtime_var_unit, self.all_leadtimes_vars["ocean"][leadtime.value])
+                leadtime_var_value = self.all_leadtimes_vars["ocean"][leadtime.value]
 
-            # TODO most experiments are not implemented, we need to make this more general maybe?
+            leadtime_var_input = Leadtime(leadtime_dim_name, self.leadtime_var_unit, leadtime_var_value)
 
-            leadtime_target = Leadtime(leadtime.name, leadtime.unit, 0) # TODO maybe make it configurable by user?
+            leadtime_target = Leadtime("leadtime", self.leadtime_unit, 0) # TODO maybe make it configurable by user?
 
             train_providers = self._get_source_providers(var_input, var_target, train_period_d, MLBCExperimentMode.TRAIN)
             test_providers = self._get_source_providers(var_input, var_target, self.test_periods, MLBCExperimentMode.TEST)
@@ -649,12 +652,13 @@ class MLBCExperimentLauncher:
                 },
             }
 
+            leadtime_input = Leadtime("leadtime", self.leadtime_unit, leadtime)
             exp_configs.append(dict(
                 experiment=self.experiment,
-                leadtime_var_input=leadtime_var_input,
-                leadtime_var_target=leadtime_target,
-                leadtime_input=leadtime,
-                leadtime_target=leadtime_target,
+                leadtime_var_input=leadtime_var_input, # type Leadtime
+                leadtime_var_target=leadtime_target, # type Leadtime
+                leadtime_input=leadtime_input, # type Leadtime
+                leadtime_target=leadtime_target, # type Leadtime
                 var_input_key=var_input_key,
                 var_target_key=var_target_key,
                 region_key=region,
