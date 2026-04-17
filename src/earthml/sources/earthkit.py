@@ -7,6 +7,15 @@ os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 from pathlib import Path
 import hashlib, json
 
+from rich.progress import (
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    BarColumn,
+    TimeElapsedColumn,
+    MofNCompleteColumn,
+)
+
 from contextlib import contextmanager
 
 from datetime import timedelta, datetime
@@ -93,6 +102,204 @@ class EarthkitSource(BaseSource):
         self._lock_dir = self.ekd_base_cache / ".locks"
         self._lock_dir.mkdir(parents=True, exist_ok=True)
 
+    @staticmethod
+    def _format_request_chunk_label(
+        req_args: Mapping[str, Any],
+        start: pd.Timedelta | datetime,
+        end: pd.Timedelta | datetime,
+        idx: int,
+        total: int,
+    ) -> str:
+        months_req = req_args.get("month")
+        years_req = req_args.get("year")
+        date_req = req_args.get("date")
+        parts = [f"{idx}/{total}"]
+
+        if date_req is not None:
+            parts.append(f"date {date_req}")
+        else:
+            parts.append(f"{start:%Y-%m}..{end:%Y-%m}")
+
+        if years_req is not None:
+            if isinstance(years_req, Sequence) and not isinstance(years_req, str):
+                years_req = ",".join(str(y) for y in years_req)
+            parts.append(f"y={years_req}")
+        if months_req is not None:
+            if isinstance(months_req, Sequence) and not isinstance(months_req, str):
+                month_values = [str(m) for m in months_req]
+                months_repr = month_values[0] if len(month_values) == 1 else f"{month_values[0]}-{month_values[-1]}"
+            else:
+                months_repr = str(months_req)
+            parts.append(f"m={months_repr}")
+
+        return ", ".join(parts)
+
+    @staticmethod
+    def _format_progress_stage(stage: str | None) -> str | None:
+        if not stage:
+            return None
+
+        if stage.startswith("earthkit-data"):
+            return "download"
+
+        normalized = {
+            "prepare request": "prepare",
+            "submit request": "submit",
+            "load xarray": "decode",
+            "chunk complete": "finalize",
+        }
+        return normalized.get(stage, stage)
+
+    @staticmethod
+    def _set_progress(
+        progress: Progress | None,
+        task_id: int | None,
+        *,
+        total_chunks: int,
+        chunk_position: float | None = None,
+        stage: str | None = None,
+        chunk_label: str | None = None,
+    ) -> None:
+        if progress is None or task_id is None:
+            return
+
+        update_kwargs: dict[str, Any] = {}
+        if chunk_position is not None:
+            update_kwargs["completed"] = max(0.0, min(float(chunk_position), float(total_chunks)))
+
+        if chunk_label is not None:
+            description = f"{SOURCE_CTX} {chunk_label}"
+            if stage:
+                formatted_stage = EarthkitSource._format_progress_stage(stage)
+                if formatted_stage:
+                    description = f"{description} [{formatted_stage}]"
+            update_kwargs["description"] = description
+
+        if update_kwargs:
+            progress.update(task_id, **update_kwargs)
+
+    def _progress_task_description(
+        self,
+        variable_name: str,
+        date_range_text: str,
+    ) -> str:
+        return f"{SOURCE_CTX} {variable_name} {date_range_text}"
+
+    @contextmanager
+    def _earthkit_progress_redirect(
+        self,
+        progress: Progress | None,
+        task_id: int | None,
+        *,
+        chunk_index: int,
+        total_chunks: int,
+        chunk_label: str,
+    ):
+        if progress is None or task_id is None:
+            yield
+            return
+
+        import earthkit.data.sources.url as ekd_url
+        import earthkit.data.utils.progbar as ekd_progbar
+        import cdsapi.api as cdsapi_api
+        import logging
+
+        orig_progress_bar = ekd_progbar.progress_bar
+        orig_tqdm = ekd_progbar.tqdm
+        orig_url_progress_bar = ekd_url.progress_bar
+        orig_cdsapi_tqdm = cdsapi_api.tqdm
+        cdsapi_logger = logging.getLogger("cdsapi")
+        orig_cdsapi_disabled = cdsapi_logger.disabled
+        orig_cdsapi_level = cdsapi_logger.level
+        base_completed = max(chunk_index - 1, 0)
+
+        class _RichEarthkitProgress:
+            def __init__(self, *, total=None, iterable=None, initial=0, desc=None, **_kwargs):
+                self.total = total
+                self.iterable = iterable
+                self.current = initial
+                self.desc = desc
+                self._refresh()
+
+            def _stage(self) -> str:
+                if self.desc:
+                    return f"earthkit-data: {self.desc}"
+                return "earthkit-data"
+
+            def _refresh(self) -> None:
+                if self.total:
+                    fraction = min(max(self.current / self.total, 0.0), 1.0)
+                    EarthkitSource._set_progress(
+                        progress,
+                        task_id,
+                        total_chunks=total_chunks,
+                        chunk_position=base_completed + fraction,
+                        stage=self._stage(),
+                        chunk_label=chunk_label,
+                    )
+                else:
+                    EarthkitSource._set_progress(
+                        progress,
+                        task_id,
+                        total_chunks=total_chunks,
+                        stage=self._stage(),
+                        chunk_label=chunk_label,
+                    )
+
+            def update(self, n=1):
+                self.current += n
+                self._refresh()
+
+            def refresh(self):
+                self._refresh()
+
+            def close(self):
+                return None
+
+            def set_description(self, desc=None, refresh=True):
+                self.desc = desc
+                if refresh:
+                    self._refresh()
+
+            def __iter__(self):
+                if self.iterable is None:
+                    return iter(())
+                for item in self.iterable:
+                    yield item
+                    self.update(1)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.close()
+                return False
+
+        def _progress_factory(*, total=None, iterable=None, initial=0, desc=None, **kwargs):
+            return _RichEarthkitProgress(
+                total=total,
+                iterable=iterable,
+                initial=initial,
+                desc=desc,
+                **kwargs,
+            )
+
+        ekd_progbar.progress_bar = _progress_factory
+        ekd_progbar.tqdm = _RichEarthkitProgress
+        ekd_url.progress_bar = _progress_factory
+        cdsapi_api.tqdm = _RichEarthkitProgress
+        cdsapi_logger.disabled = True
+        cdsapi_logger.setLevel(logging.WARNING)
+        try:
+            yield
+        finally:
+            ekd_progbar.progress_bar = orig_progress_bar
+            ekd_progbar.tqdm = orig_tqdm
+            ekd_url.progress_bar = orig_url_progress_bar
+            cdsapi_api.tqdm = orig_cdsapi_tqdm
+            cdsapi_logger.disabled = orig_cdsapi_disabled
+            cdsapi_logger.setLevel(orig_cdsapi_level)
+
     def _init_leadtime_variables_periods(self):
         self.variables = list(self.data_selection.variable) if isinstance(self.data_selection.variable, Sequence) else [self.data_selection.variable]
         leadtime_config = self.config.leadtime
@@ -177,37 +384,27 @@ class EarthkitSource(BaseSource):
         request_other_args: dict,
         total_chunks: int | None = None,
         chunk_offset: int = 0,
+        progress: Progress | None = None,
+        progress_task_id: int | None = None,
     ) -> tuple[str | None, Sequence[xr.Dataset]]:
         """
         Helper to fetch chunked datasets using ekd
         """
-        def _format_request_chunk_log(req_args, start, end, idx, total):
-            months_req = req_args.get("month")
-            years_req = req_args.get("year")
-            date_req = req_args.get("date")
-            time_req = req_args.get("time")
-
-            parts = [f" → Fetching chunk {idx}/{total}:"]
-
-            if date_req is not None:
-                parts.append(f"date={date_req}")
-            else:
-                parts.append(f"window={start:%Y-%m-%d}..{end:%Y-%m-%d}")
-
-            if years_req is not None:
-                parts.append(f"year={years_req}")
-            if months_req is not None:
-                parts.append(f"month={months_req}")
-            if time_req is not None:
-                parts.append(f"time={time_req}")
-
-            return ", ".join(parts)
-
         total_chunks = len(request_args_list) if total_chunks is None else total_chunks
         ds_chunks = []
         xarray_concat_dim = None
         for i, req_args in enumerate(request_args_list, start=1):
-            logger.info("%s %s", SOURCE_CTX, _format_request_chunk_log(req_args, start, end, i + chunk_offset, total_chunks))
+            chunk_index = i + chunk_offset
+            chunk_label = self._format_request_chunk_label(req_args, start, end, chunk_index, total_chunks)
+            logger.debug("%s Fetching %s", SOURCE_CTX, chunk_label)
+            self._set_progress(
+                progress,
+                progress_task_id,
+                total_chunks=total_chunks,
+                chunk_position=chunk_index - 1,
+                stage="prepare request",
+                chunk_label=chunk_label,
+            )
 
             request_d = dict(
                 **request_other_args,
@@ -258,15 +455,30 @@ class EarthkitSource(BaseSource):
                 with self._file_lock(lock_path):
                     return ekd.from_source(**src_ekd_params)
 
-            src_ekd: ekd.Source = retry_fetch_after_hdf_err(
-                _fetch_ekd_src,
-                error_re=r"NetCDF:.*HDF error",
-                base_sleep=5,
-                tries=5,
-                delete_bad_file=False,
-                delete_bad_parent=False,
-                manage_earthkit_cache=True,
-            )
+            with self._earthkit_progress_redirect(
+                progress,
+                progress_task_id,
+                chunk_index=chunk_index,
+                total_chunks=total_chunks,
+                chunk_label=chunk_label,
+            ):
+                self._set_progress(
+                    progress,
+                    progress_task_id,
+                    total_chunks=total_chunks,
+                    chunk_position=chunk_index - 1,
+                    stage="submit request",
+                    chunk_label=chunk_label,
+                )
+                src_ekd: ekd.Source = retry_fetch_after_hdf_err(
+                    _fetch_ekd_src,
+                    error_re=r"NetCDF:.*HDF error",
+                    base_sleep=5,
+                    tries=5,
+                    delete_bad_file=False,
+                    delete_bad_parent=False,
+                    manage_earthkit_cache=True,
+                )
 
             def _fetch_ekd():
                 with self._file_lock(lock_path): # reuse of the same lock could affect performances
@@ -289,15 +501,30 @@ class EarthkitSource(BaseSource):
 
             # logger.debug(src_ekd)
             # logger.debug(self.config.to_xarray_args)
-            ds_chunk = retry_fetch_after_hdf_err(
-                _fetch_ekd,
-                error_re=r"NetCDF:.*HDF error",
-                base_sleep=2,
-                tries=5,
-                delete_bad_file=True,
-                delete_bad_parent=True,
-                manage_earthkit_cache=True,
-            )
+            with self._earthkit_progress_redirect(
+                progress,
+                progress_task_id,
+                chunk_index=chunk_index,
+                total_chunks=total_chunks,
+                chunk_label=chunk_label,
+            ):
+                self._set_progress(
+                    progress,
+                    progress_task_id,
+                    total_chunks=total_chunks,
+                    chunk_position=chunk_index - 1,
+                    stage="load xarray",
+                    chunk_label=chunk_label,
+                )
+                ds_chunk = retry_fetch_after_hdf_err(
+                    _fetch_ekd,
+                    error_re=r"NetCDF:.*HDF error",
+                    base_sleep=2,
+                    tries=5,
+                    delete_bad_file=True,
+                    delete_bad_parent=True,
+                    manage_earthkit_cache=True,
+                )
 
             # Validate quickly: expected variables present
             missing = [v for v in self.var_name_list if v not in ds_chunk.data_vars]
@@ -314,7 +541,7 @@ class EarthkitSource(BaseSource):
             realization_dim = ds_chunk.earthml.guessed_dims.realization
             leadtime_dim = ds_chunk.earthml.guessed_dims.leadtime # actual leadtime in chunk
 
-            logger.info("   %s Chunk size: %s", SOURCE_CTX, ds_chunk.sizes)
+            logger.debug("   %s Chunk size: %s", SOURCE_CTX, ds_chunk.sizes)
             logger.debug("   %s Chunk coords: %s", SOURCE_CTX, ds_chunk.coords)
             logger.debug("   %s Requested leadtime: %s", SOURCE_CTX, self.leadtime_d)
             logger.debug("   %s Leadtime dim from chunk: %s", SOURCE_CTX, leadtime_dim)
@@ -355,7 +582,7 @@ class EarthkitSource(BaseSource):
                 mask_lt = (lt_values >= low) & (lt_values <= high)
                 idxs = np.where(mask_lt)[0]
 
-                logger.info(
+                logger.debug(
                     "   %s Nearest leadtime center: %s, window: [%s, %s], inferred realizations %s",
                     SOURCE_CTX,
                     pd.to_timedelta(center_lt) if np.issubdtype(unique_lt.dtype, np.timedelta64) else center_lt,
@@ -453,12 +680,20 @@ class EarthkitSource(BaseSource):
                 ds_chunk = ds_chunk.drop_vars(leadtime_dim, errors="ignore")
 
 
-            logger.info("   %s Size after all processing: %s", SOURCE_CTX, ds_chunk.sizes)
+            logger.debug("   %s Size after all processing: %s", SOURCE_CTX, ds_chunk.sizes)
             logger.debug("   %s Coords after all processing: %s", SOURCE_CTX, ds_chunk.coords)
 
             xarray_concat_dim = ds_chunk.earthml.guessed_dims.time if not self.config.xarray_concat_dim else self.config.xarray_concat_dim
             logger.debug("   %s Discovered concat dim = time dim: %s", SOURCE_CTX, xarray_concat_dim)
             ds_chunks.append(ds_chunk)
+            self._set_progress(
+                progress,
+                progress_task_id,
+                total_chunks=total_chunks,
+                chunk_position=chunk_index,
+                stage="chunk complete",
+                chunk_label=chunk_label,
+            )
 
         return xarray_concat_dim, ds_chunks
 
@@ -670,7 +905,7 @@ class EarthkitSource(BaseSource):
                 raise ValueError(
                     f"{SOURCE_CTX} Years calculated from date range for var {v.name} are empty for start={self.start_d[v]} end={self.end_d[v]}"
                 )
-            logger.info("%s Requested split-by-year ranges for var %s: %s", SOURCE_CTX, v.name, years_d[v])
+            logger.debug("%s Requested split-by-year ranges for var %s: %s", SOURCE_CTX, v.name, list(years_d[v]))
         
         self.months_splitted = self._month_splitter()
 
@@ -682,19 +917,6 @@ class EarthkitSource(BaseSource):
         ]
 
         for v in self.variables:
-            logger.info(
-                "%s Requesting %s (%s, %s) in region %s from %s:%s (ekd_ver=%s)",
-                SOURCE_CTX,
-                v.longname,
-                dates_d[v],
-                self.data_selection.period.freq,
-                area,
-                self.config.provider,
-                self.config.dataset,
-                self.ekd_version,
-            )
-            logger.info("%s Check request status: https://cds.climate.copernicus.eu/requests?tab=all", SOURCE_CTX)
-
             start, end = self.start_d[v], self.end_d[v]
             years = years_d[v]
             leadtime_req = self.leadtime_d[v]["request"] # we request all leadtimes at once to optimize caching
@@ -757,41 +979,70 @@ class EarthkitSource(BaseSource):
                 total_chunks = sum(len(reqs) for _, _, reqs in year_chunk_requests)
 
                 offset = 0
-                for chunk_start, chunk_end, request_args_list in year_chunk_requests:
-                    c_dim, ds_chunks = self._fetch_chunks(
-                        request_args_list=request_args_list,
-                        start=chunk_start,
-                        end=chunk_end,
-                        leadtime=leadtime_var,
-                        request_other_args=self.config.request_extra_args,
-                        total_chunks=total_chunks,
-                        chunk_offset=offset,
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    BarColumn(),
+                    MofNCompleteColumn(),
+                    TimeElapsedColumn(),
+                ) as prog:
+                    logger.info("%s Check request status: https://cds.climate.copernicus.eu/requests?tab=all", SOURCE_CTX)
+                    task = prog.add_task(
+                        self._progress_task_description(v.longname, dates_d[v]),
+                        total=total_chunks,
                     )
-                    offset += len(request_args_list)
-                    datasets.extend(ds_chunks)
-                    concat_dims.append(c_dim)
 
-                if None in concat_dims:
-                    raise ValueError(f"{SOURCE_CTX} Not all chunks have a valid time dim for concatenation: {concat_dims}")
+                    for chunk_start, chunk_end, request_args_list in year_chunk_requests:
+                        c_dim, ds_chunks = self._fetch_chunks(
+                            request_args_list=request_args_list,
+                            start=chunk_start,
+                            end=chunk_end,
+                            leadtime=leadtime_var,
+                            request_other_args=self.config.request_extra_args,
+                            total_chunks=total_chunks,
+                            chunk_offset=offset,
+                            progress=prog,
+                            progress_task_id=task,
+                        )
+                        offset += len(request_args_list)
+                        datasets.extend(ds_chunks)
+                        concat_dims.append(c_dim)
 
-                if len(set(concat_dims)) == 1:
-                    xarray_concat_dim = concat_dims[0]
-                else:
-                    raise ValueError(f"{SOURCE_CTX} Different time dim for concatenation: {concat_dims}")
+                    if None in concat_dims:
+                        raise ValueError(f"{SOURCE_CTX} Not all chunks have a valid time dim for concatenation: {concat_dims}")
 
-            # Multiple years requests
+                    if len(set(concat_dims)) == 1:
+                        xarray_concat_dim = concat_dims[0]
+                    else:
+                        raise ValueError(f"{SOURCE_CTX} Different time dim for concatenation: {concat_dims}")
+
+            # Multiple years single request
             else:
                 logger.debug("%s Multiple years requests for %s", SOURCE_CTX, v)
                 request_args_list = self._create_base_request_args_list(start, end, area, split_req_dates)
                 
                 if request_args_list:
-                    xarray_concat_dim, datasets = self._fetch_chunks(
-                        request_args_list=request_args_list,
-                        start=start,
-                        end=end,
-                        leadtime=leadtime_var, # used to filter leadtime in actual dataset
-                        request_other_args=self.config.request_extra_args,
-                    )
+                    with Progress(
+                        SpinnerColumn(),
+                        TextColumn("[progress.description]{task.description}"),
+                        BarColumn(),
+                        MofNCompleteColumn(),
+                        TimeElapsedColumn(),
+                    ) as prog:
+                        logger.info("%s Check request status: https://cds.climate.copernicus.eu/requests?tab=all", SOURCE_CTX)
+                        task = prog.add_task(
+                            self._progress_task_description(v.longname, dates_d[v]),
+                            total=len(request_args_list),
+                        )
+                        xarray_concat_dim, datasets = self._fetch_chunks(
+                            request_args_list=request_args_list,
+                            start=start,
+                            end=end,
+                            leadtime=leadtime_var, # used to filter leadtime in actual dataset
+                            request_other_args=self.config.request_extra_args,
+                            progress=prog,
+                            progress_task_id=task,
+                        )
                 else:
                     logger.warning("%s Cannot fetch request. Continuing...", SOURCE_CTX)
 
