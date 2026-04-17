@@ -1,4 +1,5 @@
-from typing import Literal, Any, Callable
+from typing import Literal, Any, TypeAlias
+from collections.abc import Mapping, Sequence, Callable
 from dataclasses import dataclass, field
 
 import os, time, random
@@ -8,7 +9,7 @@ import hashlib, json
 
 from contextlib import contextmanager
 
-from datetime import timedelta, datetime, timezone
+from datetime import timedelta, datetime
 from dateutil.relativedelta import relativedelta
 from dateutil.rrule import rrule, MONTHLY
 
@@ -20,16 +21,18 @@ import earthkit.data as ekd
 from .dataclasses import DataSource, RegridConfig
 from .utils import retry_fetch_after_hdf_err, generate_hours
 from .base import BaseSource
-from ..base import leadtime_to_timedelta
+from ..base import Leadtime, Variable
 from ..logging import get_logger
 
 
 logger = get_logger(__name__)
+SOURCE_CTX = "[source earthkit]"
 
+LeadtimeEarthkit: TypeAlias = dict[Variable, dict[Literal["request", "dataset"], Leadtime]]
 
 @dataclass
 class EarthkitSourceConfig:
-    leadtime                    : relativedelta
+    leadtime                    : Leadtime # request leadtime, we only support one for now
     provider                    : str
     dataset                     : str
     regrid_config               : RegridConfig
@@ -39,10 +42,12 @@ class EarthkitSourceConfig:
     select_area_after_request   : bool = False
     request_type                : Literal["hourly", "daily", "monthly"] = "hourly"
     request_extra_args          : dict[str, Any] = field(default_factory=dict)
+    request_delta_hack          : dict[str, relativedelta] | relativedelta | None = None
     to_xarray_args              : dict[str, Any] = field(default_factory=dict)
     xarray_concat_dim           : str | None = None
     xarray_concat_extra_args    : dict[str, Any] = field(default_factory=dict)
     convert_unit                : dict[str, tuple[Callable, str]] = field(default_factory=dict)
+    snap_time_index             : Literal["previous", "same", "next", "nearest"] = "nearest"
     earthkit_cache_dir          : Path = Path("/tmp/earthkit-cache/")
 
 
@@ -58,17 +63,7 @@ class EarthkitSource(BaseSource):
         super().__init__(datasource)
         self.config = config
 
-        self.ekd_version = ekd.__version__
-        # Shared, persistent cache directory (reused across restarts)
-        ekd_base_cache = Path(config.earthkit_cache_dir)
-        ekd_base_cache.mkdir(parents=True, exist_ok=True)
-
-        ekd.config.set("cache-policy", "user")
-        ekd.config.set("user-cache-directory", str(ekd_base_cache))
-
-        # Locks must be shared across jobs/runs if cache is shared
-        self._lock_dir = ekd_base_cache / ".locks"
-        self._lock_dir.mkdir(parents=True, exist_ok=True)
+        self._ekd_setup()
 
         self.elements.samples = self.date_range
 
@@ -80,69 +75,67 @@ class EarthkitSource(BaseSource):
         self.regrid_resolution = self.config.regrid_config.regrid_resolution
         self.regrid_vars = config.regrid_config.regrid_vars if config.regrid_config.regrid_vars is not None else self.var_name_list
 
-        self._create_leadtime_dict()
+        self._init_leadtime_variables_periods() # build self.leadtime_d dict, "request" from config, "dataset" from data selection
         self._populate_missed()
 
 
+    def _ekd_setup(self):
+        """Earthkit-data setup"""
+        self.ekd_version = ekd.__version__
+
+        # Shared, persistent cache directory (reused across restarts)
+        self.ekd_base_cache = Path(self.config.earthkit_cache_dir)
+        self.ekd_base_cache.mkdir(parents=True, exist_ok=True)
+        ekd.config.set("cache-policy", "user")
+        ekd.config.set("user-cache-directory", str(self.ekd_base_cache))
+
+        # Locks must be shared across jobs/runs if cache is shared
+        self._lock_dir = self.ekd_base_cache / ".locks"
+        self._lock_dir.mkdir(parents=True, exist_ok=True)
+
+    def _init_leadtime_variables_periods(self):
+        self.variables = list(self.data_selection.variable) if isinstance(self.data_selection.variable, Sequence) else [self.data_selection.variable]
+        leadtime_config = self.config.leadtime
+        self.leadtime_d: LeadtimeEarthkit = {}
+        for v in self.variables:
+            leadtime_var = v.leadtime if v.leadtime is not None else leadtime_config
+            self.leadtime_d[v] = {
+                "request": leadtime_config,
+                "dataset": leadtime_var,
+            }
+        self.start_d, self.end_d = {}, {}
+        for v in self.variables:
+            # these are the same, not really per-variable, but in the future maybe
+            self.start_d[v] = self.date_range[0] - self.leadtime_d[v]["request"].to_timedelta()
+            self.end_d[v] = self.date_range[-1] - self.leadtime_d[v]["request"].to_timedelta()
+            logger.debug("%s Periods to be requested for %s: %s - %s", SOURCE_CTX, v.name, self.start_d[v], self.end_d[v])
+
+    # TODO extend support for other requests?
     def _populate_missed(self):
-        """Populate missed if some months are skipped for seasonal requests"""
-        # TODO we only support monthly seasonal datasets
+        """Populate missed if some months are skipped for seasonal monthly requests only"""
         if self.config.request_type == "monthly":
-            # Use effective start/end
-            start = self.date_range[0] - self.config.leadtime
-            end = self.date_range[-1] - self.config.leadtime
             skip_months = set(self.split_month_jump)
 
-            missed = [
-                dt + self.config.leadtime for dt in rrule(MONTHLY, dtstart=start, until=end)
-                if f"{dt.month:02d}" in skip_months
-            ]
-            # Snap all timesteps to month-start (00:00 of the 1st)
-            t = pd.to_datetime(missed)
-            self.elements.missed = set(t.to_period("M").to_timestamp(how="start"))  # month begin, midnight
-
-
-    def _create_leadtime_dict(self):
-        vars_ = (
-            self.data_selection.variable
-            if isinstance(self.data_selection.variable, list)
-            else [self.data_selection.variable]
-        )
-
-        leadtime_pairs = []
-
-        for v in vars_:
-            lt = getattr(v, "leadtime", None)
-            if lt is None:
-                continue
-
-            # resolve timedelta
-            if hasattr(lt, "value") and hasattr(lt, "unit"):
-                td = leadtime_to_timedelta(lt)
-            else:
-                td = pd.to_timedelta(lt)
-
-            name = getattr(lt, "name", "leadtime")
-            leadtime_pairs.append((name, td))
-
-        if not leadtime_pairs:
-            self.leadtime_d = {}
-        else:
-            names = {n for n, _ in leadtime_pairs}
-            times = {t for _, t in leadtime_pairs}
-
-            if len(names) > 1 or len(times) > 1:
-                raise ValueError(
-                    f"Leadtime inconsistent across variables: "
-                    f"names={sorted(names)}, leadtimes={sorted(times)}"
+            missed = set()
+            for v in self.variables:
+                missed |= set(
+                    dt + self.leadtime_d[v]["request"].to_timedelta() for dt in rrule(MONTHLY, dtstart=self.start_d[v], until=self.end_d[v])
+                    if f"{dt.month:02d}" in skip_months
                 )
-
-            name, td = leadtime_pairs[0]
-            self.leadtime_d = {name: td}
+            # Snap all timesteps to month-start (00:00 of the 1st)
+            t = pd.to_datetime(sorted(list(missed))).to_period("M").to_timestamp(how="start")
+            self.elements.missed = set(t) # month begin, midnight #type: ignore
 
 
     @contextmanager
-    def _file_lock(self, lock_path: Path, timeout_s: int = 600, poll_s: float = 0.2, stale_s: int = 6 * 3600):
+    def _file_lock(
+        self,
+        lock_path: Path,
+        timeout_s: int = 600,
+        poll_s: float = 0.2,
+        stale_s: int = 6 * 3600
+    ):
+        """Context manager for an exclusive file lock with timeout and stale-lock cleanup."""
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         start = time.time()
 
@@ -163,7 +156,7 @@ class EarthkitSource(BaseSource):
                     continue
 
                 if time.time() - start > timeout_s:
-                    raise TimeoutError(f"Timeout waiting for lock: {lock_path}")
+                    raise TimeoutError(f"{SOURCE_CTX} Timeout waiting for lock: {lock_path}")
                 time.sleep(poll_s + random.random() * 0.1)
 
         try:
@@ -175,15 +168,24 @@ class EarthkitSource(BaseSource):
                 pass
 
 
-    def _fetch_chunks(self, request_time_args_list, start, end, request_other_args):
+    def _fetch_chunks(
+        self,
+        request_args_list: Sequence[dict],
+        start: pd.Timedelta | datetime,
+        end: pd.Timedelta | datetime,
+        leadtime: Leadtime, # leadtime in the dataset, "dataset" in self.leadtime_d
+        request_other_args: dict,
+        total_chunks: int | None = None,
+        chunk_offset: int = 0,
+    ) -> tuple[str | None, Sequence[xr.Dataset]]:
         """
         Helper to fetch chunked datasets using ekd
         """
-        def _format_request_chunk_log(req_time_arg, start, end, idx, total):
-            months_req = req_time_arg.get("month")
-            years_req = req_time_arg.get("year")
-            date_req = req_time_arg.get("date")
-            time_req = req_time_arg.get("time")
+        def _format_request_chunk_log(req_args, start, end, idx, total):
+            months_req = req_args.get("month")
+            years_req = req_args.get("year")
+            date_req = req_args.get("date")
+            time_req = req_args.get("time")
 
             parts = [f" → Fetching chunk {idx}/{total}:"]
 
@@ -201,21 +203,23 @@ class EarthkitSource(BaseSource):
 
             return ", ".join(parts)
 
+        total_chunks = len(request_args_list) if total_chunks is None else total_chunks
         ds_chunks = []
-        for i, req_time_arg in enumerate(request_time_args_list, start=1):
-            logger.info("%s", _format_request_chunk_log(req_time_arg, start, end, i, len(request_time_args_list)))
+        xarray_concat_dim = None
+        for i, req_args in enumerate(request_args_list, start=1):
+            logger.info("%s %s", SOURCE_CTX, _format_request_chunk_log(req_args, start, end, i + chunk_offset, total_chunks))
 
             request_d = dict(
                 **request_other_args,
-                **req_time_arg,
+                **req_args,
             )
-            # print(request_d)
+            logger.debug("   %s Full request to ekd: %s", SOURCE_CTX, request_d)
 
             if self.config.dataset:
-                src_ekd_params = {"name": self.config.provider, "dataset": self.config.dataset} | request_d
+                src_ekd_params: Mapping[str, Any] = {"name": self.config.provider, "dataset": self.config.dataset} | request_d
                 # src_ekd = ekd.from_source(self.config.provider, self.config.dataset, **request_d)
             else:
-                src_ekd_params = {"name": self.config.provider} | request_d
+                src_ekd_params: Mapping[str, Any] = {"name": self.config.provider} | request_d
 
             def _freeze(obj):
                 """Convert obj into a JSON-serializable, order-stable structure."""
@@ -254,7 +258,7 @@ class EarthkitSource(BaseSource):
                 with self._file_lock(lock_path):
                     return ekd.from_source(**src_ekd_params)
 
-            src_ekd = retry_fetch_after_hdf_err(
+            src_ekd: ekd.Source = retry_fetch_after_hdf_err(
                 _fetch_ekd_src,
                 error_re=r"NetCDF:.*HDF error",
                 base_sleep=5,
@@ -265,15 +269,15 @@ class EarthkitSource(BaseSource):
             )
 
             def _fetch_ekd():
-                with self._file_lock(lock_path): # TODO safe to reuse the same lock?
+                with self._file_lock(lock_path): # reuse of the same lock could affect performances
                     # Open and load dataset
-                    ds_chunk = src_ekd.to_xarray(**(self.config.to_xarray_args or {}))
+                    ds_chunk: xr.Dataset = src_ekd.to_xarray(**(self.config.to_xarray_args or {}))
                     ds_chunk = ds_chunk.load()
 
                     # Validate quickly: expected variables present
                     missing = [v for v in self.var_name_list if v not in ds_chunk.data_vars]
                     if missing:
-                        raise ValueError(f"Missing variables in chunk: {missing}. Got: {list(ds_chunk.data_vars)}")
+                        raise ValueError(f"{SOURCE_CTX} Missing variables in chunk: {missing}. Got: {list(ds_chunk.data_vars)}")
 
                     # Touch a tiny slice to force a real read
                     probe_var = self.var_name_list[0]
@@ -283,8 +287,8 @@ class EarthkitSource(BaseSource):
 
                     return ds_chunk
 
-            # print(src_ekd)
-            # print(self.config.to_xarray_args)
+            # logger.debug(src_ekd)
+            # logger.debug(self.config.to_xarray_args)
             ds_chunk = retry_fetch_after_hdf_err(
                 _fetch_ekd,
                 error_re=r"NetCDF:.*HDF error",
@@ -298,339 +302,515 @@ class EarthkitSource(BaseSource):
             # Validate quickly: expected variables present
             missing = [v for v in self.var_name_list if v not in ds_chunk.data_vars]
             if missing:
-                raise ValueError(f"Missing variables in chunk: {missing}. Got: {list(ds_chunk.data_vars)}")
+                raise ValueError(f"{SOURCE_CTX} Missing variables in chunk: {missing}. Got: {list(ds_chunk.data_vars)}")
 
             # Touch a tiny slice to force a real read
             probe_var = self.var_name_list[0]
             _ = ds_chunk[probe_var].isel({d: 0 for d in ds_chunk[probe_var].dims if ds_chunk.sizes.get(d, 1) > 0}).load()
 
-            # print(ds_chunk)
+            # logger.debug(ds_chunk)
 
+            # Get dims from chunk, could be None
             realization_dim = ds_chunk.earthml.guessed_dims.realization
             leadtime_dim = ds_chunk.earthml.guessed_dims.leadtime # actual leadtime in chunk
 
-            logger.info("   Chunk size: %s", ds_chunk.sizes)
-            # print(f"   Chunk coords: {ds_chunk.coords}")
-            # print(f"   Leadtime: {self.leadtime_d}")
+            logger.info("   %s Chunk size: %s", SOURCE_CTX, ds_chunk.sizes)
+            logger.debug("   %s Chunk coords: %s", SOURCE_CTX, ds_chunk.coords)
+            logger.debug("   %s Requested leadtime: %s", SOURCE_CTX, self.leadtime_d)
+            logger.debug("   %s Leadtime dim from chunk: %s", SOURCE_CTX, leadtime_dim)
+            logger.debug("   %s Realization dim from chunk: %s", SOURCE_CTX, realization_dim)
 
-            # TODO Control thoroughly this flow
-            if self.leadtime_d:
-                # Get requested leadtime and coord name
-                target_lt_d = next(iter(self.leadtime_d.values()))
-                leadtime_name = next(iter(self.leadtime_d.keys())) # leadtime dim name we want
+            # Leadtime discovery
+            leadtime_target_td = leadtime.to_timedelta()
+            coord_dtype = (
+                ds_chunk[leadtime_dim].dtype
+                if leadtime_dim is not None
+                else np.dtype("timedelta64[ns]")
+            )
 
-                if target_lt_d is not None and leadtime_dim in ds_chunk.coords:
-                    # Normalize requested target to the coordinate dtype
-                    if not isinstance(target_lt_d, pd.Timedelta):
-                        target_lt_pd = pd.to_timedelta(target_lt_d)
-                    else:
-                        target_lt_pd = target_lt_d
+            # For timedelta64 coords: convert via to_timedelta64 then cast to coord dtype
+            # For numeric coords this still works if leadtime_target_td is numeric-like
+            try:
+                leadtime_target_np = np.array(leadtime_target_td.to_timedelta64(), dtype=coord_dtype)
+            except Exception:
+                # Fallback generic cast (useful if coords are ints/floats)
+                leadtime_target_np = np.asarray(leadtime_target_td, dtype=coord_dtype)
 
-                    coord_dtype = ds_chunk[leadtime_dim].dtype
+            # If there is a leadtime dim, try to select the correct slice
+            if leadtime_dim is not None:
+                # Find nearest available leadtime in this chunk
+                lt_values = ds_chunk[leadtime_dim].values
 
-                    # For timedelta64 coords: convert via to_timedelta64 then cast to coord dtype
-                    # For numeric coords this still works if target_lt_pd is numeric-like
-                    try:
-                        target_np = np.array(target_lt_pd.to_timedelta64(), dtype=coord_dtype)
-                    except Exception:
-                        # Fallback generic cast (useful if coords are ints/floats)
-                        target_np = np.asarray(target_lt_pd, dtype=coord_dtype)
+                logger.debug("   %s Leadtime values: %s", SOURCE_CTX, lt_values)
+                unique_lt = np.unique(lt_values)
 
-                    # Find nearest available leadtime in this chunk
-                    lt_values = ds_chunk[leadtime_dim].values
+                # Target_np should be same dtype as unique_lt (timedelta or numeric)
+                idx0 = np.argmin(np.abs(unique_lt - leadtime_target_np))
+                center_lt = unique_lt[idx0]
 
-                    # print(f"    Leadtime values: {lt_values}")
-                    unique_lt = np.unique(lt_values)
+                # Window around nearest center
+                half_window = np.timedelta64(3, "D")
+                low, high = center_lt - half_window, center_lt + half_window
 
-                    # Target_np should be same dtype as unique_lt (timedelta or numeric)
-                    idx0 = np.argmin(np.abs(unique_lt - target_np))
-                    center_lt = unique_lt[idx0]
+                mask_lt = (lt_values >= low) & (lt_values <= high)
+                idxs = np.where(mask_lt)[0]
 
-                    # Window around nearest center
-                    half_window = np.timedelta64(3, "D")
-                    low, high = center_lt - half_window, center_lt + half_window
+                logger.info(
+                    "   %s Nearest leadtime center: %s, window: [%s, %s], inferred realizations %s",
+                    SOURCE_CTX,
+                    pd.to_timedelta(center_lt) if np.issubdtype(unique_lt.dtype, np.timedelta64) else center_lt,
+                    pd.to_timedelta(low) if np.issubdtype(unique_lt.dtype, np.timedelta64) else low,
+                    pd.to_timedelta(high) if np.issubdtype(unique_lt.dtype, np.timedelta64) else high,
+                    idxs.size,
+                )
 
-                    mask_lt = (lt_values >= low) & (lt_values <= high)
-                    idxs = np.where(mask_lt)[0]
+                if idxs.size == 0:
+                    raise ValueError(f"{SOURCE_CTX} No leadtimes found in the computed window")
 
-                    logger.info(
-                        "   Nearest leadtime center: %s, window: [%s, %s], inferred realizations %s",
-                        pd.to_timedelta(center_lt) if np.issubdtype(unique_lt.dtype, np.timedelta64) else center_lt,
-                        pd.to_timedelta(low) if np.issubdtype(unique_lt.dtype, np.timedelta64) else low,
-                        pd.to_timedelta(high) if np.issubdtype(unique_lt.dtype, np.timedelta64) else high,
-                        idxs.size,
-                    )
+                ds_chunk = ds_chunk.isel({leadtime_dim: idxs})
+                logger.debug("   %s Chunk size after leadtime selection: %s", SOURCE_CTX, ds_chunk.sizes)
 
-                    if idxs.size == 0:
-                        raise ValueError("No leadtimes found in the computed window")
+                # This crazy realization inference only for CMCC SPS4 ocean, it's very specific with leadtime dim being "time"
+                if self.config.dataset == "seasonal-monthly-ocean":
+                    ds_chunk = self._prepare_leadtime_and_infer_realizations("time", ds_chunk, start, end, (high, low), leadtime_target_np)
+                    logger.debug("   %s Chunk size after realization inference: %s", SOURCE_CTX, ds_chunk.sizes)                    
+            else:
+                logger.debug("   %s Leadtime dim not found in fetched dataset. Continuing...", SOURCE_CTX)
 
-                    ds_chunk = ds_chunk.isel({leadtime_dim: idxs})
-                    # print(f"   Chunk size after selection: {ds_chunk.sizes}")
+            # Refresh realization and leadtime dim names
+            time_dim = ds_chunk.earthml.guessed_dims.time
+            realization_dim = ds_chunk.earthml.guessed_dims.realization
+            leadtime_dim = ds_chunk.earthml.guessed_dims.leadtime
+            leadtime_coord = ds_chunk.earthml.guessed_coords.leadtime
 
-                    # TODO realization guessing is brittle, but I have no alternative for now
-                    if leadtime_dim in ds_chunk.dims and realization_dim is None:
-                        # In this case leadtime is the time dimension, swap and sort
-                        ds_chunk = ds_chunk.swap_dims({leadtime_dim: "time"})
-                        if leadtime_dim in ds_chunk.data_vars:
-                            ds_chunk = ds_chunk.drop_vars(leadtime_dim)
-                        ds_chunk = ds_chunk.sortby("time")
-                        # print(f"   Chunk coords after swap: {ds_chunk.coords}")
+            # Make sure leadtime dim is named leadtime.name="leadtime"
+            # At this point potentially after realization inference, leadtime_dim may be None
+            if leadtime_dim is None:
+                if leadtime_coord is None:
+                    # Assign the coordinate to the requested target (ensures uniform coord across chunks)
+                    ds_chunk = ds_chunk.expand_dims({leadtime.name: np.array([leadtime_target_np], dtype=coord_dtype)})
+                else:
+                    ds_chunk = ds_chunk.rename({leadtime_coord: leadtime.name})
+            else:
+                logger.debug(f"   {SOURCE_CTX} Leadtime values found: {ds_chunk[leadtime_dim].values}")
+                # Move leadtime first to make bfill deterministic across the step axis
+                ds_chunk = ds_chunk.transpose(leadtime_dim, ...)
+                valid_per_leadtime = (~ds_chunk.to_array().isnull()).any(
+                    dim=[d for d in ds_chunk.to_array().dims if d != leadtime_dim]
+                )
+                logger.debug(
+                    "   %s Non-null leadtime slices: count=%s indices=%s",
+                    SOURCE_CTX,
+                    int(valid_per_leadtime.sum().item()),
+                    np.where(valid_per_leadtime.values)[0],
+                )
+                # Since at most one is non-NaN, bfill then take leadtime=0 gives the only valid value
+                # ds_chunk = ds_chunk.bfill(leadtime_dim).isel({leadtime_dim: 0})
+                if leadtime_coord is None:
+                    # Restore a length-1 leadtime dimension with the requested conceptual value
+                    ds_chunk = ds_chunk.expand_dims({leadtime.name: np.array([leadtime_target_np], dtype=coord_dtype)})
 
-                        # Infer member index from repeats within each time
-                        # This assumes that for each valid time we have the same number of stacked members.
-                        t = ds_chunk["time"].values
-                        unique_t, counts = np.unique(t, return_counts=True)
+            # Collapse monthly atmo forecast step -> one valid time and one data slice per sample.
+            if self.config.dataset == "seasonal-monthly-single-levels" and leadtime_dim is not None:
+                if "valid_time" not in ds_chunk.coords or leadtime_dim not in ds_chunk["valid_time"].dims:
+                    raise ValueError(f"{SOURCE_CTX} Coord 'valid_time' with dim '{leadtime_dim}' not found in fetched dataset")
 
-                        if counts.min() != counts.max():
-                            raise ValueError(f"Unequal members per time: min={counts.min()} max={counts.max()} counts={dict(zip(unique_t, counts))}")
+                vt = ds_chunk["valid_time"].transpose(leadtime_dim, ...)
+                vt_vals = vt.values
+                mask = ~pd.isna(vt_vals)
 
-                        n_realizations = int(counts[0])
-                        realization_index = np.concatenate([np.arange(n_realizations, dtype=np.int32) for _ in range(len(unique_t))])
-                        # print(f"    Inferred realization number: {n_realizations}, index: {realization_index}")
+                has_valid = mask.any(axis=0)
+                first_valid_idx = mask.argmax(axis=0)
+                cols = np.where(has_valid)[0]
 
-                        # Add member coordinate and unstack to get dimensions (time, realization)
-                        ds_chunk = ds_chunk.assign_coords(realization=("time", realization_index))
-                        # print(f"   Realization coord: {ds_chunk["realization"].values}")
+                vt_1d_vals = np.full(vt_vals.shape[1], np.datetime64("NaT"), dtype="datetime64[ns]")
+                vt_1d_vals[cols] = vt_vals[first_valid_idx[cols], cols]
 
-                        # Avoid name collision
-                        ds_chunk = ds_chunk.rename_vars({"time": "valid_time"})
+                if "time" in ds_chunk.coords:
+                    ds_chunk = ds_chunk.assign_coords(reftime=("time", ds_chunk["time"].values))
 
-                        # MultiIndex
-                        ds_chunk = ds_chunk.set_index(time=["valid_time", "realization"]).unstack("time")
+                ds_chunk = ds_chunk.assign_coords(valid_time_1d=("time", vt_1d_vals))
+                ds_chunk = ds_chunk.swap_dims({"time": "valid_time_1d"})
+                ds_chunk = ds_chunk.drop_vars("time", errors="ignore")
+                ds_chunk = ds_chunk.rename({"valid_time_1d": "time"})
 
-                        # Rename time dim
-                        ds_chunk = ds_chunk.rename({"valid_time": "time"})
+                # Collapse data variables across step.
+                for name in list(ds_chunk.data_vars):
+                    da = ds_chunk[name]
+                    if leadtime_dim in da.dims:
+                        da = da.transpose(leadtime_dim, ...)
+                        da = da.bfill(leadtime_dim).isel({leadtime_dim: 0}, drop=True)
+                        ds_chunk[name] = da
 
-                        # Drop variable only if it exists as a data variable (avoid dropping the coord unintentionally)
-                        if leadtime_dim in ds_chunk.data_vars:
-                            ds_chunk = ds_chunk.drop_vars(leadtime_dim)
+                # Drop coordinates that still depend on step.
+                coords_to_drop = [name for name, coord in ds_chunk.coords.items() if leadtime_dim in coord.dims]
+                if coords_to_drop:
+                    ds_chunk = ds_chunk.drop_vars(coords_to_drop, errors="ignore")
 
-                        # Reassign the coordinate to the requested target (ensures uniform coord across chunks)
-                        ds_chunk = ds_chunk.assign_coords({leadtime_name: (leadtime_name, np.array([target_np], dtype=coord_dtype))})
+                # If step is still present as a scalar/size-1 coord, remove it.
+                if leadtime_dim in ds_chunk.dims and ds_chunk.sizes.get(leadtime_dim, 0) == 1:
+                    ds_chunk = ds_chunk.squeeze(leadtime_dim, drop=True)
+                ds_chunk = ds_chunk.drop_vars(leadtime_dim, errors="ignore")
 
-                    else:
-                        # Move leadtime first to make bfill deterministic across the step axis
-                        ds_chunk = ds_chunk.transpose(leadtime_dim, ...)
 
-                        # Since at most one is non-NaN, bfill then take leadtime=0 gives the only valid value
-                        ds_chunk = ds_chunk.bfill(leadtime_dim).isel({leadtime_dim: 0})
-
-                        # Restore a length-1 leadtime dimension with the requested conceptual value
-                        ds_chunk = ds_chunk.expand_dims({leadtime_name: [target_np]})
-
-                    logger.info("   Size after all processing: %s", ds_chunk.sizes)
+            logger.info("   %s Size after all processing: %s", SOURCE_CTX, ds_chunk.sizes)
+            logger.debug("   %s Coords after all processing: %s", SOURCE_CTX, ds_chunk.coords)
 
             xarray_concat_dim = ds_chunk.earthml.guessed_dims.time if not self.config.xarray_concat_dim else self.config.xarray_concat_dim
-            # print(xarray_concat_dim)
+            logger.debug("   %s Discovered concat dim = time dim: %s", SOURCE_CTX, xarray_concat_dim)
             ds_chunks.append(ds_chunk)
+
         return xarray_concat_dim, ds_chunks
 
-    def _get_data(self) -> xr.Dataset:
-        n_missed = len(self.elements.missed) # at this stage is always zero
-        samples = [s for s in self.elements.samples if s not in self.elements.missed] # TODO refactor to BaseSource?
-        logger.info("Samples: %s, missed: %s", len(samples), n_missed)
+    # TODO realization guessing is brittle, but I have no alternative for now
+    def _prepare_leadtime_and_infer_realizations(
+        self,
+        orderable_leadtime_dim: str, # "time" in CDS CMCC SPS4 ocean monthly datasets
+        ds_chunk: xr.Dataset,
+        start: pd.Timedelta | datetime,
+        end: pd.Timedelta | datetime,
+        window: Sequence,
+        leadtime_target: np.timedelta64,
+    ):
+        high, low = window
 
-        var_longname_list = [v.longname for v in self.data_selection.variable] if isinstance(self.data_selection.variable, list) else [self.data_selection.variable.longname]
+        leadtime_dim = ds_chunk.earthml.guessed_dims.leadtime
+        lt = ds_chunk[leadtime_dim].values.copy() # store fore later reassignment
 
-        # print(f"Earthkit period shifted: {self.data_selection.period.shifted}")
-
-        # print(f"Lead time: {self.config.leadtime}")
-        lead_is_zero = (
-            self.config.leadtime.years == 0
-            and self.config.leadtime.months == 0
-            and self.config.leadtime.days == 0
-            and self.config.leadtime.hours == 0
-            and self.config.leadtime.minutes == 0
-            and self.config.leadtime.seconds == 0
+        # "time" is the date location of the leadtime, swap and sort
+        ds_chunk = ds_chunk.swap_dims({leadtime_dim: orderable_leadtime_dim})
+        # Use "time" to sort
+        ds_chunk = ds_chunk.sortby(orderable_leadtime_dim)
+        logger.debug(
+            "   %s Realization inference, chunk coords after leadtime_dim=%s and orderable_leadtime_dim=%s swap: %s",
+            SOURCE_CTX, leadtime_dim, orderable_leadtime_dim, ds_chunk.coords
         )
-        # lead_is_zero = self.config.leadtime == relativedelta() # possibile stricter alternative
 
-        # print(f"Leadtime is zero: {lead_is_zero}")
-        # print(f"Data sel start: {self.date_range[0]}, end: {self.date_range[-1]}")
-        # Use effective start and end dates
-        start = self.date_range[0] - self.config.leadtime #+ relativedelta(**self.data_selection.period.shifted) if self.data_selection.period.shifted is not None else self.data_selection.period.start
-        end = self.date_range[-1] - self.config.leadtime #+ relativedelta(**self.data_selection.period.shifted) if self.data_selection.period.shifted is not None else self.data_selection.period.end
+        # Infer member index from repeats within each time
+        # This assumes that for each valid time we have the same number of stacked members.
+        t = ds_chunk[orderable_leadtime_dim].values
+        unique_t, counts = np.unique(t, return_counts=True)
 
-        # TODO wrong if months requested are 12 1, it splits wrongly
-        dates = f"{start.strftime('%Y-%m-%d')}/{end.strftime('%Y-%m-%d')}"
+        if counts.min() != counts.max():
+            raise ValueError(f"{SOURCE_CTX} Unequal members per time: min={counts.min()} max={counts.max()} counts={dict(zip(unique_t, counts))}")
 
+        n_realizations = int(counts[0])
+        realization_index = np.concatenate([np.arange(n_realizations, dtype=np.int32) for _ in range(len(unique_t))])
+        logger.debug("  %s Realization inference, number of realizations: %s, index: %s", SOURCE_CTX, n_realizations, realization_index)
+
+        # Make leadtimes unique
+        leadtime_per_date = lt.reshape(len(unique_t), n_realizations)[:, 0]
+        mask_lt = (leadtime_per_date >= low) & (leadtime_per_date <= high)
+        if np.all(mask_lt * leadtime_per_date):
+            one_leadtime = leadtime_target
+        else:
+            raise ValueError(f"{SOURCE_CTX} More than one leadtime detected in tolerance window: {leadtime_per_date}")        
+
+        # Add member coordinate and unstack to get dimensions ("time", "realization")
+        ds_chunk = ds_chunk.assign_coords(realization=(orderable_leadtime_dim, realization_index))
+        # logger.debug("  %s Realization inference, coord: %s", SOURCE_CTX, ds_chunk["realization"].values)
+
+        # Avoid name collision
+        ds_chunk = ds_chunk.rename_vars({orderable_leadtime_dim: "leadtime_date"})
+
+        # MultiIndex
+        ds_chunk = ds_chunk.set_index({orderable_leadtime_dim: ["leadtime_date", "realization"]}).unstack(orderable_leadtime_dim)
+
+        # First remove any leftover leadtime
+        if leadtime_dim in ds_chunk.coords or leadtime_dim in ds_chunk.data_vars:
+            ds_chunk = ds_chunk.drop_vars(leadtime_dim)
+        # Create real time axis
+        ds_chunk = ds_chunk.rename({"leadtime_date": "time"})
+        # Add new leadtime dim
+        ds_chunk = ds_chunk.expand_dims({"leadtime": [one_leadtime]})
+        ds_chunk = ds_chunk.assign_coords({
+            "leadtime_date": ("time", leadtime_per_date),
+            # "leadtime": ("leadtime", one_leadtime),
+        })
+
+        return ds_chunk
+
+    def _month_splitter(self):
         all_months = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12']
         months_splitted = [
             [m for m in all_months[i:i+self.config.split_month] if m not in self.split_month_jump]
             for i in range(0, len(all_months), self.config.split_month)
         ]
-        # print(f"Months requested: {months_splitted}")
+        logger.debug("%s Months requested: %s", SOURCE_CTX, months_splitted)
         # Convert singletons to strings and clean up empty/None elements
         months_splitted = [chunk[0] if len(chunk) == 1 else chunk for chunk in months_splitted]
         months_splitted = [x for x in months_splitted if x]
-        # print(f"Months requested cleaned-up: {months_splitted}")
+        logger.debug("%s Months requested cleaned-up: %s", SOURCE_CTX, months_splitted)
+        return months_splitted
 
-        area = [
+    def _create_base_request_args_list(
+        self,
+        start: datetime,
+        end: datetime,
+        area: Sequence[int | float] ,
+        split_req_dates: pd.DatetimeIndex | xr.CFTimeIndex | None,
+    ) -> list[dict[str, Any]]:
+        # Common request args
+        request_args_d: dict[str, Any] = dict(variable=[v.longname for v in self.variables])
+        if not self.config.select_area_after_request:
+            request_args_d["area"] = area
+
+        # Period request args
+        request_time_args: dict[str, Any] = {}
+        request_time_args_list = []
+
+        if self.config.request_type == "hourly":
+            if self.config.provider == "ecmwf-open-data":
+                time_freq = generate_hours(self.data_selection.period.freq, 'int')
+            else:
+                time_freq = generate_hours(self.data_selection.period.freq)
+            request_time_args['date'] = f"{start:%Y-%m-%d}/{end:%Y-%m-%d}"
+            request_time_args['time'] = time_freq
+        elif self.config.request_type == "monthly":
+            monthly_dates = xr.date_range(
+                start=pd.Timestamp(start).to_period("M").to_timestamp(how="start"),
+                end=pd.Timestamp(end).to_period("M").to_timestamp(how="start"),
+                freq="MS",
+            )
+            request_time_args["year"] = sorted({d.strftime("%Y") for d in monthly_dates})
+            if "month" not in self.config.request_extra_args:
+                request_time_args["month"] = [d.strftime("%m") for d in monthly_dates]
+
+        if split_req_dates is not None and self.config.request_type == "monthly":
+            split_req_months = [m.strftime("%m") for m in split_req_dates]
+            split_req_years = sorted({m.strftime("%Y") for m in split_req_dates})
+            for m in self.months_splitted: # create multiple requests
+                # logger.debug("  %s m:%s", SOURCE_CTX, m)
+                request_time_args["year"] = split_req_years
+                if "month" not in self.config.request_extra_args:
+                    if isinstance(m, list):
+                        month_req = [x for x in m if x in set(split_req_months)]
+                        if not month_req:
+                            continue
+                    else:
+                        if m in split_req_months:
+                            month_req = m
+                        else:
+                            continue
+                    request_time_args['month'] = month_req
+                request_time_args_list.append(request_time_args | request_args_d)
+        else: # only one request
+            request_time_args_list.append(request_time_args | request_args_d)
+
+        return request_time_args_list
+
+    def _add_boundary_for_yearly_chunks(
+        self,
+        years: pd.DatetimeIndex | xr.CFTimeIndex,
+        start: datetime,
+        end: datetime,
+    ) -> pd.DatetimeIndex | xr.CFTimeIndex:
+        year_first, year_last = years[0], years[-1]
+        if year_first > start: # comaprison may be broad
+            new_years = xr.date_range(start, start, periods=1).append(years)
+        else:
+            new_years = years
+        if year_last <= end:
+            if self.config.request_type in ("daily", "hourly"):
+                new_years = new_years.append(
+                    xr.date_range(end + timedelta(days=1), end + timedelta(days=1), periods=1)
+                ) #type: ignore
+            elif self.config.request_type == "monthly":
+                new_years = new_years.append(
+                    xr.date_range(end + relativedelta(months=1), end + relativedelta(months=1), periods=1)
+                ) #type: ignore
+        return new_years #type: ignore
+
+    def _get_data(self) -> xr.Dataset:
+        n_missed = len(self.elements.missed) # can be nonzero if split_month_jump is non empty
+        samples = [s for s in self.elements.samples if s not in self.elements.missed]
+        logger.info("%s Samples: %s, missed: %s", SOURCE_CTX, len(samples), n_missed)
+
+        logger.debug("%s Lead time: %s", SOURCE_CTX, self.config.leadtime)
+
+        dates_d, years_d = {}, {}
+        for v in self.variables:
+            logger.debug("%s Variable: %s, period: %s - %s", SOURCE_CTX, v, self.start_d[v], self.end_d[v])
+            # Optional hack to fix misaligned conventions by moving the request period (e.g. ORAS5 and SPS4 seadonal-monthly-ocean)
+            # can be per-variable
+            delta_hack = None
+            if self.config.request_delta_hack:
+                if isinstance(self.config.request_delta_hack, dict):
+                    if v.name in self.config.request_delta_hack.keys():
+                        delta_hack = self.config.request_delta_hack[v.name]
+                elif isinstance(self.config.request_delta_hack, relativedelta):
+                    delta_hack = self.config.request_delta_hack
+                else:
+                    delta_hack = relativedelta(months=0)
+                    logger.debug("%s Invalid request_delta_hack %s, do not apply", SOURCE_CTX, self.config.request_delta_hack)
+                if delta_hack is not None:
+                    self.start_d[v] += delta_hack
+                    self.end_d[v] += delta_hack
+                    logger.debug(
+                        "%s Anticipate %s %s request of %s: %s - %s",
+                        SOURCE_CTX,
+                        v.name,
+                        self.config.dataset,
+                        delta_hack,
+                        self.start_d[v],
+                        self.end_d[v],
+                    )
+
+            dates_d[v] = f"{self.start_d[v].strftime('%Y-%m-%d')}/{self.end_d[v].strftime('%Y-%m-%d')}"
+            years_d[v] = self._add_boundary_for_yearly_chunks(
+                xr.date_range(
+                    start=datetime(self.start_d[v].year, 1, 1),
+                    end=datetime(self.end_d[v].year, 1, 1),
+                    freq="YS",
+                ),
+                self.start_d[v],
+                self.end_d[v],
+            )
+            if len(years_d[v]) == 0:
+                raise ValueError(
+                    f"{SOURCE_CTX} Years calculated from date range for var {v.name} are empty for start={self.start_d[v]} end={self.end_d[v]}"
+                )
+            logger.info("%s Requested split-by-year ranges for var %s: %s", SOURCE_CTX, v.name, years_d[v])
+        
+        self.months_splitted = self._month_splitter()
+
+        area: list[int | float] = [
             self.data_selection.region.lat[0],
             self.data_selection.region.lon[0],
             self.data_selection.region.lat[1],
             self.data_selection.region.lon[1]
         ]
-        if self.config.select_area_after_request:
-            request_args = dict(variable=var_longname_list)
-        else:
-            request_args = dict(variable=var_longname_list, area=area)
 
-        years = xr.date_range(
-            start=datetime(start.year, 1, 1),
-            end=datetime(end.year, 1, 1),
-            freq="YS",
-        )
-        if len(years) == 0:
-            raise ValueError(
-                f"Years calculated from date range is empty for start={start} end={end}"
+        for v in self.variables:
+            logger.info(
+                "%s Requesting %s (%s, %s) in region %s from %s:%s (ekd_ver=%s)",
+                SOURCE_CTX,
+                v.longname,
+                dates_d[v],
+                self.data_selection.period.freq,
+                area,
+                self.config.provider,
+                self.config.dataset,
+                self.ekd_version,
             )
+            logger.info("%s Check request status: https://cds.climate.copernicus.eu/requests?tab=all", SOURCE_CTX)
 
-        logger.info(
-            "Requesting %s (%s, %s) in region %s from %s:%s (ekd_ver=%s)",
-            var_longname_list,
-            dates,
-            self.data_selection.period.freq,
-            area,
-            self.config.provider,
-            self.config.dataset,
-            self.ekd_version,
-        )
-        logger.info("Check request status: https://cds.climate.copernicus.eu/requests?tab=all")
+            start, end = self.start_d[v], self.end_d[v]
+            years = years_d[v]
+            leadtime_req = self.leadtime_d[v]["request"] # we request all leadtimes at once to optimize caching
+            leadtime_var = self.leadtime_d[v]["dataset"]
 
-        if (
-            self.config.split_request and (
-                end - start > pd.to_timedelta('365 days') or
-                end.year == start.year+1
-            )
-        ):
-            # print(f"Years before change: {years}")
-            # Split into yearly chunks
-            year_first, year_last = years[0], years[-1]
-            if year_first > start:
-                years = xr.date_range(start, start, periods=1).append(years)
-            if year_last <= end:
-                if self.config.request_type in ("daily", "hourly"):
-                    years = years.append(
-                        xr.date_range(end + timedelta(days=1), end + timedelta(days=1), periods=1)
-                    )
-                elif self.config.request_type == "monthly":
-                    years = years.append(
-                        xr.date_range(end + relativedelta(months=1), end + relativedelta(months=1), periods=1)
-                    )
-            logger.info("Requested split-by-year ranges: %s", years)
-
-            datasets = []
             xarray_concat_dim = None
-            for y1, y2 in zip(years[:-1], years[1:]):
-                chunk_start = max(pd.Timestamp(y1), pd.Timestamp(start))
-                request_time_args_list = []
-                if self.config.request_type in ("daily", "hourly"):
-                    chunk_end = min(pd.Timestamp(y2) - timedelta(days=1), pd.Timestamp(end))
-                    if chunk_start > chunk_end:
-                        continue
-                    y2 = y2 - timedelta(days=1) # inclusive end
-                    if self.config.provider == "ecmwf-open-data":
-                        time_freq = generate_hours(self.data_selection.period.freq, 'int')
+            split_req_dates = None
+            ds_vars = []
+            # Single year requests
+            if (
+                self.config.split_request and (
+                    end - start > pd.to_timedelta('365 days') or
+                    end.year == start.year+1
+                )
+            ):
+                logger.debug("%s Single year requests for %s", SOURCE_CTX, v)
+                datasets: Sequence[xr.Dataset] = []
+                concat_dims: list[str | None] = []
+                year_chunk_requests: list[tuple[pd.Timestamp, pd.Timestamp, list[dict[str, Any]]]] = []
+
+                for y1, y2 in zip(years[:-1], years[1:]):
+                    raw_chunk_start = max(pd.Timestamp(y1), pd.Timestamp(start))
+
+                    if self.config.request_type in ("daily", "hourly"):
+                        chunk_start = raw_chunk_start
+                        chunk_end = min(pd.Timestamp(y2) - timedelta(days=1), pd.Timestamp(end))
+                        split_req_dates = None
+
+                    elif self.config.request_type == "monthly":
+                        # Canonicalize monthly bounds to month starts before splitting.
+                        start_ms = pd.Timestamp(start).to_period("M").to_timestamp(how="start")
+                        end_ms = pd.Timestamp(end).to_period("M").to_timestamp(how="start")
+                        y1_ms = pd.Timestamp(y1).to_period("M").to_timestamp(how="start")
+                        y2_ms = pd.Timestamp(y2).to_period("M").to_timestamp(how="start")
+
+                        chunk_start = max(y1_ms, start_ms)
+                        chunk_end = min(y2_ms - relativedelta(months=1), end_ms)
+
+                        if chunk_start > chunk_end:
+                            continue
+
+                        split_req_dates = xr.date_range(start=chunk_start, end=chunk_end, freq="MS")
+                        if len(split_req_dates) == 0:
+                            continue
+
                     else:
-                        time_freq = generate_hours(self.data_selection.period.freq)
-                    request_time_args = dict(
-                        date=f"{chunk_start:%Y-%m-%d}/{chunk_end:%Y-%m-%d}",
-                        time=time_freq,
-                    )
-                    request_time_args_list.append(request_time_args)
+                        raise ValueError(f"{SOURCE_CTX} Unsupported earthkit request type {self.config.request_type}")
 
-                elif self.config.request_type == "monthly":
-                    chunk_end = min(pd.Timestamp(y2) - relativedelta(months=1), pd.Timestamp(end))
                     if chunk_start > chunk_end:
                         continue
-                    split_req_dates = xr.date_range(start=chunk_start, end=chunk_end, freq="MS")
-                    if len(split_req_dates) == 0:
-                        continue
-                    split_req_months = [m.strftime("%m") for m in split_req_dates]
-                    split_req_years = sorted({m.strftime("%Y") for m in split_req_dates})
-                    for m in months_splitted:
-                        # print(f"   m:{m}")
-                        request_time_args = dict(year=split_req_years)
-                        if "month" not in self.config.request_extra_args:
-                            if isinstance(m, list):
-                                month_req = [x for x in m if x in set(split_req_months)]
-                            else:
-                                if m in split_req_months:
-                                    month_req = m
-                                else:
-                                    continue
-                            request_time_args['month'] = month_req
-                        request_time_args_list.append(request_time_args)
 
-                else:
-                    raise ValueError(f"Unsupported earthkit request type {self.config.request_type}")
-
-                # print(f"   request_time_args_list: {request_time_args_list}")
-                if request_time_args_list:
-                    xarray_concat_dim, ds_chunks = self._fetch_chunks(
-                        request_time_args_list,
-                        chunk_start,
-                        chunk_end,
-                        request_args | self.config.request_extra_args,
+                    request_args_list = self._create_base_request_args_list(
+                        chunk_start, chunk_end, area, split_req_dates
                     )
+                    if request_args_list:
+                        year_chunk_requests.append((chunk_start, chunk_end, request_args_list))
+                    else:
+                        logger.warning("%s Cannot fetch request. Continuing...", SOURCE_CTX)
+
+                total_chunks = sum(len(reqs) for _, _, reqs in year_chunk_requests)
+
+                offset = 0
+                for chunk_start, chunk_end, request_args_list in year_chunk_requests:
+                    c_dim, ds_chunks = self._fetch_chunks(
+                        request_args_list=request_args_list,
+                        start=chunk_start,
+                        end=chunk_end,
+                        leadtime=leadtime_var,
+                        request_other_args=self.config.request_extra_args,
+                        total_chunks=total_chunks,
+                        chunk_offset=offset,
+                    )
+                    offset += len(request_args_list)
                     datasets.extend(ds_chunks)
+                    concat_dims.append(c_dim)
 
-            # Guard for empy datasets and no concat dim
-            if not datasets or xarray_concat_dim is None:
-                raise ValueError(
-                    f"No datasets fetched for {self.source_name}. "
-                    f"request_type={self.config.request_type}, start={start}, end={end}"
-                )
+                if None in concat_dims:
+                    raise ValueError(f"{SOURCE_CTX} Not all chunks have a valid time dim for concatenation: {concat_dims}")
 
-            # Combine all datasets
-            # print(f"Combine split-request datasets of length {len(datasets)}")
-            ds_all = xr.concat(datasets, dim=xarray_concat_dim, **self.config.xarray_concat_extra_args)
-            # print(f"Combined datasets: {len(ds_all[xarray_concat_dim].values)}")
-
-        else:
-            request_time_args_list = []
-            if self.config.request_type in ("daily", "hourly"):
-                if self.config.provider == "ecmwf-open-data":
-                    time_freq = generate_hours(self.data_selection.period.freq, 'int')
+                if len(set(concat_dims)) == 1:
+                    xarray_concat_dim = concat_dims[0]
                 else:
-                    time_freq = generate_hours(self.data_selection.period.freq)
-                request_time_args = dict(
-                    date=f"{start:%Y-%m-%d}/{end:%Y-%m-%d}",
-                    time=time_freq,
-                )
-                request_time_args_list.append(request_time_args)
-            elif self.config.request_type == "monthly":
-                # print(f"start: {start}, end: {end}")
-                split_req_months = [m.strftime("%m") for m in xr.date_range(start=start, end=end, freq="MS")]
-                # print(split_req_months)
-                for m in months_splitted:
-                    request_time_args = dict(year=xr.date_range(start=datetime(start.year, 1, 1), end=datetime(end.year, 1, 1), freq="YS").strftime("%Y").tolist())
-                    if "month" not in self.config.request_extra_args:
-                        if isinstance(m, list):
-                            month_req = [x for x in m if x in set(split_req_months)]
-                        else:
-                            if m in split_req_months:
-                                month_req = m
-                            else:
-                                continue
-                        request_time_args['month'] = month_req
-                    # print(request_time_args)
-                    request_time_args_list.append(request_time_args)
+                    raise ValueError(f"{SOURCE_CTX} Different time dim for concatenation: {concat_dims}")
+
+            # Multiple years requests
             else:
-                raise ValueError(f"Unsupported earthkit request type {self.config.request_type}")
-            if request_time_args_list:
-                xarray_concat_dim, datasets = self._fetch_chunks(request_time_args_list, start, end, request_args | self.config.request_extra_args)
+                logger.debug("%s Multiple years requests for %s", SOURCE_CTX, v)
+                request_args_list = self._create_base_request_args_list(start, end, area, split_req_dates)
+                
+                if request_args_list:
+                    xarray_concat_dim, datasets = self._fetch_chunks(
+                        request_args_list=request_args_list,
+                        start=start,
+                        end=end,
+                        leadtime=leadtime_var, # used to filter leadtime in actual dataset
+                        request_other_args=self.config.request_extra_args,
+                    )
+                else:
+                    logger.warning("%s Cannot fetch request. Continuing...", SOURCE_CTX)
 
             # Guard for empy datasets and no concat dim
             if not datasets or xarray_concat_dim is None:
                 raise ValueError(
-                    f"No datasets fetched for {self.source_name}. "
+                    f"{SOURCE_CTX} No datasets fetched for {self.source_name}. "
                     f"request_type={self.config.request_type}, start={start}, end={end}"
                 )
 
             # Combine all datasets
-            ds_all = xr.concat(datasets, dim=xarray_concat_dim, **self.config.xarray_concat_extra_args)
+            logger.debug("%s Combine split-request datasets of length for var %s %s", SOURCE_CTX, v.name, len(datasets))
+            ds_single_var = xr.concat(datasets, dim=xarray_concat_dim, **self.config.xarray_concat_extra_args)
+            logger.debug("%s Datasets combined length for var %s: %s", SOURCE_CTX, v.name, len(ds_single_var[xarray_concat_dim].values))
+            ds_vars.append(ds_single_var)
+
+        # Merge
+        ds_all = xr.merge(ds_vars)
+        logger.debug("%s Merged dataset for vars %s", SOURCE_CTX, [v.name for v in self.variables])
 
         # Drop unused variables
         ds_all = ds_all.drop_vars([v for v in ds_all.data_vars if v not in self.var_name_list])
@@ -638,177 +818,48 @@ class EarthkitSource(BaseSource):
         # Ensure concat dim is datetime64[ns]
         ds_all = xr.decode_cf(ds_all)
         ds_all = ds_all.assign_coords({xarray_concat_dim: ds_all[xarray_concat_dim].astype("datetime64[ns]")})
-        # print(f"Time values before reassignment: {ds_all[xarray_concat_dim].values}")
+        logger.debug("%s Time values before reassignment: %s", SOURCE_CTX, ds_all[xarray_concat_dim].values)
 
-        if self.config.request_type == "monthly":
-            # Snap all timesteps to month-start (00:00 of the 1st)
-            t = pd.to_datetime(ds_all[xarray_concat_dim].values)
-            t_month_start = t.to_period("M").to_timestamp(how="start")  # month begin, midnight
-            # print(t_month_start.values)
-            ds_all = ds_all.assign_coords({xarray_concat_dim: (xarray_concat_dim, t_month_start.values)})
-            # Optional: unique after snapping (avoid duplicates)
-            # ds_all = ds_all.groupby(xarray_concat_dim).first()
+        # Snapping
+        t = pd.to_datetime(ds_all[xarray_concat_dim].values)
+        # Snap some datasets timesteps to month-start of the PREVIOUS month (00:00 of the 1st)
+        if self.config.snap_time_index == "previous":
+            k = -1
+        # Snap some datasets timesteps to month-start of the NEXT month (00:00 of the 1st) (e.g. ORAS5 and ocean SPS4 weird convention that half-month -> next month)
+        if self.config.snap_time_index == "next":
+            k = 1
+        # Snap some datasets timesteps to month-start of the SAME month (00:00 of the 1st) (e.g. ERA5 is at 12:00 start-of-month)
+        if self.config.snap_time_index == "same":
+            k = 0
+        if self.config.snap_time_index == "nearest":
+        # Snap some datasets timesteps to the NEAREST month month-start (00:00 of the 1st) (e.g. atmo SPS4, with 'valid_time')
+            month_start = t.to_period("M").to_timestamp(how="start")
+            next_month_start = (t.to_period("M") + 1).to_timestamp(how="start")
+            t_snapped = month_start.where(
+                (t - month_start) <= (next_month_start - t),
+                next_month_start,
+            )
+        else:
+            t_snapped = (t.to_period("M") + k).to_timestamp(how="start")
+        
+        ds_all = ds_all.assign_coords({xarray_concat_dim: (xarray_concat_dim, t_snapped.values)})
 
-        # print(f"Datasets before dropping missing samples: {len(ds_all[xarray_concat_dim].values)}")
-        # print(f"Time values after reassignment: {ds_all[xarray_concat_dim].values}")
+        logger.debug("%s Datasets before dropping missing samples: %s", SOURCE_CTX, len(ds_all[xarray_concat_dim].values))
+        logger.debug("%s Time values after reassignment: %s", SOURCE_CTX, ds_all[xarray_concat_dim].values)
 
         n_missed = len(self.elements.missed) # recompute after fetching
         n_actual_samples = len(ds_all[xarray_concat_dim].values)
         n_all_samples = len(self.date_range)
-        assert n_missed + n_actual_samples == n_all_samples, f"number of samples obtained + missed is different from number of all samples ({n_actual_samples}+{n_missed} =/= {n_all_samples})"
-        # print(f"Missed: {self.elements.missed}")
+        assert n_missed + n_actual_samples == n_all_samples, f"{SOURCE_CTX} number of samples obtained + missed is different from number of all samples ({n_actual_samples}+{n_missed} =/= {n_all_samples})"
+        logger.debug("%s Missed: %s", SOURCE_CTX, self.elements.missed)
         # Drop missing samples
         xarray_concat_dim = ds_all.earthml.guessed_dims.time if not self.config.xarray_concat_dim else self.config.xarray_concat_dim
         if self.elements.missed:
             ds_all = ds_all.drop_sel({xarray_concat_dim: list(self.elements.missed)}, errors='ignore')
 
-        # print(f"Datasets after dropping missing samples: {len(ds_all[xarray_concat_dim].values)}")
+        logger.debug("%s Timesteps after dropping missing samples: %s", SOURCE_CTX, len(ds_all[xarray_concat_dim].values))
 
-        # Shift time index by lead time to get appropriate time corresponding for both forecast and analysis
-        # time_index = pd.DatetimeIndex(ds_all[xarray_concat_dim].values)
-        # if self.config.request_type in ("daily", "hourly"):
-        #     shift_delta = relativedelta(days=1)
-        # elif self.config.request_type == "monthly":
-        #     shift_delta = relativedelta(months=1)
-        # shifted = time_index.map(lambda t: t - self.config.leadtime + shift_delta) # +1 day/month to compensate for inclusive end in requests (e.g. 2020-01-31 is included in Jan request, but after shifting it becomes 2020-01-30 which is not included in Feb request)
-
-        # actual = pd.to_datetime(ds_all[xarray_concat_dim].values).to_period("M").to_timestamp()
-        # expected = pd.to_datetime(self.date_range).to_period("M").to_timestamp()
-
-        # if not actual.equals(expected):
-        #     raise ValueError(
-        #         f"Forecast valid times do not match expected target dates.\n"
-        #         f"Actual:   {list(actual)}\n"
-        #         f"Expected: {list(expected)}"
-        #     )
-
-        # Canonical convention for earthkit sources:
-        # - `source_time` preserves the provider-native request/init timeline
-        # - `time` is the actual forecast valid time used downstream
-        source_time = pd.DatetimeIndex(pd.to_datetime(ds_all[xarray_concat_dim].values))
-        expected_canonical_time = pd.DatetimeIndex(
-            [d for d in self.date_range if d not in self.elements.missed]
-        )
-
-        def _extract_time_like_coord(name: str) -> pd.DatetimeIndex | None:
-            if name not in ds_all.coords:
-                return None
-
-            coord = ds_all[name]
-            if xarray_concat_dim not in coord.dims:
-                return None
-
-            squeeze_dims = {
-                dim: 0
-                for dim in coord.dims
-                if dim != xarray_concat_dim and ds_all.sizes.get(dim, 0) == 1
-            }
-            if squeeze_dims:
-                coord = coord.isel(squeeze_dims, drop=True)
-
-            if coord.dims != (xarray_concat_dim,):
-                return None
-
-            values = pd.to_datetime(coord.values)
-            if self.config.request_type == "monthly":
-                values = values.to_period("M").to_timestamp(how="start")
-            return pd.DatetimeIndex(values)
-
-        valid_time = _extract_time_like_coord("valid_time")
-        use_source_time_as_canonical = (
-            self.config.request_type == "monthly"
-            and self.config.dataset == "seasonal-monthly-single-levels"
-        )
-        canonical_time = source_time if use_source_time_as_canonical else (
-            valid_time if valid_time is not None else expected_canonical_time
-        )
-
-        if use_source_time_as_canonical:
-            logger.info(
-                "Using source_time as canonical time for %s monthly forecasts; "
-                "provider valid_time remains available as auxiliary metadata.",
-                self.config.dataset,
-            )
-
-        if len(source_time) != len(canonical_time):
-            raise ValueError(
-                "Fetched sample count does not match canonical non-missed date_range.\n"
-                f"Fetched count: {len(source_time)}\n"
-                f"Canonical count: {len(canonical_time)}\n"
-                f"Fetched head/tail: {source_time[:3].tolist()} ... {source_time[-3:].tolist()}\n"
-                f"Canonical head/tail: {canonical_time[:3].tolist()} ... {canonical_time[-3:].tolist()}"
-            )
-
-        if not source_time.is_monotonic_increasing:
-            raise ValueError(
-                "Fetched source_time is not monotonic increasing.\n"
-                f"Head/tail: {source_time[:3].tolist()} ... {source_time[-3:].tolist()}"
-            )
-
-        if not source_time.is_unique:
-            duplicates = source_time[source_time.duplicated()].unique().tolist()
-            raise ValueError(
-                "Fetched source_time contains duplicates after leadtime selection.\n"
-                f"Duplicate values (up to 10): {duplicates[:10]}"
-            )
-
-        if len(canonical_time) != len(expected_canonical_time):
-            raise ValueError(
-                "Actual valid_time count does not match expected canonical date_range.\n"
-                f"valid_time count: {len(canonical_time)}\n"
-                f"Expected count: {len(expected_canonical_time)}"
-            )
-
-        if (
-            not use_source_time_as_canonical
-            and valid_time is not None
-            and not canonical_time.equals(expected_canonical_time)
-        ):
-            raise ValueError(
-                "Fetched forecast valid_time does not match expected target dates.\n"
-                f"valid_time head/tail: {canonical_time[:3].tolist()} ... {canonical_time[-3:].tolist()}\n"
-                f"expected head/tail: {expected_canonical_time[:3].tolist()} ... {expected_canonical_time[-3:].tolist()}"
-            )
-
-        ds_all = ds_all.assign_coords(source_time=(xarray_concat_dim, source_time.values))
-        ds_all["source_time"].attrs.update({
-            "long_name": "raw provider time coordinate before canonical remapping",
-            "note": (
-                "For forecast products this may represent initialization time or provider-specific "
-                "valid-time semantics depending on dataset/engine. The canonical training axis is `time`."
-            ),
-        })
-
-        # Assign canonical target/valid dates used everywhere else in the pipeline.
-        ds_all = ds_all.assign_coords({xarray_concat_dim: canonical_time.values})
-        ds_all[xarray_concat_dim].attrs.update({
-            "standard_name": "time",
-            "long_name": "time",
-            "axis": "T",
-        })
-
-        logger.info(
-            "Time convention mapping: source_time head/tail=%s ... %s | canonical_time head/tail=%s ... %s",
-            source_time[:3].tolist(),
-            source_time[-3:].tolist(),
-            canonical_time[:3].tolist(),
-            canonical_time[-3:].tolist(),
-        )
-        if len(source_time) > 0 and len(canonical_time) > 0:
-            logger.info(
-                "Leadtime audit: requested_leadtime=%s, first source->canonical=%s -> %s",
-                self.config.leadtime,
-                source_time[0],
-                canonical_time[0],
-            )
-        # Reindex, set NaNs instead of missed values
-        # full_index = pd.DatetimeIndex(self.date_range)
-        # ds_all = ds_all.reindex({xarray_concat_dim: full_index})
-
-        logger.info(
-            "First and last time values in obtained dataset: %s, %s",
-            pd.to_datetime(ds_all[xarray_concat_dim].values[0]),
-            pd.to_datetime(ds_all[xarray_concat_dim].values[-1]),
-        )
+        # import sys
+        # sys.exit("Stopping here on purpose")
 
         return ds_all
