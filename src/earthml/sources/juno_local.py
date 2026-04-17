@@ -34,7 +34,7 @@ from .dataclasses import DataSource, Sample, RegridConfig
 from .utils import retry_fetch_after_hdf_err
 from .xarray_local import MFXarrayLocalSource
 from ._preprocess import preprocess_mfdataset
-from ..logging import get_logger
+from ..logging import get_console, get_logger
 
 
 REALIZATION_RE = re.compile(r"_r(\d+)")
@@ -493,6 +493,7 @@ class JunoLocalSource(MFXarrayLocalSource):
             BarColumn(),
             MofNCompleteColumn(),
             TimeElapsedColumn(),
+            console=get_console(),
         ) as prog:
             task = prog.add_task("Opening local Juno samples", total=len(samples))
 
