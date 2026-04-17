@@ -24,6 +24,7 @@ __all__ = [
     "EarthkitSourceConfig",
     "JunoLocalSourceConfig",
     "JunoLocalSourceFileNameConfig",
+    "JunoLocalSourcePathConfig",
     "XarrayLocalSourceConfig",
     "CopernicusmarineSourceConfig",
 ]
@@ -37,6 +38,7 @@ for target in _REGISTRY_SOURCE_CONFIGS.values():
     module_path, class_name = target.split(":")
     _SOURCES[class_name] = (f".{module_path.rsplit('.', 1)[1]}", class_name)
 _SOURCES["JunoLocalSourceFileNameConfig"] = (".juno_local", "JunoLocalSourceFileNameConfig")
+_SOURCES["JunoLocalSourcePathConfig"] = (".juno_local", "JunoLocalSourcePathConfig")
 
 def __getattr__(name: str):
     if name in _SOURCES:

@@ -5,9 +5,20 @@ from pathlib import Path
 from dateutil.relativedelta import relativedelta
 
 from ...base import Leadtime, LeadtimeUnit
-from .. import SourceConfigContainer, RegridConfig, JunoLocalSourceConfig, JunoLocalSourceFileNameConfig, EarthkitSourceConfig, CopernicusmarineSourceConfig
+from .. import SourceConfigContainer, RegridConfig, JunoLocalSourceConfig, JunoLocalSourceFileNameConfig, JunoLocalSourcePathConfig, EarthkitSourceConfig, CopernicusmarineSourceConfig
 
 from .registry import register_source_config_provider as register_provider
+
+
+def _medfs_grid_token(var_name: str, grid_token: Literal["T", "U", "V"] | None = None) -> str:
+    if grid_token is not None:
+        return grid_token
+
+    if var_name in {"uo", "vozocrtx"}:
+        return "U"
+    if var_name in {"vo", "vomecrty"}:
+        return "V"
+    return "T"
 
 
 # Seasonal ocean
@@ -270,6 +281,134 @@ def juno_global_ocean_physics_forecast_daily(
                 date_separator="_",
                 realizations=1,
             ),
+            regrid_config=RegridConfig(
+                regrid_resolution=regrid_resolution,
+                regrid_vars=[var_name],
+            ),
+        ),
+    )
+
+
+@register_provider("ocean.juno.medfs.forecast.daily")
+def juno_medfs_forecast_daily(
+    var_name: str,
+    leadtime_value: int,
+    leadtime_unit: LeadtimeUnit,
+    root_path: str | Path = "/data/products/MFS/MFS_EAS6v8/bulletin",
+    engine: str = "h5netcdf",
+    regrid_resolution: float | None = None,
+    file_path_date_format: str = "%Y%m%d",
+    file_date_format: str = "%Y%m%d",
+    grid_token: Literal["T", "U", "V"] | None = None,
+    file_open_workers: int | None = 1,
+) -> SourceConfigContainer:
+    leadtime = Leadtime("leadtime", leadtime_unit, leadtime_value)
+    grid = _medfs_grid_token(var_name, grid_token)
+
+    file_name_config = JunoLocalSourceFileNameConfig(
+        file_path_date_format=file_path_date_format,
+        file_header="mfs_eas6v8-",
+        file_suffix=f"-f-{grid}.nc",
+        file_date_format=file_date_format,
+        both_data_and_previous_date_in_file=True,
+        date_separator="-",
+        realizations=1,
+    )
+
+    return SourceConfigContainer(
+        source="juno-local",
+        config=JunoLocalSourceConfig(
+            leadtime=leadtime,
+            root_path=Path(root_path),
+            engine=engine,
+            file_open_workers=file_open_workers,
+            file_name_config=file_name_config,
+            path_configs=[
+                JunoLocalSourcePathConfig(
+                    start_date="2022-01-01",
+                    end_date="2022-10-17",
+                    root_path="/data/products/MFS/MFS_EAS6v8/bulletin",
+                    file_name_config=JunoLocalSourceFileNameConfig(
+                        file_path_date_format=file_path_date_format,
+                        file_header="mfs_eas6v8-",
+                        file_suffix=f"-f-{grid}.nc",
+                        file_date_format=file_date_format,
+                        both_data_and_previous_date_in_file=True,
+                        date_separator="-",
+                        realizations=1,
+                    ),
+                ),
+                JunoLocalSourcePathConfig(
+                    start_date="2022-10-18",
+                    end_date="2022-11-14",
+                    root_path="/data/products/MFS/MFS_EAS6v82/bulletin",
+                    file_name_config=JunoLocalSourceFileNameConfig(
+                        file_path_date_format=file_path_date_format,
+                        file_header="mfs_eas6v8-",
+                        file_suffix=f"-f-{grid}.nc",
+                        file_date_format=file_date_format,
+                        both_data_and_previous_date_in_file=True,
+                        date_separator="-",
+                        realizations=1,
+                    ),
+                ),
+                JunoLocalSourcePathConfig(
+                    start_date="2022-11-15",
+                    end_date="2023-11-21",
+                    root_path="/data/products/MFS/MFS_EAS7v1/bulletin",
+                    file_name_config=JunoLocalSourceFileNameConfig(
+                        file_path_date_format=file_path_date_format,
+                        file_header="mfs_eas7-",
+                        file_suffix=f"-f-{grid}.nc",
+                        file_date_format=file_date_format,
+                        both_data_and_previous_date_in_file=True,
+                        date_separator="-",
+                        realizations=1,
+                    ),
+                ),
+                JunoLocalSourcePathConfig(
+                    start_date="2023-11-22",
+                    end_date="2024-11-11",
+                    root_path="/data/products/MFS/MFS_EAS8/bulletin",
+                    file_name_config=JunoLocalSourceFileNameConfig(
+                        file_path_date_format=file_path_date_format,
+                        file_header="medfs-eas8_1d_",
+                        file_suffix=f"_ALL_grid_{grid}.nc",
+                        file_date_format=file_date_format,
+                        both_data_and_previous_date_in_file=True,
+                        date_separator="_",
+                        realizations=1,
+                    ),
+                ),
+                JunoLocalSourcePathConfig(
+                    start_date="2024-11-12",
+                    end_date="2025-10-20",
+                    root_path="/data/products/MFS/MFS_EAS9/bulletin",
+                    file_name_config=JunoLocalSourceFileNameConfig(
+                        file_path_date_format=file_path_date_format,
+                        file_header="medfs-eas9_1d_",
+                        file_suffix=f"_ALL_grid_{grid}.nc",
+                        file_date_format=file_date_format,
+                        both_data_and_previous_date_in_file=True,
+                        date_separator="_",
+                        realizations=1,
+                    ),
+                ),
+                JunoLocalSourcePathConfig(
+                    start_date="2025-10-21",
+                    end_date=None,
+                    root_path="/data/products/MFS/MedFS_EAS10/bulletin",
+                    file_name_config=JunoLocalSourceFileNameConfig(
+                        file_path_date_format=file_path_date_format,
+                        file_header="medfs-eas10_1d_",
+                        file_suffix=f"_ALL_grid_{grid}.nc",
+                        file_date_format=file_date_format,
+                        both_data_and_previous_date_in_file=True,
+                        date_separator="_",
+                        realizations=1,
+                    ),
+                ),
+            ],
             regrid_config=RegridConfig(
                 regrid_resolution=regrid_resolution,
                 regrid_vars=[var_name],
