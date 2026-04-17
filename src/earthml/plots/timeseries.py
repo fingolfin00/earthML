@@ -46,7 +46,7 @@ def _reduce_for_timeseries(
     return reduced
 
 
-def _plot_x_values_raw(x):
+def _plot_x_values_raw(x, *, monthly_alignment: Literal["raw", "midpoint"] = "raw"):
     x = np.asarray(x)
 
     if not np.issubdtype(x.dtype, np.datetime64):
@@ -78,8 +78,11 @@ def _plot_x_values_raw(x):
         except Exception:
             is_monthly = False
 
-    if not is_monthly:
+    if not is_monthly or monthly_alignment == "raw":
         return x
+
+    if monthly_alignment != "midpoint":
+        raise ValueError("monthly_alignment must be 'raw' or 'midpoint'")
 
     month_start = _snap_to_nearest_month_start(idx)
     next_month = (idx.to_period("M") + 1).to_timestamp(how="start")
@@ -87,8 +90,13 @@ def _plot_x_values_raw(x):
     return midpoint.to_numpy()
 
 
-def _plot_x_values(da: xr.DataArray, x_dim: str):
-    return _plot_x_values_raw(da[x_dim].values)
+def _plot_x_values(
+    da: xr.DataArray,
+    x_dim: str,
+    *,
+    monthly_alignment: Literal["raw", "midpoint"] = "raw",
+):
+    return _plot_x_values_raw(da[x_dim].values, monthly_alignment=monthly_alignment)
 
 
 def _plot_coord_name(da: xr.DataArray, x_dim: str) -> str:
@@ -131,6 +139,7 @@ def plot_realization_timeseries(
     extra_lw: float = 1.5,
     extra_ls: str = ":",
     eager_compute: bool = False,
+    monthly_alignment: Literal["raw", "midpoint"] = "raw",
 ) -> Axes:
     """
     Plot a 1D series with optional realization members and shaded spread.
@@ -159,7 +168,7 @@ def plot_realization_timeseries(
     series_mean = _reduce_for_timeseries(series_mean, keep_dims=(x_dim,), eager_compute=eager_compute)
     series_mean = series_mean.transpose(x_dim)
     x_coord = _plot_coord_name(series_mean, x_dim)
-    x = _plot_x_values_raw(series_mean[x_coord].values)
+    x = _plot_x_values_raw(series_mean[x_coord].values, monthly_alignment=monthly_alignment)
 
     if members is not None:
         members = _reduce_for_timeseries(members, keep_dims=(x_dim, ens_dim), eager_compute=eager_compute)
