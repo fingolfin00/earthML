@@ -20,6 +20,9 @@ class EarthMLClimatology:
             ds = ds.sel({time_dim: slice(start, end)})
 
         time = ds[time_dim]
+        if time.size == 0:
+            raise ValueError(f"{time_dim!r} is empty; cannot compute climatology")
+
         if not hasattr(time, "dt"):
             raise TypeError(f"{time_dim!r} must be datetime-like")
 
