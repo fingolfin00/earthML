@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Sequence, Callable, Any, TypeAlias
+from typing import Sequence, Callable, Any, TypeAlias, Literal
 from itertools import product
 import multiprocessing
 
@@ -42,6 +42,7 @@ class MLBCExperimentLauncher:
     experiment                  : MLBCExperimentLauncherConfig # type, name, root folder, suffix
     run_mode                    : MLBCRunMode
     max_retries                 : int
+    log_level                   : Literal["info", "debug"]
     # Exp settings
     variables_input             : str | Sequence[str]
     variables_target            : str | Sequence[str]
@@ -446,7 +447,7 @@ class MLBCExperimentLauncher:
             # Common provider args
             provider_args_common = dict(regrid_resolution=float(self.regrid_resolution)) if self.regrid_resolution is not None else {}
             if self.experiment.name == MLBCExperimentName.CDS_CMCC__ORAS5:
-                provider_args = provider_args_common | dict(earthkit_cache_dir=self.earthkit_cache_dir, split_month=12)
+                provider_args = provider_args_common | dict(earthkit_cache_dir=self.earthkit_cache_dir)
             else:
                 provider_args = provider_args_common
             input_provider_args_list.append(provider_args)
@@ -732,6 +733,7 @@ class MLBCExperimentLauncher:
                     dask_workers=self.dask_workers,
                     memory_limit=self.memory_limit,
                     needs_ca_bundle=needs_ca_bundle,
+                    log_level=self.log_level
                 )
                 dask_runtime = runtime.start()
                 log_file = None
