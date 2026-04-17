@@ -426,6 +426,14 @@ class MLBCExperiment:
         )
 
         before_sizes = {"input": dict(input_ds.sizes), "target": dict(target_ds.sizes)}
+        input_time_dim = input_ds.earthml.guessed_dims.time
+        target_time_dim = target_ds.earthml.guessed_dims.time
+
+        self.logger.debug("input time", input_ds[input_time_dim].values)
+        self.logger.debug("target time", target_ds[target_time_dim].values)
+        self.logger.debug("input only", np.setdiff1d(input_ds[input_time_dim].values, target_ds[target_time_dim].values))
+        self.logger.debug("target only", np.setdiff1d(target_ds[target_time_dim].values, input_ds[input_time_dim].values))
+
         input_ds, target_ds = xr.align(
             input_ds,
             target_ds,
