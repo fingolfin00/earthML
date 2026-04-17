@@ -1,6 +1,11 @@
 from dataclasses import dataclass, field, is_dataclass
-from typing import Any, Sequence, Set, TYPE_CHECKING, TypeAlias
+from typing import Any, TYPE_CHECKING, TypeAlias
+from collections.abc import Mapping, Sequence, Set
+
 from datetime import datetime
+import cftime
+import pandas as pd
+import xarray as xr
 
 from ..base import DataSelection
 
@@ -73,11 +78,21 @@ class DataSource:
             return self
         return self.__add__(other)
 
+
+SampleValues = (
+    Mapping[str, Any]
+    | pd.DatetimeIndex
+    | xr.CFTimeIndex
+    | Sequence[datetime]
+    | Sequence[cftime.datetime]
+    | Sequence[pd.Timedelta]
+)
+
 @dataclass
 class Sample:
-    samples : dict | Sequence[datetime] = field(default_factory=dict)
+    samples : SampleValues = field(default_factory=dict)
     missed  : Set[datetime] = field(default_factory=set)
-    extra   : dict = None
+    extra   : dict = field(default_factory=dict)
 
 @dataclass
 class RegridConfig:
