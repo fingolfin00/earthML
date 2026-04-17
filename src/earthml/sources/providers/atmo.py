@@ -1,6 +1,7 @@
-from dateutil.relativedelta import relativedelta
 from pathlib import Path
 
+from dateutil.relativedelta import relativedelta
+from ...base import Leadtime, LeadtimeUnit
 from .. import SourceConfigContainer, RegridConfig, JunoLocalSourceConfig, JunoLocalSourceFileNameConfig, EarthkitSourceConfig
 
 from .registry import register_source_config_provider as register_provider
@@ -9,7 +10,7 @@ from .registry import register_source_config_provider as register_provider
 def juno_forecast_hourly(
     var_name: str,
     leadtime_value: int,
-    leadtime_unit: str,
+    leadtime_unit: LeadtimeUnit,
     root_path: str | Path = "/data/inputs/METOCEAN/rolling/model/atmos/ECMWF/IFS_010/1.0forecast/1h/grib/",
     engine: str = "cfgrib",
     cfgrib_idx_path: str = "",
@@ -23,7 +24,7 @@ def juno_forecast_hourly(
     plus_hours: int = 1,
     file_open_workers: int | None = 1,
 ) -> SourceConfigContainer:
-    leadtime = relativedelta(**{leadtime_unit: leadtime_value})
+    leadtime = Leadtime("leadtime", leadtime_unit, leadtime_value)
 
     return SourceConfigContainer(
         source="juno-local",
@@ -55,7 +56,7 @@ def juno_forecast_hourly(
 def juno_analysis_6hourly(
     var_name: str,
     leadtime_value: int, # ignored
-    leadtime_unit: str,
+    leadtime_unit: LeadtimeUnit,
     root_path: str | Path = "/data/inputs/METOCEAN/historical/model/atmos/ECMWF/IFS_010/analysis/6h/grib/",
     engine: str = "cfgrib",
     cfgrib_idx_path: str = "",
@@ -69,7 +70,7 @@ def juno_analysis_6hourly(
     plus_hours: int = 1,
     file_open_workers: int | None = 1,
 ) -> SourceConfigContainer:
-    leadtime = relativedelta(**{leadtime_unit: 0})
+    leadtime = Leadtime("leadtime", leadtime_unit, 0)
 
     return SourceConfigContainer(
         source="juno-local",
@@ -110,7 +111,7 @@ def earthkit_cds_era5_single_levels(
     time_dim_mode: str = "valid_time",
     add_earthkit_attrs: bool = False,
 ) -> SourceConfigContainer:
-    leadtime = relativedelta(**{leadtime_unit: 0})
+    leadtime = Leadtime("leadtime", leadtime_unit, 0)
 
     return SourceConfigContainer(
         source="earthkit",
@@ -143,6 +144,7 @@ def earthkit_cds_era5_single_levels(
             ),
             xarray_concat_dim=None,
             xarray_concat_extra_args=dict(coords="minimal", compat="override"),
+            snap_time_index="same", # account for ERA5 convention of start of the month at 12:00 (snap it to 00:00)
             convert_unit=convert_unit,
             earthkit_cache_dir=earthkit_cache_dir,
         ), 
@@ -159,12 +161,12 @@ def earthkit_cmcc_monthly_hindcast_atmo(
     regrid_resolution: float = 0.25,
     select_area_after_request: bool = True,
     leadtime_month: list[str] = ["1", "2", "3", "4", "5", "6"],
-    split_month: int = 1,
+    split_month: int = 12, # 12: one single request, 1: 12 requests (one per month)
     split_month_jump: list[str] | None = None,
     data_format: str = "grib", # netcdf (experimental)
     earthkit_cache_dir: str  = Path("/tmp/earthkit-cache/"),
 ) -> SourceConfigContainer:
-    leadtime = relativedelta(**{leadtime_unit: leadtime_value})
+    leadtime = Leadtime("leadtime", leadtime_unit, leadtime_value)
     
     if data_format == "netcdf":
         to_xarray_args = dict(
@@ -207,6 +209,7 @@ def earthkit_cmcc_monthly_hindcast_atmo(
             to_xarray_args=to_xarray_args,
             xarray_concat_dim="time",
             xarray_concat_extra_args=dict(coords="minimal", compat="override"),
+            snap_time_index="nearest", # account for SPS4 atmo use of "valid_time" to set the forecast target time
             earthkit_cache_dir=earthkit_cache_dir,
         ),
     )
@@ -223,7 +226,7 @@ def earthkit_cds_era5_single_levels_monthly(
     convert_unit: dict | None = None, # dict of var_name: (func, target_unit) to convert variable unit (e.g. {"temperature": (lambda x: x - 273.15, "C")})
     add_earthkit_attrs: bool = False,
 ) -> SourceConfigContainer:
-    leadtime = relativedelta(**{leadtime_unit: 0})
+    leadtime = Leadtime("leadtime", leadtime_unit, 0)
 
     return SourceConfigContainer(
         source="earthkit",

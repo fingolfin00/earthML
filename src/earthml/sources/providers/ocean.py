@@ -1,8 +1,10 @@
 from typing import Literal
 
 from pathlib import Path
+
 from dateutil.relativedelta import relativedelta
 
+from ...base import Leadtime, LeadtimeUnit
 from .. import SourceConfigContainer, RegridConfig, JunoLocalSourceConfig, JunoLocalSourceFileNameConfig, EarthkitSourceConfig, CopernicusmarineSourceConfig
 
 from .registry import register_source_config_provider as register_provider
@@ -13,7 +15,7 @@ from .registry import register_source_config_provider as register_provider
 def juno_monthly_hindcast_ocean_netcdf(
     var_name: str,
     leadtime_value: int,
-    leadtime_unit: str,
+    leadtime_unit: LeadtimeUnit,
     root_path: str = "/work/cmcc/cp1/CMCC-CM/archive/C3S/",
     realizations: str | int = "all",
     engine: str = "h5netcdf", # h5netcdf, netcdf4
@@ -26,7 +28,7 @@ def juno_monthly_hindcast_ocean_netcdf(
     file_open_workers: int | None = 1,
 ) -> SourceConfigContainer:
     members = str(realizations) if isinstance(realizations, int) else "*"
-    leadtime = relativedelta(**{leadtime_unit: leadtime_value})
+    leadtime = Leadtime("leadtime", leadtime_unit, leadtime_value)
 
     return SourceConfigContainer(
         source="juno-local",
@@ -55,16 +57,19 @@ def juno_monthly_hindcast_ocean_netcdf(
 def earthkit_cmcc_monthly_hindcast_ocean(
     var_name: str,
     leadtime_value: int, # months
-    leadtime_unit: str,
+    leadtime_unit: LeadtimeUnit,
     originating_centre: str = "cmcc",
     system: str = "4",
     regrid_resolution: float = 0.25,
     select_area_after_request: bool = True,
-    split_month: int = 1,
+    leadtime_month: list[str] = ["1", "2", "3", "4", "5", "6"],
+    split_request: bool = True,
+    split_month: int = 6, # 12: one single request, 1: 12 requests (one per month)
     split_month_jump: list[str] | None = None, # ['03', '04', '06', '07'],
-    earthkit_cache_dir: str  = Path("/tmp/earthkit-cache/"),
+    data_format: str = "grib", # netcdf (experimental)
+    earthkit_cache_dir: str | Path = Path("/tmp/earthkit-cache/"),
 ) -> SourceConfigContainer:
-    leadtime = relativedelta(**{leadtime_unit: leadtime_value})
+    leadtime = Leadtime("leadtime", leadtime_unit, leadtime_value)
 
     return SourceConfigContainer(
         source="earthkit",
@@ -76,7 +81,7 @@ def earthkit_cmcc_monthly_hindcast_ocean(
                 regrid_resolution=regrid_resolution,
                 regrid_vars=[var_name],
             ),
-            split_request=True,
+            split_request=split_request,
             split_month=split_month,
             split_month_jump=split_month_jump or [],
             select_area_after_request=select_area_after_request,
@@ -85,8 +90,11 @@ def earthkit_cmcc_monthly_hindcast_ocean(
                 forecast_type="hindcast",
                 originating_centre=originating_centre,
                 system=system,
+                leadtime_month=leadtime_month,
+                data_format=data_format,
             ),
-            to_xarray_args=dict(
+            # request_delta_hack=relativedelta(months=1),
+            to_xarray_args=dict( # passed to earthkit-data to_xarray method
                 engine="h5netcdf", # h5netcdf, netcdf4
                 decode_timedelta=True,
                 data_vars="all",
@@ -99,6 +107,7 @@ def earthkit_cmcc_monthly_hindcast_ocean(
             ),
             xarray_concat_dim="time",
             xarray_concat_extra_args=dict(coords="minimal", compat="override"),
+            snap_time_index="next", # forecast at half month corresponds to following month
             earthkit_cache_dir=earthkit_cache_dir,
         ),
     )
@@ -108,14 +117,14 @@ def earthkit_cmcc_monthly_hindcast_ocean(
 def earthkit_cds_oras5(
     var_name: str,
     leadtime_value: int, # ignored
-    leadtime_unit: str,
+    leadtime_unit: LeadtimeUnit,
     product_type: str = "consolidated", # or "operational"
     regrid_resolution: float = 0.25,
     select_area_after_request: bool = True,
-    earthkit_cache_dir: str  = Path("/tmp/earthkit-cache/"),
+    earthkit_cache_dir: str | Path = Path("/tmp/earthkit-cache/"),
     convert_unit: dict | None = None, # dict of var_name: (func, target_unit) to convert variable unit (e.g. {"temperature": (lambda x: x - 273.15, "C")})
 ) -> SourceConfigContainer:
-    leadtime = relativedelta(**{leadtime_unit: 0})
+    leadtime = Leadtime("leadtime", leadtime_unit, 0)
 
     return SourceConfigContainer(
         source="earthkit",
@@ -134,6 +143,7 @@ def earthkit_cds_oras5(
                 product_type=product_type,
                 vertical_resolution="single_level",
             ),
+            request_delta_hack={"sosstsst": -relativedelta(days=15)}, # account for sosstsst ORAS5 (possible) convention that half of the month corresponds to the following month
             to_xarray_args=dict(
                 engine="h5netcdf", # h5netcdf, netcdf4
                 decode_timedelta=True,
@@ -146,6 +156,7 @@ def earthkit_cds_oras5(
             ),
             xarray_concat_dim=None,
             xarray_concat_extra_args=dict(coords="minimal", compat="override"),
+            snap_time_index="next" if var_name=="sosstsst" else "same",
             convert_unit=convert_unit,
             earthkit_cache_dir=earthkit_cache_dir,
         ), 
@@ -157,7 +168,7 @@ def earthkit_cds_oras5(
 def copernicusmarine_global_ocean_physics_analysis_hourly(
     var_name: str,
     leadtime_value: int, # unused
-    leadtime_unit: str,
+    leadtime_unit: LeadtimeUnit,
     username: str,
     password: str,
     regrid_resolution: float = 0.08,
@@ -165,7 +176,7 @@ def copernicusmarine_global_ocean_physics_analysis_hourly(
     # copernicusmarine_cache_dir: str  = Path("/tmp/copernicusmarine-cache/"),
     convert_unit: dict | None = None, # dict of var_name: (func, target_unit) to convert variable unit (e.g. {"temperature": (lambda x: x - 273.15, "C")})
 ) -> SourceConfigContainer:
-    leadtime = relativedelta(**{leadtime_unit: 0})
+    leadtime = Leadtime("leadtime", leadtime_unit, 0)
 
     return SourceConfigContainer(
         source="copernicusmarine",
@@ -189,7 +200,7 @@ def copernicusmarine_global_ocean_physics_analysis_hourly(
 def copernicusmarine_global_ocean_physics_analysis_daily(
     var_name: str,
     leadtime_value: int, # unused
-    leadtime_unit: str,
+    leadtime_unit: LeadtimeUnit,
     username: str,
     password: str,
     regrid_resolution: float = 0.08,
@@ -197,7 +208,7 @@ def copernicusmarine_global_ocean_physics_analysis_daily(
     # copernicusmarine_cache_dir: str  = Path("/tmp/copernicusmarine-cache/"),
     convert_unit: dict | None = None, # dict of var_name: (func, target_unit) to convert variable unit (e.g. {"temperature": (lambda x: x - 273.15, "C")})
 ) -> SourceConfigContainer:
-    leadtime = relativedelta(**{leadtime_unit: 0})
+    leadtime = Leadtime("leadtime", leadtime_unit, 0)
 
     if var_name in ("thetao", "so"):
         var_dataset_name = f"-{var_name}"
@@ -226,7 +237,7 @@ def copernicusmarine_global_ocean_physics_analysis_daily(
 def juno_global_ocean_physics_forecast_daily(
     var_name: str,
     leadtime_value: int,
-    leadtime_unit: str,
+    leadtime_unit: LeadtimeUnit,
     root_path: str | Path = "/work/cmcc/jd19424/test-ML/dataML/mercator/1.0forecast/day/",
     engine: str = "h5netcdf",
     cfgrib_idx_path: str = "",
@@ -239,7 +250,7 @@ def juno_global_ocean_physics_forecast_daily(
     both_data_and_previous_date_in_file: bool = True,
     file_open_workers: int | None = 1,
 ) -> SourceConfigContainer:
-    leadtime = relativedelta(**{leadtime_unit: leadtime_value})
+    leadtime = Leadtime("leadtime", leadtime_unit, leadtime_value)
 
     return SourceConfigContainer(
         source="juno-local",
