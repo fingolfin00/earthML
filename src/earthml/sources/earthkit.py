@@ -3,6 +3,7 @@ from collections.abc import Mapping, Sequence, Callable
 from dataclasses import dataclass, field
 
 import os, time, random
+import logging
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 from pathlib import Path
 import hashlib, json
@@ -185,6 +186,9 @@ class EarthkitSource(BaseSource):
     ) -> str:
         return f"{SOURCE_CTX} {variable_name} {date_range_text}"
 
+    def _should_use_progress(self) -> bool:
+        return not logger.isEnabledFor(logging.DEBUG)
+
     @contextmanager
     def _earthkit_progress_redirect(
         self,
@@ -202,7 +206,6 @@ class EarthkitSource(BaseSource):
         import earthkit.data.sources.url as ekd_url
         import earthkit.data.utils.progbar as ekd_progbar
         import cdsapi.api as cdsapi_api
-        import logging
 
         orig_progress_bar = ekd_progbar.progress_bar
         orig_tqdm = ekd_progbar.tqdm
@@ -979,19 +982,37 @@ class EarthkitSource(BaseSource):
                 total_chunks = sum(len(reqs) for _, _, reqs in year_chunk_requests)
 
                 offset = 0
-                with Progress(
-                    SpinnerColumn(),
-                    TextColumn("[progress.description]{task.description}"),
-                    BarColumn(),
-                    MofNCompleteColumn(),
-                    TimeElapsedColumn(),
-                ) as prog:
+                if year_chunk_requests:
                     logger.info("%s Check request status: https://cds.climate.copernicus.eu/requests?tab=all", SOURCE_CTX)
-                    task = prog.add_task(
-                        self._progress_task_description(v.longname, dates_d[v]),
-                        total=total_chunks,
-                    )
+                if self._should_use_progress():
+                    with Progress(
+                        SpinnerColumn(),
+                        TextColumn("[progress.description]{task.description}"),
+                        BarColumn(),
+                        MofNCompleteColumn(),
+                        TimeElapsedColumn(),
+                    ) as prog:
+                        task = prog.add_task(
+                            self._progress_task_description(v.longname, dates_d[v]),
+                            total=total_chunks,
+                        )
 
+                        for chunk_start, chunk_end, request_args_list in year_chunk_requests:
+                            c_dim, ds_chunks = self._fetch_chunks(
+                                request_args_list=request_args_list,
+                                start=chunk_start,
+                                end=chunk_end,
+                                leadtime=leadtime_var,
+                                request_other_args=self.config.request_extra_args,
+                                total_chunks=total_chunks,
+                                chunk_offset=offset,
+                                progress=prog,
+                                progress_task_id=task,
+                            )
+                            offset += len(request_args_list)
+                            datasets.extend(ds_chunks)
+                            concat_dims.append(c_dim)
+                else:
                     for chunk_start, chunk_end, request_args_list in year_chunk_requests:
                         c_dim, ds_chunks = self._fetch_chunks(
                             request_args_list=request_args_list,
@@ -1001,20 +1022,18 @@ class EarthkitSource(BaseSource):
                             request_other_args=self.config.request_extra_args,
                             total_chunks=total_chunks,
                             chunk_offset=offset,
-                            progress=prog,
-                            progress_task_id=task,
                         )
                         offset += len(request_args_list)
                         datasets.extend(ds_chunks)
                         concat_dims.append(c_dim)
 
-                    if None in concat_dims:
-                        raise ValueError(f"{SOURCE_CTX} Not all chunks have a valid time dim for concatenation: {concat_dims}")
+                if None in concat_dims:
+                    raise ValueError(f"{SOURCE_CTX} Not all chunks have a valid time dim for concatenation: {concat_dims}")
 
-                    if len(set(concat_dims)) == 1:
-                        xarray_concat_dim = concat_dims[0]
-                    else:
-                        raise ValueError(f"{SOURCE_CTX} Different time dim for concatenation: {concat_dims}")
+                if len(set(concat_dims)) == 1:
+                    xarray_concat_dim = concat_dims[0]
+                else:
+                    raise ValueError(f"{SOURCE_CTX} Different time dim for concatenation: {concat_dims}")
 
             # Multiple years single request
             else:
@@ -1022,26 +1041,35 @@ class EarthkitSource(BaseSource):
                 request_args_list = self._create_base_request_args_list(start, end, area, split_req_dates)
                 
                 if request_args_list:
-                    with Progress(
-                        SpinnerColumn(),
-                        TextColumn("[progress.description]{task.description}"),
-                        BarColumn(),
-                        MofNCompleteColumn(),
-                        TimeElapsedColumn(),
-                    ) as prog:
-                        logger.info("%s Check request status: https://cds.climate.copernicus.eu/requests?tab=all", SOURCE_CTX)
-                        task = prog.add_task(
-                            self._progress_task_description(v.longname, dates_d[v]),
-                            total=len(request_args_list),
-                        )
+                    logger.info("%s Check request status: https://cds.climate.copernicus.eu/requests?tab=all", SOURCE_CTX)
+                    if self._should_use_progress():
+                        with Progress(
+                            SpinnerColumn(),
+                            TextColumn("[progress.description]{task.description}"),
+                            BarColumn(),
+                            MofNCompleteColumn(),
+                            TimeElapsedColumn(),
+                        ) as prog:
+                            task = prog.add_task(
+                                self._progress_task_description(v.longname, dates_d[v]),
+                                total=len(request_args_list),
+                            )
+                            xarray_concat_dim, datasets = self._fetch_chunks(
+                                request_args_list=request_args_list,
+                                start=start,
+                                end=end,
+                                leadtime=leadtime_var, # used to filter leadtime in actual dataset
+                                request_other_args=self.config.request_extra_args,
+                                progress=prog,
+                                progress_task_id=task,
+                            )
+                    else:
                         xarray_concat_dim, datasets = self._fetch_chunks(
                             request_args_list=request_args_list,
                             start=start,
                             end=end,
                             leadtime=leadtime_var, # used to filter leadtime in actual dataset
                             request_other_args=self.config.request_extra_args,
-                            progress=prog,
-                            progress_task_id=task,
                         )
                 else:
                     logger.warning("%s Cannot fetch request. Continuing...", SOURCE_CTX)
