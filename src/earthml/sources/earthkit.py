@@ -439,10 +439,7 @@ class EarthkitSource(BaseSource):
                 chunk_label=chunk_label,
             )
 
-            request_d = dict(
-                **request_other_args,
-                **req_args,
-            )
+            request_d = dict(request_other_args) | dict(req_args)
             logger.debug("   %s Full request to ekd: %s", SOURCE_CTX, request_d)
 
             if self.config.dataset:
@@ -816,6 +813,62 @@ class EarthkitSource(BaseSource):
         logger.debug("%s Months requested cleaned-up: %s", SOURCE_CTX, months_splitted)
         return months_splitted
 
+    def _route_oras5_product_types(
+        self,
+        request_args_list: Sequence[dict[str, Any]],
+        request_other_args: Mapping[str, Any],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """
+        ORAS5 product type must be chosen from the effective request date, not
+        from launcher-side period routing. This keeps the request valid even when
+        date hacks shift a nominal 2015 sample back into December 2014.
+        """
+        routed_other_args = dict(request_other_args)
+        if (
+            self.config.dataset != "reanalysis-oras5"
+            or self.config.request_type != "monthly"
+            or "product_type" not in routed_other_args
+        ):
+            return list(request_args_list), routed_other_args
+
+        routed_other_args.pop("product_type", None)
+        cutoff_year = 2014
+        routed_requests: list[dict[str, Any]] = []
+
+        def _as_year_list(year_value: Any) -> list[str]:
+            if isinstance(year_value, Sequence) and not isinstance(year_value, str):
+                return [str(y) for y in year_value]
+            return [str(year_value)]
+
+        for req_args in request_args_list:
+            years_raw = req_args.get("year")
+            if years_raw is None:
+                routed_requests.append(req_args | {"product_type": "consolidated"})
+                continue
+
+            years = _as_year_list(years_raw)
+            consolidated_years = [y for y in years if int(y) <= cutoff_year]
+            operational_years = [y for y in years if int(y) > cutoff_year]
+
+            if consolidated_years:
+                routed_requests.append(req_args | {"year": consolidated_years, "product_type": "consolidated"})
+            if operational_years:
+                routed_requests.append(req_args | {"year": operational_years, "product_type": "operational"})
+
+        logger.debug(
+            "%s Routed ORAS5 requests by product_type: %s",
+            SOURCE_CTX,
+            [
+                {
+                    "year": req.get("year"),
+                    "month": req.get("month"),
+                    "product_type": req.get("product_type"),
+                }
+                for req in routed_requests
+            ],
+        )
+        return routed_requests, routed_other_args
+
     def _create_base_request_args_list(
         self,
         start: datetime,
@@ -870,6 +923,10 @@ class EarthkitSource(BaseSource):
         else: # only one request
             request_time_args_list.append(request_time_args | request_args_d)
 
+        request_time_args_list, _ = self._route_oras5_product_types(
+            request_time_args_list,
+            self.config.request_extra_args,
+        )
         return request_time_args_list
 
     def _add_boundary_for_yearly_chunks(
