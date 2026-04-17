@@ -25,6 +25,7 @@ class XarrayDataset(Dataset):
         realization_as_channel: bool = False,
         output_realizations: Literal["deterministic", "ensemble"] = "deterministic", # deterministic -> output R = 1, ensemble -> output R = input R
         fill_nan_value: float = 0.0,
+        torch_mask: Literal["target", "input", "both"] = "both",
     ):
         """
         input_ds: xarray.Dataset
@@ -51,6 +52,8 @@ class XarrayDataset(Dataset):
         self.transform_x, self.transform_y = transform_x, transform_y
         self.transform_x_args = transform_x_args or {}
         self.transform_y_args = transform_y_args or {}
+
+        self.torch_mask = torch_mask
 
         # NumPy arrays with NaNs for missing data
         self.x_np = self._transpose_dims_ds_to_da(self.input_ds).to_numpy()
@@ -287,7 +290,11 @@ class XarrayDataset(Dataset):
         if self.transform_y:
             y = self.transform_y(y, **self.transform_y_args)
 
-        mask = my           # use target mask
-        # mask = mx & my    # combine input and target masks
+        if self.torch_mask == "target":
+            mask = my # use target mask
+        elif self.torch_mask == "input":
+            mask = mx # use input mask
+        if self.torch_mask == "both":
+            mask = mx & my # combine input and target masks
 
         return x, y, mask
