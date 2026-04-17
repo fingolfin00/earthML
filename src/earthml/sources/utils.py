@@ -1,16 +1,18 @@
-from typing import Callable
+from typing import Callable, TypeVar
 from pathlib import Path
 
 from datetime import datetime, timedelta
 
 import re, time, shutil
 
-import xarray as xr
+import earthkit.data as ekd
 
 from ..logging import get_logger
 
 
 logger = get_logger(__name__)
+
+T = TypeVar("T")
 
 
 def retry_fetch_after_hdf_err_eks_source(
@@ -35,13 +37,11 @@ def _extract_nc_path_from_oserror(e: Exception) -> Path | None:
     m = re.search(r"(/[^'\"]+\.(?:nc|nc4))", str(e))
     return Path(m.group(1)) if m else None
 
-def _set_ekd_cache_dir(cache_dir: str = Path("/tmp/earthkit-cache/")):
-    import earthkit.data as ekd # TODO why here?
+def _set_ekd_cache_dir(cache_dir: str | Path = Path("/tmp/earthkit-cache/")):
     ekd.config.set("cache-policy", "user")
     ekd.config.set("user-cache-directory", cache_dir)
 
-def _get_ekd_cache_dir():
-    import earthkit.data as ekd # TODO why here?
+def _get_ekd_cache_dir() -> str:
     return ekd.config.get("user-cache-directory")
 
 
@@ -53,7 +53,7 @@ def _is_earthkit_empty_source(obj) -> bool:
     return isinstance(obj, EmptySource)
 
 def retry_fetch_after_hdf_err(
-    fetch_fn: Callable[[], xr.Dataset | object],
+    fetch_fn: Callable[[], T],
     *,
     error_re: str | None = None,
     tries: int = 5,
@@ -61,10 +61,10 @@ def retry_fetch_after_hdf_err(
     delete_bad_file: bool = False,
     delete_bad_parent: bool = False,
     manage_earthkit_cache: bool = False,
-):
+) -> T:
     pat = re.compile(error_re, re.I) if error_re else None
     last_e: Exception | None = None
-    orig_ekd_cache_dir = _get_ekd_cache_dir() if manage_earthkit_cache else None
+    orig_ekd_cache_dir: str | None = _get_ekd_cache_dir() if manage_earthkit_cache else None
 
     def rmdir(directory):
         shutil.rmtree(Path(directory), ignore_errors=False)
@@ -78,7 +78,7 @@ def retry_fetch_after_hdf_err(
                 _set_ekd_cache_dir()  # default tmp cache
                 # continue retry loop
             else:
-                if manage_earthkit_cache:
+                if orig_ekd_cache_dir is not None:
                     _set_ekd_cache_dir(orig_ekd_cache_dir)
                 return data
 
@@ -91,7 +91,7 @@ def retry_fetch_after_hdf_err(
             retryable = True if pat is None else bool(pat.search(msg))
 
             if not retryable:
-                if manage_earthkit_cache:
+                if orig_ekd_cache_dir:
                     _set_ekd_cache_dir(orig_ekd_cache_dir)
                 raise  # non-matching error -> fail fast
 
