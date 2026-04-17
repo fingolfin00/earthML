@@ -297,9 +297,11 @@ class MLBCExperimentLauncher:
 
         if self.experiment.name in (
             MLBCExperimentName.JUNO_CMCC__CMEMS,
+            MLBCExperimentName.JUNO_MEDFS__CMEMS,
             MLBCExperimentName.CMEMS__CMEMS,
         ): # ocean weather: CMEMS global ocean fc and an
-            var_catalog_keys = (f"{var_input}_gopaf_fc", f"{var_target}_gopaf_an")
+            input_var_suffix = "medfs_fc" if self.experiment.name == MLBCExperimentName.JUNO_MEDFS__CMEMS else "gopaf_fc"
+            var_catalog_keys = (f"{var_input}_{input_var_suffix}", f"{var_target}_gopaf_an")
 
         if self.experiment.name == MLBCExperimentName.JUNO_ECMWF__ERA5: # atmo weather: local Juno forecasts + ERA5 reanalysis
             raise NotImplementedError(f"Experiment {self.experiment.name} not yet implemented.")
@@ -406,6 +408,10 @@ class MLBCExperimentLauncher:
 
                 if self.experiment.name == MLBCExperimentName.JUNO_CMCC__CMEMS: # ocean weather Juno local + cloud for analysis (daily)
                     input_provider = "ocean.juno.gopaf.forecast.daily"
+                    target_provider = "ocean.copernicusmarine.gopaf.analysis.daily"
+
+                if self.experiment.name == MLBCExperimentName.JUNO_MEDFS__CMEMS: # ocean weather MedFS local + cloud for analysis (daily)
+                    input_provider = "ocean.juno.medfs.forecast.daily"
                     target_provider = "ocean.copernicusmarine.gopaf.analysis.daily"
 
             return input_provider, target_provider
@@ -632,6 +638,7 @@ class MLBCExperimentLauncher:
 
             if self.experiment.name in (
                 MLBCExperimentName.JUNO_CMCC__CMEMS,
+                MLBCExperimentName.JUNO_MEDFS__CMEMS,
                 MLBCExperimentName.CMEMS__CMEMS,
             ): # ocean weather experiment from cloud (cmems_cmems) cannot work currently (no past forecasts)
                 leadtime_var_value = self.all_leadtimes_vars["ocean"][leadtime.value]

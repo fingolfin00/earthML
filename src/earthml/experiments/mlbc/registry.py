@@ -31,6 +31,7 @@ class MLBCExperimentName(StrEnum):
     # ocean weather
     CMEMS__CMEMS            = "cmems_cmems"
     JUNO_CMCC__CMEMS        = "juno-cmcc_cmems"
+    JUNO_MEDFS__CMEMS       = "juno-medfs_cmems"
     # atmo seasonal
     CDS_CMCC__ERA5          = "cds-cmcc_era5"
     # atmo weather
