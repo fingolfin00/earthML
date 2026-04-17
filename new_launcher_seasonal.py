@@ -19,13 +19,13 @@ if __name__ == "__main__":
     experiment_type             = "seasonal"                # seasonal, weather
     experiment_name             = "cds-cmcc_era5"          # cds-cmcc_oras5, cds-cmcc_era5
 
-    run_mode                    = "prepare"     # train_test_on_train, train_test, prepare, train, test
+    run_mode                    = "train_test_on_train"     # train_test_on_train, train_test, prepare, train, test
     experiment_mode             = "full"                   # full, short, debug
     only_longest_train_period   = True                      # only train on the largest train period (if False, train on all periods, which can be much slower but allows to see variability across train periods)
     # add_hyper_exp_name_suffix   = False                     # if True use also batch_size, max_epochs, initial_learning_rate in exp name (and resulting folder) automatically extending exp_suffix
     extra_exp_suffix            = ""                # additional custom suffix to add to exp name (and resulting folder), e.g. "_debug" or "_try1"
 
-    exp_root_folder             = "/Users/jacopodallaglio/ML/experiments_earthML_ocean_refactor_test"
+    exp_root_folder             = "/Users/jacopodallaglio/ML/experiments_earthML_seasonal_atmo"
     earthkit_cache_dir          = "/Users/jacopodallaglio/ML/.earthkit-cache"       # if using earthkit datasource
 
     if experiment_name == "cds-cmcc_oras5":
@@ -33,7 +33,7 @@ if __name__ == "__main__":
         regions                 = ["pacific"]                               # e.g. ["pacific", "natlantic", "satlantic", "indian"]
     if experiment_name == "cds-cmcc_era5":
         variables               = ["t2m", "msl", "u10", "v10", "d2m"]               # atmo seasonal e.g. ["t2m", "tp", "u10", "v10"] (tp wrong)
-        regions                 = ["conus"]                                 # e.g. ["conus", "europe"]
+        regions                 = ["conus", "europe"]                                 # e.g. ["conus", "europe"]
     leadtimes                   = (1, 2, 3, 4, 5, 6)
 
     inpaint_nan                 = True                      # whether to inpaint nan values in input and target datasets (after loading, before torch dataset generation)
