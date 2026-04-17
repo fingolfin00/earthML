@@ -6,7 +6,6 @@ import xarray as xr
 import pandas as pd
 
 from ..base.dataclasses import DataSelection
-from ..base import leadtime_to_timedelta
 from ..logging import get_logger
 
 
@@ -190,7 +189,7 @@ class EarthMLSubset:
                     leadtime.name,
                 )
             else:
-                td = leadtime_to_timedelta(leadtime)
+                td = leadtime.to_timedelta()
                 coord_dtype = ds[leadtime_coord].dtype
                 target = td.to_numpy().astype(coord_dtype)
                 leadtime_sel_d = self._dim_selection(leadtime_dim, target)

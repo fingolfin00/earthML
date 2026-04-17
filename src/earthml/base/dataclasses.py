@@ -1,6 +1,6 @@
 from dataclasses import dataclass, asdict, astuple
 from datetime import datetime
-from typing import List, Dict, Optional, Literal
+from typing import Dict, Optional, Literal, TypeAlias
 
 import pandas as pd
 
@@ -12,29 +12,27 @@ class Region:
     lat     : tuple
 
 
+LeadtimeUnit: TypeAlias = Literal["hours", "days", "months"]
 @dataclass
 class Leadtime:
     name    : str # variable name if applicable
-    unit    : Literal["hours", "days", "months"]
+    unit    : LeadtimeUnit
     value   : int
 
+    def to_timedelta(
+        self,
+        month_length_days: int = 30,
+    ) -> pd.Timedelta:
+        """
+        Convert a Leadtime to Pandas timedelta representation.
 
-def leadtime_to_timedelta(
-    leadtime: "Leadtime",
-    *,
-    month_length_days: int = 30,
-) -> pd.Timedelta:
-    """
-    Convert a Leadtime to a concrete timedelta.
-
-    Calendar months are not supported by ``pd.to_timedelta``. For leadtime-axis
-    matching we therefore keep the historical earthML convention that one
-    conceptual month maps to 30 days unless a caller provides a different
-    approximation explicitly.
-    """
-    if leadtime.unit == "months":
-        return pd.Timedelta(days=leadtime.value * month_length_days)
-    return pd.to_timedelta(f"{leadtime.value} {leadtime.unit}")
+        Calendar months are not supported by ``pd.to_timedelta``. For leadtime-axis
+        matching we therefore keep the convention that one conceptual month maps to
+        30 days unless a caller provides a different approximation explicitly.
+        """
+        if self.unit == "months":
+            return pd.Timedelta(days=self.value * month_length_days)
+        return pd.to_timedelta(f"{self.value} {self.unit}")
 
 
 @dataclass
