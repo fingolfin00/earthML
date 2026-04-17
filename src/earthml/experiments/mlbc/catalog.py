@@ -89,6 +89,8 @@ def make_var(
 
         v10_cds_fc=Variable(longname="10m_v_component_of_wind", name="v10", unit="m/s", leadtime=leadtime_input),
         v10_era5_seasonal_an=Variable(longname="10m_v_component_of_wind", name="v10", unit="m/s"),
+
+        sst_era5_seasonal_an=Variable(longname="sea_surface_temperature", name="sst", unit="K"),
     )
 
 def make_region ():
