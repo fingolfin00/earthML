@@ -206,14 +206,24 @@ class EarthkitSource(BaseSource):
         import earthkit.data.sources.url as ekd_url
         import earthkit.data.utils.progbar as ekd_progbar
         import cdsapi.api as cdsapi_api
+        import ecmwf.datastores.processing as ecmwf_processing
+        import ecmwf.datastores.legacy_client as ecmwf_legacy_client
+        import multiurl.base as multiurl_base
 
         orig_progress_bar = ekd_progbar.progress_bar
         orig_tqdm = ekd_progbar.tqdm
         orig_url_progress_bar = ekd_url.progress_bar
         orig_cdsapi_tqdm = cdsapi_api.tqdm
+        orig_multiurl_progress_bar = multiurl_base.progress_bar
+        processing_logger = logging.getLogger("ecmwf.datastores.processing")
+        legacy_logger = logging.getLogger("ecmwf.datastores.legacy_client")
         cdsapi_logger = logging.getLogger("cdsapi")
         orig_cdsapi_disabled = cdsapi_logger.disabled
         orig_cdsapi_level = cdsapi_logger.level
+        orig_processing_disabled = processing_logger.disabled
+        orig_processing_level = processing_logger.level
+        orig_legacy_disabled = legacy_logger.disabled
+        orig_legacy_level = legacy_logger.level
         base_completed = max(chunk_index - 1, 0)
 
         class _RichEarthkitProgress:
@@ -291,8 +301,13 @@ class EarthkitSource(BaseSource):
         ekd_progbar.tqdm = _RichEarthkitProgress
         ekd_url.progress_bar = _progress_factory
         cdsapi_api.tqdm = _RichEarthkitProgress
+        multiurl_base.progress_bar = _progress_factory
         cdsapi_logger.disabled = True
         cdsapi_logger.setLevel(logging.WARNING)
+        processing_logger.disabled = True
+        processing_logger.setLevel(logging.WARNING)
+        legacy_logger.disabled = True
+        legacy_logger.setLevel(logging.WARNING)
         try:
             yield
         finally:
@@ -300,8 +315,13 @@ class EarthkitSource(BaseSource):
             ekd_progbar.tqdm = orig_tqdm
             ekd_url.progress_bar = orig_url_progress_bar
             cdsapi_api.tqdm = orig_cdsapi_tqdm
+            multiurl_base.progress_bar = orig_multiurl_progress_bar
             cdsapi_logger.disabled = orig_cdsapi_disabled
             cdsapi_logger.setLevel(orig_cdsapi_level)
+            processing_logger.disabled = orig_processing_disabled
+            processing_logger.setLevel(orig_processing_level)
+            legacy_logger.disabled = orig_legacy_disabled
+            legacy_logger.setLevel(orig_legacy_level)
 
     def _init_leadtime_variables_periods(self):
         self.variables = list(self.data_selection.variable) if isinstance(self.data_selection.variable, Sequence) else [self.data_selection.variable]
