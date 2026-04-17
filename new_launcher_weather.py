@@ -18,7 +18,7 @@ if __name__ == "__main__":
     force_retrain               = False
 
     experiment_type             = "weather"                 # seasonal, weather
-    experiment_name             = "juno-ecmwf_juno-ecmwf"             # cmems_cmems, juno-ecmwf_juno-ecmwf, juno-cmcc_cmems
+    experiment_name             = "juno-ecmwf_juno-ecmwf"             # cmems_cmems, juno-ecmwf_juno-ecmwf, juno-cmcc_cmems, juno-medfs_cmems
 
     run_mode                    = "train_test_on_train"     # train_test_on_train, train_test, prepare, train, test
     experiment_mode             = "full"        # full, short, debug
@@ -33,7 +33,7 @@ if __name__ == "__main__":
         variables               = ["msl", "t2m", "d2m", "u10", "v10", "tcc"]                   # e.g. ["msl", "t2m", "u10", "v10", "d2m", "tcc"]
         regions                 = ["westconus"]                 # e.g. ["conus", "westconus", "europe", "westeurope"]
         leadtimes               = (.5, 1, 2, 3) # (.5, 1, 2, 3)
-    if experiment_name in ("cmems_cmems", "juno-cmcc_cmems"):
+    if experiment_name in ("cmems_cmems", "juno-cmcc_cmems", "juno-medfs_cmems"):
         variables               = ["sst", "ssh", "sss"]     # e.g. ["sst", "ssh", "sss"]
         regions                 = ["atlanticbox"]               # e.g. ["pacific", "natlantic", "satlantic", "indian", "atlanticbox"]
         leadtimes               = (1, 2, 3, 4, 5, 6, 7, 8, 9) # (1, 2, 3, 4, 5, 6, 7, 8, 9)
@@ -56,11 +56,11 @@ if __name__ == "__main__":
         end_test_date               = datetime(2026, 3, 31)
         freq                        = "12h"
         regrid_resolution           = 0.08
-    if experiment_name == "juno-cmcc_cmems":
-        start_train_date            = datetime(2024, 4, 23) # this needs to be adapted on the current day
+    if experiment_name in ("juno-cmcc_cmems", "juno-medfs_cmems"):
+        start_train_date            = datetime(2024, 4, 23) # this needs to be adapted on the current day (not anymore)
         end_train_date              = datetime(2025, 12, 31)
         start_test_date             = datetime(2026, 1, 1)
-        end_test_date               = datetime(2026, 4, 11) # this needs to be adapted on the current day
+        end_test_date               = datetime(2026, 4, 11) # this needs to be adapted on the current day (not anymore)
         freq                        = "1d"
         regrid_resolution           = 0.08
 
@@ -177,7 +177,7 @@ if __name__ == "__main__":
                     # test fully in new folder
                     test=dict(root_path=root_path_analysis_new, file_header="CMS") | grib_indexing,
             )
-    if experiment_name in ("cmems_cmems", "juno-cmcc_cmems"):
+    if experiment_name in ("cmems_cmems", "juno-cmcc_cmems", "juno-medfs_cmems"):
         target_test_provider_kwargs = dict(
             train=cmems_credential,
             test=cmems_credential,
