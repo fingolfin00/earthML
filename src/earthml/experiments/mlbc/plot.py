@@ -415,17 +415,17 @@ def _build_residual_ds(
     left_ds: xr.Dataset,
     right_ds: xr.Dataset,
     *,
-    var: str,
+    var: str
 ) -> xr.Dataset:
-    left_var = _select_plot_var_flexible(left_ds, var)
-    right_var = _select_plot_var_flexible(right_ds, var)
+    left_name = _resolve_plot_var_name(left_ds, var)
+    right_name = _resolve_plot_var_name(right_ds, var)
+
+    left_var = left_ds[left_name]
+    right_var = right_ds[right_name]
 
     rdim_left = left_var.earthml.guessed_dims.realization
     rdim_right = right_var.earthml.guessed_dims.realization
 
-    # If the reference side is deterministic/singleton while the left side is
-    # ensemble, drop the singleton realization axis so xarray broadcasts it
-    # instead of intersecting realization coordinates during subtraction.
     if (
         rdim_left is not None
         and rdim_right is not None
@@ -434,12 +434,11 @@ def _build_residual_ds(
         and right_var.sizes.get(rdim_right, 1) == 1
     ):
         right_var = right_var.squeeze(rdim_right, drop=True)
-        rdim_right = None
 
     exclude_align_dims = tuple(dim for dim in (rdim_left, rdim_right) if dim is not None)
     left_var, right_var = xr.align(left_var, right_var, join="inner", exclude=exclude_align_dims)
 
-    return left_var - right_var
+    return (left_var - right_var).to_dataset(name=var)
 
 
 def _build_climatology_ds(ds: xr.Dataset) -> xr.Dataset:
