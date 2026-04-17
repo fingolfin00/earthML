@@ -26,6 +26,18 @@ def _sanitize_path_fragment(value: str) -> str:
     return cleaned.strip("._") or "experiment"
 
 
+def _next_available_log_path(log_path: Union[str, Path]) -> Path:
+    candidate = Path(log_path)
+    stem = candidate.stem or "experiment"
+    suffix = candidate.suffix
+    counter = 0
+    while True:
+        numbered_candidate = candidate.with_name(f"{stem}_{counter:03d}{suffix}")
+        if not numbered_candidate.exists():
+            return numbered_candidate
+        counter += 1
+
+
 @dataclass(slots=True)
 class LoggingPaths:
     experiment_dir: Path
@@ -59,7 +71,7 @@ def build_experiment_logging_paths(
     log_dir = experiment_dir / log_dir_name
     stamp = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
     run_fragment = _sanitize_path_fragment(run_name) if run_name else stamp
-    log_file = log_dir / (filename or f"{run_fragment}.log")
+    log_file = _next_available_log_path(log_dir / (filename or f"{run_fragment}.log"))
     return LoggingPaths(experiment_dir=experiment_dir, log_dir=log_dir, log_file=log_file)
 
 
@@ -119,7 +131,7 @@ def add_experiment_file_handler(
     level: Optional[Union[int, str]] = None,
     mode: str = "a",
 ) -> Path:
-    log_path = Path(log_file)
+    log_path = _next_available_log_path(log_file)
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     file_handler = logging.FileHandler(log_path, mode=mode)
