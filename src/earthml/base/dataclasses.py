@@ -5,7 +5,7 @@ from typing import Dict, Optional, Literal, TypeAlias
 import pandas as pd
 
 
-@dataclass
+@dataclass(frozen=True)
 class Region:
     name    : str
     lon     : tuple
@@ -13,7 +13,7 @@ class Region:
 
 
 LeadtimeUnit: TypeAlias = Literal["hours", "days", "months"]
-@dataclass
+@dataclass(frozen=True)
 class Leadtime:
     name    : str # variable name if applicable
     unit    : LeadtimeUnit
@@ -35,7 +35,7 @@ class Leadtime:
         return pd.to_timedelta(f"{self.value} {self.unit}")
 
 
-@dataclass
+@dataclass(frozen=True)
 class Variable:
     name    : str
     longname: Optional[str] = None
@@ -46,10 +46,10 @@ class Variable:
 
     def __post_init__(self):
         if self.longname is None:
-            self.longname = self.name
+            object.__setattr__(self, "longname", self.name)
 
 
-@dataclass
+@dataclass(frozen=True)
 class TimeRange:
     start   : datetime
     end     : datetime
@@ -73,14 +73,14 @@ class TimeRange:
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class DataSelection:
-    variable: Variable | List[Variable]
+    variable: Variable | tuple[Variable]
     region  : Region
     period  : TimeRange
 
 
-@dataclass
+@dataclass(frozen=True)
 class Dims:
     time: str
     latitude: str
