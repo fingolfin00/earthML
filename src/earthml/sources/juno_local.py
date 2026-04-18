@@ -1,10 +1,11 @@
-from typing import Literal
+import datetime
+from typing import Literal, Any
 from dataclasses import dataclass, field
 from functools import partial
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import multiprocessing
 
-import re, time, dask
+import re, dask
 from heapq import nlargest
 from pathlib import Path
 
@@ -12,13 +13,11 @@ import hashlib
 import json
 
 from datetime import timedelta
-from dateutil.relativedelta import relativedelta
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 
-from dask.distributed import progress
 from dask.utils import SerializableLock
 
 from rich.progress import (
@@ -30,15 +29,18 @@ from rich.progress import (
     MofNCompleteColumn,
 )
 
+from ..base import Leadtime
+from ..logging import get_console, get_logger
+
 from .dataclasses import DataSource, Sample, RegridConfig
 from .utils import retry_fetch_after_hdf_err
 from .xarray_local import MFXarrayLocalSource
 from ._preprocess import preprocess_mfdataset
-from ..logging import get_console, get_logger
 
 
 REALIZATION_RE = re.compile(r"_r(\d+)")
 logger = get_logger(__name__)
+SOURCE_CTX = "[source juno-local]"
 
 
 @dataclass
@@ -65,7 +67,7 @@ class JunoLocalSourcePathConfig:
 
 @dataclass
 class JunoLocalSourceConfig:
-    leadtime                    : relativedelta # TODO move to Leadtime?
+    leadtime                    : Leadtime
     root_path                   : str | Path
     engine                      : str
     file_name_config            : JunoLocalSourceFileNameConfig
@@ -192,7 +194,7 @@ class JunoLocalSource(MFXarrayLocalSource):
             matches.sort(key=lambda t: t[0], reverse=True)
             return [p for _, p in matches]
 
-        # Keep exact same observable behavior: newest files only, newest-first order
+        # Newest files only, newest-first order
         top = nlargest(realizations, matches, key=lambda t: t[0])
         top.sort(key=lambda t: t[0], reverse=True)
         return [p for _, p in top]
@@ -406,7 +408,7 @@ class JunoLocalSource(MFXarrayLocalSource):
 
     def _get_data_filenames(
         self,
-        leadtime: relativedelta,
+        leadtime: Leadtime,
         config: JunoLocalSourceFileNameConfig,
     ) -> Sample:
         """Get the data filenames for the given data selection."""
@@ -415,7 +417,7 @@ class JunoLocalSource(MFXarrayLocalSource):
         assert config.realizations == "all" or config.realizations > 0
 
         for date in self.date_range:
-            previous_date = date - leadtime
+            previous_date = date - leadtime.to_timedelta()
             root_path, date_config = self._resolve_path_config(previous_date)
             data_path = root_path.joinpath(previous_date.strftime(date_config.file_path_date_format))
 
@@ -465,7 +467,7 @@ class JunoLocalSource(MFXarrayLocalSource):
                     found = True
 
             if not found:
-                logger.warning("Missed sample (local filename not found): %s", date)
+                logger.warning("%s Missed sample (local filename not found): %s", SOURCE_CTX, date)
                 s.missed.add(date)
 
         return s
@@ -481,7 +483,8 @@ class JunoLocalSource(MFXarrayLocalSource):
         has_shifted_samples = bool(minus_samples or plus_samples)
 
         logger.info(
-            "Juno local file samples: %s, minus: %s, plus: %s, missed: %s",
+            "%s Juno local file samples: %s, minus: %s, plus: %s, missed: %s",
+            SOURCE_CTX,
             len(samples),
             len(minus_samples),
             len(plus_samples),
@@ -554,7 +557,7 @@ class JunoLocalSource(MFXarrayLocalSource):
                     prog.advance(task)
             else:
                 workers = min(self.file_open_workers, len(samples))
-                logger.info("Opening Juno local samples with %s worker threads", workers)
+                logger.info("%s Opening Juno local samples with %s worker threads", workers, SOURCE_CTX)
                 future_to_date = {}
 
                 with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -571,8 +574,8 @@ class JunoLocalSource(MFXarrayLocalSource):
                             samples_d[date] = ds_sample
                         prog.advance(task)
 
-        # dbg_sample_k = self.date_range[10]
-        # print(f"Juno local, size of ds[{dbg_sample_k}] after open_mfdataset: {samples_d[dbg_sample_k].sizes}")
+        dbg_sample_k = self.date_range[10]
+        logger.debug(f"{SOURCE_CTX} Juno local, size of ds[{dbg_sample_k}] after open_mfdataset: {samples_d[dbg_sample_k].sizes}")
 
         # Infer resolution from first valid sample
         valid_dates = sorted(samples_d)
@@ -582,7 +585,7 @@ class JunoLocalSource(MFXarrayLocalSource):
         ref_lon = np.round(ref_lon, 10)
         ref_lon = np.unique(ref_lon) # remove exact duplicates
 
-        logger.info("Juno local inferred reference lon size: %s", ref_lon.size)
+        logger.info("%s Juno local inferred reference lon size: %s", ref_lon.size, SOURCE_CTX)
 
         # Enforce same lon convention to all samples
         for date, ds_sample in samples_d.items():
@@ -673,6 +676,6 @@ class JunoLocalSource(MFXarrayLocalSource):
             combine_attrs="drop_conflicts",
         )
         # progress(ds_all) # show progress bar (concat lazy, not working)
-        logger.info("Juno local, size of ds after concat: %s", ds_all.sizes)
+        logger.info("%s Juno local, size of ds after concat: %s", ds_all.sizes, SOURCE_CTX)
 
         return ds_all
