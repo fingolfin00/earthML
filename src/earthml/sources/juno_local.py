@@ -72,8 +72,8 @@ class JunoLocalSourceConfig:
     leadtime                    : Leadtime
     root_path                   : str | Path
     engine                      : str
-    file_name_config            : JunoLocalSourceFileNameConfig
     regrid_config               : RegridConfig
+    file_name_config            : JunoLocalSourceFileNameConfig | None = None
     path_configs                : list[JunoLocalSourcePathConfig] = field(default_factory=list)
     select_area_after_request   : bool = True
     cfgrib_idx_path             : str | Path = ""
