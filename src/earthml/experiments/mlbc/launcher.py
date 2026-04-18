@@ -71,6 +71,7 @@ class MLBCExperimentLauncher:
     target_realization_avg      : bool = False  # whether to average over target realizations when loading target data to torch
     realization_as_channel      : bool = False  # whether to use realization a channel dimension
     force_retrain               : bool = False  # whether to ignore previous training artifacts and restart from scratch
+    force_rebuild_dataset       : bool = False  # whether to ignore saved local dataset stores and rebuild them
 
 
     def __post_init__(self):
@@ -182,6 +183,7 @@ class MLBCExperimentLauncher:
             "options.realization_as_channel": self.realization_as_channel,
             "options.output_realizations": self.output_realizations,
             "options.force_retrain": self.force_retrain,
+            "options.force_rebuild_dataset": self.force_rebuild_dataset,
             "options.torch_preprocess_fn": getattr(self.torch_preprocess_fn, "__name__", None) if self.torch_preprocess_fn else None,
             "net.name": self.net.name,
             "net.loss": self.net.loss,
@@ -628,7 +630,7 @@ class MLBCExperimentLauncher:
                 MLBCExperimentName.CDS_CMCC__ERA5,
             ): # atmo experiments
                 if self.experiment.name == MLBCExperimentName.CDS_CMCC__ERA5:
-                    leadtime_dim_name = "forecastMonth"
+                    leadtime_dim_name = "forecastMonth" #TODO possibly unused
                 try:
                     leadtime_var_value = self.all_leadtimes_vars["atmo"][leadtime] # in hours (weather) or days (seasonal)
                 except KeyError as exc:
@@ -698,6 +700,7 @@ class MLBCExperimentLauncher:
             target_realization_avg=self.target_realization_avg,
             realization_as_channel=self.realization_as_channel,
             output_realizations=self.output_realizations,
+            force_rebuild_dataset=self.force_rebuild_dataset,
         )
 
         return dataset.experiment_run_name, dataset, exp_cfg

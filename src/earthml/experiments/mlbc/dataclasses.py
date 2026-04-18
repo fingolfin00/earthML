@@ -73,3 +73,4 @@ class MLBCExperimentConfig:
     realization_as_channel      : Optional[bool]                    = False             # whether to use realization a channel dimension
     output_realizations         : Optional[Literal[
                                     "deterministic", "ensemble"]]   = "deterministic"   # deterministic -> output R = 1, ensemble -> output R = input R
+    force_rebuild_dataset       : Optional[bool]                    = False             # whether to ignore saved local dataset stores and rebuild them

@@ -756,6 +756,14 @@ class MLBCExperiment:
                 # for marker in ("zarr.json", ".zgroup", ".zmetadata") # supports also older Zarr versions
             )
 
+            if is_zarr_store and self.config.force_rebuild_dataset:
+                self.logger.info(
+                    "force_rebuild_dataset=True: removing existing dataset store %s",
+                    save_path,
+                )
+                shutil.rmtree(save_path)
+                is_zarr_store = False
+
             if is_zarr_store:
                 xr_loc_source_configs, sources[e.role] = self._create_xarray_local_source(save_path, datasource)
                 log_renderable(
