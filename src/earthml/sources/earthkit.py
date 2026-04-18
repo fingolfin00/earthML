@@ -32,7 +32,7 @@ from .dataclasses import DataSource, RegridConfig
 from .utils import retry_fetch_after_hdf_err, generate_hours
 from .base import BaseSource
 from ..base import Leadtime, Variable
-from ..logging import get_logger
+from ..logging import get_logger, is_console_enabled_for
 
 
 logger = get_logger(__name__)
@@ -187,7 +187,7 @@ class EarthkitSource(BaseSource):
         return f"{SOURCE_CTX} {variable_name} {date_range_text}"
 
     def _should_use_progress(self) -> bool:
-        return not logger.isEnabledFor(logging.DEBUG)
+        return not is_console_enabled_for(logger, logging.DEBUG)
 
     @contextmanager
     def _earthkit_progress_redirect(
