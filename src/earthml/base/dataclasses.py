@@ -85,6 +85,7 @@ class Dims:
     time: str
     latitude: str
     longitude: str
+    level: str | None
     realization: str | None
     leadtime: str | None
     """
