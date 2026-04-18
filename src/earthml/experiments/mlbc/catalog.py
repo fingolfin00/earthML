@@ -110,7 +110,7 @@ def make_region ():
         conus=Region(name="ConUS", lon=(-130, -60), lat=(50, 25)),
         westeurope=Region(name="WestEurope", lon=(-10, 36), lat=(55, 35)),
         europe=Region(name="Europe", lon=(-30, 60), lat=(80, 30)),
-        med=Region(name="Mediterranean", lon=(-6, 37), lat=(46, 30)),
+        med=Region(name="Mediterranean", lon=(-18, 36), lat=(46, 30)),
         italy=Region(name="ItalianPeninsula", lon=(5, 23.5), lat=(49, 25.5)),
         pacific=Region(name="CentralPacific", lon=(-200, -120), lat=(30, -30)),
         natlantic=Region(name="NorthAtlantic", lon=(-100, 40), lat=(80, 0)),
