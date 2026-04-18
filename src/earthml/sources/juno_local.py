@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import multiprocessing
+import threading
 
 import re, dask
 from heapq import nlargest
@@ -109,6 +110,8 @@ class JunoLocalSource(MFXarrayLocalSource):
             Path(self.cfgrib_idx_path).mkdir(parents=True, exist_ok=True)
 
         self.file_open_workers = self._resolve_file_open_workers(config.file_open_workers)
+        self._cfgrib_locks: dict[str, SerializableLock] = {}
+        self._cfgrib_locks_guard = threading.Lock()
 
 
     @staticmethod
@@ -146,10 +149,22 @@ class JunoLocalSource(MFXarrayLocalSource):
         return hashlib.md5(raw.encode()).hexdigest()
 
 
-    def _open_one_cfgrib(self, path: Path, var_name: str, date, lock):
+    def _get_cfgrib_lock(self, path: Path) -> SerializableLock:
+        lock_key = str(path.resolve())
+        with self._cfgrib_locks_guard:
+            lock = self._cfgrib_locks.get(lock_key)
+            if lock is None:
+                lock = SerializableLock()
+                self._cfgrib_locks[lock_key] = lock
+                logger.debug("%s Created cfgrib lock for %s", SOURCE_CTX, lock_key)
+        return lock
+
+
+    def _open_one_cfgrib(self, path: Path, var_name: str, date):
         filter_by_keys = {"cfVarName": var_name}
         indexpath_key = self._make_cfgrib_index_key(path, filter_by_keys)
         indexpath = str(Path(self.cfgrib_idx_path) / f"{indexpath_key}.idx")
+        lock = self._get_cfgrib_lock(path)
 
         ds = xr.open_dataset(
             path,
@@ -304,7 +319,7 @@ class JunoLocalSource(MFXarrayLocalSource):
                     per_file = []
                     for path in sample:
                         def _open_one(path=path, var_name=var.name, date=date):
-                            return self._open_one_cfgrib(path, var_name, date, lock)
+                            return self._open_one_cfgrib(path, var_name, date)
 
                         ds_one = retry_fetch_after_hdf_err(
                             _open_one,
@@ -351,7 +366,7 @@ class JunoLocalSource(MFXarrayLocalSource):
                 per_file = []
                 for path in sample:
                     def _open_one(path=path, var_name=var.name, date=date):
-                        return self._open_one_cfgrib(path, var_name, date, lock)
+                        return self._open_one_cfgrib(path, var_name, date)
 
                     ds_one = retry_fetch_after_hdf_err(
                         _open_one,
