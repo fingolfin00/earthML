@@ -188,6 +188,21 @@ def _iter_effective_handlers(logger: logging.Logger) -> Iterator[logging.Handler
         current = current.parent
 
 
+def is_console_enabled_for(
+    logger: logging.Logger,
+    level: Union[int, str],
+) -> bool:
+    target_level = _coerce_level(level)
+
+    for handler in _iter_effective_handlers(logger):
+        if getattr(handler, "_earthml_file_path", None) is not None:
+            continue
+        if handler.level <= target_level:
+            return True
+
+    return False
+
+
 def _render_to_text(renderable: Any) -> str:
     with _TEXT_CONSOLE.capture() as capture:
         _TEXT_CONSOLE.print(renderable)
