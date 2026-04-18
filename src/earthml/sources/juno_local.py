@@ -45,10 +45,12 @@ SOURCE_CTX = "[source juno-local]"
 
 @dataclass
 class JunoLocalSourceFileNameConfig:
-    file_path_date_format               : str
-    file_header                         : str
-    file_suffix                         : str
-    file_date_format                    : str
+    file_path_header                    : str = ""
+    file_path_suffix                    : str = ""
+    file_path_date_format               : str = ""
+    file_header                         : str = ""
+    file_suffix                         : str = ""
+    file_date_format                    : str = "%Y%m%d"
     both_data_and_previous_date_in_file : bool = True
     date_order                          : Literal["previous_current", "current_previous"] = "previous_current"
     date_separator                      : str = ""
@@ -205,6 +207,16 @@ class JunoLocalSource(MFXarrayLocalSource):
         if not m:
             raise ValueError(f"Could not parse realization from filename: {p.name}")
         return int(m.group(1))
+
+    @staticmethod
+    def _build_data_path(
+        config: JunoLocalSourceFileNameConfig,
+        root_path: Path,
+        date: datetime,
+    ) -> Path:
+        date_str = date.strftime(config.file_path_date_format)
+        inner_path = f"{config.file_path_header}{date_str}{config.file_path_suffix}"
+        return root_path.joinpath(inner_path)
 
     @staticmethod
     def _build_data_glob(
@@ -419,7 +431,12 @@ class JunoLocalSource(MFXarrayLocalSource):
         for date in self.date_range:
             previous_date = date - leadtime.to_timedelta()
             root_path, date_config = self._resolve_path_config(previous_date)
-            data_path = root_path.joinpath(previous_date.strftime(date_config.file_path_date_format))
+            data_path = self._build_data_path(
+                config=date_config,
+                root_path=root_path,
+                date=previous_date,
+            )
+            logger.debug("%s Data path constructed for date %s: %s", SOURCE_CTX, date, data_path)
 
             realizations = date_config.realizations
             minus_td = date_config.minus_timedelta
