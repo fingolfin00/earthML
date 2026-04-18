@@ -185,7 +185,7 @@ class EarthkitSource(BaseSource):
         chunk_label: str,
     ):
         if progress is None or task_id is None:
-            yield
+            yield {"status": None}
             return
 
         import earthkit.data.sources.url as ekd_url
@@ -347,7 +347,7 @@ class EarthkitSource(BaseSource):
         legacy_logger.disabled = True
         legacy_logger.setLevel(logging.WARNING)
         try:
-            yield
+            yield cache_state
         finally:
             ekd_progbar.progress_bar = orig_progress_bar
             ekd_progbar.tqdm = orig_tqdm
@@ -552,7 +552,7 @@ class EarthkitSource(BaseSource):
                 chunk_index=chunk_index,
                 total_chunks=total_chunks,
                 chunk_label=chunk_label,
-            ):
+            ) as cache_state:
                 self._set_progress(
                     progress,
                     progress_task_id,
@@ -599,7 +599,7 @@ class EarthkitSource(BaseSource):
                 chunk_index=chunk_index,
                 total_chunks=total_chunks,
                 chunk_label=chunk_label,
-            ):
+            ) as cache_state:
                 self._set_progress(
                     progress,
                     progress_task_id,
