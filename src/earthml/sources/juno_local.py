@@ -465,6 +465,7 @@ class JunoLocalSource(MFXarrayLocalSource):
                 previous_date=previous_date,
                 current_date=date,
             )
+            logger.debug("%s Data glob constructed for date %s: %s", SOURCE_CTX, date, data_glob)
 
             files_exact = self._latest_matching_files(data_path, data_glob, realizations)
 
@@ -590,6 +591,7 @@ class JunoLocalSource(MFXarrayLocalSource):
                         self.elements.missed.add(date)
                     else:
                         samples_d[date] = ds_sample
+                    logger.debug(f"{SOURCE_CTX} Juno local, vars in sample [{date}]: {ds_sample.data_vars}")
                     prog.advance(task)
             else:
                 workers = min(self.file_open_workers, len(samples))
@@ -609,6 +611,7 @@ class JunoLocalSource(MFXarrayLocalSource):
                         else:
                             samples_d[date] = ds_sample
                         prog.advance(task)
+                        logger.debug(f"{SOURCE_CTX} Juno local, vars in sample [{date}]: {ds_sample.data_vars}")
 
         dbg_sample_k = self.date_range[10]
         logger.debug(f"{SOURCE_CTX} Juno local, size of ds[{dbg_sample_k}] after open_mfdataset: {samples_d[dbg_sample_k].sizes}")
