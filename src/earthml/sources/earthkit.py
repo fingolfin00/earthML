@@ -108,48 +108,32 @@ class EarthkitSource(BaseSource):
         req_args: Mapping[str, Any],
         start: pd.Timedelta | datetime,
         end: pd.Timedelta | datetime,
-        idx: int,
-        total: int,
     ) -> str:
-        months_req = req_args.get("month")
-        years_req = req_args.get("year")
         date_req = req_args.get("date")
-        parts = [f"{idx}/{total}"]
 
         if date_req is not None:
-            parts.append(f"date {date_req}")
-        else:
-            parts.append(f"{start:%Y-%m}..{end:%Y-%m}")
-
-        if years_req is not None:
-            if isinstance(years_req, Sequence) and not isinstance(years_req, str):
-                years_req = ",".join(str(y) for y in years_req)
-            parts.append(f"y={years_req}")
-        if months_req is not None:
-            if isinstance(months_req, Sequence) and not isinstance(months_req, str):
-                month_values = [str(m) for m in months_req]
-                months_repr = month_values[0] if len(month_values) == 1 else f"{month_values[0]}-{month_values[-1]}"
-            else:
-                months_repr = str(months_req)
-            parts.append(f"m={months_repr}")
-
-        return ", ".join(parts)
+            return f"date {date_req}"
+        return f"{start:%Y-%m}..{end:%Y-%m}"
 
     @staticmethod
-    def _format_progress_stage(stage: str | None) -> str | None:
+    def _format_progress_stage(stage: str | None, cache_status: str | None = None) -> str | None:
         if not stage:
             return None
 
         if stage.startswith("earthkit-data"):
-            return "download"
+            stage_label = "download"
+        else:
+            normalized = {
+                "prepare request": "prepare",
+                "submit request": "submit",
+                "load xarray": "decode",
+                "chunk complete": "finalize",
+            }
+            stage_label = normalized.get(stage, stage)
 
-        normalized = {
-            "prepare request": "prepare",
-            "submit request": "submit",
-            "load xarray": "decode",
-            "chunk complete": "finalize",
-        }
-        return normalized.get(stage, stage)
+        if cache_status:
+            return f"{stage_label}, cache {cache_status}"
+        return stage_label
 
     @staticmethod
     def _set_progress(
@@ -160,6 +144,7 @@ class EarthkitSource(BaseSource):
         chunk_position: float | None = None,
         stage: str | None = None,
         chunk_label: str | None = None,
+        cache_status: str | None = None,
     ) -> None:
         if progress is None or task_id is None:
             return
@@ -169,11 +154,11 @@ class EarthkitSource(BaseSource):
             update_kwargs["completed"] = max(0.0, min(float(chunk_position), float(total_chunks)))
 
         if chunk_label is not None:
-            description = f"{SOURCE_CTX} {chunk_label}"
+            description = f"earthkit {chunk_label}"
             if stage:
-                formatted_stage = EarthkitSource._format_progress_stage(stage)
+                formatted_stage = EarthkitSource._format_progress_stage(stage, cache_status)
                 if formatted_stage:
-                    description = f"{description} [{formatted_stage}]"
+                    description = f"{description} - {formatted_stage}"
             update_kwargs["description"] = description
 
         if update_kwargs:
@@ -184,7 +169,7 @@ class EarthkitSource(BaseSource):
         variable_name: str,
         date_range_text: str,
     ) -> str:
-        return f"{SOURCE_CTX} {variable_name} {date_range_text}"
+        return f"earthkit {variable_name} {date_range_text}"
 
     def _should_use_progress(self) -> bool:
         return not is_console_enabled_for(logger, logging.DEBUG)
@@ -204,15 +189,21 @@ class EarthkitSource(BaseSource):
             return
 
         import earthkit.data.sources.url as ekd_url
+        import earthkit.data.sources as ekd_sources
         import earthkit.data.utils.progbar as ekd_progbar
+        import earthkit.data.core.caching as ekd_caching
         import cdsapi.api as cdsapi_api
         import ecmwf.datastores.processing as ecmwf_processing
         import ecmwf.datastores.legacy_client as ecmwf_legacy_client
         import multiurl.base as multiurl_base
 
+        cache_state = {"status": None}
         orig_progress_bar = ekd_progbar.progress_bar
         orig_tqdm = ekd_progbar.tqdm
+        orig_cache_file = ekd_caching.cache_file
+        orig_sources_cache_file = ekd_sources.cache_file
         orig_url_progress_bar = ekd_url.progress_bar
+        orig_url_cache_file = ekd_url.cache_file
         orig_cdsapi_tqdm = cdsapi_api.tqdm
         orig_multiurl_progress_bar = multiurl_base.progress_bar
         processing_logger = logging.getLogger("ecmwf.datastores.processing")
@@ -249,6 +240,7 @@ class EarthkitSource(BaseSource):
                         chunk_position=base_completed + fraction,
                         stage=self._stage(),
                         chunk_label=chunk_label,
+                        cache_status=cache_state["status"],
                     )
                 else:
                     EarthkitSource._set_progress(
@@ -257,6 +249,7 @@ class EarthkitSource(BaseSource):
                         total_chunks=total_chunks,
                         stage=self._stage(),
                         chunk_label=chunk_label,
+                        cache_status=cache_state["status"],
                     )
 
             def update(self, n=1):
@@ -297,9 +290,54 @@ class EarthkitSource(BaseSource):
                 **kwargs,
             )
 
+        def _cache_file_with_status(owner, create, args, hash_extra=None, extension=".cache", force=None, replace=None):
+            create_called = False
+
+            def _create_with_status(target, create_args):
+                nonlocal create_called
+                create_called = True
+                cache_state["status"] = "miss"
+                EarthkitSource._set_progress(
+                    progress,
+                    task_id,
+                    total_chunks=total_chunks,
+                    chunk_position=base_completed,
+                    stage="submit request",
+                    chunk_label=chunk_label,
+                    cache_status=cache_state["status"],
+                )
+                return create(target, create_args)
+
+            path = orig_cache_file(
+                owner,
+                _create_with_status,
+                args,
+                hash_extra=hash_extra,
+                extension=extension,
+                force=force,
+                replace=replace,
+            )
+
+            if not create_called:
+                cache_state["status"] = "hit"
+                EarthkitSource._set_progress(
+                    progress,
+                    task_id,
+                    total_chunks=total_chunks,
+                    chunk_position=base_completed,
+                    stage="submit request",
+                    chunk_label=chunk_label,
+                    cache_status=cache_state["status"],
+                )
+
+            return path
+
         ekd_progbar.progress_bar = _progress_factory
         ekd_progbar.tqdm = _RichEarthkitProgress
+        ekd_caching.cache_file = _cache_file_with_status
+        ekd_sources.cache_file = _cache_file_with_status
         ekd_url.progress_bar = _progress_factory
+        ekd_url.cache_file = _cache_file_with_status
         cdsapi_api.tqdm = _RichEarthkitProgress
         multiurl_base.progress_bar = _progress_factory
         cdsapi_logger.disabled = True
@@ -313,7 +351,10 @@ class EarthkitSource(BaseSource):
         finally:
             ekd_progbar.progress_bar = orig_progress_bar
             ekd_progbar.tqdm = orig_tqdm
+            ekd_caching.cache_file = orig_cache_file
+            ekd_sources.cache_file = orig_sources_cache_file
             ekd_url.progress_bar = orig_url_progress_bar
+            ekd_url.cache_file = orig_url_cache_file
             cdsapi_api.tqdm = orig_cdsapi_tqdm
             multiurl_base.progress_bar = orig_multiurl_progress_bar
             cdsapi_logger.disabled = orig_cdsapi_disabled
@@ -448,7 +489,7 @@ class EarthkitSource(BaseSource):
         xarray_concat_dim = None
         for i, req_args in enumerate(request_args_list, start=1):
             chunk_index = i + chunk_offset
-            chunk_label = self._format_request_chunk_label(req_args, start, end, chunk_index, total_chunks)
+            chunk_label = self._format_request_chunk_label(req_args, start, end)
             logger.debug("%s Fetching %s", SOURCE_CTX, chunk_label)
             self._set_progress(
                 progress,
@@ -519,6 +560,7 @@ class EarthkitSource(BaseSource):
                     chunk_position=chunk_index - 1,
                     stage="submit request",
                     chunk_label=chunk_label,
+                    cache_status=cache_state["status"],
                 )
                 src_ekd: ekd.Source = retry_fetch_after_hdf_err(
                     _fetch_ekd_src,
@@ -565,6 +607,7 @@ class EarthkitSource(BaseSource):
                     chunk_position=chunk_index - 1,
                     stage="load xarray",
                     chunk_label=chunk_label,
+                    cache_status=cache_state["status"],
                 )
                 ds_chunk = retry_fetch_after_hdf_err(
                     _fetch_ekd,
