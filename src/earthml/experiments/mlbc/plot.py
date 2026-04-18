@@ -134,6 +134,16 @@ def _select_plot_var_flexible(ds: xr.Dataset, var: str) -> xr.Dataset:
     return ds[[_resolve_plot_var_name(ds, var)]]
 
 
+def _select_plot_mask(mask: xr.DataArray | xr.Dataset | None) -> xr.DataArray | None:
+    if mask is None:
+        return None
+    if isinstance(mask, xr.DataArray):
+        return mask
+    if len(mask.data_vars) != 1:
+        raise ValueError("Mask dataset must contain exactly one variable for timeseries plotting.")
+    return mask[next(iter(mask.data_vars))]
+
+
 def _sanitize_plot_time_coords(ds: xr.Dataset, *, x_dim: str) -> xr.Dataset:
     """
     Remove auxiliary time-like coordinates that can visually conflict with the
@@ -648,6 +658,7 @@ def plot_stage_timeseries(
             for spec in plot_specs:
                 ds_var = _select_plot_var_flexible(spec["ds"], var)
                 members, rdim = _get_plot_members(ds_var)
+                mask = _select_plot_mask(spec.get("mask"))
                 logger.info(
                     "Plot %s %s/%s: %s realizations=%s",
                     stage_kind,
@@ -659,6 +670,7 @@ def plot_stage_timeseries(
                 plot_realization_timeseries(
                     ds_var,
                     members=members,
+                    mask=mask,
                     x_dim=plot_dim,
                     ens_dim=rdim or "realization",
                     ax=ax,

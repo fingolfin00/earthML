@@ -570,6 +570,7 @@ class MLBCExperiment:
         target_ds: xr.Dataset,
         mode: MLBCExperimentMode,
         stage: str,
+        mask_ds: xr.Dataset | None = None,
     ) -> None:
         """
         Hook for lightweight diagnostic plots during the experiment lifecycle.
@@ -583,9 +584,10 @@ class MLBCExperiment:
             self.logger.info("Skip dataset-stage plotting because ENABLE_STAGE_PLOTTING=False")
             return
 
+        plot_mask = self._resolve_plot_mask(mask_ds, input_ds, target_ds)
         plot_specs = [
-            {"ds": input_ds, "label": "input", "mean_label": "input mean", "color": "tab:blue"},
-            {"ds": target_ds, "label": "target", "mean_label": "target mean", "color": "tab:orange"},
+            {"ds": input_ds, "mask": plot_mask, "label": "input", "mean_label": "input mean", "color": "tab:blue"},
+            {"ds": target_ds, "mask": plot_mask, "label": "target", "mean_label": "target mean", "color": "tab:orange"},
         ]
         lag_steps = self._requested_lag_steps(mode, input_ds)
         run_stage_plot_bundle(
@@ -609,15 +611,17 @@ class MLBCExperiment:
         target_ds: xr.Dataset,
         mode: MLBCExperimentMode,
         stage: str,
+        mask_ds: xr.Dataset | None = None,
     ) -> None:
         if not ENABLE_STAGE_PLOTTING:
             self.logger.info("Skip prediction-stage plotting because ENABLE_STAGE_PLOTTING=False")
             return
 
+        plot_mask = self._resolve_plot_mask(mask_ds, input_ds, target_ds)
         plot_specs = [
-            {"ds": pred_ds, "label": "pred", "mean_label": "pred mean", "color": "tab:green"},
-            {"ds": input_ds, "label": "input", "mean_label": "input mean", "color": "tab:blue"},
-            {"ds": target_ds, "label": "target", "mean_label": "target mean", "color": "tab:orange"},
+            {"ds": pred_ds, "mask": plot_mask, "label": "pred", "mean_label": "pred mean", "color": "tab:green"},
+            {"ds": input_ds, "mask": plot_mask, "label": "input", "mean_label": "input mean", "color": "tab:blue"},
+            {"ds": target_ds, "mask": plot_mask, "label": "target", "mean_label": "target mean", "color": "tab:orange"},
         ]
         lag_steps = self._requested_lag_steps(mode, input_ds)
         run_stage_plot_bundle(
@@ -633,6 +637,16 @@ class MLBCExperiment:
             residual_mean_label="pred-target mean",
             lag_steps=lag_steps,
         )
+
+    def _resolve_plot_mask(
+        self,
+        mask_ds: xr.Dataset | None,
+        input_ds: xr.Dataset,
+        target_ds: xr.Dataset,
+    ) -> xr.DataArray:
+        if mask_ds is None:
+            return (input_ds.earthml.mask() & target_ds.earthml.mask()).rename("common_mask")
+        return mask_ds["common_mask"].astype(bool)
 
     def _requested_lag_steps(
         self,
@@ -1264,6 +1278,7 @@ class MLBCExperiment:
             target_ds=test_target_ds,
             mode=test_data_mode,
             stage="test_preds_unmasked",
+            mask_ds=self.train_mask_ds if test_data_mode == MLBCExperimentMode.TRAIN else self.test_mask_ds,
         )
         self._plot_prediction_stage(
             pred_ds=pred_ds_masked,
@@ -1271,6 +1286,7 @@ class MLBCExperiment:
             target_ds=test_target_ds,
             mode=test_data_mode,
             stage="test_preds_masked",
+            mask_ds=self.train_mask_ds if test_data_mode == MLBCExperimentMode.TRAIN else self.test_mask_ds,
         )
 
         return dataloader
