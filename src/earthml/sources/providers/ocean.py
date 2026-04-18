@@ -143,7 +143,8 @@ def earthkit_cds_oras5(
                 product_type=product_type,
                 vertical_resolution="single_level",
             ),
-            request_delta_hack={"sosstsst": -relativedelta(days=15)}, # account for sosstsst ORAS5 (possible) convention that half of the month corresponds to the following month
+            request_delta_hack=-relativedelta(days=15), # account for sosstsst ORAS5 (possible) convention that half of the month corresponds to the following month
+            # request_delta_hack={"sosstsst": -relativedelta(days=15)}, # account for sosstsst ORAS5 (possible) convention that half of the month corresponds to the following month
             to_xarray_args=dict(
                 engine="h5netcdf", # h5netcdf, netcdf4
                 decode_timedelta=True,
@@ -156,7 +157,8 @@ def earthkit_cds_oras5(
             ),
             xarray_concat_dim=None,
             xarray_concat_extra_args=dict(coords="minimal", compat="override"),
-            snap_time_index="next" if var_name=="sosstsst" else "same",
+            snap_time_index="next",
+            # snap_time_index="next" if var_name=="sosstsst" else "same",
             convert_unit=convert_unit,
             earthkit_cache_dir=earthkit_cache_dir,
         ), 
