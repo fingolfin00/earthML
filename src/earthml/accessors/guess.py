@@ -9,8 +9,9 @@ from ..base.dataclasses import Dims
 # Constants
 DIM_NAMES = {
     "time":         ["time", "valid_time", "time_counter", "source_time", "t"],
-    "latitude":     ['lat', 'y', 'nav_lat'],
-    "longitude":    ['lon', 'x', 'nav_lon'],
+    "latitude":     ["lat", "y", "nav_lat"],
+    "longitude":    ["lon", "x", "nav_lon"],
+    "level":        ["height", "depth", "depthu", "depthv", "depthw"],
     "realization":  ["realization", "number", "ens"],
     "leadtime":     ["lead_time", "leadtime", "step", "forecastMonth"],
 }
@@ -98,6 +99,10 @@ class EarthMLGuess:
         return self.guess_dim(self._obj, 'longitude', DIM_NAMES["longitude"])
 
     @property
+    def guess_lev_dim(self):
+        return self.guess_dim(self._obj, 'level', DIM_NAMES["level"])
+
+    @property
     def guess_realization_dim(self):
         return self.guess_dim(self._obj, "realization", DIM_NAMES["realization"])
 
@@ -120,6 +125,10 @@ class EarthMLGuess:
         return self.guess_coord(self._obj, 'longitude', DIM_NAMES["longitude"])
 
     @property
+    def guess_lev_coord(self):
+        return self.guess_coord(self._obj, 'level', DIM_NAMES["level"])
+
+    @property
     def guess_realization_coord(self):
         return self.guess_coord(self._obj, "realization", DIM_NAMES["realization"])
 
@@ -133,6 +142,7 @@ class EarthMLGuess:
             time=self.guess_time_dim,
             latitude=self.guess_lat_dim,
             longitude=self.guess_lon_dim,
+            level=self.guess_lev_dim,
             realization=self.guess_realization_dim,
             leadtime=self.guess_leadtime_dim,
         )
@@ -143,6 +153,7 @@ class EarthMLGuess:
             time=self.guess_time_coord,
             latitude=self.guess_lat_coord,
             longitude=self.guess_lon_coord,
+            level=self.guess_lev_coord,
             realization=self.guess_realization_coord,
             leadtime=self.guess_leadtime_coord,
         )
