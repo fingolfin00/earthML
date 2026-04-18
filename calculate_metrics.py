@@ -4575,7 +4575,7 @@ def _guess_dask_workers_for_host() -> tuple[int | None, str]:
     host_overrides = (
         (("mac-studio",), 12, "Mac Studio default"),
         (("macbook", "mbp", "air"), min(4, cpu_count), "laptop default"),
-        (("juno", "login", "node", "hpc", "cluster"), min(max(8, cpu_count // 2), 16), "shared cluster default"),
+        (("juno", "login", "node", "hpc", "cluster"), min(max(8, cpu_count // 2), 24), "shared cluster default"),
     )
     for patterns, workers, reason in host_overrides:
         if any(pattern in hostname for pattern in patterns):
