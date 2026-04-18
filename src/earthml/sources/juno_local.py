@@ -78,6 +78,7 @@ class JunoLocalSourceConfig:
     select_area_after_request   : bool = True
     cfgrib_idx_path             : str | Path = ""
     file_open_workers           : int | None = 1
+    chunk_option                : Any = "auto"
 
 
 class JunoLocalSource(MFXarrayLocalSource):
@@ -281,7 +282,7 @@ class JunoLocalSource(MFXarrayLocalSource):
             "coords": "minimal" if has_shifted_samples else "different",
             "compat": "override" if has_shifted_samples else "no_conflicts",
             "engine": self.engine,
-            "chunks": "auto",
+            "chunks": self.config.chunk_option,
             "parallel": True,
             "decode_timedelta": True,
             "backend_kwargs": {},
