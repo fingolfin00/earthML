@@ -25,9 +25,14 @@ def _reduce_for_timeseries(
     da: xr.DataArray | xr.Dataset,
     *,
     keep_dims: Sequence[str],
+    mask: xr.DataArray | xr.Dataset | None = None,
     eager_compute: bool = False,
 ) -> xr.DataArray:
     da = _as_dataarray(da)
+    if mask is not None:
+        mask_da = _as_dataarray(mask).astype(bool)
+        da, mask_da = xr.align(da, mask_da, join="inner")
+        da = da.where(mask_da)
     if eager_compute and np.issubdtype(da.dtype, np.floating) and da.dtype.itemsize < np.dtype(np.float32).itemsize:
         # Flox/numbagg reductions do not support float16 inputs reliably; promote
         # plotting reductions to float32 without forcing eager computation.
@@ -116,6 +121,7 @@ def plot_realization_timeseries(
     series_mean: xr.DataArray | xr.Dataset,
     members: xr.DataArray | xr.Dataset | None = None,
     extra: xr.DataArray | xr.Dataset | None = None,
+    mask: xr.DataArray | xr.Dataset | None = None,
     *,
     x_dim: str = "time",
     ens_dim: str = "realization",
@@ -165,13 +171,23 @@ def plot_realization_timeseries(
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 4))
 
-    series_mean = _reduce_for_timeseries(series_mean, keep_dims=(x_dim,), eager_compute=eager_compute)
+    series_mean = _reduce_for_timeseries(
+        series_mean,
+        keep_dims=(x_dim,),
+        mask=mask,
+        eager_compute=eager_compute,
+    )
     series_mean = series_mean.transpose(x_dim)
     x_coord = _plot_coord_name(series_mean, x_dim)
     x = _plot_x_values_raw(series_mean[x_coord].values, monthly_alignment=monthly_alignment)
 
     if members is not None:
-        members = _reduce_for_timeseries(members, keep_dims=(x_dim, ens_dim), eager_compute=eager_compute)
+        members = _reduce_for_timeseries(
+            members,
+            keep_dims=(x_dim, ens_dim),
+            mask=mask,
+            eager_compute=eager_compute,
+        )
         members = members.transpose(x_dim, ens_dim)
 
         if plot_members:
@@ -216,7 +232,12 @@ def plot_realization_timeseries(
     )
 
     if extra is not None:
-        extra = _reduce_for_timeseries(extra, keep_dims=(x_dim,), eager_compute=eager_compute)
+        extra = _reduce_for_timeseries(
+            extra,
+            keep_dims=(x_dim,),
+            mask=mask,
+            eager_compute=eager_compute,
+        )
         extra = extra.transpose(x_dim)
         ax.plot(
             x,
