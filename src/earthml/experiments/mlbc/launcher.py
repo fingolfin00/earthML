@@ -105,17 +105,14 @@ class MLBCExperimentLauncher:
         }
 
         # Lead time const and experiment type check
-        self.leadtime_var_unit = "days"
         if self.experiment.type == MLBCExperimentType.SEASONAL:
-            # self.all_leadtimes       = (1, 2, 3, 4, 5, 6) # months
+            self.leadtime_var_unit = "days"
             self.all_leadtimes_vars  = {
                 "ocean" : {1: 15, 2: 45, 3: 75, 4: 105, 5: 135, 6: 165},
                 "atmo"  : {1: 30, 2: 60, 3: 90, 4: 120, 5: 150, 6: 180},  # atmo seasonal forecast has end of month leadtimes
             }
         if self.experiment.type == MLBCExperimentType.WEATHER:
-            # leadtimes_weather_days = (0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9) # all possible days
-            # leadtimes_weather_hours = (0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9) # all possible hours
-            # self.all_leadtimes       = leadtimes_weather_days # days
+            self.leadtime_var_unit = "hours"
             self.all_leadtimes_vars  = {
                 "ocean" : {1: 24, 2: 48, 3: 72, 4: 96, 5: 120, 6: 144, 7: 168, 8: 192, 9: 216},
                 "atmo"  : {0.5: 12, 1: 24, 2: 48, 3: 72},
@@ -295,13 +292,14 @@ class MLBCExperimentLauncher:
         ): # local Juno atmo weather or ocean (not really available)
             var_catalog_keys = (f"{var_input}_juno_fc", f"{var_target}_juno_an")
 
-        if self.experiment.name in (
-            MLBCExperimentName.JUNO_CMCC__CMEMS,
-            MLBCExperimentName.JUNO_MEDFS__CMEMS,
-            MLBCExperimentName.CMEMS__CMEMS,
-        ): # ocean weather: CMEMS global ocean fc and an
-            input_var_suffix = "medfs_fc" if self.experiment.name == MLBCExperimentName.JUNO_MEDFS__CMEMS else "gopaf_fc"
-            var_catalog_keys = (f"{var_input}_{input_var_suffix}", f"{var_target}_gopaf_an")
+        if self.experiment.name == MLBCExperimentName.JUNO_CMCC__CMEMS:
+            var_catalog_keys = (f"{var_input}_juno_fc", f"{var_target}_gopaf_an")
+
+        if self.experiment.name == MLBCExperimentName.JUNO_MEDFS__CMEMS:
+            var_catalog_keys = (f"{var_input}_medfs_fc", f"{var_target}_gopaf_an")
+
+        if self.experiment.name == MLBCExperimentName.JUNO_MEDFS__JUNO_MEDFS:
+            var_catalog_keys = (f"{var_input}_medfs_fc", f"{var_target}_medfs_an")
 
         if self.experiment.name == MLBCExperimentName.JUNO_ECMWF__ERA5: # atmo weather: local Juno forecasts + ERA5 reanalysis
             raise NotImplementedError(f"Experiment {self.experiment.name} not yet implemented.")
@@ -402,10 +400,6 @@ class MLBCExperimentLauncher:
                     input_provider = "atmo.juno.ecmwf.forecast.hourly"
                     target_provider = "atmo.juno.ecmwf.analysis.6hourly"
 
-                if self.experiment.name == MLBCExperimentName.CMEMS__CMEMS: # ocean weather cloud (cannot work, no past forecasts)
-                    input_provider = "ocean.copernicusmarine.gopaf.forecast.hourly"
-                    target_provider = "ocean.copernicusmarine.gopaf.analysis.hourly"
-
                 if self.experiment.name == MLBCExperimentName.JUNO_CMCC__CMEMS: # ocean weather Juno local + cloud for analysis (daily)
                     input_provider = "ocean.juno.gopaf.forecast.daily"
                     target_provider = "ocean.copernicusmarine.gopaf.analysis.daily"
@@ -413,6 +407,10 @@ class MLBCExperimentLauncher:
                 if self.experiment.name == MLBCExperimentName.JUNO_MEDFS__CMEMS: # ocean weather MedFS local + cloud for analysis (daily)
                     input_provider = "ocean.juno.medfs.forecast.daily"
                     target_provider = "ocean.copernicusmarine.gopaf.analysis.daily"
+
+                if self.experiment.name == MLBCExperimentName.JUNO_MEDFS__JUNO_MEDFS: # ocean weather MedFS local + MedFS local for analysis (daily)
+                    input_provider = "ocean.juno.medfs.forecast.daily"
+                    target_provider = "ocean.juno.medfs.analysis.daily"
 
             return input_provider, target_provider
 
@@ -632,16 +630,16 @@ class MLBCExperimentLauncher:
                 if self.experiment.name == MLBCExperimentName.CDS_CMCC__ERA5:
                     leadtime_dim_name = "forecastMonth"
                 try:
-                    leadtime_var_value = self.all_leadtimes_vars["atmo"][leadtime]
+                    leadtime_var_value = self.all_leadtimes_vars["atmo"][leadtime] # in hours (weather) or days (seasonal)
                 except KeyError as exc:
                     raise ValueError(f"Unsupported atmo seasonal leadtime: {leadtime} {self.leadtime_unit}") from exc
 
             if self.experiment.name in (
                 MLBCExperimentName.JUNO_CMCC__CMEMS,
                 MLBCExperimentName.JUNO_MEDFS__CMEMS,
-                MLBCExperimentName.CMEMS__CMEMS, # purely cloud ocean weather experiment (cmems_cmems) cannot work currently (no past forecasts)
+                MLBCExperimentName.JUNO_MEDFS__JUNO_MEDFS,
             ):
-                leadtime_var_value = self.all_leadtimes_vars["ocean"][leadtime]
+                leadtime_var_value = self.all_leadtimes_vars["ocean"][leadtime] # in hours (weather) or days (seasonal)
 
             leadtime_var_input = Leadtime(leadtime_dim_name, self.leadtime_var_unit, leadtime_var_value)
 
