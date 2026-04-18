@@ -407,17 +407,35 @@ class JunoLocalSource(MFXarrayLocalSource):
         if lon_name is None or lat_name is None:
             return None
 
-        lon = np.asarray(ds_sample[lon_name].values, dtype=np.float64)
+        lon_da = ds_sample[lon_name]
+        lon = np.asarray(lon_da.values, dtype=np.float64)
         lon = ((lon + 180.0) % 360.0) - 180.0
         lon = np.round(lon, 10)
         lon = np.where(np.isclose(lon, 180.0, atol=1e-8), -180.0, lon)
 
-        ds_sample = ds_sample.assign_coords({lon_name: lon}).sortby(lon_name)
+        # Reassign longitude with explicit dims
+        ds_sample = ds_sample.assign_coords({
+            lon_name: (lon_da.dims, lon)
+        })
 
-        vals = np.asarray(ds_sample[lon_name].values)
-        _, idx = np.unique(vals, return_index=True)
-        return ds_sample.isel({lon_name: np.sort(idx)})
+        # 1D regular grid: keep old behavior
+        if lon_da.ndim == 1:
+            ds_sample = ds_sample.sortby(lon_name)
 
+            vals = np.asarray(ds_sample[lon_name].values)
+            _, idx = np.unique(vals, return_index=True)
+            ds_sample = ds_sample.isel({lon_name: np.sort(idx)})
+
+        # 2D curvilinear grid: cannot sort/dedup by lon coordinate this way
+        elif lon_da.ndim == 2:
+            pass
+
+        else:
+            raise ValueError(
+                f"{date}: unsupported longitude coord {lon_name!r} with ndim={lon_da.ndim}"
+            )
+
+        return ds_sample
 
     def _get_data_filenames(
         self,
