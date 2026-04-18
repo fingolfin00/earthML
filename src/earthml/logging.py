@@ -48,6 +48,7 @@ class LoggingPaths:
 @dataclass(slots=True)
 class LoggingConfig:
     level: Union[int, str] = logging.INFO
+    file_level: Union[int, str] = logging.DEBUG
     logger_name: str = DEFAULT_LOGGER_NAME
     console: Optional[Console] = None
     use_rich_console: bool = True
@@ -94,9 +95,11 @@ def _remove_managed_handlers(logger: logging.Logger) -> None:
 
 def configure_logging(config: Optional[LoggingConfig] = None) -> logging.Logger:
     config = config or LoggingConfig()
+    console_level = _coerce_level(config.level)
+    file_level = _coerce_level(config.file_level)
 
     logger = logging.getLogger(config.logger_name)
-    logger.setLevel(_coerce_level(config.level))
+    logger.setLevel(min(console_level, file_level))
     logger.propagate = False
 
     _remove_managed_handlers(logger)
@@ -113,7 +116,7 @@ def configure_logging(config: Optional[LoggingConfig] = None) -> logging.Logger:
     else:
         console_handler = logging.StreamHandler()
 
-    console_handler.setLevel(_coerce_level(config.level))
+    console_handler.setLevel(console_level)
     console_handler.setFormatter(logging.Formatter(DEFAULT_LOG_FORMAT, datefmt=DEFAULT_DATE_FORMAT))
     console_handler._earthml_managed = True
     logger.addHandler(console_handler)
@@ -128,14 +131,14 @@ def add_experiment_file_handler(
     logger: logging.Logger,
     log_file: Union[str, Path],
     *,
-    level: Optional[Union[int, str]] = None,
+    level: Optional[Union[int, str]] = logging.DEBUG,
     mode: str = "a",
 ) -> Path:
     log_path = _next_available_log_path(log_file)
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     file_handler = logging.FileHandler(log_path, mode=mode)
-    file_handler.setLevel(_coerce_level(level or logger.level))
+    file_handler.setLevel(_coerce_level(logging.DEBUG if level is None else level))
     file_handler.setFormatter(logging.Formatter(DEFAULT_FILE_FORMAT, datefmt=DEFAULT_DATE_FORMAT))
     file_handler._earthml_managed = True
     file_handler._earthml_file_path = str(log_path)
