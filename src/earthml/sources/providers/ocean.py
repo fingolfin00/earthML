@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, Any, TypeAlias
 
 from pathlib import Path
 
@@ -8,17 +8,6 @@ from ...base import Leadtime, LeadtimeUnit
 from .. import SourceConfigContainer, RegridConfig, JunoLocalSourceConfig, JunoLocalSourceFileNameConfig, JunoLocalSourcePathConfig, EarthkitSourceConfig, CopernicusmarineSourceConfig
 
 from .registry import register_source_config_provider as register_provider
-
-
-def _medfs_grid_token(var_name: str, grid_token: Literal["T", "U", "V"] | None = None) -> str:
-    if grid_token is not None:
-        return grid_token
-
-    if var_name in {"uo", "vozocrtx"}:
-        return "U"
-    if var_name in {"vo", "vomecrty"}:
-        return "V"
-    return "T"
 
 
 # Seasonal ocean
@@ -289,6 +278,42 @@ def juno_global_ocean_physics_forecast_daily(
     )
 
 
+# MedFS
+MedFSGridToken: TypeAlias = Literal["T", "T_h", "U", "U_h", "V", "V_h", "W"]
+MedFSVersion: TypeAlias = Literal["6.8", "6.82", "7.1", "8", "9", "10"]
+
+def _medfs_grid_token(var_name: str, medfs_ver: MedFSVersion) -> MedFSGridToken:
+    OLD_VERSIONS = {"6.8", "6.82", "7.1"}
+    if var_name in {"sozotaux", "vozocrtx"}:
+        return "U"
+    if var_name == "ssu":
+        return "U_h" if medfs_ver in OLD_VERSIONS else "U"
+    if var_name in {"sometauy", "vomecrty"}:
+        return "V"
+    if var_name == "ssv":
+        return "V_h" if medfs_ver in OLD_VERSIONS else "V"
+    if var_name in {"votkeavt", "vovecrtz"}:
+        return "W"
+    if var_name in {
+        "votemper",
+        "vosaline",
+        "somxl010",
+        "solafldo",
+        "sosefldo",
+        "solofldo",
+        "sohefldo",
+        "soshfldo",
+        "sorunoff",
+        "soprecip",
+        "soevapor",
+        "sowaflup",
+    }:
+        return "T"
+    if var_name == "sossheig":
+        return "T_h" if medfs_ver in OLD_VERSIONS else "T"
+    raise ValueError(f"Unsupported var_name: {var_name}")
+
+# MedFS forecasts
 @register_provider("ocean.juno.medfs.forecast.daily")
 def juno_medfs_forecast_daily(
     var_name: str,
@@ -299,19 +324,15 @@ def juno_medfs_forecast_daily(
     regrid_resolution: float | None = None,
     file_path_date_format: str = "%Y%m%d",
     file_date_format: str = "%Y%m%d",
-    grid_token: Literal["T", "U", "V"] | None = None,
     file_open_workers: int | None = 1,
+    chunk_option: Any = {},
 ) -> SourceConfigContainer:
     leadtime = Leadtime("leadtime", leadtime_unit, leadtime_value)
-    grid = _medfs_grid_token(var_name, grid_token)
 
+    data_type_suf = "f"
+    file_path_header="b"
+    file_path_suffix=""
     file_name_config = JunoLocalSourceFileNameConfig(
-        file_path_date_format=file_path_date_format,
-        file_header="mfs_eas6v8-",
-        file_suffix=f"-f-{grid}.nc",
-        file_date_format=file_date_format,
-        both_data_and_previous_date_in_file=True,
-        date_separator="-",
         realizations=1,
     )
 
@@ -329,9 +350,11 @@ def juno_medfs_forecast_daily(
                     end_date="2022-10-17",
                     root_path="/data/products/MFS/MFS_EAS6v8/bulletin",
                     file_name_config=JunoLocalSourceFileNameConfig(
+                        file_path_header=file_path_header,
+                        file_path_suffix=file_path_suffix,
                         file_path_date_format=file_path_date_format,
                         file_header="mfs_eas6v8-",
-                        file_suffix=f"-f-{grid}.nc",
+                        file_suffix=f"-{data_type_suf}-{_medfs_grid_token(var_name, 6.8)}.nc",
                         file_date_format=file_date_format,
                         both_data_and_previous_date_in_file=True,
                         date_separator="-",
@@ -343,9 +366,11 @@ def juno_medfs_forecast_daily(
                     end_date="2022-11-14",
                     root_path="/data/products/MFS/MFS_EAS6v82/bulletin",
                     file_name_config=JunoLocalSourceFileNameConfig(
+                        file_path_header=file_path_header,
+                        file_path_suffix=file_path_suffix,
                         file_path_date_format=file_path_date_format,
                         file_header="mfs_eas6v8-",
-                        file_suffix=f"-f-{grid}.nc",
+                        file_suffix=f"-{data_type_suf}-{_medfs_grid_token(var_name, 6.82)}.nc",
                         file_date_format=file_date_format,
                         both_data_and_previous_date_in_file=True,
                         date_separator="-",
@@ -357,9 +382,11 @@ def juno_medfs_forecast_daily(
                     end_date="2023-11-21",
                     root_path="/data/products/MFS/MFS_EAS7v1/bulletin",
                     file_name_config=JunoLocalSourceFileNameConfig(
+                        file_path_header=file_path_header,
+                        file_path_suffix=file_path_suffix,
                         file_path_date_format=file_path_date_format,
                         file_header="mfs_eas7-",
-                        file_suffix=f"-f-{grid}.nc",
+                        file_suffix=f"-{data_type_suf}-{_medfs_grid_token(var_name, 7.1)}.nc",
                         file_date_format=file_date_format,
                         both_data_and_previous_date_in_file=True,
                         date_separator="-",
@@ -371,9 +398,11 @@ def juno_medfs_forecast_daily(
                     end_date="2024-11-11",
                     root_path="/data/products/MFS/MFS_EAS8/bulletin",
                     file_name_config=JunoLocalSourceFileNameConfig(
+                        file_path_header=file_path_header,
+                        file_path_suffix=file_path_suffix,
                         file_path_date_format=file_path_date_format,
                         file_header="medfs-eas8_1d_",
-                        file_suffix=f"_ALL_grid_{grid}.nc",
+                        file_suffix=f"_ALL_grid_{_medfs_grid_token(var_name, 8)}.nc",
                         file_date_format=file_date_format,
                         both_data_and_previous_date_in_file=True,
                         date_separator="_",
@@ -382,12 +411,14 @@ def juno_medfs_forecast_daily(
                 ),
                 JunoLocalSourcePathConfig(
                     start_date="2024-11-12",
-                    end_date="2025-10-20",
+                    end_date="2025-11-4",
                     root_path="/data/products/MFS/MFS_EAS9/bulletin",
                     file_name_config=JunoLocalSourceFileNameConfig(
+                        file_path_header=file_path_header,
+                        file_path_suffix=file_path_suffix,
                         file_path_date_format=file_path_date_format,
                         file_header="medfs-eas9_1d_",
-                        file_suffix=f"_ALL_grid_{grid}.nc",
+                        file_suffix=f"_ALL_grid_{_medfs_grid_token(var_name, 9)}.nc",
                         file_date_format=file_date_format,
                         both_data_and_previous_date_in_file=True,
                         date_separator="_",
@@ -395,13 +426,15 @@ def juno_medfs_forecast_daily(
                     ),
                 ),
                 JunoLocalSourcePathConfig(
-                    start_date="2025-10-21",
+                    start_date="2025-11-5",
                     end_date=None,
                     root_path="/data/products/MFS/MedFS_EAS10/bulletin",
                     file_name_config=JunoLocalSourceFileNameConfig(
+                        file_path_header=file_path_header,
+                        file_path_suffix=file_path_suffix,
                         file_path_date_format=file_path_date_format,
                         file_header="medfs-eas10_1d_",
-                        file_suffix=f"_ALL_grid_{grid}.nc",
+                        file_suffix=f"_ALL_grid_{_medfs_grid_token(var_name, 10)}.nc",
                         file_date_format=file_date_format,
                         both_data_and_previous_date_in_file=True,
                         date_separator="_",
@@ -413,5 +446,52 @@ def juno_medfs_forecast_daily(
                 regrid_resolution=regrid_resolution,
                 regrid_vars=[var_name],
             ),
+            chunk_option=chunk_option,
+        ),
+    )
+
+# MedFS analysis
+@register_provider("ocean.juno.medfs.analysis.daily")
+def juno_medfs_analysis_daily(
+    var_name: str,
+    leadtime_value: int,
+    leadtime_unit: LeadtimeUnit,
+    root_path: str | Path = "/data/products/MFS/MFS_EAS9/analysis_daily_mean",
+    engine: str = "h5netcdf",
+    regrid_resolution: float | None = None,
+    file_path_date_format: str = "%Y/%m",
+    file_date_format: str = "%Y%m%d",
+    file_open_workers: int | None = 1,
+    chunk_option: Any = {},
+) -> SourceConfigContainer:
+    leadtime = Leadtime("leadtime", leadtime_unit, 0)
+
+    file_path_header="b"
+    file_path_suffix=""
+    file_name_config = JunoLocalSourceFileNameConfig(
+        file_path_header=file_path_header,
+        file_path_suffix=file_path_suffix,
+        file_path_date_format=file_path_date_format,
+        file_header="medfs-eas10_1d_",
+        file_suffix=f"_ALL_grid_{_medfs_grid_token(var_name, 10)}.nc",
+        file_date_format=file_date_format,
+        both_data_and_previous_date_in_file=False,
+        date_separator="-",
+        realizations=1,
+    )
+
+    return SourceConfigContainer(
+        source="juno-local",
+        config=JunoLocalSourceConfig(
+            leadtime=leadtime,
+            root_path=Path(root_path),
+            engine=engine,
+            file_open_workers=file_open_workers,
+            file_name_config=file_name_config,
+            regrid_config=RegridConfig(
+                regrid_resolution=regrid_resolution,
+                regrid_vars=[var_name],
+            ),
+            chunk_option=chunk_option,
         ),
     )
