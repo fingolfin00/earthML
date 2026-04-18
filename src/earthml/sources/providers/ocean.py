@@ -20,6 +20,7 @@ def juno_monthly_hindcast_ocean_netcdf(
     realizations: str | int = "all",
     engine: str = "h5netcdf", # h5netcdf, netcdf4
     regrid_resolution: float = 0.25,
+    per_sample_regrid: bool = False,
     file_path_date_format: str = "%Y%m",
     file_header: str = "cmcc_CMCC-CM3-v20231101_hindcast_S",
     file_path_var_prefix: str = "00_ocean_mon_ocean2d_", # _ocean_6hr_surface_
@@ -36,6 +37,7 @@ def juno_monthly_hindcast_ocean_netcdf(
             leadtime=leadtime,
             root_path=root_path,
             engine=engine,
+            per_sample_regrid=per_sample_regrid,
             file_open_workers=file_open_workers,
             file_name_config=JunoLocalSourceFileNameConfig(
                 file_path_date_format=file_path_date_format,
@@ -244,6 +246,7 @@ def juno_global_ocean_physics_forecast_daily(
     engine: str = "h5netcdf",
     cfgrib_idx_path: str = "",
     regrid_resolution: float = 0.08,
+    per_sample_regrid: bool = False,
     file_path_date_format: str = "%Y%m%d",
     region_str: Literal["MEDATL", "MEDDRD"] = "MEDATL",
     file_header: str = "cmems_mod_glo_phy_anfc_0.083deg_P1D-m",
@@ -260,6 +263,7 @@ def juno_global_ocean_physics_forecast_daily(
             leadtime=leadtime,
             root_path=Path(root_path),
             engine=engine,
+            per_sample_regrid=per_sample_regrid,
             cfgrib_idx_path=cfgrib_idx_path,
             file_open_workers=file_open_workers,
             file_name_config=JunoLocalSourceFileNameConfig(
@@ -324,6 +328,7 @@ def juno_medfs_forecast_daily(
     root_path: str | Path = "/data/products/MFS/MFS_EAS6v8/bulletin",
     engine: str = "h5netcdf",
     regrid_resolution: float | None = None,
+    per_sample_regrid: bool = True,
     file_path_date_format: str = "%Y%m%d",
     file_date_format: str = "%Y%m%d",
     file_open_workers: int | None = 1,
@@ -344,6 +349,7 @@ def juno_medfs_forecast_daily(
             leadtime=leadtime,
             root_path=Path(root_path),
             engine=engine,
+            per_sample_regrid=per_sample_regrid,
             file_open_workers=file_open_workers,
             file_name_config=file_name_config,
             path_configs=[
@@ -461,6 +467,7 @@ def juno_medfs_analysis_daily(
     root_path: str | Path = "/data/products/MFS/MFS_EAS9/analysis_daily_mean",
     engine: str = "h5netcdf",
     regrid_resolution: float | None = None,
+    per_sample_regrid: bool = False,
     file_path_date_format: str = "%Y/%m",
     file_date_format: str = "%Y%m%d",
     file_open_workers: int | None = 1,
@@ -488,6 +495,7 @@ def juno_medfs_analysis_daily(
             leadtime=leadtime,
             root_path=Path(root_path),
             engine=engine,
+            per_sample_regrid=per_sample_regrid,
             file_open_workers=file_open_workers,
             file_name_config=file_name_config,
             regrid_config=RegridConfig(

@@ -72,6 +72,7 @@ class MLBCExperimentLauncher:
     # Providers args
     earthkit_cache_dir          : str | Path = Path("/tmp/.earthkit_data")
     regrid_resolution           : float | None = None
+    juno_per_sample_regrid      : bool = False
     # Source providers
     providers                   : dict[MLBCExperimentDatasetRole, str | Sequence[str]] | None = None
     providers_kwargs            : dict[MLBCExperimentDatasetRole, ProviderKwargsByMode | None] | None = None
@@ -191,6 +192,7 @@ class MLBCExperimentLauncher:
             "runtime.dask_workers": self.dask_workers,
             "runtime.juno_file_open_workers": self.juno_file_open_workers,
             "runtime.regrid_resolution": self.regrid_resolution,
+            "runtime.juno_per_sample_regrid": self.juno_per_sample_regrid,
             "runtime.earthkit_cache_dir": str(self.earthkit_cache_dir),
             "runtime.only_longest_train_period": self.only_longest_train_period,
             "options.anomaly": self.anomaly,
@@ -564,7 +566,10 @@ class MLBCExperimentLauncher:
 
         for provider_name, provider_args in zip(input_provider_list, input_provider_args_list, strict=True):
             if provider_name in JUNO_LOCAL_PROVIDER_NAMES:
-                provider_args = provider_args | {"file_open_workers": self.juno_file_open_workers}
+                provider_args = provider_args | {
+                    "file_open_workers": self.juno_file_open_workers,
+                    "per_sample_regrid": self.juno_per_sample_regrid,
+                }
             input_providers.append(Provider(name=provider_name, params=provider_args))
 
         for provider_name, provider_args in zip(target_provider_list, target_provider_args_list, strict=True):
@@ -576,7 +581,10 @@ class MLBCExperimentLauncher:
                     Provider(
                         name=name,
                         params=(
-                            args | {"file_open_workers": self.juno_file_open_workers}
+                            args | {
+                                "file_open_workers": self.juno_file_open_workers,
+                                "per_sample_regrid": self.juno_per_sample_regrid,
+                            }
                             if name in JUNO_LOCAL_PROVIDER_NAMES
                             else args
                         ),
@@ -585,7 +593,10 @@ class MLBCExperimentLauncher:
                 )
             else:
                 if provider_name in JUNO_LOCAL_PROVIDER_NAMES:
-                    provider_args = provider_args | {"file_open_workers": self.juno_file_open_workers}
+                    provider_args = provider_args | {
+                        "file_open_workers": self.juno_file_open_workers,
+                        "per_sample_regrid": self.juno_per_sample_regrid,
+                    }
                 target_providers.append(Provider(name=provider_name, params=provider_args))
 
         return {

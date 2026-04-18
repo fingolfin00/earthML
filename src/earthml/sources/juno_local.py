@@ -74,6 +74,7 @@ class JunoLocalSourceConfig:
     root_path                   : str | Path
     engine                      : str
     regrid_config               : RegridConfig
+    per_sample_regrid           : bool = False
     file_name_config            : JunoLocalSourceFileNameConfig | None = None
     path_configs                : list[JunoLocalSourcePathConfig] = field(default_factory=list)
     select_area_after_request   : bool = True
@@ -102,8 +103,10 @@ class JunoLocalSource(MFXarrayLocalSource):
 
         self.select_area_after_request = self.config.select_area_after_request
 
-        self.regrid_resolution = config.regrid_config.regrid_resolution
+        self.per_sample_regrid = bool(config.per_sample_regrid)
+        self.sample_regrid_resolution = config.regrid_config.regrid_resolution
         self.regrid_vars = config.regrid_config.regrid_vars if config.regrid_config.regrid_vars is not None else self.var_name_list
+        self.regrid_resolution = None if self.per_sample_regrid else self.sample_regrid_resolution
 
         self.cfgrib_idx_path = str(config.cfgrib_idx_path)
         if self.engine == "cfgrib" and self.cfgrib_idx_path:
@@ -448,6 +451,20 @@ class JunoLocalSource(MFXarrayLocalSource):
         else:
             raise ValueError(
                 f"{date}: unsupported longitude coord {lon_name!r} with ndim={lon_da.ndim}"
+            )
+
+        if self.per_sample_regrid and self.sample_regrid_resolution is not None:
+            logger.info(
+                "%s Per-sample regridding date=%s vars=%s resolution=%s",
+                SOURCE_CTX,
+                date,
+                self.regrid_vars,
+                self.sample_regrid_resolution,
+            )
+            ds_sample = ds_sample.earthml.regrid_to_rectilinear(
+                region=self.data_selection.region,
+                resolution=self.sample_regrid_resolution,
+                vars_to_regrid=self.regrid_vars,
             )
 
         return ds_sample

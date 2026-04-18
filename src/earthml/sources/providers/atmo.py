@@ -15,6 +15,7 @@ def juno_forecast_hourly(
     engine: str = "cfgrib",
     cfgrib_idx_path: str = "",
     regrid_resolution: float | None = None,
+    per_sample_regrid: bool = False,
     file_path_date_format: str = "%Y%m%d",
     file_header: str = "JLS",
     file_suffix: str = "*",
@@ -32,6 +33,7 @@ def juno_forecast_hourly(
             leadtime=leadtime,
             root_path=Path(root_path),
             engine=engine,
+            per_sample_regrid=per_sample_regrid,
             cfgrib_idx_path=cfgrib_idx_path,
             file_open_workers=file_open_workers,
             file_name_config=JunoLocalSourceFileNameConfig(
@@ -61,6 +63,7 @@ def juno_analysis_6hourly(
     engine: str = "cfgrib",
     cfgrib_idx_path: str = "",
     regrid_resolution: float | None = None,
+    per_sample_regrid: bool = False,
     file_path_date_format: str = "%Y/%m",
     file_header: str = "JLD",
     file_suffix: str = "*",
@@ -78,6 +81,7 @@ def juno_analysis_6hourly(
             leadtime=leadtime,
             root_path=Path(root_path),
             engine=engine,
+            per_sample_regrid=per_sample_regrid,
             cfgrib_idx_path=cfgrib_idx_path,
             file_open_workers=file_open_workers,
             file_name_config=JunoLocalSourceFileNameConfig(
