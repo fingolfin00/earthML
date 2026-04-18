@@ -627,7 +627,7 @@ class JunoLocalSource(MFXarrayLocalSource):
                     prog.advance(task)
             else:
                 workers = min(self.file_open_workers, len(samples))
-                logger.info("%s Opening Juno local samples with %s worker threads", workers, SOURCE_CTX)
+                logger.info("%s Opening Juno local samples with %s worker threads", SOURCE_CTX, workers)
                 future_to_date = {}
 
                 with ThreadPoolExecutor(max_workers=workers) as pool:
