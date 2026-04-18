@@ -620,21 +620,51 @@ class JunoLocalSource(MFXarrayLocalSource):
         valid_dates = sorted(samples_d)
         ref_date = valid_dates[0]
         ref_lon_name = samples_d[ref_date].earthml.guessed_coords.longitude
-        ref_lon = np.asarray(samples_d[ref_date][ref_lon_name].values, dtype=np.float64)
+        ref_lon_da = samples_d[ref_date][ref_lon_name]
+        ref_lon = np.asarray(ref_lon_da.values, dtype=np.float64)
         ref_lon = np.round(ref_lon, 10)
-        ref_lon = np.unique(ref_lon) # remove exact duplicates
 
-        logger.info("%s Juno local inferred reference lon size: %s", ref_lon.size, SOURCE_CTX)
+        if ref_lon_da.ndim == 1:
+            ref_lon = np.unique(ref_lon)  # remove exact duplicates on regular grids
+            logger.info("%s Juno local inferred reference 1D lon size: %s", SOURCE_CTX, ref_lon.size)
+        elif ref_lon_da.ndim == 2:
+            logger.info("%s Juno local inferred reference 2D lon shape: %s", SOURCE_CTX, ref_lon.shape)
+        else:
+            raise ValueError(
+                f"{ref_date}: unsupported reference longitude coord {ref_lon_name!r} "
+                f"with ndim={ref_lon_da.ndim}"
+            )
 
         # Enforce same lon convention to all samples
         for date, ds_sample in samples_d.items():
             lon_name = ds_sample.earthml.guessed_coords.longitude
-            vals = np.asarray(ds_sample[lon_name].values, dtype=np.float64)
+            lon_da = ds_sample[lon_name]
+            vals = np.asarray(lon_da.values, dtype=np.float64)
             vals = np.round(vals, 10)
 
-            if vals.size != ref_lon.size:
+            if lon_da.ndim != ref_lon_da.ndim:
                 raise ValueError(
-                    f"{date}: longitude size mismatch {vals.size} vs ref {ref_lon.size}"
+                    f"{date}: longitude ndim mismatch {lon_da.ndim} vs ref {ref_lon_da.ndim}"
+                )
+
+            if lon_da.ndim == 1:
+                if vals.size != ref_lon.size:
+                    raise ValueError(
+                        f"{date}: longitude size mismatch {vals.size} vs ref {ref_lon.size}"
+                    )
+
+                if not np.allclose(vals, ref_lon, atol=1e-8, rtol=0.0):
+                    diff = np.max(np.abs(vals - ref_lon))
+                    raise ValueError(
+                        f"{date}: longitude grid differs from reference, max abs diff={diff}"
+                    )
+
+                samples_d[date] = ds_sample.assign_coords({lon_name: ref_lon})
+                continue
+
+            if vals.shape != ref_lon.shape:
+                raise ValueError(
+                    f"{date}: longitude shape mismatch {vals.shape} vs ref {ref_lon.shape}"
                 )
 
             if not np.allclose(vals, ref_lon, atol=1e-8, rtol=0.0):
@@ -643,7 +673,7 @@ class JunoLocalSource(MFXarrayLocalSource):
                     f"{date}: longitude grid differs from reference, max abs diff={diff}"
                 )
 
-            samples_d[date] = ds_sample.assign_coords({lon_name: ref_lon})
+            samples_d[date] = ds_sample.assign_coords({lon_name: (lon_da.dims, ref_lon)})
 
         # Batch validity checks instead of one compute() per sample
         validity_tasks = []
