@@ -16,6 +16,7 @@ if __name__ == "__main__":
     # ----------------------------------------------------------------------------------
     max_retries                 = 4
     force_retrain               = False
+    log_level                   = "info"                    # debug, info
 
     experiment_type             = "weather"                 # seasonal, weather
     experiment_name             = "juno-ecmwf_juno-ecmwf"             # cmems_cmems, juno-ecmwf_juno-ecmwf, juno-cmcc_cmems, juno-medfs_cmems
@@ -226,24 +227,22 @@ if __name__ == "__main__":
             accumulate_grad_batches=accumulate_grad_batches,
         )
 
-        leadtimes_lt = [
-            Leadtime(name="leadtime", unit="days", value=lt)
-            for lt in leadtimes
-        ]
         launcher = MLBCExperimentLauncher(
             experiment=launcher_cfg,
             run_mode=run_mode,
             max_retries=max_retries,
+            log_level=log_level,
             variables_input=variables,
             variables_target=variables,
-            leadtimes=leadtimes_lt,
+            leadtimes=leadtimes,
+            leadtime_unit="days",
             regions=regions,
             train_periods=train_periods,
             test_periods=test_periods,
             net=net,
             # Optional
-            dask_workers=None,
-            memory_limit="8GB",
+            dask_workers=24,
+            memory_limit="16GB",
             only_longest_train_period=only_longest_train_period,
             force_retrain=force_retrain,
             # Providers args

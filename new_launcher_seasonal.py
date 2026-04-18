@@ -15,6 +15,7 @@ if __name__ == "__main__":
     # ----------------------------------------------------------------------------------
     max_retries                 = 4
     force_retrain               = False
+    log_level                   = "info"                    # debug, info
 
     experiment_type             = "seasonal"                # seasonal, weather
     experiment_name             = "cds-cmcc_era5"          # cds-cmcc_oras5, cds-cmcc_era5
@@ -138,17 +139,15 @@ if __name__ == "__main__":
             accumulate_grad_batches=accumulate_grad_batches,
         )
 
-        leadtimes_lt = [
-            Leadtime(name="leadtime", unit="months", value=lt)
-            for lt in leadtimes
-        ]
         launcher = MLBCExperimentLauncher(
             experiment=launcher_cfg,
             run_mode=run_mode,
             max_retries=max_retries,
+            log_level=log_level,
             variables_input=variables,
             variables_target=variables,
-            leadtimes=leadtimes_lt,
+            leadtimes=leadtimes,
+            leadtime_unit="months",
             regions=regions,
             train_periods=train_period,
             test_periods=test_period,
