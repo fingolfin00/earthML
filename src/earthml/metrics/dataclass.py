@@ -173,7 +173,12 @@ class MetricData:
         truth_data = truth_data.earthml.normalize_dims_and_coords()
         model_data = [ds.earthml.normalize_dims_and_coords() for ds in model_data]
 
-        time_dim, lat_dim, lon_dim, realization_dim, leadtime_dim = model_data[0].earthml.guessed_dims
+        guessed_dims = model_data[0].earthml.guessed_dims
+        time_dim = guessed_dims.time
+        lat_dim = guessed_dims.latitude
+        lon_dim = guessed_dims.longitude
+        realization_dim = guessed_dims.realization
+        leadtime_dim = guessed_dims.leadtime
 
         def _broadcast_singleton_realization(
             ds: xr.Dataset,
