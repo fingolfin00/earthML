@@ -15,6 +15,7 @@ if __name__ == "__main__":
     # ----------------------------------------------------------------------------------
     max_retries                 = 4
     force_retrain               = False
+    force_rebuild_dataset       = False                     # False, "all", "train", "test", "input", "target", "train_input", "train_target", "test_input", "test_target"
     log_level                   = "info"                    # debug, info
 
     experiment_type             = "seasonal"                # seasonal, weather
@@ -157,6 +158,7 @@ if __name__ == "__main__":
             memory_limit="8GB",
             only_longest_train_period=only_longest_train_period,
             force_retrain=force_retrain,
+            force_rebuild_dataset=force_rebuild_dataset,
             # Providers args
             earthkit_cache_dir=earthkit_cache_dir,
             regrid_resolution=1,
