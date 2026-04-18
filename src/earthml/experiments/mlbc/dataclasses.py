@@ -9,6 +9,17 @@ from ...sources import DataSource, EarthkitSourceConfig, JunoLocalSourceConfig, 
 from .registry import MLBCExperimentType, MLBCExperimentName, MLBCExperimentDatasetRole
 
 PreprocessFn = Callable[[xr.Dataset, xr.Dataset], Tuple[xr.Dataset, xr.Dataset]]
+DatasetRebuildSelector = Literal[
+    "train_input",
+    "train_target",
+    "test_input",
+    "test_target",
+    "train",
+    "test",
+    "input",
+    "target",
+    "all",
+]
 
 # Dataclasses
 @dataclass(frozen=True)
@@ -73,4 +84,4 @@ class MLBCExperimentConfig:
     realization_as_channel      : Optional[bool]                    = False             # whether to use realization a channel dimension
     output_realizations         : Optional[Literal[
                                     "deterministic", "ensemble"]]   = "deterministic"   # deterministic -> output R = 1, ensemble -> output R = input R
-    force_rebuild_dataset       : Optional[bool]                    = False             # whether to ignore saved local dataset stores and rebuild them
+    force_rebuild_dataset       : Optional[bool | DatasetRebuildSelector] = False       # False to reuse saved stores, else rebuild matching dataset stores

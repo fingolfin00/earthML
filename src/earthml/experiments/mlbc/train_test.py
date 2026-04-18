@@ -714,6 +714,20 @@ class MLBCExperiment:
 
         return mask_ds
 
+    def _should_rebuild_dataset(
+        self,
+        source_type: str,
+        role: str,
+    ) -> bool:
+        selector = self.config.force_rebuild_dataset
+        if selector is False:
+            return False
+        if selector == "all":
+            return True
+        if selector == source_type or selector == role:
+            return True
+        return selector == f"{source_type}_{role}"
+
     def _init_source_data(
         self,
         exp_ds: MLBCExperimentDataset | Sequence[MLBCExperimentDataset],
@@ -756,9 +770,10 @@ class MLBCExperiment:
                 # for marker in ("zarr.json", ".zgroup", ".zmetadata") # supports also older Zarr versions
             )
 
-            if is_zarr_store and self.config.force_rebuild_dataset:
+            if is_zarr_store and self._should_rebuild_dataset(source_type, e.role):
                 self.logger.info(
-                    "force_rebuild_dataset=True: removing existing dataset store %s",
+                    "force_rebuild_dataset=%r: removing existing dataset store %s",
+                    self.config.force_rebuild_dataset,
                     save_path,
                 )
                 shutil.rmtree(save_path)

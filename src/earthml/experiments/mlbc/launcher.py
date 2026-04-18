@@ -22,7 +22,7 @@ from ...sources.providers import Provider
 from ...sources.providers.registry import JUNO_LOCAL_PROVIDER_NAMES
 
 from .dataset import MLBCDatasetGenerator
-from .dataclasses import MLBCExperimentLauncherConfig, MLBCNeuralNet, MLBCExperimentConfig
+from .dataclasses import MLBCExperimentLauncherConfig, MLBCNeuralNet, MLBCExperimentConfig, DatasetRebuildSelector
 from .registry import MLBCExperimentDatasetRole, MLBCRunMode, MLBCExperimentName, MLBCExperimentMode, MLBCExperimentType
 from .train_test import MLBCExperiment
 from .utils import half_train_periods_days, halved_windows_split_by_cutoff
@@ -34,6 +34,18 @@ from .registry import available_exp_types, available_exps, available_runmodes
 ProviderKwargs: TypeAlias = dict[str, Any]
 ProviderKwargsSlot: TypeAlias = ProviderKwargs | Sequence[ProviderKwargs]
 ProviderKwargsByMode: TypeAlias = dict[MLBCExperimentMode, ProviderKwargsSlot | Sequence[ProviderKwargsSlot]]
+DatasetRebuildOption: TypeAlias = bool | DatasetRebuildSelector
+VALID_FORCE_REBUILD_DATASET_VALUES: tuple[DatasetRebuildSelector, ...] = (
+    "train_input",
+    "train_target",
+    "test_input",
+    "test_target",
+    "train",
+    "test",
+    "input",
+    "target",
+    "all",
+)
 
 
 @dataclass
@@ -71,7 +83,7 @@ class MLBCExperimentLauncher:
     target_realization_avg      : bool = False  # whether to average over target realizations when loading target data to torch
     realization_as_channel      : bool = False  # whether to use realization a channel dimension
     force_retrain               : bool = False  # whether to ignore previous training artifacts and restart from scratch
-    force_rebuild_dataset       : bool = False  # whether to ignore saved local dataset stores and rebuild them
+    force_rebuild_dataset       : DatasetRebuildOption = False  # False to reuse saved stores, else rebuild matching dataset stores
 
 
     def __post_init__(self):
@@ -85,6 +97,11 @@ class MLBCExperimentLauncher:
             raise ValueError(f"MLBC experiment {self.experiment.type} not supported, choose between {available_exp_types()}")
         if self.experiment.name not in available_exps():
             raise ValueError(f"MLBC experiment {self.experiment.name} not supported, choose between {available_exps()}")
+        if self.force_rebuild_dataset is not False and self.force_rebuild_dataset not in VALID_FORCE_REBUILD_DATASET_VALUES:
+            raise ValueError(
+                "force_rebuild_dataset must be False or one of "
+                f"{VALID_FORCE_REBUILD_DATASET_VALUES}, got {self.force_rebuild_dataset!r}"
+            )
 
         # Init variables as list
         self.leadtimes: list[int | float] = [self.leadtimes] if isinstance(self.leadtimes, int | float) else self.leadtimes
