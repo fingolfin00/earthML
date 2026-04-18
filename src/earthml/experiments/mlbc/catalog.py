@@ -7,17 +7,25 @@ def make_var(
 ):
     return SimpleNamespace(
         # Ocean weather
+        # Mercator
         sss_gopaf_fc=Variable(longname="sea surface salinity", name="so", levm=0, leadtime=leadtime_input),
         sss_gopaf_an=Variable(longname="sea surface salinity", name="so", levm=0),
-        sss_medfs_fc=Variable(longname="sea surface salinity", name="so", levm=0, leadtime=leadtime_input),
 
         sst_gopaf_fc=Variable(longname="sea_surface_temperature", name="thetao", levm=0, leadtime=leadtime_input),
         sst_gopaf_an=Variable(longname="sea_surface_temperature", name="thetao", levm=0),
-        sst_medfs_fc=Variable(longname="sea_surface_temperature", name="thetao", levm=0, leadtime=leadtime_input),
 
         ssh_gopaf_fc=Variable(longname="Sea surface height", name="zos", leadtime=leadtime_input),
         ssh_gopaf_an=Variable(longname="Sea surface height", name="zos"), # only surface variable
-        ssh_medfs_fc=Variable(longname="Sea surface height", name="zos", leadtime=leadtime_input),
+
+        # MedFS
+        sst_medfs_fc=Variable(longname="sea_surface_temperature", name="votemper", leadtime=leadtime_input),
+        sst_medfs_an=Variable(longname="sea_surface_temperature", name="votemper", leadtime=leadtime_input),
+
+        sss_medfs_fc=Variable(longname="sea surface salinity", name="vosaline", leadtime=leadtime_input),
+        sss_medfs_an=Variable(longname="sea surface salinity", name="vosaline", leadtime=leadtime_input),
+
+        ssh_medfs_fc=Variable(longname="sea_surface_height_above_geoid", name="sossheig", leadtime=leadtime_input),
+        ssh_medfs_an=Variable(longname="sea_surface_height_above_geoid", name="sossheig", leadtime=leadtime_input),
 
         # Atmo weather
         # local forecast
