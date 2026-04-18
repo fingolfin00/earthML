@@ -639,9 +639,9 @@ class MLBCExperimentLauncher:
             if self.experiment.name in (
                 MLBCExperimentName.JUNO_CMCC__CMEMS,
                 MLBCExperimentName.JUNO_MEDFS__CMEMS,
-                MLBCExperimentName.CMEMS__CMEMS,
-            ): # ocean weather experiment from cloud (cmems_cmems) cannot work currently (no past forecasts)
-                leadtime_var_value = self.all_leadtimes_vars["ocean"][leadtime.value]
+                MLBCExperimentName.CMEMS__CMEMS, # purely cloud ocean weather experiment (cmems_cmems) cannot work currently (no past forecasts)
+            ):
+                leadtime_var_value = self.all_leadtimes_vars["ocean"][leadtime]
 
             leadtime_var_input = Leadtime(leadtime_dim_name, self.leadtime_var_unit, leadtime_var_value)
 
