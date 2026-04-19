@@ -229,6 +229,15 @@ class JunoLocalSource(MFXarrayLocalSource):
         *,
         include_exact: bool = True,
     ) -> list[tuple[str, list[Path]]]:
+        attempts = self._candidate_file_attempts_for_date(date, include_exact=include_exact)
+        return [(attempt["kind"], attempt["files"]) for attempt in attempts if attempt["files"]]
+
+    def _candidate_file_attempts_for_date(
+        self,
+        date,
+        *,
+        include_exact: bool = True,
+    ) -> list[dict[str, object]]:
         previous_date = pd.Timestamp(date) - self.leadtime.to_timedelta()
         root_path, date_config = self._resolve_path_config(previous_date)
         data_path = self._build_data_path(
@@ -237,7 +246,7 @@ class JunoLocalSource(MFXarrayLocalSource):
             date=previous_date,
         )
         realizations = date_config.realizations
-        candidates: list[tuple[str, list[Path]]] = []
+        attempts: list[dict[str, object]] = []
 
         if include_exact:
             exact_glob = self._build_data_glob(
@@ -246,8 +255,13 @@ class JunoLocalSource(MFXarrayLocalSource):
                 current_date=date,
             )
             exact_files = self._latest_matching_files(data_path, exact_glob, realizations)
-            if exact_files:
-                candidates.append(("exact", exact_files))
+            attempts.append({
+                "kind": "exact",
+                "target_date": pd.Timestamp(date),
+                "data_path": data_path,
+                "glob": exact_glob,
+                "files": exact_files,
+            })
 
         if date_config.minus_timedelta is not None:
             minus_date = pd.Timestamp(date) - date_config.minus_timedelta
@@ -257,8 +271,13 @@ class JunoLocalSource(MFXarrayLocalSource):
                 current_date=minus_date,
             )
             minus_files = self._latest_matching_files(data_path, minus_glob, realizations)
-            if minus_files:
-                candidates.append(("minus", minus_files))
+            attempts.append({
+                "kind": "minus",
+                "target_date": minus_date,
+                "data_path": data_path,
+                "glob": minus_glob,
+                "files": minus_files,
+            })
 
         if date_config.plus_timedelta is not None:
             plus_date = pd.Timestamp(date) + date_config.plus_timedelta
@@ -268,10 +287,15 @@ class JunoLocalSource(MFXarrayLocalSource):
                 current_date=plus_date,
             )
             plus_files = self._latest_matching_files(data_path, plus_glob, realizations)
-            if plus_files:
-                candidates.append(("plus", plus_files))
+            attempts.append({
+                "kind": "plus",
+                "target_date": plus_date,
+                "data_path": data_path,
+                "glob": plus_glob,
+                "files": plus_files,
+            })
 
-        return candidates
+        return attempts
 
     def _open_one_cfgrib_with_var_fallback(self, path: Path, var_name: str, date) -> xr.Dataset:
         ds = self._open_one_cfgrib(path, var_name, date)
@@ -292,16 +316,16 @@ class JunoLocalSource(MFXarrayLocalSource):
                         self.elements.extra.setdefault("minus_samples", []).append(date)
                     elif source_kind == "plus":
                         self.elements.extra.setdefault("plus_samples", []).append(date)
-                logger.info(
-                    "%s Recovered missing var=%s for date=%s using %s fallback file %s instead of %s",
-                    SOURCE_CTX,
-                    var_name,
-                    date,
-                    source_kind,
-                    candidate,
-                    path,
-                )
-                return ds_candidate
+                    logger.info(
+                        "%s Recovered missing var=%s for date=%s using %s fallback file %s instead of %s",
+                        SOURCE_CTX,
+                        var_name,
+                        date,
+                        source_kind,
+                        candidate,
+                        path,
+                    )
+                    return ds_candidate
 
         logger.warning(
             "%s Requested var=%s missing in %s for date=%s; no valid %s fallback found",
@@ -615,10 +639,12 @@ class JunoLocalSource(MFXarrayLocalSource):
         assert config.realizations == "all" or config.realizations > 0
 
         for date in self.date_range:
-            candidates = self._candidate_files_for_date(date, include_exact=True)
+            attempts = self._candidate_file_attempts_for_date(date, include_exact=True)
             found = False
 
-            for source_kind, files in candidates:
+            for attempt in attempts:
+                source_kind = attempt["kind"]
+                files = attempt["files"]
                 if not files:
                     continue
                 s.samples[date] = files
@@ -631,6 +657,17 @@ class JunoLocalSource(MFXarrayLocalSource):
 
             if not found:
                 logger.warning("%s Missed sample (local filename not found): %s", SOURCE_CTX, date)
+                for attempt in attempts:
+                    logger.debug(
+                        "%s Missed sample details date=%s attempt=%s target_date=%s path=%s glob=%s files=%s",
+                        SOURCE_CTX,
+                        date,
+                        attempt["kind"],
+                        attempt["target_date"],
+                        attempt["data_path"],
+                        attempt["glob"],
+                        [str(path.name) for path in attempt["files"]],
+                    )
                 s.missed.add(date)
 
         return s
