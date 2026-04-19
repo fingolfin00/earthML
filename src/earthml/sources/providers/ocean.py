@@ -481,7 +481,9 @@ def juno_medfs_analysis_daily(
         file_path_suffix="",
         file_path_date_format=file_path_date_format,
         # file_header="medfs-eas9_1d_",
-        file_header="medfs-eas10_1d_",
+        # 2022: medfs-eas9_1d_20221231_ALL_grid_T.nc -> 2023:  medfs-eas10_1d_20230101_ALL_grid_T.nc
+        # 20251005: conventions changes: medfs-eas10_1d_20251005_ALL_grid_T.nc -> medfs-eas10_1d_20251021_20251006_ALL_grid_T.nc
+        file_header="medfs-*_1d_*",
         file_suffix=f"_ALL_grid_{_medfs_grid_token(var_name, 10)}.nc",
         file_date_format=file_date_format,
         both_data_and_previous_date_in_file=False,
