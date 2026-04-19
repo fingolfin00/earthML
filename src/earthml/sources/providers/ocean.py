@@ -468,7 +468,7 @@ def juno_medfs_analysis_daily(
     root_path: str | Path = "/data/products/MFS/MedFS_EAS10/analysis_daily_mean",
     engine: str = "h5netcdf",
     regrid_resolution: float | None = None,
-    per_sample_regrid: bool = False,
+    per_sample_regrid: bool = True,
     file_path_date_format: str = "%Y/%m",
     file_date_format: str = "%Y%m%d",
     file_open_workers: int | None = 1,
