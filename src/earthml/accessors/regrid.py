@@ -7,6 +7,7 @@ import numpy as np
 import cf_xarray
 import xarray as xr
 from scipy.interpolate import griddata
+from scipy.spatial import Delaunay, QhullError
 
 from ..base.dataclasses import Region
 from ..logging import get_logger
@@ -18,6 +19,8 @@ logger = get_logger(__name__)
 _DEFAULT_REGRID_CACHE_DIR = ".earthml-cache/regrid"
 _REGRID_GEOMETRY_CACHE = OrderedDict()
 _REGRID_GEOMETRY_CACHE_MAX_ITEMS = max(int(os.getenv("EARTHML_REGRID_CACHE_MAX_ITEMS", "16")), 1)
+_REGRID_INTERP_MAP_CACHE = OrderedDict()
+_REGRID_INTERP_MAP_CACHE_MAX_ITEMS = max(int(os.getenv("EARTHML_REGRID_INTERP_CACHE_MAX_ITEMS", "64")), 1)
 
 
 def _cache_dir() -> Path:
@@ -53,6 +56,23 @@ def _remember_geometry_cache_entry(cache_key: str, entry: dict[str, np.ndarray])
     _REGRID_GEOMETRY_CACHE.move_to_end(cache_key)
     while len(_REGRID_GEOMETRY_CACHE) > _REGRID_GEOMETRY_CACHE_MAX_ITEMS:
         _REGRID_GEOMETRY_CACHE.popitem(last=False)
+
+
+def _build_interp_map_cache_key(
+    geometry_cache_key: str,
+    data_valid_mask: np.ndarray,
+) -> str:
+    hasher = hashlib.blake2b(digest_size=16)
+    hasher.update(geometry_cache_key.encode("ascii"))
+    hasher.update(_hash_array(np.asarray(data_valid_mask, dtype=bool)).encode("ascii"))
+    return hasher.hexdigest()
+
+
+def _remember_interp_map_cache_entry(cache_key: str, entry: dict[str, np.ndarray | bool | str]) -> None:
+    _REGRID_INTERP_MAP_CACHE[cache_key] = entry
+    _REGRID_INTERP_MAP_CACHE.move_to_end(cache_key)
+    while len(_REGRID_INTERP_MAP_CACHE) > _REGRID_INTERP_MAP_CACHE_MAX_ITEMS:
+        _REGRID_INTERP_MAP_CACHE.popitem(last=False)
 
 
 def _load_or_build_curvilinear_geometry(
@@ -121,6 +141,81 @@ def _load_or_build_curvilinear_geometry(
 
     _log_info("Regrid geometry cache miss: %s", cache_key)
     return cache_key, entry
+
+
+def _load_or_build_curvilinear_interp_map(
+    *,
+    geometry_cache_key: str,
+    points: np.ndarray,
+    xi: np.ndarray,
+    data_valid_mask: np.ndarray,
+    silent: bool = False,
+) -> dict[str, np.ndarray | bool | str]:
+    def _log_info(msg: str, *args) -> None:
+        if not silent:
+            logger.info(msg, *args)
+
+    cache_key = _build_interp_map_cache_key(
+        geometry_cache_key=geometry_cache_key,
+        data_valid_mask=data_valid_mask,
+    )
+
+    entry = _REGRID_INTERP_MAP_CACHE.get(cache_key)
+    if entry is not None:
+        _REGRID_INTERP_MAP_CACHE.move_to_end(cache_key)
+        _log_info("Regrid interpolation map cache hit: %s", cache_key)
+        return entry
+
+    valid_idx = np.flatnonzero(data_valid_mask)
+    if valid_idx.size < 3:
+        entry = {"usable": False, "reason": "too_few_points"}
+        _remember_interp_map_cache_entry(cache_key, entry)
+        return entry
+
+    points_valid = points[valid_idx]
+
+    try:
+        tri = Delaunay(points_valid)
+        simplex = tri.find_simplex(xi)
+        inside_mask = simplex >= 0
+        inside_idx = np.flatnonzero(inside_mask)
+
+        if inside_idx.size == 0:
+            entry = {
+                "usable": True,
+                "inside_idx": inside_idx.astype(np.int64, copy=False),
+                "vertices": np.empty((0, 3), dtype=np.int64),
+                "weights": np.empty((0, 3), dtype=np.float64),
+                "value_indices": valid_idx.astype(np.int64, copy=False),
+            }
+            _remember_interp_map_cache_entry(cache_key, entry)
+            _log_info("Regrid interpolation map cache miss: %s", cache_key)
+            return entry
+
+        simplex_inside = simplex[inside_mask]
+        transform = tri.transform[simplex_inside]
+        delta = xi[inside_mask] - transform[:, 2, :]
+        bary = np.einsum("ijk,ik->ij", transform[:, :2, :], delta)
+        weights = np.concatenate(
+            [bary, 1.0 - bary.sum(axis=1, keepdims=True)],
+            axis=1,
+        )
+        vertices = tri.simplices[simplex_inside]
+
+        entry = {
+            "usable": True,
+            "inside_idx": inside_idx.astype(np.int64, copy=False),
+            "vertices": vertices.astype(np.int64, copy=False),
+            "weights": weights.astype(np.float64, copy=False),
+            "value_indices": valid_idx.astype(np.int64, copy=False),
+        }
+    except QhullError as exc:
+        _log_info("Regrid interpolation map build failed (%s): %s", cache_key, exc)
+        entry = {"usable": False, "reason": "qhull_error"}
+
+    _remember_interp_map_cache_entry(cache_key, entry)
+    _log_info("Regrid interpolation map cache miss: %s", cache_key)
+    return entry
 
 
 # TODO refactor regrid in one single optimized helper, possibly adding support for xesmf or other fast lib
@@ -360,7 +455,7 @@ class EarthMLRegrid:
         Ny = lat_target.size
         Nx = lon_target.size
 
-        _, geometry = _load_or_build_curvilinear_geometry(
+        geometry_cache_key, geometry = _load_or_build_curvilinear_geometry(
             lat_src_2d=lat_src_2d,
             lon_src_2d=lon_src_2d,
             lat_target=lat_target,
@@ -406,21 +501,45 @@ class EarthMLRegrid:
             out_slices = []
             for i in range(arr.shape[0]):
                 zi = arr[i, :]
+                zi_coord_valid = zi[coord_valid]
+                data_valid = np.isfinite(zi_coord_valid)
+                valid_count = int(data_valid.sum())
 
-                valid = coord_valid & np.isfinite(zi)
-
-                if valid.sum() == 0:
+                if valid_count == 0:
                     zi_interp = np.full(xi.shape[0], np.nan, dtype=np.float64)
-                elif valid.sum() < 3:
+                elif valid_count < 3:
                     # Not enough points for linear triangulation
                     zi_interp = np.full(xi.shape[0], np.nan, dtype=np.float64)
                 else:
-                    zi_interp = griddata(
-                        points[valid[coord_valid]],
-                        zi[valid],
-                        xi,
-                        method="linear",
+                    interp_map = _load_or_build_curvilinear_interp_map(
+                        geometry_cache_key=geometry_cache_key,
+                        points=points,
+                        xi=xi,
+                        data_valid_mask=data_valid,
+                        silent=silent,
                     )
+
+                    if bool(interp_map["usable"]):
+                        zi_interp = np.full(xi.shape[0], np.nan, dtype=np.float64)
+                        inside_idx = interp_map["inside_idx"]
+                        vertices = interp_map["vertices"]
+                        weights = interp_map["weights"]
+                        value_indices = interp_map["value_indices"]
+
+                        if inside_idx.size:
+                            zi_values = zi_coord_valid[value_indices]
+                            zi_interp[inside_idx] = np.einsum(
+                                "ij,ij->i",
+                                zi_values[vertices],
+                                weights,
+                            )
+                    else:
+                        zi_interp = griddata(
+                            points[data_valid],
+                            zi_coord_valid[data_valid],
+                            xi,
+                            method="linear",
+                        )
 
                 zi_interp_2d = zi_interp.reshape(Ny, Nx)
                 out_slices.append(zi_interp_2d)
