@@ -185,7 +185,7 @@ class MLBCExperimentLauncher:
             "data.variables_target": list(self.variables_target),
             "data.regions": list(self.regions),
             "data.leadtimes": [f"{cfg["leadtime_input"].value} {cfg["leadtime_input"].unit}" for cfg in exp_gen_cfgs],
-            "data.leadtimes vars": [f"{cfg["leadtime_var_input"].value} {cfg["leadtime_var_input"].unit}" for cfg in exp_gen_cfgs],
+            "data.leadtimes vars": [f"{cfg["leadtime_var_input"].value} {cfg["leadtime_var_input"].unit}" for cfg in exp_gen_cfgs], #TODO print repeated leadtimes by vars number
             "data.train_period_groups": self._format_train_period_groups(self.train_periods),
             "data.test_periods": self._format_time_range(self.test_periods),
             "runtime.dask_workers": self.dask_workers,
