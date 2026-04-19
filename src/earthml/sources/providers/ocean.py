@@ -458,13 +458,14 @@ def juno_medfs_forecast_daily(
         ),
     )
 
-# MedFS analysis
+# MedFS EAS10 analysis
 @register_provider("ocean.juno.medfs.analysis.daily")
 def juno_medfs_analysis_daily(
     var_name: str,
     leadtime_value: int,
     leadtime_unit: LeadtimeUnit,
-    root_path: str | Path = "/data/products/MFS/MFS_EAS9/analysis_daily_mean",
+    # root_path: str | Path = "/data/products/MFS/MFS_EAS9/analysis_daily_mean",
+    root_path: str | Path = "/data/products/MFS/MedFS_EAS10/analysis_daily_mean",
     engine: str = "h5netcdf",
     regrid_resolution: float | None = None,
     per_sample_regrid: bool = False,
@@ -475,12 +476,11 @@ def juno_medfs_analysis_daily(
 ) -> SourceConfigContainer:
     leadtime = Leadtime("leadtime", leadtime_unit, 0)
 
-    file_path_header="b"
-    file_path_suffix=""
     file_name_config = JunoLocalSourceFileNameConfig(
-        file_path_header=file_path_header,
-        file_path_suffix=file_path_suffix,
+        file_path_header="",
+        file_path_suffix="",
         file_path_date_format=file_path_date_format,
+        # file_header="medfs-eas9_1d_",
         file_header="medfs-eas10_1d_",
         file_suffix=f"_ALL_grid_{_medfs_grid_token(var_name, 10)}.nc",
         file_date_format=file_date_format,
