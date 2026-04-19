@@ -11,7 +11,7 @@ DIM_NAMES = {
     "time":         ["time", "valid_time", "time_counter", "source_time", "t"],
     "latitude":     ["lat", "y", "nav_lat"],
     "longitude":    ["lon", "x", "nav_lon"],
-    "level":        ["height", "depth", "depthu", "depthv", "depthw"],
+    "level":        ["level", "lev", "z", "height", "depth", "deptht", "depthu", "depthv", "depthw"],
     "realization":  ["realization", "number", "ens"],
     "leadtime":     ["lead_time", "leadtime", "step", "forecastMonth"],
 }
