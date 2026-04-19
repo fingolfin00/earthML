@@ -18,14 +18,14 @@ def make_var(
         ssh_gopaf_an=Variable(longname="Sea surface height", name="zos"), # only surface variable
 
         # MedFS
-        sst_medfs_fc=Variable(longname="sea_surface_temperature", name="votemper", leadtime=leadtime_input),
-        sst_medfs_an=Variable(longname="sea_surface_temperature", name="votemper", leadtime=leadtime_input),
+        sst_medfs_fc=Variable(longname="sea_surface_temperature", name="votemper", levm=0, leadtime=leadtime_input),
+        sst_medfs_an=Variable(longname="sea_surface_temperature", name="votemper", levm=0, leadtime=leadtime_input),
 
-        sss_medfs_fc=Variable(longname="sea surface salinity", name="vosaline", leadtime=leadtime_input),
-        sss_medfs_an=Variable(longname="sea surface salinity", name="vosaline", leadtime=leadtime_input),
+        sss_medfs_fc=Variable(longname="sea surface salinity", name="vosaline", levm=0, leadtime=leadtime_input),
+        sss_medfs_an=Variable(longname="sea surface salinity", name="vosaline", levm=0, leadtime=leadtime_input),
 
         ssh_medfs_fc=Variable(longname="sea_surface_height_above_geoid", name="sossheig", leadtime=leadtime_input),
-        ssh_medfs_an=Variable(longname="sea_surface_height_above_geoid", name="sossheig", leadtime=leadtime_input),
+        ssh_medfs_an=Variable(longname="sea_surface_height_above_geoid", name="sossheig", leadtime=leadtime_input), # only surface variable
 
         # Atmo weather
         # local forecast
