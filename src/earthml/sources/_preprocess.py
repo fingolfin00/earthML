@@ -66,6 +66,48 @@ def ensure_time_dim(ds: xr.Dataset) -> tuple[xr.Dataset, str]:
     return ds2, tname
 
 
+def _select_vertical_level(
+    ds: xr.Dataset,
+    da: xr.DataArray,
+    data: DataSelection,
+) -> tuple[xr.Dataset, xr.DataArray, float]:
+    import numpy as np
+
+    t0 = time.perf_counter()
+    var0 = data.variable[0] if isinstance(data.variable, list) else data.variable
+    level_value = next((lv for lv in (var0.levhpa, var0.levm) if lv is not None), None)
+    if level_value is None:
+        return ds, da, 0.0
+
+    level_dim = ds.earthml.guessed_dims.level
+    level_coord = ds.earthml.guessed_coords.level
+
+    if level_dim is None or level_dim not in da.dims:
+        return ds, da, 0.0
+
+    if level_coord is not None and level_coord in ds.coords:
+        coord = ds[level_coord]
+    elif level_dim in ds.coords:
+        coord = ds[level_dim]
+    else:
+        coord = None
+
+    if coord is not None and coord.ndim == 1 and level_dim in coord.dims:
+        coord_vals = np.asarray(coord.values, dtype=np.float64)
+        idx = int(np.abs(coord_vals - float(level_value)).argmin())
+        da = da.isel({level_dim: idx})
+        ds = ds.isel({level_dim: idx})
+    else:
+        try:
+            da = da.sel({level_dim: level_value}, method="nearest")
+            ds = ds.sel({level_dim: level_value}, method="nearest")
+        except Exception:
+            da = da.isel({level_dim: 0})
+            ds = ds.isel({level_dim: 0})
+
+    return ds, da, time.perf_counter() - t0
+
+
 def preprocess_mfdataset(ds: xr.Dataset, data: DataSelection, var_name: str | None = None, date = None) -> xr.Dataset:
     import numpy as np
     import cf_xarray, earthml  # noqa
@@ -145,6 +187,8 @@ def preprocess_mfdataset(ds: xr.Dataset, data: DataSelection, var_name: str | No
     da = ds[var_name]
     t_var1 = time.perf_counter()
 
+    ds, da, level_select_s = _select_vertical_level(ds, da, data)
+
     # Select leadtime if present
     leadtime_select_s = 0.0
     if leadtime is not None and leadtime.name in da.coords: # TODO need to understand this bit better
@@ -188,12 +232,13 @@ def preprocess_mfdataset(ds: xr.Dataset, data: DataSelection, var_name: str | No
 
     t_out1 = time.perf_counter()
     logger.debug(
-        "preprocess timing date=%s var=%s ensure_time=%.3fs guessed_coords=%.3fs get_var=%.3fs leadtime_select=%.3fs build_out=%.3fs total=%.3fs",
+        "preprocess timing date=%s var=%s ensure_time=%.3fs guessed_coords=%.3fs get_var=%.3fs level_select=%.3fs leadtime_select=%.3fs build_out=%.3fs total=%.3fs",
         date,
         var_name,
         t_ensure1 - t_ensure0,
         t_coords1 - t_coords0,
         t_var1 - t_var0,
+        level_select_s,
         leadtime_select_s,
         t_out1 - t_out0,
         t_out1 - t0,
