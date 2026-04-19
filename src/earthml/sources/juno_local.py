@@ -454,17 +454,11 @@ class JunoLocalSource(MFXarrayLocalSource):
             )
 
         if self.per_sample_regrid and self.sample_regrid_resolution is not None:
-            logger.info(
-                "%s Per-sample regridding date=%s vars=%s resolution=%s",
-                SOURCE_CTX,
-                date,
-                self.regrid_vars,
-                self.sample_regrid_resolution,
-            )
             ds_sample = ds_sample.earthml.regrid_to_rectilinear(
                 region=self.data_selection.region,
                 resolution=self.sample_regrid_resolution,
                 vars_to_regrid=self.regrid_vars,
+                silent=True,
             )
 
         return ds_sample
