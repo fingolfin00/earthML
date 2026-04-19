@@ -90,7 +90,7 @@ class MLBCDatasetGenerator:
                 period[default_type][-1].end if isinstance(period[default_type], list) else period[default_type].end
             )
         elif isinstance(period, Sequence):
-            return period[0].start, period[-1].start
+            return period[0].start, period[-1].end
         else:
             return period.start, period.end
 
