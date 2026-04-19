@@ -212,6 +212,108 @@ class JunoLocalSource(MFXarrayLocalSource):
         return out
 
     @staticmethod
+    def _cfgrib_missing_var_reason(ds: xr.Dataset, var_name: str) -> bool:
+        if "_missing_var_name" not in ds.attrs:
+            return False
+        return ds.attrs["_missing_var_name"] == var_name and "_has_var" in ds
+
+    @staticmethod
+    def _cfgrib_has_requested_var(ds: xr.Dataset) -> bool:
+        if "_has_var" not in ds:
+            return False
+        return bool(ds["_has_var"].any().item())
+
+    def _candidate_files_for_date(
+        self,
+        date,
+        *,
+        include_exact: bool = True,
+    ) -> list[tuple[str, list[Path]]]:
+        previous_date = pd.Timestamp(date) - self.leadtime.to_timedelta()
+        root_path, date_config = self._resolve_path_config(previous_date)
+        data_path = self._build_data_path(
+            config=date_config,
+            root_path=root_path,
+            date=previous_date,
+        )
+        realizations = date_config.realizations
+        candidates: list[tuple[str, list[Path]]] = []
+
+        if include_exact:
+            exact_glob = self._build_data_glob(
+                config=date_config,
+                previous_date=previous_date,
+                current_date=date,
+            )
+            exact_files = self._latest_matching_files(data_path, exact_glob, realizations)
+            if exact_files:
+                candidates.append(("exact", exact_files))
+
+        if date_config.minus_timedelta is not None:
+            minus_date = pd.Timestamp(date) - date_config.minus_timedelta
+            minus_glob = self._build_data_glob(
+                config=date_config,
+                previous_date=previous_date,
+                current_date=minus_date,
+            )
+            minus_files = self._latest_matching_files(data_path, minus_glob, realizations)
+            if minus_files:
+                candidates.append(("minus", minus_files))
+
+        if date_config.plus_timedelta is not None:
+            plus_date = pd.Timestamp(date) + date_config.plus_timedelta
+            plus_glob = self._build_data_glob(
+                config=date_config,
+                previous_date=previous_date,
+                current_date=plus_date,
+            )
+            plus_files = self._latest_matching_files(data_path, plus_glob, realizations)
+            if plus_files:
+                candidates.append(("plus", plus_files))
+
+        return candidates
+
+    def _open_one_cfgrib_with_var_fallback(self, path: Path, var_name: str, date) -> xr.Dataset:
+        ds = self._open_one_cfgrib(path, var_name, date)
+        if self._cfgrib_has_requested_var(ds) or not self._cfgrib_missing_var_reason(ds, var_name):
+            return ds
+
+        candidate_files = self._candidate_files_for_date(date, include_exact=False)
+        checked_paths: list[str] = []
+
+        for source_kind, candidate_group in candidate_files:
+            for candidate in candidate_group:
+                if candidate == path:
+                    continue
+                checked_paths.append(candidate.name)
+                ds_candidate = self._open_one_cfgrib(candidate, var_name, date)
+                if self._cfgrib_has_requested_var(ds_candidate):
+                    if source_kind == "minus":
+                        self.elements.extra.setdefault("minus_samples", []).append(date)
+                    elif source_kind == "plus":
+                        self.elements.extra.setdefault("plus_samples", []).append(date)
+                logger.info(
+                    "%s Recovered missing var=%s for date=%s using %s fallback file %s instead of %s",
+                    SOURCE_CTX,
+                    var_name,
+                    date,
+                    source_kind,
+                    candidate,
+                    path,
+                )
+                return ds_candidate
+
+        logger.warning(
+            "%s Requested var=%s missing in %s for date=%s; no valid %s fallback found",
+            SOURCE_CTX,
+            var_name,
+            path,
+            date,
+            checked_paths,
+        )
+        return ds
+
+    @staticmethod
     def _latest_matching_files(data_path: Path, pattern: str, realizations: int | Literal["all"]) -> list[Path]:
         """
         Return matching files sorted by newest mtime first.
@@ -345,7 +447,7 @@ class JunoLocalSource(MFXarrayLocalSource):
                     per_file = []
                     for path in sample:
                         def _open_one(path=path, var_name=var.name, date=date):
-                            return self._open_one_cfgrib(path, var_name, date)
+                            return self._open_one_cfgrib_with_var_fallback(path, var_name, date)
 
                         ds_one = retry_fetch_after_hdf_err(
                             _open_one,
@@ -392,7 +494,7 @@ class JunoLocalSource(MFXarrayLocalSource):
                 per_file = []
                 for path in sample:
                     def _open_one(path=path, var_name=var.name, date=date):
-                        return self._open_one_cfgrib(path, var_name, date)
+                        return self._open_one_cfgrib_with_var_fallback(path, var_name, date)
 
                     ds_one = retry_fetch_after_hdf_err(
                         _open_one,
@@ -513,60 +615,19 @@ class JunoLocalSource(MFXarrayLocalSource):
         assert config.realizations == "all" or config.realizations > 0
 
         for date in self.date_range:
-            previous_date = date - leadtime.to_timedelta()
-            root_path, date_config = self._resolve_path_config(previous_date)
-            data_path = self._build_data_path(
-                config=date_config,
-                root_path=root_path,
-                date=previous_date,
-            )
-            logger.debug("%s Data path constructed for date %s: %s", SOURCE_CTX, date, data_path)
-
-            realizations = date_config.realizations
-            minus_td = date_config.minus_timedelta
-            plus_td = date_config.plus_timedelta
-            data_glob = self._build_data_glob(
-                config=date_config,
-                previous_date=previous_date,
-                current_date=date,
-            )
-            logger.debug("%s Data glob constructed for date %s: %s", SOURCE_CTX, date, data_glob)
-
-            files_exact = self._latest_matching_files(data_path, data_glob, realizations)
-
-            if files_exact:
-                s.samples[date] = files_exact
-                continue
-
+            candidates = self._candidate_files_for_date(date, include_exact=True)
             found = False
 
-            if minus_td is not None:
-                test_date = date - minus_td
-                test_glob = self._build_data_glob(
-                    config=date_config,
-                    previous_date=previous_date,
-                    current_date=test_date,
-                )
-
-                test_files = self._latest_matching_files(data_path, test_glob, realizations)
-                if test_files:
-                    s.samples[date] = test_files
+            for source_kind, files in candidates:
+                if not files:
+                    continue
+                s.samples[date] = files
+                if source_kind == "minus":
                     s.extra["minus_samples"].append(date)
-                    found = True
-
-            if not found and plus_td is not None:
-                test_date = date + plus_td
-                test_glob = self._build_data_glob(
-                    config=date_config,
-                    previous_date=previous_date,
-                    current_date=test_date,
-                )
-
-                test_files = self._latest_matching_files(data_path, test_glob, realizations)
-                if test_files:
-                    s.samples[date] = test_files
+                elif source_kind == "plus":
                     s.extra["plus_samples"].append(date)
-                    found = True
+                found = True
+                break
 
             if not found:
                 logger.warning("%s Missed sample (local filename not found): %s", SOURCE_CTX, date)
