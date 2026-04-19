@@ -60,7 +60,13 @@ def _load_or_build_curvilinear_geometry(
     lon_src_2d: np.ndarray,
     lat_target: np.ndarray,
     lon_target: np.ndarray,
+    *,
+    silent: bool = False,
 ) -> tuple[str, dict[str, np.ndarray]]:
+    def _log_info(msg: str, *args) -> None:
+        if not silent:
+            logger.info(msg, *args)
+
     cache_key = _build_curvilinear_cache_key(
         lat_src_2d=lat_src_2d,
         lon_src_2d=lon_src_2d,
@@ -71,7 +77,7 @@ def _load_or_build_curvilinear_geometry(
     entry = _REGRID_GEOMETRY_CACHE.get(cache_key)
     if entry is not None:
         _REGRID_GEOMETRY_CACHE.move_to_end(cache_key)
-        logger.info("Regrid geometry cache hit (memory): %s", cache_key)
+        _log_info("Regrid geometry cache hit (memory): %s", cache_key)
         return cache_key, entry
 
     cache_path = _cache_dir() / f"{cache_key}.npz"
@@ -83,7 +89,7 @@ def _load_or_build_curvilinear_geometry(
                 "xi": cached["xi"],
             }
         _remember_geometry_cache_entry(cache_key, entry)
-        logger.info("Regrid geometry cache hit (disk): %s", cache_path)
+        _log_info("Regrid geometry cache hit (disk): %s", cache_path)
         return cache_key, entry
 
     lat_flat = lat_src_2d.ravel()
@@ -109,11 +115,11 @@ def _load_or_build_curvilinear_geometry(
             points=points,
             xi=xi,
         )
-        logger.info("Regrid geometry cache stored: %s", cache_path)
+        _log_info("Regrid geometry cache stored: %s", cache_path)
     except OSError as exc:
         logger.warning("Failed to persist regrid geometry cache %s: %s", cache_path, exc)
 
-    logger.info("Regrid geometry cache miss: %s", cache_key)
+    _log_info("Regrid geometry cache miss: %s", cache_key)
     return cache_key, entry
 
 
@@ -124,6 +130,8 @@ class EarthMLRegrid:
         region: Region,
         resolution: float | tuple[float, float],
         vars_to_regrid=None,
+        *,
+        silent: bool = False,
     ) -> xr.Dataset:
         """
         Regrid dataset variables onto a rectilinear latitude/longitude target grid.
@@ -198,7 +206,11 @@ class EarthMLRegrid:
         else:
             vars_to_regrid = list(vars_to_regrid)
 
-        logger.info("Regrid: available data vars %s, requested vars %s", list(ds.data_vars.keys()), vars_to_regrid)
+        def _log_info(msg: str, *args) -> None:
+            if not silent:
+                logger.info(msg, *args)
+
+        _log_info("Regrid: available data vars %s, requested vars %s", list(ds.data_vars.keys()), vars_to_regrid)
 
         lat0, lat1 = map(float, region.lat)
         lon0, lon1 = map(float, region.lon)
@@ -257,7 +269,7 @@ class EarthMLRegrid:
         # Case 1: rectilinear (1D) source -> rectilinear (1D) target
         # ======================================================================
         if rectilinear_src:
-            logger.info("Regrid: rectilinear (1D) source -> rectilinear (1D) target via xarray.interp.")
+            _log_info("Regrid: rectilinear (1D) source -> rectilinear (1D) target via xarray.interp.")
 
             lat_src = np.asarray(ds[lat_name].values, dtype=np.float64)
             lon_src = _shift_longitudes_near_reference(ds[lon_name].values, lon_center)
@@ -294,7 +306,7 @@ class EarthMLRegrid:
             same_lon = src_lon.shape == lon_target.shape and np.allclose(src_lon, lon_target, atol=1e-6)
 
             if same_lat and same_lon:
-                logger.info("  no-op: keeping existing rectilinear grid")
+                _log_info("  no-op: keeping existing rectilinear grid")
                 return ds_interp
 
             lat_tgt_da = xr.DataArray(lat_target, dims=(lat_name,), name=lat_name)
@@ -326,7 +338,7 @@ class EarthMLRegrid:
         # ======================================================================
         # Case 2: curvilinear (2D) source -> rectilinear (1D) target
         # ======================================================================
-        logger.info("Regrid: curvilinear (2D) source -> rectilinear (1D) target via scipy.griddata.")
+        _log_info("Regrid: curvilinear (2D) source -> rectilinear (1D) target via scipy.griddata.")
 
         if lat_da.ndim != 2 or lon_da.ndim != 2:
             raise ValueError(
@@ -353,6 +365,7 @@ class EarthMLRegrid:
             lon_src_2d=lon_src_2d,
             lat_target=lat_target,
             lon_target=lon_target,
+            silent=silent,
         )
         coord_valid = geometry["coord_valid"]
         points = geometry["points"]
@@ -369,7 +382,7 @@ class EarthMLRegrid:
                 data_vars_out[name] = da
                 continue
 
-            logger.info("  Regridding variable '%s' with griddata...", name)
+            _log_info("  Regridding variable '%s' with griddata...", name)
 
             da_spatial = da.transpose(
                 *[d for d in da.dims if d not in (y_dim_src, x_dim_src)],
