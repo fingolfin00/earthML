@@ -1,9 +1,14 @@
 import cf_xarray  # ensure .cf accessor on workers
+import time
 import xarray as xr
 import pandas as pd
 from rich import print
 
 from .dataclasses import DataSelection
+from ..logging import get_logger
+
+
+logger = get_logger(__name__)
 
 
 def _status_da(ds: xr.Dataset, time_coord: str | None, ok: bool, name: str = "_has_var"):
@@ -67,13 +72,18 @@ def preprocess_mfdataset(ds: xr.Dataset, data: DataSelection, var_name: str | No
     import xarray as xr
     import pandas as pd
 
+    t0 = time.perf_counter()
     var0 = data.variable[0] if isinstance(data.variable, list) else data.variable
     leadtime = var0.leadtime
 
     # Ensure ds a=has a time dim
+    t_ensure0 = time.perf_counter()
     ds, time_coord = ensure_time_dim(ds)
+    t_ensure1 = time.perf_counter()
 
+    t_coords0 = time.perf_counter()
     lon_coord, lat_coord = ds.earthml.guessed_coords.longitude, ds.earthml.guessed_coords.latitude
+    t_coords1 = time.perf_counter()
 
     # Require both spatial coordinates; otherwise mark sample invalid
     if lon_coord is None or lat_coord is None:
@@ -86,6 +96,14 @@ def preprocess_mfdataset(ds: xr.Dataset, data: DataSelection, var_name: str | No
         out.attrs["_source"] = ds.encoding.get("source", "")
         if date is not None and time_coord is not None and time_coord in out.dims and out.sizes[time_coord] == 1:
             out = out.assign_coords({time_coord: [np.datetime64(date)]})
+        logger.debug(
+            "preprocess timing date=%s var=%s missing_spatial ensure_time=%.3fs guessed_coords=%.3fs total=%.3fs",
+            date,
+            var_name or var0.name,
+            t_ensure1 - t_ensure0,
+            t_coords1 - t_coords0,
+            time.perf_counter() - t0,
+        )
         return out
 
     # Decide desired variable name
@@ -93,6 +111,7 @@ def preprocess_mfdataset(ds: xr.Dataset, data: DataSelection, var_name: str | No
 
     # Fallback if variable not present in ds
     if var_name not in ds.data_vars and var_name not in ds.variables:
+        t_missing0 = time.perf_counter()
         # propagate “missing var” info in a concat-safe way
         out = xr.Dataset()
         out["_has_var"] = _status_da(ds, time_coord, False, name="_has_var")
@@ -110,13 +129,26 @@ def preprocess_mfdataset(ds: xr.Dataset, data: DataSelection, var_name: str | No
         if date is not None and time_coord is not None and time_coord in out.dims and out.sizes[time_coord] == 1:
             out = out.assign_coords({time_coord: [np.datetime64(date)]})
         # print(out)
+        logger.debug(
+            "preprocess timing date=%s var=%s missing_var ensure_time=%.3fs guessed_coords=%.3fs missing_build=%.3fs total=%.3fs",
+            date,
+            var_name,
+            t_ensure1 - t_ensure0,
+            t_coords1 - t_coords0,
+            time.perf_counter() - t_missing0,
+            time.perf_counter() - t0,
+        )
         return out
 
     # Normal case
+    t_var0 = time.perf_counter()
     da = ds[var_name]
+    t_var1 = time.perf_counter()
 
     # Select leadtime if present
+    leadtime_select_s = 0.0
     if leadtime is not None and leadtime.name in da.coords: # TODO need to understand this bit better
+        t_lt0 = time.perf_counter()
         td = leadtime.to_timedelta()
         coord = da[leadtime.name]
         target = td.to_numpy().astype(coord.dtype)
@@ -131,7 +163,10 @@ def preprocess_mfdataset(ds: xr.Dataset, data: DataSelection, var_name: str | No
         idx = int(np.abs(coord_vals - target).argmin())
         ##
         da = da.isel({lead_dim: idx})
+        t_lt1 = time.perf_counter()
+        leadtime_select_s = t_lt1 - t_lt0
 
+    t_out0 = time.perf_counter()
     out = xr.Dataset({da.name or var_name: da})
     out["_has_var"] = _status_da(out, time_coord, True, name="_has_var")
 
@@ -150,6 +185,19 @@ def preprocess_mfdataset(ds: xr.Dataset, data: DataSelection, var_name: str | No
     if "time" in out.coords and "time" not in out.dims and "time" != time_coord:
         # print("Reset extra time coordinate")
         out = out.reset_coords("time", drop=True)
+
+    t_out1 = time.perf_counter()
+    logger.debug(
+        "preprocess timing date=%s var=%s ensure_time=%.3fs guessed_coords=%.3fs get_var=%.3fs leadtime_select=%.3fs build_out=%.3fs total=%.3fs",
+        date,
+        var_name,
+        t_ensure1 - t_ensure0,
+        t_coords1 - t_coords0,
+        t_var1 - t_var0,
+        leadtime_select_s,
+        t_out1 - t_out0,
+        t_out1 - t0,
+    )
 
     # print("preprocess", out.dims)
     return out
