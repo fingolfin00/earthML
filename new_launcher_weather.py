@@ -16,33 +16,33 @@ if __name__ == "__main__":
     # ----------------------------------------------------------------------------------
     max_retries                 = 4
     force_retrain               = False
-    force_rebuild_dataset       = False                     # False, "all", "train", "test", "input", "target", "train_input", "train_target", "test_input", "test_target"
-    log_level                   = "info"                    # debug, info
+    force_rebuild_dataset       = False # False, "all", "train", "test", "input", "target", "train_input", "train_target", "test_input", "test_target"
+    log_level                   = "info" # debug, info
+    juno_file_open_workers      = 1 # 1: good for grib (atmo weather), 8: good for netcdf (ocean weather)
 
-    experiment_type             = "weather"                 # seasonal, weather
-    experiment_name             = "juno-ecmwf_juno-ecmwf"             # cmems_cmems, juno-ecmwf_juno-ecmwf, juno-cmcc_cmems, juno-medfs_cmems
+    experiment_type             = "weather" # seasonal, weather
+    experiment_name             = "juno-ecmwf_juno-ecmwf" # cmems_cmems, juno-ecmwf_juno-ecmwf, juno-cmcc_cmems, juno-medfs_cmems
 
-    run_mode                    = "train_test_on_train"     # train_test_on_train, train_test, prepare, train, test
-    experiment_mode             = "full"        # full, short, debug
-    only_longest_train_period   = True          # only train on the largest train period (if False, train on all periods, which can be much slower but allows to see variability across train periods)
-    # add_hyper_exp_name_suffix   = False       # if True use also batch_size, max_epochs, initial_learning_rate in exp name (and resulting folder) automatically extending exp_suffix
-    extra_exp_suffix            = ""            # additional custom suffix to add to exp name (and resulting folder), e.g. "_debug" or "_try1"
+    run_mode                    = "train_test_on_train" # train_test_on_train, train_test, prepare, train, test
+    experiment_mode             = "full" # full, short, debug
+    only_longest_train_period   = True # only train on the largest train period (if False, train on all periods, which can be much slower but allows to see variability across train periods)
+    extra_exp_suffix            = "" # additional custom suffix to add to exp name (and resulting folder), e.g. "_debug" or "_try1"
 
     exp_root_folder             = "/Users/jacopodallaglio/ML/experiments_earthML_ocean_weather"
     earthkit_cache_dir          = "/Users/jacopodallaglio/ML/.earthkit-cache"       # if using earthkit datasource
 
     if experiment_name == "juno-ecmwf_juno-ecmwf":
-        variables               = ["msl", "t2m", "d2m", "u10", "v10", "tcc"]                   # e.g. ["msl", "t2m", "u10", "v10", "d2m", "tcc"]
-        regions                 = ["westconus"]                 # e.g. ["conus", "westconus", "europe", "westeurope"]
-        leadtimes               = (.5, 1, 2, 3) # (.5, 1, 2, 3)
-    if experiment_name in ("cmems_cmems", "juno-cmcc_cmems", "juno-medfs_cmems"):
-        variables               = ["sst", "ssh", "sss"]     # e.g. ["sst", "ssh", "sss"]
-        regions                 = ["atlanticbox"]               # e.g. ["pacific", "natlantic", "satlantic", "indian", "atlanticbox"]
+        variables               = ["msl", "t2m", "d2m", "u10", "v10", "tcc"] # e.g. ["msl", "t2m", "u10", "v10", "d2m", "tcc"]
+        regions                 = ["westconus", "westeurope"] # e.g. ["conus", "westconus", "europe", "westeurope"]
+        leadtimes               = (3,) # (.5, 1, 2, 3)
+    if experiment_name in ("cmems_cmems", "juno-cmcc_cmems", "juno-medfs_cmems", "juno-medfs_juno-medfs"):
+        variables               = ["sst", "ssh", "sss"] # e.g. ["sst", "ssh", "sss"]
+        regions                 = ["med"] # e.g. ["pacific", "natlantic", "satlantic", "indian", "atlanticbox"]
         leadtimes               = (1, 2, 3, 4, 5, 6, 7, 8, 9) # (1, 2, 3, 4, 5, 6, 7, 8, 9)
 
-    inpaint_nan                 = True                      # whether to inpaint nan values in input and target datasets (after loading, before torch dataset generation)
-    anomaly                     = False                     # if True, predict anomaly (i.e. remove climatology from target variable), otherwise predict absolute values
-    per_epoch_resplit           = False                     # if True, split test and validation randomly per epoch with a different seed, if False only one initial split for all epochs (fixed seed)
+    inpaint_nan                 = True # whether to inpaint nan values in input and target datasets (after loading, before torch dataset generation)
+    anomaly                     = False # if True, predict anomaly (i.e. remove climatology from target variable), otherwise predict absolute values
+    per_epoch_resplit           = False # if True, split test and validation randomly per epoch with a different seed, if False only one initial split for all epochs (fixed seed)
 
     if experiment_name == "juno-ecmwf_juno-ecmwf":
         start_train_date            = datetime(2019, 10, 11)
@@ -59,16 +59,23 @@ if __name__ == "__main__":
         freq                        = "12h"
         regrid_resolution           = 0.08
     if experiment_name in ("juno-cmcc_cmems", "juno-medfs_cmems"):
-        start_train_date            = datetime(2024, 4, 23) # this needs to be adapted on the current day (not anymore)
+        start_train_date            = datetime(2024, 4, 23) # this is the earliest available
         end_train_date              = datetime(2025, 12, 31)
         start_test_date             = datetime(2026, 1, 1)
-        end_test_date               = datetime(2026, 4, 11) # this needs to be adapted on the current day (not anymore)
+        end_test_date               = datetime(2026, 4, 11)
         freq                        = "1d"
         regrid_resolution           = 0.08
+    if experiment_name == "juno-medfs_juno-medfs":
+        start_train_date            = datetime(2022, 1, 10)
+        end_train_date              = datetime(2025, 12, 31)
+        start_test_date             = datetime(2026, 1, 1)
+        end_test_date               = datetime(2026, 4, 11)
+        freq                        = "1d"
+        regrid_resolution           = 0.04
 
-    target_realization_avg      = False                     # average over realizations for target variable (if True, add _taravg suffix to exp_suffix)
-    realization_as_channel      = False                     # use realization a channel dim (if True, add _rasc suffix to exp_suffix)
-    n_input_realizations        = 30                        # used only if realization_as_channel = True
+    target_realization_avg      = False # average over realizations for target variable (if True, add _taravg suffix to exp_suffix)
+    realization_as_channel      = False # use realization a channel dim (if True, add _rasc suffix to exp_suffix)
+    n_input_realizations        = 30 # used only if realization_as_channel = True
 
     # Hyperparams
     batch_size                  = 32
@@ -133,7 +140,8 @@ if __name__ == "__main__":
     root_path_analysis          = "/data/inputs/METOCEAN/historical/model/atmos/ECMWF/IFS_010/analysis/6h/grib/"
     root_path_analysis_new      = "/data/inputs/METOCEAN/historical/model/atmos/ECMWF/IFS_010_new/analysis/6h/grib/"
 
-    grib_index_path             = "/work/cmcc/jd19424/test-ML/.grib_index"
+    grib_index_path             = "/tmp/.grib_index"
+    # grib_index_path             = "/work/cmcc/jd19424/test-ML/.grib_index"
 
     cmems_credential = dict(
         username="jacopo.dallaglio2@unibo.it",
@@ -244,6 +252,7 @@ if __name__ == "__main__":
             # Optional
             dask_workers=24,
             memory_limit="16GB",
+            juno_file_open_workers=juno_file_open_workers,
             only_longest_train_period=only_longest_train_period,
             force_retrain=force_retrain,
             force_rebuild_dataset=force_rebuild_dataset,
