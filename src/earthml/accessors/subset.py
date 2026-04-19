@@ -204,7 +204,7 @@ class EarthMLSubset:
         levhpa = data_selection.variable.levhpa
         levm = data_selection.variable.levm
         level_value = next((lv for lv in (levhpa, levm) if lv is not None), None)
-        vertical_dim = ds.earthml.guess_dim(ds, "vertical", ["level", "z"])
+        vertical_dim = ds.earthml.guessed_dims.level
         selection_d |= self._dim_selection(vertical_dim, level_value)
 
         return selection_d
