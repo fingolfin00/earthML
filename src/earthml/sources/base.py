@@ -302,15 +302,18 @@ class BaseSource(ABC):
         """Save dataset in Zarr format in filepath"""
         if self.ds is None:
             self.ds = self.load()
+        ds_to_save = self.ds.drop_vars("_has_var", errors="ignore")
         store = Path(filepath)
         logger.info("Saving dataset to %s", store)
+        if "_has_var" in self.ds:
+            logger.info("Dropping bookkeeping variable _has_var before saving %s", store)
         time_dim = self.ds.earthml.guessed_dims.time
         target_bytes = 128 * 1024 * 1024
         hard_limit_bytes = 2_000_000_000
         compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
         encoding_zarr = {}
 
-        for name, var in self.ds.variables.items():
+        for name, var in ds_to_save.variables.items():
             encoding = {"compressors": compressor}
             if hasattr(var, "dims") and hasattr(var, "dtype"):
                 chunks = self._safe_zarr_chunks_for_var(
@@ -324,7 +327,7 @@ class BaseSource(ABC):
                     logger.info("Zarr chunks for %s: dims=%s chunks=%s", name, var.dims, chunks)
             encoding_zarr[name] = encoding
 
-        self.ds.to_zarr(
+        ds_to_save.to_zarr(
             store,
             encoding=encoding_zarr,
             mode='w',
