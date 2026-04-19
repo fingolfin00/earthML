@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import field
 from typing import Sequence
+import math
 
 from copy import deepcopy
 from pathlib import Path
@@ -243,6 +244,55 @@ class BaseSource(ABC):
         self.ds = None
         return self.load(show_dask_progress=show_dask_progress)
 
+    @staticmethod
+    def _chunk_nbytes(da: xr.DataArray, chunk_sizes: dict[str, int]) -> int:
+        n_items = 1
+        for dim in da.dims:
+            n_items *= max(1, int(chunk_sizes.get(dim, da.sizes[dim])))
+        return n_items * da.dtype.itemsize
+
+    def _safe_zarr_chunks_for_var(
+        self,
+        da: xr.DataArray,
+        *,
+        time_dim: str | None,
+        target_bytes: int,
+        hard_limit_bytes: int,
+    ) -> tuple[int, ...] | None:
+        if not da.dims:
+            return None
+
+        chunk_sizes = {dim: int(da.sizes[dim]) for dim in da.dims}
+
+        if time_dim is not None and time_dim in chunk_sizes:
+            chunk_sizes[time_dim] = min(chunk_sizes[time_dim], 8)
+
+        while self._chunk_nbytes(da, chunk_sizes) > hard_limit_bytes:
+            candidate_dims = [
+                dim for dim in da.dims
+                if chunk_sizes[dim] > 1 and dim != "realization"
+            ]
+            if not candidate_dims:
+                break
+
+            non_time_dims = [dim for dim in candidate_dims if dim != time_dim]
+            split_dim = max(non_time_dims or candidate_dims, key=lambda dim: chunk_sizes[dim])
+            chunk_sizes[split_dim] = max(1, math.ceil(chunk_sizes[split_dim] / 2))
+
+        while self._chunk_nbytes(da, chunk_sizes) > target_bytes:
+            candidate_dims = [
+                dim for dim in da.dims
+                if chunk_sizes[dim] > 1 and dim != "realization"
+            ]
+            if not candidate_dims:
+                break
+
+            non_time_dims = [dim for dim in candidate_dims if dim != time_dim]
+            split_dim = max(non_time_dims or candidate_dims, key=lambda dim: chunk_sizes[dim])
+            chunk_sizes[split_dim] = max(1, math.ceil(chunk_sizes[split_dim] / 2))
+
+        return tuple(int(chunk_sizes[dim]) for dim in da.dims)
+
 
     def save(
         self,
@@ -254,11 +304,26 @@ class BaseSource(ABC):
             self.ds = self.load()
         store = Path(filepath)
         logger.info("Saving dataset to %s", store)
-        # print(f"Saving sizes: {self.ds.sizes}")
+        time_dim = self.ds.earthml.guessed_dims.time
+        target_bytes = 128 * 1024 * 1024
+        hard_limit_bytes = 2_000_000_000
         compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
-        encoding_zarr = ({
-            v: {"compressors": compressor} for v in self.ds.variables
-        })
+        encoding_zarr = {}
+
+        for name, var in self.ds.variables.items():
+            encoding = {"compressors": compressor}
+            if hasattr(var, "dims") and hasattr(var, "dtype"):
+                chunks = self._safe_zarr_chunks_for_var(
+                    var,
+                    time_dim=time_dim,
+                    target_bytes=target_bytes,
+                    hard_limit_bytes=hard_limit_bytes,
+                )
+                if chunks is not None:
+                    encoding["chunks"] = chunks
+                    logger.info("Zarr chunks for %s: dims=%s chunks=%s", name, var.dims, chunks)
+            encoding_zarr[name] = encoding
+
         self.ds.to_zarr(store, encoding=encoding_zarr, mode='w', consolidated=consolidated)
 
 
