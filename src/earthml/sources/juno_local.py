@@ -656,7 +656,12 @@ class JunoLocalSource(MFXarrayLocalSource):
                         self.elements.missed.add(date)
                     else:
                         samples_d[date] = ds_sample
-                    logger.debug(f"{SOURCE_CTX} Juno local, vars in sample [{date}]: {ds_sample.data_vars}")
+                    if ds_sample is None:
+                        self.elements.missed.add(date)
+                        logger.debug("%s Juno local sample [%s] returned None", SOURCE_CTX, date)
+                    else:
+                        samples_d[date] = ds_sample
+                        logger.debug("%s Juno local, vars in sample [%s]: %s", SOURCE_CTX, date, ds_sample.data_vars)
                     prog.advance(task)
             else:
                 workers = min(self.file_open_workers, len(samples))
@@ -678,8 +683,14 @@ class JunoLocalSource(MFXarrayLocalSource):
                         prog.advance(task)
                         logger.debug(f"{SOURCE_CTX} Juno local, vars in sample [{date}]: {ds_sample.data_vars}")
 
-        dbg_sample_k = self.date_range[10]
-        logger.debug(f"{SOURCE_CTX} Juno local, size of ds[{dbg_sample_k}] after open_mfdataset: {samples_d[dbg_sample_k].sizes}")
+        if samples_d:
+            dbg_sample_k = next(iter(samples_d))
+            logger.debug(
+                "%s Juno local, size of ds[%s] after open_mfdataset: %s",
+                SOURCE_CTX,
+                dbg_sample_k,
+                samples_d[dbg_sample_k].sizes,
+            )
 
         # Infer resolution from first valid sample
         valid_dates = sorted(samples_d)
