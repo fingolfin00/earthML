@@ -30,6 +30,7 @@ if __name__ == "__main__":
 
     exp_root_folder             = "/Users/jacopodallaglio/ML/experiments_earthML_ocean_weather"
     earthkit_cache_dir          = "/Users/jacopodallaglio/ML/.earthkit-cache"       # if using earthkit datasource
+    juno_per_sample_regrid      = False
 
     if experiment_name == "juno-ecmwf_juno-ecmwf":
         variables               = ["msl", "t2m", "d2m", "u10", "v10", "tcc"] # e.g. ["msl", "t2m", "u10", "v10", "d2m", "tcc"]
@@ -259,6 +260,7 @@ if __name__ == "__main__":
             # Providers args
             earthkit_cache_dir=earthkit_cache_dir,
             regrid_resolution=regrid_resolution,
+            juno_per_sample_regrid=juno_per_sample_regrid,
             providers_kwargs={
                 "input": input_test_provider_kwargs,
                 "target": target_test_provider_kwargs,
