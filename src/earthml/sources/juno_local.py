@@ -5,6 +5,7 @@ from functools import partial
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import multiprocessing
 import threading
+import time
 
 import re, dask
 from heapq import nlargest
@@ -164,11 +165,13 @@ class JunoLocalSource(MFXarrayLocalSource):
 
 
     def _open_one_cfgrib(self, path: Path, var_name: str, date):
+        t0 = time.perf_counter()
         filter_by_keys = {"cfVarName": var_name}
         indexpath_key = self._make_cfgrib_index_key(path, filter_by_keys)
         indexpath = str(Path(self.cfgrib_idx_path) / f"{indexpath_key}.idx")
         lock = self._get_cfgrib_lock(path)
 
+        t_open = time.perf_counter()
         ds = xr.open_dataset(
             path,
             engine="cfgrib",
@@ -181,13 +184,32 @@ class JunoLocalSource(MFXarrayLocalSource):
             lock=lock,
             chunks="auto",
         )
+        t_preprocess = time.perf_counter()
 
-        return preprocess_mfdataset(
+        out = preprocess_mfdataset(
             ds,
             data=self.data_selection,
             var_name=var_name,
             date=date,
         )
+        t_done = time.perf_counter()
+        try:
+            file_size_mb = path.stat().st_size / (1024 * 1024)
+        except FileNotFoundError:
+            file_size_mb = float("nan")
+        logger.debug(
+            "%s cfgrib timings date=%s var=%s file=%s size_mb=%.1f lock+setup=%.3fs open=%.3fs preprocess=%.3fs total=%.3fs",
+            SOURCE_CTX,
+            date,
+            var_name,
+            path,
+            file_size_mb,
+            t_open - t0,
+            t_preprocess - t_open,
+            t_done - t_preprocess,
+            t_done - t0,
+        )
+        return out
 
     @staticmethod
     def _latest_matching_files(data_path: Path, pattern: str, realizations: int | Literal["all"]) -> list[Path]:
@@ -292,6 +314,7 @@ class JunoLocalSource(MFXarrayLocalSource):
         has_shifted_samples: bool,
         lock,
     ) -> xr.Dataset | None:
+        t0 = time.perf_counter()
         if len(sample) > 1:
             sample = sorted(sample, key=self._realization_key)
 
@@ -410,9 +433,18 @@ class JunoLocalSource(MFXarrayLocalSource):
                     {realization_concat_dim: ds_sample[realization_concat_dim]}
                 )
 
-        return self._normalize_sample_dataset(ds_sample, date)
+        ds_sample = self._normalize_sample_dataset(ds_sample, date)
+        logger.debug(
+            "%s sample load timing date=%s files=%s total=%.3fs",
+            SOURCE_CTX,
+            date,
+            len(sample),
+            time.perf_counter() - t0,
+        )
+        return ds_sample
 
     def _normalize_sample_dataset(self, ds_sample: xr.Dataset, date) -> xr.Dataset | None:
+        t0 = time.perf_counter()
         if "_has_var" not in ds_sample:
             raise ValueError(f"{date}: ds_sample has no _has_var flag")
 
@@ -461,6 +493,13 @@ class JunoLocalSource(MFXarrayLocalSource):
                 silent=True,
             )
 
+        logger.debug(
+            "%s sample normalize timing date=%s dims=%s total=%.3fs",
+            SOURCE_CTX,
+            date,
+            dict(ds_sample.sizes),
+            time.perf_counter() - t0,
+        )
         return ds_sample
 
     def _get_data_filenames(
