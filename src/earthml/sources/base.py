@@ -324,7 +324,13 @@ class BaseSource(ABC):
                     logger.info("Zarr chunks for %s: dims=%s chunks=%s", name, var.dims, chunks)
             encoding_zarr[name] = encoding
 
-        self.ds.to_zarr(store, encoding=encoding_zarr, mode='w', consolidated=consolidated)
+        self.ds.to_zarr(
+            store,
+            encoding=encoding_zarr,
+            mode='w',
+            consolidated=consolidated,
+            align_chunks=True,
+        )
 
 
     def _debug_check_per_var(self, ds, print_str: str):
