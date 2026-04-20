@@ -270,6 +270,7 @@ class SmaAt_UNet(EarthMLLightningModule):
             for name, param in self.named_parameters():
                 if torch.isnan(param).any() or torch.isinf(param).any():
                     raise ValueError(f"Model parameter '{name}' contains NaN/Inf values")
+        logger.debug("SmaAt_UNet forward input shape: %s", tuple(x.shape))
         x1 = self.inc(x)
         x1Att = self.cbam1(x1)
         x2 = self.down1(x1)
