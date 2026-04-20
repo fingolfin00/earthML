@@ -392,9 +392,17 @@ class MLBCExperiment:
         if tmp_path.exists():
             shutil.rmtree(tmp_path)
         if save_path.exists():
-            shutil.rmtree(save_path)
+            self._remove_dataset_store_path(save_path)
         source.save(tmp_path)
         tmp_path.replace(save_path)
+
+    def _remove_dataset_store_path(self, path: Path) -> None:
+        if path.is_symlink():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+        elif path.exists():
+            path.unlink()
 
     def _ensure_local_dataset_link(self, local_path: Path, target_path: Path) -> None:
         local_path.parent.mkdir(parents=True, exist_ok=True)
@@ -956,7 +964,7 @@ class MLBCExperiment:
                     self.config.force_rebuild_dataset,
                     save_path,
                 )
-                shutil.rmtree(save_path)
+                self._remove_dataset_store_path(save_path)
                 is_zarr_store = False
 
             if self._should_use_shared_cache(e.role) and e.save:
