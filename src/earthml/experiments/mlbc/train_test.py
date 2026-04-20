@@ -39,8 +39,8 @@ class MLBCExperiment:
         self,
         config: MLBCExperimentConfig,
     ):
-        self._configure_torch_env()
         self.config = config
+        self._configure_torch_env()
         self.logger = get_logger(__name__)
 
         self.per_channel_masked_mean = False if self.config.output_realizations else True # return (1, C, 1, 1) in _masked_metrics (see neural/normalize.py) # TODO not sure it's super general
