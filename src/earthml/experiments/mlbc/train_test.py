@@ -207,7 +207,11 @@ class MLBCExperiment:
 
 
     def _configure_torch_env(self):
-        os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+        cuda_alloc_conf = self.config.net.cuda_alloc_conf
+        if cuda_alloc_conf is None:
+            os.environ.pop("PYTORCH_CUDA_ALLOC_CONF", None)
+        else:
+            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = cuda_alloc_conf
 
     @staticmethod
     def _resolve_accelerator_and_device() -> tuple[str, torch.device]:
@@ -218,6 +222,8 @@ class MLBCExperiment:
         return "cpu", torch.device("cpu")
 
     def _resolve_trainer_precision(self) -> str:
+        if self.config.net.trainer_precision:
+            return self.config.net.trainer_precision
         # AMP helps on CUDA and is usually fine on MPS, but slows CPU training down.
         return "16-mixed" if self.accelerator in {"gpu", "mps"} else "32-true"
 

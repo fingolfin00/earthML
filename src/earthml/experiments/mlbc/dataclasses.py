@@ -59,6 +59,8 @@ class MLBCNeuralNet:
     loss_params             : dict[str, dict[str, Any]] = field(default_factory=lambda: {"net": {}, "loss": {}})
     # Other
     norm_strategy           : str   = "BatchNorm2d"
+    trainer_precision       : Optional[str] = None
+    cuda_alloc_conf         : Optional[str] = "expandable_segments:True"
     train_percent           : float = 0.9
     earlystopping_patience  : int   = 30
     accumulate_grad_batches : int   = 2
