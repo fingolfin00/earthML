@@ -5,7 +5,10 @@ import torchvision.models as models
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import lightning as L
 
+from ...logging import get_logger
 from .. import EarthMLLightningModule
+
+logger = get_logger(__name__)
 
 
 class ResNetUNetEncoder(EarthMLLightningModule):
@@ -14,9 +17,8 @@ class ResNetUNetEncoder(EarthMLLightningModule):
     Input: (B, 1, H, W)  -> Output: list of features at multiple scales
     Works for non-square H, W.
     """
-    def __init__(self, norm, extra_logger):
-        super().__init__(extra_logger=extra_logger)
-        self.extra_logger = extra_logger
+    def __init__(self, norm, extra_logger=None):
+        super().__init__()
 
         base_model = models.resnet18(norm_layer=norm)
 
@@ -54,8 +56,8 @@ class DecoderBlock(EarthMLLightningModule):
     """
     Decoder block: upsample (ConvTranspose2d) + conv layers.
     """
-    def __init__(self, in_channels, skip_channels, out_channels, extra_logger, norm=nn.BatchNorm2d):
-        super().__init__(extra_logger=extra_logger)
+    def __init__(self, in_channels, skip_channels, out_channels, extra_logger=None, norm=nn.BatchNorm2d):
+        super().__init__()
         # Exact doubling
         self.up = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2)
         self.conv = nn.Sequential(
@@ -86,16 +88,15 @@ class ResNetUNetDecoder(EarthMLLightningModule):
     UNet decoder with shape-preserving design.
     Always outputs same H×W as input.
     """
-    def __init__(self, norm, extra_logger):
-        super().__init__(extra_logger=extra_logger)
-        self.extra_logger = extra_logger
+    def __init__(self, norm, extra_logger=None):
+        super().__init__()
 
         # Mirror channels from ResNet18 encoder
-        self.decoder4 = DecoderBlock(512, 256, 256, self.extra_logger, norm)  # 1/32 -> 1/16
-        self.decoder3 = DecoderBlock(256, 128, 128, self.extra_logger, norm)  # 1/16 -> 1/8
-        self.decoder2 = DecoderBlock(128, 64, 64, self.extra_logger, norm)    # 1/8 -> 1/4
-        self.decoder1 = DecoderBlock(64, 64, 64, self.extra_logger, norm)     # 1/4 -> 1/2
-        self.decoder0 = DecoderBlock(64, 64, 32, self.extra_logger, norm)     # 1/2 -> 1/1
+        self.decoder4 = DecoderBlock(512, 256, 256, norm=norm)  # 1/32 -> 1/16
+        self.decoder3 = DecoderBlock(256, 128, 128, norm=norm)  # 1/16 -> 1/8
+        self.decoder2 = DecoderBlock(128, 64, 64, norm=norm)    # 1/8 -> 1/4
+        self.decoder1 = DecoderBlock(64, 64, 64, norm=norm)     # 1/4 -> 1/2
+        self.decoder0 = DecoderBlock(64, 64, 32, norm=norm)     # 1/2 -> 1/1
 
         self.final_upsample = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
         # Final prediction
@@ -113,9 +114,9 @@ class ResNetUNetDecoder(EarthMLLightningModule):
         d0 = self.final_upsample(d0)
         output = self.final_conv(d0)
         if output.shape[-2:] != input_size:
-            self.extra_logger.debug(f"Shape mismatch: got {output.shape[-2:]}, expected {input_size}")
+            logger.debug("Shape mismatch: got %s, expected %s", output.shape[-2:], input_size)
             output = self.match_spatial(output, input_size[-2], input_size[-1])
-            self.extra_logger.debug(f"New size: {output.shape[-2:]}")
+            logger.debug("New size after match_spatial: %s", output.shape[-2:])
         return output
 
 
@@ -123,15 +124,15 @@ class WeatherResNetUNet(EarthMLLightningModule):
     """
     UNet model for weather
     """
-    def __init__(self, loss, learning_rate, norm, supervised, extra_logger):
-        super().__init__(extra_logger=extra_logger)
+    def __init__(self, loss, learning_rate, norm, supervised, extra_logger=None):
+        super().__init__()
         self.loss = loss
         self.learning_rate = learning_rate
         self.supervised = supervised
 
         # Components
-        self.encoder = ResNetUNetEncoder(norm=norm, extra_logger=extra_logger)
-        self.decoder = ResNetUNetDecoder(norm=norm, extra_logger=extra_logger)
+        self.encoder = ResNetUNetEncoder(norm=norm)
+        self.decoder = ResNetUNetDecoder(norm=norm)
 
     def forward(self, x):
         """

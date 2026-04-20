@@ -5,12 +5,16 @@ from torch_geometric.data import Data
 from torch_geometric.nn import GCNConv
 
 import lightning as L
+from ...logging import get_logger
 from .. import EarthMLLightningModule
+
+logger = get_logger(__name__)
 
 
 class GCN(EarthMLLightningModule):
     def __init__(self):
         super(GCN, self).__init__()
+        logger.debug("Initializing GCN")
         self.conv1 = GCNConv(3, 4)  # First layer: 3 input features, 4 output features
         self.conv2 = GCNConv(4, 2)  # Second layer: 4 input features, 2 output features
 
