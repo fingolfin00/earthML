@@ -85,6 +85,7 @@ class MLBCExperimentLauncher:
     skip_train_test_plots       : bool = False  # whether to skip train/test diagnostic plot generation
     force_retrain               : bool = False  # whether to ignore previous training artifacts and restart from scratch
     force_rebuild_dataset       : DatasetRebuildOption = False  # False to reuse saved stores, else rebuild matching dataset stores
+    weights_filename            : str | Path | None = None  # optional checkpoint/weights file to use for testing instead of generated best weights
 
 
     def __post_init__(self):
@@ -203,6 +204,7 @@ class MLBCExperimentLauncher:
             "options.skip_train_test_plots": self.skip_train_test_plots,
             "options.force_retrain": self.force_retrain,
             "options.force_rebuild_dataset": self.force_rebuild_dataset,
+            "options.weights_filename": str(self.weights_filename) if self.weights_filename is not None else None,
             "options.torch_preprocess_fn": getattr(self.torch_preprocess_fn, "__name__", None) if self.torch_preprocess_fn else None,
             "net.name": self.net.name,
             "net.loss": self.net.loss,
@@ -741,12 +743,18 @@ class MLBCExperimentLauncher:
         run_name = dataset.experiment_run_name
         if mode not in ("prepare", "train", "test", "train_test", "train_test_on_train"):
             raise ValueError(f"Invalid run mode {mode}")
-        if mode in ("train", "train_test", "train_test_on_train"):
+        should_skip_train = self.weights_filename is not None
+        if should_skip_train and mode in ("train", "train_test", "train_test_on_train"):
+            exp.logger.info(
+                "Skipping training because explicit weights were provided: %s",
+                self.weights_filename,
+            )
+        if mode in ("train", "train_test", "train_test_on_train") and not should_skip_train:
             exp.train(force_retrain=self.force_retrain)
         if mode in ("test", "train_test", "train_test_on_train"):
-            exp.test()
+            exp.test(weights_filename=self.weights_filename)
         if mode == "train_test_on_train":
-            exp.test_on_train()
+            exp.test_on_train(weights_filename=self.weights_filename)
         return run_name, dataset, exp
 
 
