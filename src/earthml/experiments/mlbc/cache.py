@@ -13,6 +13,7 @@ from pathlib import Path
 import shutil
 import sqlite3
 import time
+from dateutil.relativedelta import relativedelta
 
 from ...base import DataSelection
 from ...logging import get_logger
@@ -92,6 +93,27 @@ class DatasetCacheManager:
             return str(value)
         if isinstance(value, datetime):
             return value.isoformat()
+        if isinstance(value, relativedelta):
+            # Serialize all explicit relativedelta components into a stable mapping.
+            return {
+                "__type__": "relativedelta",
+                "years": value.years,
+                "months": value.months,
+                "days": value.days,
+                "leapdays": value.leapdays,
+                "hours": value.hours,
+                "minutes": value.minutes,
+                "seconds": value.seconds,
+                "microseconds": value.microseconds,
+                "year": value.year,
+                "month": value.month,
+                "day": value.day,
+                "weekday": str(value.weekday) if value.weekday is not None else None,
+                "hour": value.hour,
+                "minute": value.minute,
+                "second": value.second,
+                "microsecond": value.microsecond,
+            }
         if isinstance(value, Mapping):
             return {
                 str(k): DatasetCacheManager._normalize_value(v)
