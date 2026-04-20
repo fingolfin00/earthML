@@ -44,6 +44,7 @@ if __name__ == "__main__":
     inpaint_nan                 = True # whether to inpaint nan values in input and target datasets (after loading, before torch dataset generation)
     anomaly                     = False # if True, predict anomaly (i.e. remove climatology from target variable), otherwise predict absolute values
     per_epoch_resplit           = False # if True, split test and validation randomly per epoch with a different seed, if False only one initial split for all epochs (fixed seed)
+    skip_train_test_plots       = False # whether to skip train/test diagnostic plots and Lightning curve exports
 
     if experiment_name == "juno-ecmwf_juno-ecmwf":
         start_train_date            = datetime(2019, 10, 11)
@@ -272,6 +273,7 @@ if __name__ == "__main__":
             torch_preprocess_fn=None,
             target_realization_avg=target_realization_avg,  # whether to average over target realizations when loading target data to torch
             realization_as_channel=realization_as_channel,  # whether to use realization a channel dimension
+            skip_train_test_plots=skip_train_test_plots,
         )
 
         launcher.run()
