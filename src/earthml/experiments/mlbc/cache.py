@@ -1,4 +1,5 @@
 from collections.abc import Mapping, Sequence
+from functools import partial
 from typing import Any
 
 from contextlib import contextmanager
@@ -44,6 +45,30 @@ class DatasetCacheEntry:
 
 
 class DatasetCacheManager:
+    @staticmethod
+    def _normalize_callable(value: Any) -> Any:
+        if isinstance(value, partial):
+            return {
+                "__type__": "partial",
+                "func": DatasetCacheManager._normalize_callable(value.func),
+                "args": [DatasetCacheManager._normalize_value(v) for v in value.args],
+                "keywords": DatasetCacheManager._normalize_value(value.keywords or {}),
+            }
+
+        module = getattr(value, "__module__", None)
+        qualname = getattr(value, "__qualname__", None) or getattr(value, "__name__", None)
+        if module or qualname:
+            return {
+                "__type__": "callable",
+                "module": module,
+                "qualname": qualname,
+            }
+
+        return {
+            "__type__": "callable",
+            "repr": repr(value),
+        }
+
     def __init__(self, root: str | Path):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -114,6 +139,8 @@ class DatasetCacheManager:
                 "second": value.second,
                 "microsecond": value.microsecond,
             }
+        if callable(value):
+            return DatasetCacheManager._normalize_callable(value)
         if isinstance(value, Mapping):
             return {
                 str(k): DatasetCacheManager._normalize_value(v)
