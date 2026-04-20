@@ -477,7 +477,7 @@ class MLBCExperimentLauncher:
         for tp in input_period:
             # Common provider args
             provider_args_common = dict(regrid_resolution=float(self.regrid_resolution)) if self.regrid_resolution is not None else {}
-            if self.experiment.name == MLBCExperimentName.CDS_CMCC__ORAS5:
+            if self.experiment.name in (MLBCExperimentName.CDS_CMCC__ORAS5, MLBCExperimentName.CDS_CMCC__ERA5):
                 provider_args = provider_args_common | dict(earthkit_cache_dir=self.earthkit_cache_dir)
             else:
                 provider_args = provider_args_common
