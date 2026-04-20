@@ -50,8 +50,10 @@ class MLBCExperiment:
         self.test_var_list = self._get_var_list(self.config.test_dataset)
         self.train_var_list = self._get_var_list(self.config.train_dataset)
 
-        # Setup paths and make dirs if necessary
-        self._path_setup()
+
+        # Setup paths, cache and make dirs if necessary
+        self.dataset_cache = None
+        self._path_and_cache_setup()
 
         # General torch and Lightning setup
         self.accelerator, self.device = self._resolve_accelerator_and_device()
@@ -84,7 +86,6 @@ class MLBCExperiment:
         self.target_clim_ts = None
 
         self.consolidated_zarr = False
-        self.dataset_cache = None
 
         # Init prediction experiment datasets and add to test and train lists
         self.test_preds_store = self.config.work_path / Path("test_preds").with_suffix(".zarr")
@@ -243,7 +244,7 @@ class MLBCExperiment:
             torch.backends.cudnn.deterministic = deterministic
             torch.backends.cudnn.benchmark = not deterministic
 
-    def _path_setup(self):
+    def _path_and_cache_setup(self):
         self.work_path = Path(self.config.work_path)
         if self.config.dataset_cache_enabled and self.config.dataset_cache_root is not None:
             self.dataset_cache = DatasetCacheManager(self.config.dataset_cache_root)
