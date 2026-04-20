@@ -4,7 +4,7 @@ from typing import Any
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, is_dataclass
 
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 
@@ -258,7 +258,7 @@ class DatasetCacheManager:
         return None
 
     def register(self, entry: DatasetCacheEntry) -> None:
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         manifest = {
             "cache_key": entry.cache_key,
             "schema_version": _CACHE_SCHEMA_VERSION,
@@ -307,7 +307,7 @@ class DatasetCacheManager:
         with self._connect() as conn:
             conn.execute(
                 "UPDATE dataset_cache SET last_used_at=? WHERE cache_key=?",
-                (datetime.now(datetime.timezone.utc).isoformat(), cache_key),
+                (datetime.now(timezone.utc).isoformat(), cache_key),
             )
 
     def remove_entry(self, cache_key: str, *, delete_store: bool = True) -> None:
