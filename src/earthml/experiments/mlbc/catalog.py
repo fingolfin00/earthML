@@ -19,13 +19,13 @@ def make_var(
 
         # MedFS
         sst_medfs_fc=Variable(longname="sea_surface_temperature", name="votemper", levm=0, leadtime=leadtime_input),
-        sst_medfs_an=Variable(longname="sea_surface_temperature", name="votemper", levm=0, leadtime=leadtime_input),
+        sst_medfs_an=Variable(longname="sea_surface_temperature", name="votemper", levm=0, leadtime=leadtime_target),
 
         sss_medfs_fc=Variable(longname="sea surface salinity", name="vosaline", levm=0, leadtime=leadtime_input),
-        sss_medfs_an=Variable(longname="sea surface salinity", name="vosaline", levm=0, leadtime=leadtime_input),
+        sss_medfs_an=Variable(longname="sea surface salinity", name="vosaline", levm=0, leadtime=leadtime_target),
 
         ssh_medfs_fc=Variable(longname="sea_surface_height_above_geoid", name="sossheig", leadtime=leadtime_input),
-        ssh_medfs_an=Variable(longname="sea_surface_height_above_geoid", name="sossheig", leadtime=leadtime_input), # only surface variable
+        ssh_medfs_an=Variable(longname="sea_surface_height_above_geoid", name="sossheig", leadtime=leadtime_target), # only surface variable
 
         # Atmo weather
         # local forecast
