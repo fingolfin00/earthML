@@ -82,6 +82,7 @@ class MLBCExperimentLauncher:
     torch_preprocess_fn         : Callable | None = None
     target_realization_avg      : bool = False  # whether to average over target realizations when loading target data to torch
     realization_as_channel      : bool = False  # whether to use realization a channel dimension
+    skip_train_test_plots       : bool = False  # whether to skip train/test diagnostic plot generation
     force_retrain               : bool = False  # whether to ignore previous training artifacts and restart from scratch
     force_rebuild_dataset       : DatasetRebuildOption = False  # False to reuse saved stores, else rebuild matching dataset stores
 
@@ -199,6 +200,7 @@ class MLBCExperimentLauncher:
             "options.target_realization_avg": self.target_realization_avg,
             "options.realization_as_channel": self.realization_as_channel,
             "options.output_realizations": self.output_realizations,
+            "options.skip_train_test_plots": self.skip_train_test_plots,
             "options.force_retrain": self.force_retrain,
             "options.force_rebuild_dataset": self.force_rebuild_dataset,
             "options.torch_preprocess_fn": getattr(self.torch_preprocess_fn, "__name__", None) if self.torch_preprocess_fn else None,
@@ -723,6 +725,7 @@ class MLBCExperimentLauncher:
             target_realization_avg=self.target_realization_avg,
             realization_as_channel=self.realization_as_channel,
             output_realizations=self.output_realizations,
+            skip_train_test_plots=self.skip_train_test_plots,
             force_rebuild_dataset=self.force_rebuild_dataset,
         )
 

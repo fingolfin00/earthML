@@ -86,4 +86,5 @@ class MLBCExperimentConfig:
     realization_as_channel      : Optional[bool]                    = False             # whether to use realization a channel dimension
     output_realizations         : Optional[Literal[
                                     "deterministic", "ensemble"]]   = "deterministic"   # deterministic -> output R = 1, ensemble -> output R = input R
+    skip_train_test_plots       : Optional[bool]                    = False             # whether to skip train/test diagnostic plot generation
     force_rebuild_dataset       : Optional[bool | DatasetRebuildSelector] = False       # False to reuse saved stores, else rebuild matching dataset stores

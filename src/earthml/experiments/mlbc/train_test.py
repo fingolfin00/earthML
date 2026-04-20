@@ -586,6 +586,10 @@ class MLBCExperiment:
         - save artifacts under a train/test folder in the run work path
         - remain a no-op until plotting behavior is implemented
         """
+        if self._should_skip_train_test_plots():
+            self.logger.info("Skip dataset-stage plotting because skip_train_test_plots=True")
+            return
+
         if not ENABLE_STAGE_PLOTTING:
             self.logger.info("Skip dataset-stage plotting because ENABLE_STAGE_PLOTTING=False")
             return
@@ -619,6 +623,10 @@ class MLBCExperiment:
         stage: str,
         mask_ds: xr.Dataset | None = None,
     ) -> None:
+        if self._should_skip_train_test_plots():
+            self.logger.info("Skip prediction-stage plotting because skip_train_test_plots=True")
+            return
+
         if not ENABLE_STAGE_PLOTTING:
             self.logger.info("Skip prediction-stage plotting because ENABLE_STAGE_PLOTTING=False")
             return
@@ -643,6 +651,9 @@ class MLBCExperiment:
             residual_mean_label="pred-target mean",
             lag_steps=lag_steps,
         )
+
+    def _should_skip_train_test_plots(self) -> bool:
+        return bool(getattr(self.config, "skip_train_test_plots", False))
 
     def _resolve_plot_mask(
         self,
@@ -1202,11 +1213,14 @@ class MLBCExperiment:
             datamodule=self.train_datamodule,
             ckpt_path=ckpt_path,
         )
-        export_lightning_curves(
-            logger=self.logger,
-            log_dir=self.tl_logger.log_dir,
-            plots_folder_path=self.plots_folder_path,
-        )
+        if self._should_skip_train_test_plots():
+            self.logger.info("Skip Lightning curve export because skip_train_test_plots=True")
+        else:
+            export_lightning_curves(
+                logger=self.logger,
+                log_dir=self.tl_logger.log_dir,
+                plots_folder_path=self.plots_folder_path,
+            )
 
     def _test(
         self,
@@ -1261,11 +1275,14 @@ class MLBCExperiment:
 
         # Test
         self._init_test_trainer().test(self.model, dataloaders=dataloader)
-        export_lightning_curves(
-            logger=self.logger,
-            log_dir=self.tl_logger.log_dir,
-            plots_folder_path=self.plots_folder_path,
-        )
+        if self._should_skip_train_test_plots():
+            self.logger.info("Skip Lightning curve export because skip_train_test_plots=True")
+        else:
+            export_lightning_curves(
+                logger=self.logger,
+                log_dir=self.tl_logger.log_dir,
+                plots_folder_path=self.plots_folder_path,
+            )
         # print(f"Available attributes in model: {dir(self.model)}")
 
         # Rescale preds with target normalization
