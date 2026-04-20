@@ -18,6 +18,7 @@ if __name__ == "__main__":
     force_retrain               = False
     force_rebuild_dataset       = False # False, "all", "train", "test", "input", "target", "train_input", "train_target", "test_input", "test_target"
     log_level                   = "info" # debug, info
+    weights_filename            = None # e.g. "/abs/path/to/custom_weights.ckpt"; if set, testing uses this file and training is skipped
     juno_file_open_workers      = 1 # 1: good for grib (atmo weather), 8: good for netcdf (ocean weather)
 
     experiment_type             = "weather" # seasonal, weather
@@ -258,6 +259,7 @@ if __name__ == "__main__":
             only_longest_train_period=only_longest_train_period,
             force_retrain=force_retrain,
             force_rebuild_dataset=force_rebuild_dataset,
+            weights_filename=weights_filename,
             # Providers args
             earthkit_cache_dir=earthkit_cache_dir,
             regrid_resolution=regrid_resolution,
