@@ -474,25 +474,29 @@ class MLBCExperimentLauncher:
                 input_provider_list = len(input_period) * input_provider_list
 
         # Provider args generation
+        # Input
         for tp in input_period:
             # Common provider args
             provider_args_common = dict(regrid_resolution=float(self.regrid_resolution)) if self.regrid_resolution is not None else {}
             if self.experiment.name in (MLBCExperimentName.CDS_CMCC__ORAS5, MLBCExperimentName.CDS_CMCC__ERA5):
-                provider_args = provider_args_common | dict(earthkit_cache_dir=self.earthkit_cache_dir)
+                input_provider_args = provider_args_common | dict(earthkit_cache_dir=self.earthkit_cache_dir)
             else:
-                provider_args = provider_args_common
-            input_provider_args_list.append(provider_args)
+                input_provider_args = provider_args_common
+            input_provider_args_list.append(input_provider_args)
 
+        # Target
         for tp in target_period:
             start, end = tp.start, tp.end
             # Common provider args
             provider_args_common = dict(regrid_resolution=float(self.regrid_resolution)) if self.regrid_resolution is not None else {}
+            if self.experiment.name in (MLBCExperimentName.CDS_CMCC__ORAS5, MLBCExperimentName.CDS_CMCC__ERA5):
+                target_provider_args = provider_args_common | dict(earthkit_cache_dir=self.earthkit_cache_dir)
+            else:
+                target_provider_args = provider_args_common
 
             # Target provider args
-
             # ORAS5 args
             target_provider_args_oras5_common = dict(
-                earthkit_cache_dir=self.earthkit_cache_dir,
                 # vertical_resolution="single_level",
                 convert_unit={"sst": (celsius_to_kelvin, "K")} if var_target == "sst" else None,
             )
@@ -508,15 +512,15 @@ class MLBCExperimentLauncher:
                 # Check if target period in ORAS5 consolidated or operational datasets, or both
                 if start <= self.cutoff_oras5_consolidated < end:
                     target_provider_args = [
-                        provider_args_common | target_provider_args_oras5_consolidated,
-                        provider_args_common | target_provider_args_oras5_operational,
+                        target_provider_args | target_provider_args_oras5_consolidated,
+                        target_provider_args | target_provider_args_oras5_operational,
                     ]
                 elif end <= self.cutoff_oras5_consolidated:
-                    target_provider_args = provider_args_common | target_provider_args_oras5_consolidated
+                    target_provider_args = target_provider_args | target_provider_args_oras5_consolidated
                 else:
-                    target_provider_args = provider_args_common | target_provider_args_oras5_operational
+                    target_provider_args = target_provider_args | target_provider_args_oras5_operational
             else:
-                target_provider_args = provider_args_common
+                target_provider_args = target_provider_args
 
             target_provider_args_list.append(target_provider_args)
 
