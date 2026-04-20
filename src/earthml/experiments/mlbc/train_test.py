@@ -20,6 +20,7 @@ from lightning.pytorch.loggers import TensorBoardLogger
 
 from .dataclasses import MLBCExperimentDataset, MLBCExperimentConfig
 from .registry import MLBCExperimentDatasetRole, MLBCExperimentMode
+from .cache import DatasetCacheManager
 
 from ...sources import build_source, BaseSource, DataSource, XarrayLocalSourceConfig
 from ...misc import Table
@@ -83,6 +84,7 @@ class MLBCExperiment:
         self.target_clim_ts = None
 
         self.consolidated_zarr = False
+        self.dataset_cache = None
 
         # Init prediction experiment datasets and add to test and train lists
         self.test_preds_store = self.config.work_path / Path("test_preds").with_suffix(".zarr")
@@ -243,6 +245,8 @@ class MLBCExperiment:
 
     def _path_setup(self):
         self.work_path = Path(self.config.work_path)
+        if self.config.dataset_cache_enabled and self.config.dataset_cache_root is not None:
+            self.dataset_cache = DatasetCacheManager(self.config.dataset_cache_root)
         # Diagnostic plots location
         self.plots_folder_path = self.work_path.joinpath("./plots")
         self.plots_folder_path.mkdir(parents=True, exist_ok=True)
@@ -341,6 +345,150 @@ class MLBCExperiment:
             },
         )
         return source_configs, src
+
+    def _build_source_stack(
+        self,
+        datasource: list[DataSource],
+        source_configs: list,
+        source_type: str,
+        role: str,
+    ) -> BaseSource:
+        if len(datasource) != len(source_configs):
+            raise ValueError(
+                f"datasource and source_configs length mismatch for role={role}: "
+                f"{len(datasource)} != {len(source_configs)}"
+            )
+
+        sources_list: list[BaseSource] = []
+        for i, (d, sc) in enumerate(zip(datasource, source_configs)):
+            sources_list.append(
+                build_source(
+                    d.source,
+                    params=dict(
+                        datasource=d,
+                        config=sc,
+                    ),
+                )
+            )
+            log_renderable(
+                Table({f"Source '{d.source}' {source_type} {role} [{i}] params": asdict(sc)}, twocols=True).table,
+                logger=self.logger,
+            )
+        return sum(sources_list)
+
+    def _collect_source_missed(self, source: BaseSource) -> set[pd.Timestamp]:
+        missed = set()
+        ds = source.load()
+        source_missed = getattr(source.elements, "missed", None)
+        if source_missed:
+            missed |= set(source_missed)
+        if "missed_time" in ds:
+            missed |= set(pd.to_datetime(ds["missed_time"].values).to_pydatetime())
+        return missed
+
+    def _save_source_atomically(self, source: BaseSource, save_path: Path) -> None:
+        tmp_path = save_path.with_name(f"{save_path.name}.tmp-{os.getpid()}")
+        if tmp_path.exists():
+            shutil.rmtree(tmp_path)
+        if save_path.exists():
+            shutil.rmtree(save_path)
+        source.save(tmp_path)
+        tmp_path.replace(save_path)
+
+    def _ensure_local_dataset_link(self, local_path: Path, target_path: Path) -> None:
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path = target_path.resolve()
+
+        if local_path.is_symlink():
+            try:
+                if local_path.resolve() == target_path:
+                    return
+            except FileNotFoundError:
+                pass
+            local_path.unlink()
+        elif local_path.exists():
+            if local_path.is_dir():
+                shutil.rmtree(local_path)
+            else:
+                local_path.unlink()
+
+        local_path.symlink_to(target_path, target_is_directory=True)
+
+    def _open_materialized_source(
+        self,
+        save_path: Path,
+        datasource: list[DataSource],
+        source_type: str,
+        role: str,
+    ) -> BaseSource:
+        xr_loc_source_configs, source = self._create_xarray_local_source(save_path, datasource)
+        log_renderable(
+            Table({f"Source '{source.datasource.source}' {source_type} {role} params": asdict(xr_loc_source_configs)}, twocols=True).table,
+            logger=self.logger,
+        )
+        return source
+
+    def _should_use_shared_cache(self, role: str) -> bool:
+        return bool(self.dataset_cache is not None and role != MLBCExperimentDatasetRole.PREDICTION)
+
+    def _load_shared_cached_source(
+        self,
+        *,
+        datasource: list[DataSource],
+        source_configs: list,
+        source_type: str,
+        role: str,
+    ) -> tuple[BaseSource, set[pd.Timestamp]]:
+        assert self.dataset_cache is not None
+        cache_entry = self.dataset_cache.prepare_entry(
+            role=str(role),
+            datasource_list=datasource,
+            source_configs=source_configs,
+        )
+        cached_entry = self.dataset_cache.lookup(cache_entry)
+        if self._should_rebuild_dataset(source_type, role):
+            self.logger.info(
+                "force_rebuild_dataset=%r: removing shared cached dataset store %s",
+                self.config.force_rebuild_dataset,
+                cache_entry.store_path,
+            )
+            self.dataset_cache.remove_entry(cache_entry.cache_key)
+            if cache_entry.store_path.exists():
+                shutil.rmtree(cache_entry.store_path)
+            if cache_entry.manifest_path.exists():
+                cache_entry.manifest_path.unlink()
+            cached_entry = None
+
+        if cached_entry is not None:
+            self.logger.info("Reusing shared dataset cache %s for %s %s", cached_entry.store_path, source_type, role)
+            self._ensure_local_dataset_link(
+                self.config.work_path.joinpath(Path(f"{source_type}_{role}")).with_suffix(".zarr"),
+                cached_entry.store_path,
+            )
+            source = self._open_materialized_source(cached_entry.store_path, datasource, source_type, role)
+            return source, self._collect_source_missed(source)
+
+        with self.dataset_cache.build_lock(cache_entry.cache_key):
+            cached_entry = self.dataset_cache.lookup(cache_entry)
+            if cached_entry is not None:
+                self.logger.info("Reusing shared dataset cache %s for %s %s after lock wait", cached_entry.store_path, source_type, role)
+                self._ensure_local_dataset_link(
+                    self.config.work_path.joinpath(Path(f"{source_type}_{role}")).with_suffix(".zarr"),
+                    cached_entry.store_path,
+                )
+                source = self._open_materialized_source(cached_entry.store_path, datasource, source_type, role)
+                return source, self._collect_source_missed(source)
+
+            source = self._build_source_stack(datasource, source_configs, source_type, role)
+            missed = self._collect_source_missed(source)
+            self._save_source_atomically(source, cache_entry.store_path)
+            self.dataset_cache.register(cache_entry)
+            self._ensure_local_dataset_link(
+                self.config.work_path.joinpath(Path(f"{source_type}_{role}")).with_suffix(".zarr"),
+                cache_entry.store_path,
+            )
+            source = self._open_materialized_source(cache_entry.store_path, datasource, source_type, role)
+            return source, missed
 
     def _generate_xarray_ds(
         self,
@@ -810,54 +958,28 @@ class MLBCExperiment:
                 shutil.rmtree(save_path)
                 is_zarr_store = False
 
-            if is_zarr_store:
-                xr_loc_source_configs, sources[e.role] = self._create_xarray_local_source(save_path, datasource)
-                log_renderable(
-                    Table({f"Source '{sources[e.role].datasource.source}' {source_type} {e.role} params": asdict(xr_loc_source_configs)}, twocols=True).table,
-                    logger=self.logger,
+            if self._should_use_shared_cache(e.role) and e.save:
+                sources[e.role], role_missed = self._load_shared_cached_source(
+                    datasource=datasource,
+                    source_configs=source_configs,
+                    source_type=source_type,
+                    role=e.role,
                 )
+                missed |= role_missed
+            elif is_zarr_store:
+                sources[e.role] = self._open_materialized_source(save_path, datasource, source_type, e.role)
             else:
-                if len(datasource) != len(source_configs):
-                    raise ValueError(
-                        f"datasource and source_configs length mismatch for role={e.role}: "
-                        f"{len(datasource)} != {len(source_configs)}"
-                    )
-
-                sources_list: list[BaseSource] = []
-                for i, (d, sc) in enumerate(zip(datasource, source_configs)):
-                    sources_list.append(
-                        build_source(
-                            d.source,
-                            params=dict(
-                                datasource=d,
-                                config=sc,
-                            ),
-                        )
-                    )
-                    log_renderable(
-                        Table({f"Source '{d.source}' {source_type} {e.role} [{i}] params": asdict(sc)}, twocols=True).table,
-                        logger=self.logger,
-                    )
-                source: BaseSource = sum(sources_list)
+                source = self._build_source_stack(datasource, source_configs, source_type, e.role)
 
                 # Union of missing samples
                 if e.role != MLBCExperimentDatasetRole.PREDICTION: # preds exists as folder but cannot be materialized
-                    ds = source.load() # this is the first load!
-                    source_missed = getattr(source.elements, "missed", None)
-                    if source_missed:
-                        missed |= set(source_missed)
-                        if "missed_time" in ds:
-                            missed |= set(pd.to_datetime(ds["missed_time"].values).to_pydatetime())
+                    missed |= self._collect_source_missed(source)
 
                 # Save datasets if requested
                 if e.save:
-                    source.save(save_path) # TODO examine, save may be not atomic
+                    self._save_source_atomically(source, save_path)
                     # Regenerate as xarray-local source type
-                    xr_loc_source_configs, sources[e.role] = self._create_xarray_local_source(save_path, datasource)
-                    log_renderable(
-                        Table({f"Source '{sources[e.role].datasource.source}' {source_type} {e.role} params": asdict(xr_loc_source_configs)}, twocols=True).table,
-                        logger=self.logger,
-                    )
+                    sources[e.role] = self._open_materialized_source(save_path, datasource, source_type, e.role)
                 else:
                     sources[e.role] = source
 

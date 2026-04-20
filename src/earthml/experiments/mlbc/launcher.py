@@ -86,6 +86,8 @@ class MLBCExperimentLauncher:
     force_retrain               : bool = False  # whether to ignore previous training artifacts and restart from scratch
     force_rebuild_dataset       : DatasetRebuildOption = False  # False to reuse saved stores, else rebuild matching dataset stores
     weights_filename            : str | Path | None = None  # optional checkpoint/weights file to use for testing instead of generated best weights
+    dataset_cache_enabled       : bool = False  # whether to reuse shared source-role datasets across experiments
+    dataset_cache_root          : str | Path | None = None  # optional override for the shared dataset cache root
 
 
     def __post_init__(self):
@@ -204,6 +206,8 @@ class MLBCExperimentLauncher:
             "options.skip_train_test_plots": self.skip_train_test_plots,
             "options.force_retrain": self.force_retrain,
             "options.force_rebuild_dataset": self.force_rebuild_dataset,
+            "options.dataset_cache_enabled": self.dataset_cache_enabled,
+            "options.dataset_cache_root": str(self.dataset_cache_root) if self.dataset_cache_root is not None else None,
             "options.weights_filename": str(self.weights_filename) if self.weights_filename is not None else None,
             "options.torch_preprocess_fn": getattr(self.torch_preprocess_fn, "__name__", None) if self.torch_preprocess_fn else None,
             "net.name": self.net.name,
@@ -729,6 +733,12 @@ class MLBCExperimentLauncher:
             output_realizations=self.output_realizations,
             skip_train_test_plots=self.skip_train_test_plots,
             force_rebuild_dataset=self.force_rebuild_dataset,
+            dataset_cache_enabled=self.dataset_cache_enabled,
+            dataset_cache_root=(
+                Path(self.dataset_cache_root)
+                if self.dataset_cache_root is not None
+                else Path(self.experiment.root_path) / "dataset_cache"
+            ),
         )
 
         return dataset.experiment_run_name, dataset, exp_cfg

@@ -88,3 +88,5 @@ class MLBCExperimentConfig:
                                     "deterministic", "ensemble"]]   = "deterministic"   # deterministic -> output R = 1, ensemble -> output R = input R
     skip_train_test_plots       : Optional[bool]                    = False             # whether to skip train/test diagnostic plot generation
     force_rebuild_dataset       : Optional[bool | DatasetRebuildSelector] = False       # False to reuse saved stores, else rebuild matching dataset stores
+    dataset_cache_enabled       : Optional[bool]                    = False             # whether to reuse shared cached source-role datasets across experiments
+    dataset_cache_root          : Optional[str | Path]              = None              # root folder for shared dataset cache metadata and stores
