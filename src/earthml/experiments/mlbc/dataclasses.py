@@ -89,6 +89,7 @@ class MLBCExperimentConfig:
     skip_train_test_plots       : Optional[bool]                    = False             # whether to skip train/test diagnostic plot generation
     external_mask_path          : Optional[str | Path]              = None              # optional external mask file/store to intersect with common input/target validity
     external_mask_variable      : Optional[str]                     = None              # optional variable selection within external mask dataset
+    trim_invalid_border_lines   : Optional[bool]                    = False             # whether to crop fully invalid outer lat/lon rows or columns before torch dataset creation
     force_rebuild_dataset       : Optional[bool | DatasetRebuildSelector] = False       # False to reuse saved stores, else rebuild matching dataset stores
     dataset_cache_enabled       : Optional[bool]                    = False             # whether to reuse shared cached source-role datasets across experiments
     dataset_cache_root          : Optional[str | Path]              = None              # root folder for shared dataset cache metadata and stores

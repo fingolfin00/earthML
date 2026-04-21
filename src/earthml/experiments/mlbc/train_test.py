@@ -172,6 +172,21 @@ class MLBCExperiment:
 
         self.train_mask_ds = self._create_and_save_common_mask(self.train_input_ds, self.train_target_ds, MLBCExperimentMode.TRAIN)
         self.test_mask_ds = self._create_and_save_common_mask(self.test_input_ds, self.test_target_ds, MLBCExperimentMode.TEST)
+        (
+            self.train_input_ds,
+            self.train_target_ds,
+            self.train_mask_ds,
+            self.test_input_ds,
+            self.test_target_ds,
+            self.test_mask_ds,
+        ) = self._trim_invalid_border_lines_if_enabled(
+            train_input_ds=self.train_input_ds,
+            train_target_ds=self.train_target_ds,
+            train_mask_ds=self.train_mask_ds,
+            test_input_ds=self.test_input_ds,
+            test_target_ds=self.test_target_ds,
+            test_mask_ds=self.test_mask_ds,
+        )
 
         # Build merged loss_params
         base_loss_params = dict(self.config.net.loss_params)  # shallow copy
@@ -931,19 +946,152 @@ class MLBCExperiment:
             }
         )
 
+        self._save_mask_dataset(mask_ds, data_type=data_type)
+
+        return mask_ds
+
+    def _save_mask_dataset(
+        self,
+        mask_ds: xr.Dataset,
+        *,
+        data_type: str,
+    ) -> None:
         compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
         encoding_zarr = {"common_mask": {"compressors": compressor}}
 
-        if data_type == "train":
+        if data_type == MLBCExperimentMode.TRAIN:
             self.logger.info("Save mask to %s", self.train_mask_store)
             mask_ds.to_zarr(self.train_mask_store, encoding=encoding_zarr, mode="w", consolidated=self.consolidated_zarr)
-        elif data_type == "test":
+        elif data_type == MLBCExperimentMode.TEST:
             self.logger.info("Save mask to %s", self.test_mask_store)
             mask_ds.to_zarr(self.test_mask_store, encoding=encoding_zarr, mode="w", consolidated=self.consolidated_zarr)
         else:
             raise ValueError(f"Unknown data_type {data_type} for mask saving")
 
-        return mask_ds
+    def _trim_invalid_border_lines_if_enabled(
+        self,
+        *,
+        train_input_ds: xr.Dataset,
+        train_target_ds: xr.Dataset,
+        train_mask_ds: xr.Dataset,
+        test_input_ds: xr.Dataset,
+        test_target_ds: xr.Dataset,
+        test_mask_ds: xr.Dataset,
+    ) -> tuple[xr.Dataset, xr.Dataset, xr.Dataset, xr.Dataset, xr.Dataset, xr.Dataset]:
+        if not bool(getattr(self.config, "trim_invalid_border_lines", False)):
+            return train_input_ds, train_target_ds, train_mask_ds, test_input_ds, test_target_ds, test_mask_ds
+
+        trim_slices = self._compute_invalid_border_trim_slices(train_mask_ds, test_mask_ds)
+        if trim_slices is None:
+            return train_input_ds, train_target_ds, train_mask_ds, test_input_ds, test_target_ds, test_mask_ds
+
+        lat_slice, lon_slice = trim_slices
+        lat_dim = train_mask_ds["common_mask"].earthml.guessed_dims.latitude
+        lon_dim = train_mask_ds["common_mask"].earthml.guessed_dims.longitude
+        lat_before = int(train_mask_ds.sizes[lat_dim])
+        lon_before = int(train_mask_ds.sizes[lon_dim])
+        lat_after = lat_slice.stop - lat_slice.start
+        lon_after = lon_slice.stop - lon_slice.start
+
+        self.logger.info(
+            "Trim invalid outer border lines before torch dataset creation: "
+            "latitude %s:%s (%s -> %s), longitude %s:%s (%s -> %s)",
+            lat_slice.start,
+            lat_slice.stop,
+            lat_before,
+            lat_after,
+            lon_slice.start,
+            lon_slice.stop,
+            lon_before,
+            lon_after,
+        )
+
+        train_input_ds = self._apply_spatial_trim(train_input_ds, lat_slice=lat_slice, lon_slice=lon_slice)
+        train_target_ds = self._apply_spatial_trim(train_target_ds, lat_slice=lat_slice, lon_slice=lon_slice)
+        train_mask_ds = self._apply_spatial_trim(train_mask_ds, lat_slice=lat_slice, lon_slice=lon_slice)
+        test_input_ds = self._apply_spatial_trim(test_input_ds, lat_slice=lat_slice, lon_slice=lon_slice)
+        test_target_ds = self._apply_spatial_trim(test_target_ds, lat_slice=lat_slice, lon_slice=lon_slice)
+        test_mask_ds = self._apply_spatial_trim(test_mask_ds, lat_slice=lat_slice, lon_slice=lon_slice)
+
+        self._save_mask_dataset(train_mask_ds, data_type=MLBCExperimentMode.TRAIN)
+        self._save_mask_dataset(test_mask_ds, data_type=MLBCExperimentMode.TEST)
+
+        if self.latitudes is not None and self.latitudes.ndim == 1 and self.latitudes.numel() == lat_before:
+            self.latitudes = self.latitudes[lat_slice].clone()
+
+        return train_input_ds, train_target_ds, train_mask_ds, test_input_ds, test_target_ds, test_mask_ds
+
+    @staticmethod
+    def _apply_spatial_trim(
+        ds: xr.Dataset,
+        *,
+        lat_slice: slice,
+        lon_slice: slice,
+    ) -> xr.Dataset:
+        lat_dim = ds.earthml.guessed_dims.latitude
+        lon_dim = ds.earthml.guessed_dims.longitude
+        indexers = {}
+        if lat_dim is not None and lat_dim in ds.dims:
+            indexers[lat_dim] = lat_slice
+        if lon_dim is not None and lon_dim in ds.dims:
+            indexers[lon_dim] = lon_slice
+        return ds.isel(indexers) if indexers else ds
+
+    def _compute_invalid_border_trim_slices(
+        self,
+        *mask_datasets: xr.Dataset,
+    ) -> tuple[slice, slice] | None:
+        mask_datasets = tuple(mask_ds for mask_ds in mask_datasets if mask_ds is not None)
+        if not mask_datasets:
+            return None
+
+        lat_dim = mask_datasets[0]["common_mask"].earthml.guessed_dims.latitude
+        lon_dim = mask_datasets[0]["common_mask"].earthml.guessed_dims.longitude
+        if lat_dim is None or lon_dim is None:
+            self.logger.warning("Skip invalid border trimming: common mask is missing latitude/longitude dimensions.")
+            return None
+
+        combined_spatial_valid = None
+        for mask_ds in mask_datasets:
+            if "common_mask" not in mask_ds:
+                self.logger.warning("Skip invalid border trimming: mask dataset does not contain 'common_mask'.")
+                return None
+
+            mask_da = mask_ds["common_mask"].astype(bool)
+            if lat_dim not in mask_da.dims or lon_dim not in mask_da.dims:
+                self.logger.warning(
+                    "Skip invalid border trimming: mask dimensions %s do not include expected spatial dims %s/%s.",
+                    mask_da.dims,
+                    lat_dim,
+                    lon_dim,
+                )
+                return None
+
+            reduce_dims = [dim for dim in mask_da.dims if dim not in {lat_dim, lon_dim}]
+            spatial_valid = mask_da.any(dim=reduce_dims) if reduce_dims else mask_da
+            combined_spatial_valid = (
+                spatial_valid
+                if combined_spatial_valid is None
+                else (combined_spatial_valid & spatial_valid)
+            )
+
+        row_has_valid = np.asarray(combined_spatial_valid.any(dim=lon_dim).values, dtype=bool)
+        col_has_valid = np.asarray(combined_spatial_valid.any(dim=lat_dim).values, dtype=bool)
+        if not row_has_valid.any() or not col_has_valid.any():
+            self.logger.warning("Skip invalid border trimming: common mask has no valid spatial support after reduction.")
+            return None
+
+        lat_start = int(np.argmax(row_has_valid))
+        lat_stop = int(len(row_has_valid) - np.argmax(row_has_valid[::-1]))
+        lon_start = int(np.argmax(col_has_valid))
+        lon_stop = int(len(col_has_valid) - np.argmax(col_has_valid[::-1]))
+
+        lat_size = int(combined_spatial_valid.sizes[lat_dim])
+        lon_size = int(combined_spatial_valid.sizes[lon_dim])
+        if lat_start == 0 and lat_stop == lat_size and lon_start == 0 and lon_stop == lon_size:
+            return None
+
+        return slice(lat_start, lat_stop), slice(lon_start, lon_stop)
 
     @staticmethod
     def _apply_common_mask_to_dataset(
