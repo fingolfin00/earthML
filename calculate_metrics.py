@@ -4626,6 +4626,29 @@ def _load_external_mask_dataset() -> xr.Dataset | None:
     return mask_ds
 
 
+def _apply_external_mask_to_runs(
+    runs: dict[str, xr.Dataset],
+    external_mask_data: xr.Dataset | None,
+) -> dict[str, xr.Dataset]:
+    if external_mask_data is None:
+        return runs
+
+    mask_ds = external_mask_data.earthml.normalize_dims_and_coords()
+    masked_runs: dict[str, xr.Dataset] = {}
+
+    for run_name, ds in runs.items():
+        if not isinstance(ds, xr.Dataset):
+            masked_runs[run_name] = ds
+            continue
+
+        normalized_ds = ds.earthml.normalize_dims_and_coords()
+        aligned_ds, aligned_mask = xr.align(normalized_ds, mask_ds, join="inner")
+        valid = aligned_mask.to_array().all("variable")
+        masked_runs[run_name] = aligned_ds.where(valid)
+
+    return masked_runs
+
+
 def main() -> None:
     dask_workers, dask_worker_reason = _guess_dask_workers_for_host()
     CONSOLE.print(f"Dask worker guess: {dask_workers if dask_workers is not None else 'auto'} ({dask_worker_reason})")
@@ -4681,6 +4704,7 @@ def main() -> None:
         metric_names=GLOBAL_KNOBS["metric_names"],
         show_progress=True,
     )
+    raw_field_runs = _apply_external_mask_to_runs(runs, external_mask_data)
 
     reference_model = MODEL_KNOBS["reference_model"]
     available_models = list(runs)
@@ -4727,7 +4751,7 @@ def main() -> None:
         if GLOBAL_KNOBS["enable_field_timeseries"]:
             ts_task = progress.add_task("Generating field timeseries", total=len(field_timeseries_variables))
             field_timeseries_paths = save_field_timeseries_plots(
-                runs=runs,
+                runs=raw_field_runs,
                 metrics=metrics,
                 variables=field_timeseries_variables,
                 plot_folder=PLOT_FOLDER,
@@ -4747,7 +4771,7 @@ def main() -> None:
         if GLOBAL_KNOBS["enable_maps"]:
             map_task = progress.add_task("Generating maps", total=len(map_variables))
             field_map_paths = save_field_and_metric_map_plots(
-                runs=runs,
+                runs=raw_field_runs,
                 metrics=metrics,
                 variables=map_variables,
                 plot_folder=PLOT_FOLDER,
