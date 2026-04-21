@@ -89,6 +89,29 @@ def _canonicalize_dataset_variable_names(ds: xr.Dataset, dataset_name: str | Non
     return ds
 
 
+def _drop_auxiliary_merge_metadata(ds: xr.Dataset, dataset_name: str | None = None) -> xr.Dataset:
+    """
+    Drop non-essential source metadata that can vary across otherwise mergeable runs.
+    """
+    drop_names = [name for name in ("reftime",) if name in ds.variables]
+    if not drop_names:
+        return ds
+
+    label = f" for {dataset_name!r}" if dataset_name else ""
+    logger.info("Dropping auxiliary merge metadata%s: %s", label, drop_names)
+    return ds.drop_vars(drop_names, errors="ignore")
+
+
+def _drop_auxiliary_merge_metadata_many(
+    datasets: Sequence[xr.Dataset],
+    dataset_name: str | None = None,
+) -> list[xr.Dataset]:
+    return [
+        _drop_auxiliary_merge_metadata(ds, dataset_name=dataset_name)
+        for ds in datasets
+    ]
+
+
 def _normalize_selection_values(values: object) -> list[object]:
     if values is None:
         return []
@@ -368,7 +391,9 @@ def _load_single_exp(
     for model_name, ds in (("fc", fc), ("an", an), ("pr", pr)):
         if ds is None:
             continue
+        ds = _canonicalize_dataset_variable_names(ds, dataset_name=model_name)
         ds = _subset_dataset_variables(ds, variables)
+        ds = _drop_auxiliary_merge_metadata(ds, dataset_name=model_name)
         allowed_dims = ds.earthml.guessed_dims
         ds = ds.earthml.remove_dims_and_coords(allowed_dims, drop_non_dim_coords=True)
         out[model_name] = ds
@@ -582,15 +607,6 @@ def load_all_exp_from_folder(
                 show_dask_progress=not show_progress,
             )
 
-            if not only_sizes:
-                run_dict = {
-                    model_name: (
-                        _canonicalize_dataset_variable_names(ds, dataset_name=model_name)
-                        if ds is not None and model_name in {"fc", "an", "pr"} else ds
-                    )
-                    for model_name, ds in run_dict.items()
-                }
-
             size_key = (leadtime, train_period, region, loss)
             grouped_sizes.setdefault(group_name, {})[size_key] = size
 
@@ -603,6 +619,17 @@ def load_all_exp_from_folder(
 
             for model_name, ds in run_dict.items():
                 if ds is None:
+                    continue
+                if model_name in {"fc", "an", "pr"} and not ds.data_vars:
+                    logger.info(
+                        "Skipping empty %s dataset for group=%s leadtime=%s train_period=%s region=%s loss=%s",
+                        model_name,
+                        group_name,
+                        leadtime,
+                        train_period,
+                        region,
+                        loss,
+                    )
                     continue
 
                 for dim in ["train_period", "loss", "region"]:
@@ -681,6 +708,7 @@ def load_all_exp_from_folder(
                 if not runs:
                     continue
 
+                runs = _drop_auxiliary_merge_metadata_many(runs, dataset_name=model_name)
                 combined_by_group_and_model[group_name][model_name] = xr.combine_by_coords(
                     runs,
                     combine_attrs="drop_conflicts",
@@ -699,6 +727,10 @@ def load_all_exp_from_folder(
                     prog.advance(merge_task)
                 continue
 
+            model_datasets = _drop_auxiliary_merge_metadata_many(
+                model_datasets,
+                dataset_name=model_name,
+            )
             runs_out[model_name] = xr.merge(
                 model_datasets,
                 join="outer",
