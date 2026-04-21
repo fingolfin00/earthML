@@ -84,6 +84,13 @@ GLOBAL_KNOBS = {
     "type_data": "test",
     # Keep None to load every scalar metric available.
     "metric_names": None,
+    # Optional external mask file. Supported inputs are NetCDF-like files via
+    # xarray.open_dataset(...) and zarr stores via xarray.open_zarr(...).
+    "external_mask_path": None,
+    # Optional variable selection when the mask file contains multiple vars.
+    "external_mask_variable": None,
+    # When True and no external mask is provided, use the experiment-saved mask.
+    "use_saved_mask": True,
     # Global output switches.
     "enable_field_timeseries": True,
     "enable_maps": True,
@@ -4585,6 +4592,40 @@ def _guess_dask_workers_for_host() -> tuple[int | None, str]:
     return None, f"using Dask auto sizing for host {hostname}"
 
 
+def _load_external_mask_dataset() -> xr.Dataset | None:
+    mask_path = GLOBAL_KNOBS.get("external_mask_path")
+    if mask_path is None:
+        return None
+
+    mask_path = Path(mask_path).expanduser()
+    if not mask_path.exists():
+        raise FileNotFoundError(f"External mask path not found: {mask_path}")
+
+    if mask_path.is_dir() or mask_path.suffix == ".zarr":
+        mask_ds = xr.open_zarr(mask_path)
+    else:
+        mask_ds = xr.open_dataset(mask_path)
+
+    mask_variable = GLOBAL_KNOBS.get("external_mask_variable")
+    if mask_variable is not None:
+        if mask_variable not in mask_ds.data_vars:
+            raise ValueError(
+                f"Requested external mask variable {mask_variable!r} not found. "
+                f"Available variables: {list(mask_ds.data_vars)}"
+            )
+        mask_ds = mask_ds[[mask_variable]]
+
+    if not mask_ds.data_vars:
+        raise ValueError(f"External mask dataset at {mask_path} contains no data variables")
+
+    CONSOLE.print(
+        "Using external mask:",
+        str(mask_path),
+        f"(variables={list(mask_ds.data_vars)})",
+    )
+    return mask_ds
+
+
 def main() -> None:
     dask_workers, dask_worker_reason = _guess_dask_workers_for_host()
     CONSOLE.print(f"Dask worker guess: {dask_workers if dask_workers is not None else 'auto'} ({dask_worker_reason})")
@@ -4627,6 +4668,7 @@ def main() -> None:
         if key != "variable"
     }
     CONSOLE.print(f"Load selection: variables={load_variables or 'all'}, run_filters={load_run_filters or 'all'}")
+    external_mask_data = _load_external_mask_dataset()
 
     runs, metrics, _ = get_runs_and_metrics(
         exp_root=GLOBAL_KNOBS["exp_root_folder"],
@@ -4634,6 +4676,8 @@ def main() -> None:
         load_models=LOAD_MODELS,
         variables=load_variables,
         run_filters=load_run_filters,
+        use_saved_mask=GLOBAL_KNOBS["use_saved_mask"],
+        external_mask_data=external_mask_data,
         metric_names=GLOBAL_KNOBS["metric_names"],
         show_progress=True,
     )
