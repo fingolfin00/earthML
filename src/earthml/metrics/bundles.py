@@ -91,7 +91,11 @@ def build_standard_metric_bundle(
         if probabilistic.dims != deterministic.dims:
             raise ValueError("probabilistic and deterministic metric objects must share dims")
 
-    has_realization = deterministic.dims.realization is not None
+    realization_dim = deterministic.dims.realization
+    has_realization = (
+        realization_dim is not None
+        and any(ds.sizes.get(realization_dim, 0) > 1 for ds in deterministic.model_data)
+    )
 
     full_dims = (
         deterministic.dims.time,
@@ -136,7 +140,7 @@ def build_standard_metric_bundle(
     # Ensemble
     # ------------------
     if has_realization:
-        rdim = deterministic.dims.realization
+        rdim = realization_dim
 
         for section, dims in reduce_dims.items():
             sm = section_metrics["ensemble"][section]
@@ -178,7 +182,7 @@ def build_standard_metric_bundle(
             sm["spatial_acc"] = correlation.spatial_anom_corr(dims)
 
         if has_realization:
-            rdim = deterministic.dims.realization
+            rdim = realization_dim
 
             for section, dims in reduce_dims.items():
                 sm = section_metrics["ensemble"][section]
