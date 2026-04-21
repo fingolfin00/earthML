@@ -1043,6 +1043,7 @@ def plot_stage_temporal_mean_maps(
                     ds_var,
                     save_path=stage_plot_folder.joinpath(f"{stage}_{var}_{spec['label']}_temporal_mean_map.png"),
                     cbar_label=_format_map_cbar_label(var, unit),
+                    nan_color="#4a4a4a",
                 )
             except Exception as exc:
                 logger.warning(
@@ -1180,6 +1181,7 @@ def plot_stage_metric_maps(
                         _select_plot_var_flexible(model_metric_ds, var),
                         save_path=stage_plot_folder.joinpath(f"{stage}_{var}_{spec['label']}_{metric_name}_map.png"),
                         cbar_label=_format_metric_label(metric_name, unit=metric_unit),
+                        nan_color="#4a4a4a",
                     )
                 except Exception as exc:
                     logger.warning(

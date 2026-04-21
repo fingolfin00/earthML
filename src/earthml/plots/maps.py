@@ -124,6 +124,7 @@ def plot_temporal_mean_map(
     lat_tick_step: float = 10.0,
     figsize: tuple[float, float] = (8, 4.5),
     dpi: int = 200,
+    nan_color: str | None = None,
 ) -> None:
     da = _reduce_for_temporal_mean_map(data)
     da = _sort_lon_for_plot(da)
@@ -139,10 +140,15 @@ def plot_temporal_mean_map(
     norm = None
     if vmin is not None and vmax is not None:
         norm = TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax) if vmin < 0.0 < vmax else Normalize(vmin=vmin, vmax=vmax)
+    plot_cmap = plt.get_cmap(cmap)
+    if nan_color is not None:
+        plot_cmap = plot_cmap.copy()
+        plot_cmap.set_bad(color=nan_color)
+
     mappable = da.plot.pcolormesh(
         ax=ax,
         transform=data_crs,
-        cmap=cmap,
+        cmap=plot_cmap,
         norm=norm,
         vmin=None if norm is not None else vmin,
         vmax=None if norm is not None else vmax,
