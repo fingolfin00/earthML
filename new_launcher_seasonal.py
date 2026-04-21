@@ -36,7 +36,7 @@ if __name__ == "__main__":
 
     if experiment_name == "cds-cmcc_oras5":
         variables               = ["sst", "ssh", "sss", "t14d"] # ocean seasonal, e.g. ["sst", "ssh", "sss", "t14d", "t17d"]
-        regions                 = ["pacific"] # e.g. ["pacific", "natlantic", "satlantic", "indian"]
+        regions                 = ["pacific", "natlantic"] # e.g. ["pacific", "natlantic", "satlantic", "indian"]
     if experiment_name == "cds-cmcc_era5":
         variables               = ["t2m", "msl", "u10", "v10", "d2m"] # atmo seasonal e.g. ["t2m", "tp", "u10", "v10"] (tp wrong)
         regions                 = ["conus", "europe"] # e.g. ["conus", "europe"]
@@ -63,6 +63,8 @@ if __name__ == "__main__":
     accumulate_grad_batches     = 2
     earlystopping_patience      = 100 if realization_as_channel else 30
     train_percent               = 0.9
+    trainer_precision           = "16-mixed" # None for auto, e.g. "16-mixed", "bf16-mixed", "32-true"
+    cuda_alloc_conf             = "expandable_segments:True" # None disables PYTORCH_CUDA_ALLOC_CONF, or set e.g. "expandable_segments:True"
 
     losses = [
         # {"MSELoss": dict(loss={}, net={})},
@@ -140,6 +142,8 @@ if __name__ == "__main__":
             loss_params=loss_params,
             # Other
             norm_strategy="BatchNorm2d",
+            trainer_precision=trainer_precision,
+            cuda_alloc_conf=cuda_alloc_conf,
             train_percent=train_percent,
             earlystopping_patience=earlystopping_patience,
             accumulate_grad_batches=accumulate_grad_batches,
