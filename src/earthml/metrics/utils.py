@@ -280,6 +280,55 @@ def _compute_metric_bundle(
 
     return filtered_result
 
+
+def _coord_resolution(coord: xr.DataArray) -> float | None:
+    values = np.asarray(coord.values, dtype=np.float64)
+    if values.ndim != 1 or values.size < 2:
+        return None
+    diffs = np.diff(values)
+    diffs = diffs[np.isfinite(diffs) & (diffs != 0)]
+    if diffs.size == 0:
+        return None
+    return float(np.abs(diffs).mean())
+
+
+def _project_mask_to_reference_grid(
+    mask_ds: xr.Dataset | None,
+    reference_ds: xr.Dataset,
+) -> xr.Dataset | None:
+    if mask_ds is None:
+        return None
+
+    mask_ds = mask_ds.earthml.normalize_dims_and_coords()
+    reference_ds = reference_ds.earthml.normalize_dims_and_coords()
+    projected = mask_ds
+
+    guessed_coords = reference_ds.earthml.guessed_coords
+    for coord_name in (guessed_coords.latitude, guessed_coords.longitude):
+        if coord_name is None or coord_name not in reference_ds.coords or coord_name not in projected.coords:
+            continue
+
+        ref_coord = reference_ds[coord_name]
+        mask_coord = projected[coord_name]
+        if ref_coord.ndim != 1 or mask_coord.ndim != 1:
+            continue
+
+        ref_res = _coord_resolution(ref_coord)
+        mask_res = _coord_resolution(mask_coord)
+        tol_candidates = [res for res in (ref_res, mask_res) if res is not None and np.isfinite(res)]
+        tolerance = 0.51 * max(tol_candidates) if tol_candidates else None
+
+        if tolerance is None:
+            projected = projected.reindex({coord_name: ref_coord})
+        else:
+            projected = projected.reindex(
+                {coord_name: ref_coord},
+                method="nearest",
+                tolerance=tolerance,
+            )
+
+    return projected
+
 def get_runs_and_metrics(
     exp_root: str | Path,
     type_data: str = "test",
@@ -480,8 +529,14 @@ def get_runs_and_metrics(
                 continue
 
             mask_data = _combine_masks(
-                _select_mask_for_indexers(saved_mask_runs, indexers),
-                _select_mask_for_indexers(external_mask_data, indexers),
+                _project_mask_to_reference_grid(
+                    _select_mask_for_indexers(saved_mask_runs, indexers),
+                    truth_data,
+                ),
+                _project_mask_to_reference_grid(
+                    _select_mask_for_indexers(external_mask_data, indexers),
+                    truth_data,
+                ),
             )
 
             clim_by_model = {truth_model: None, **{m: None for m in model_names_this_run}}
