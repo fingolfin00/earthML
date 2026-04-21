@@ -839,6 +839,11 @@ class MLBCExperiment:
             self.logger.info("Skip post-train plotting because ENABLE_STAGE_PLOTTING=False")
             return
 
+        if stage.endswith("_masked") and mask_ds is not None:
+            pred_ds = self._apply_common_mask_to_dataset(pred_ds, mask_ds)
+            input_ds = self._apply_common_mask_to_dataset(input_ds, mask_ds)
+            target_ds = self._apply_common_mask_to_dataset(target_ds, mask_ds)
+
         plot_mask = self._resolve_plot_mask(mask_ds, input_ds, target_ds)
         plot_specs = [
             {"ds": pred_ds, "mask": plot_mask, "label": "pred", "mean_label": "pred mean", "color": "tab:green"},
