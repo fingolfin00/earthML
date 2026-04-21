@@ -68,14 +68,22 @@ def _build_axis(lower: float, upper: float, step: float) -> np.ndarray:
     if step <= 0:
         raise ValueError("Resolution must be strictly positive")
 
-    start = min(lower, upper)
-    stop = max(lower, upper)
-    # Include the upper edge when it falls on the grid.
-    n = int(np.floor((stop - start) / step + 1e-9))
-    values = start + np.arange(n + 1, dtype=np.float64) * step
-    if values[-1] < stop - 1e-9:
-        values = np.append(values, stop)
-    return values
+    start = float(lower)
+    stop = float(upper)
+    step = abs(float(step))
+    span = abs(stop - start)
+    n = int(round(span / step))
+
+    # Match earthml.accessors.regrid._build_axis(): interpret region bounds as
+    # outer cell edges and place coordinates at cell centers.
+    if start > stop:
+        first = start - 0.5 * step
+        values = first - np.arange(n, dtype=np.float32) * step
+    else:
+        first = start + 0.5 * step
+        values = first + np.arange(n, dtype=np.float32) * step
+
+    return values.astype(np.float32)
 
 
 def _default_output_path(region_key: str, mask_kind: str, resolution: tuple[float, float], output_format: str) -> Path:
