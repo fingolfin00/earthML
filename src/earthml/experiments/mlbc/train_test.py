@@ -852,12 +852,12 @@ class MLBCExperiment:
             if deltas.size == 0:
                 return None
             dt_ns = int(np.median(deltas))
-            lt_ns = int(pd.Timedelta(
-                days=leadtime_rd.days + leadtime_rd.months * 30 + leadtime_rd.years * 365,
-                hours=leadtime_rd.hours,
-                minutes=leadtime_rd.minutes,
-                seconds=leadtime_rd.seconds,
-            ).to_timedelta64().astype("timedelta64[ns]").astype(np.int64))
+            lt_ns = int(
+                leadtime_rd.to_timedelta()
+                .to_timedelta64()
+                .astype("timedelta64[ns]")
+                .astype(np.int64)
+            )
             if dt_ns <= 0 or lt_ns <= 0:
                 return None
             return max(1, int(round(lt_ns / dt_ns)))
