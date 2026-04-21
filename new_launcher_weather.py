@@ -73,7 +73,8 @@ if __name__ == "__main__":
         freq                        = "1d"
         regrid_resolution           = 0.08
     if experiment_name == "juno-medfs_juno-medfs":
-        start_train_date            = datetime(2022, 1, 10)
+        # start_train_date            = datetime(2022, 1, 10)
+        start_train_date            = datetime(2023, 11, 24) # EAS8 starts?
         end_train_date              = datetime(2025, 12, 31)
         start_test_date             = datetime(2026, 1, 1)
         end_test_date               = datetime(2026, 4, 11)
@@ -85,10 +86,10 @@ if __name__ == "__main__":
     n_input_realizations        = 30 # used only if realization_as_channel = True
 
     # Hyperparams
-    batch_size                  = 32
+    batch_size                  = 4
     max_epochs                  = 50*n_input_realizations if realization_as_channel else 50
     init_learning_rate          = 1e-3
-    accumulate_grad_batches     = 2
+    accumulate_grad_batches     = 8
     earlystopping_patience      = 100 if realization_as_channel else 30
     train_percent               = 0.9
 
@@ -238,6 +239,8 @@ if __name__ == "__main__":
             loss_params=loss_params,
             # Other
             norm_strategy="BatchNorm2d",
+            trainer_precision = "32-true",
+            cuda_alloc_conf = None,
             train_percent=train_percent,
             earlystopping_patience=earlystopping_patience,
             accumulate_grad_batches=accumulate_grad_batches,
@@ -257,8 +260,8 @@ if __name__ == "__main__":
             test_periods=test_periods,
             net=net,
             # Optional
-            dask_workers=24,
-            memory_limit="16GB",
+            dask_workers=12,
+            memory_limit="64GB",
             juno_file_open_workers=juno_file_open_workers,
             external_mask_path=external_mask_path,
             external_mask_variable=external_mask_variable,
@@ -271,7 +274,6 @@ if __name__ == "__main__":
             # Providers args
             earthkit_cache_dir=earthkit_cache_dir,
             regrid_resolution=regrid_resolution,
-            juno_per_sample_regrid=juno_per_sample_regrid,
             providers_kwargs={
                 "input": input_test_provider_kwargs,
                 "target": target_test_provider_kwargs,
