@@ -945,6 +945,22 @@ class MLBCExperiment:
 
         return mask_ds
 
+    @staticmethod
+    def _apply_common_mask_to_dataset(
+        ds: xr.Dataset,
+        mask_ds: xr.Dataset | None,
+    ) -> xr.Dataset:
+        if mask_ds is None:
+            return ds
+
+        common_mask = mask_ds["common_mask"].astype(bool)
+        aligned_ds, aligned_mask = xr.align(
+            ds.earthml.normalize_dims_and_coords(),
+            common_mask,
+            join="inner",
+        )
+        return aligned_ds.where(aligned_mask)
+
     def _should_rebuild_dataset(
         self,
         source_type: str,
@@ -1146,6 +1162,16 @@ class MLBCExperiment:
         source_data: dict[str, BaseSource],
         mode: MLBCExperimentMode
     ):
+        if mode == MLBCExperimentMode.TRAIN:
+            common_mask_ds = self.train_mask_ds
+        elif mode == MLBCExperimentMode.TEST:
+            common_mask_ds = self.test_mask_ds
+        else:
+            common_mask_ds = None
+
+        input_ds = self._apply_common_mask_to_dataset(input_ds, common_mask_ds)
+        target_ds = self._apply_common_mask_to_dataset(target_ds, common_mask_ds)
+
         # Create torch dataset
         torch_dataset = XarrayDataset(
             input_ds, target_ds,
