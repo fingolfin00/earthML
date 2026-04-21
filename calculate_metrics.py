@@ -4639,6 +4639,14 @@ def main() -> None:
     )
 
     reference_model = MODEL_KNOBS["reference_model"]
+    available_models = list(runs)
+
+    if reference_model not in runs:
+        raise ValueError(
+            f"Reference model {reference_model!r} not found in loaded runs. "
+            f"Available models: {available_models}"
+        )
+
     variables = [v for v in runs[reference_model].data_vars if v != "_has_var"]
     variable_units = _get_variable_units_from_runs(runs, variables)
     PLOT_FOLDER.mkdir(parents=True, exist_ok=True)
