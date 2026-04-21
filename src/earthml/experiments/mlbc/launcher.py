@@ -27,7 +27,7 @@ from .registry import MLBCExperimentDatasetRole, MLBCRunMode, MLBCExperimentName
 from .train_test import MLBCExperiment
 from .utils import half_train_periods_days, halved_windows_split_by_cutoff
 from .runtime import Runtime
-from .conversion import celsius_to_kelvin
+from .conversion import celsius_to_kelvin, total_precipitation_to_rate
 from .registry import available_exp_types, available_exps, available_runmodes
 
 
@@ -510,6 +510,9 @@ class MLBCExperimentLauncher:
             target_provider_args_oras5_operational = target_provider_args_oras5_common | dict(
                 product_type="operational",
             )
+            target_provider_args_era5_common = dict(
+                convert_unit={"tp": (total_precipitation_to_rate, "m/s")} if var_target == "tp" else None,
+            )
 
             # Combine input and target args if necessary (only for ORAS5 currently)
             if self.experiment.name == MLBCExperimentName.CDS_CMCC__ORAS5:
@@ -523,6 +526,8 @@ class MLBCExperimentLauncher:
                     target_provider_args = target_provider_args | target_provider_args_oras5_consolidated
                 else:
                     target_provider_args = target_provider_args | target_provider_args_oras5_operational
+            elif self.experiment.name == MLBCExperimentName.CDS_CMCC__ERA5:
+                target_provider_args = target_provider_args | target_provider_args_era5_common
             else:
                 target_provider_args = target_provider_args
 
