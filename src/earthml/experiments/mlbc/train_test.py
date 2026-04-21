@@ -576,11 +576,11 @@ class MLBCExperiment:
         # Align shared sample axes, but never silently inner-join spatial float coordinates.
         input_ds, target_ds = self._align_input_target_ds(input_ds, target_ds)
 
-        self._plot_dataset_stage(
+        self._plot_pre_train_stage(
             input_ds=input_ds,
             target_ds=target_ds,
             mode=mode,
-            stage="input_target",
+            stage="pre_train",
         )
 
         return input_ds, target_ds
@@ -763,7 +763,7 @@ class MLBCExperiment:
             "Refusing dangerous inner alignment on spatial coordinates."
         )
 
-    def _plot_dataset_stage(
+    def _plot_pre_train_stage(
         self,
         input_ds: xr.Dataset,
         target_ds: xr.Dataset,
@@ -780,11 +780,11 @@ class MLBCExperiment:
         - remain a no-op until plotting behavior is implemented
         """
         if self._should_skip_train_test_plots():
-            self.logger.info("Skip dataset-stage plotting because skip_train_test_plots=True")
+            self.logger.info("Skip pre-train plotting because skip_train_test_plots=True")
             return
 
         if not ENABLE_STAGE_PLOTTING:
-            self.logger.info("Skip dataset-stage plotting because ENABLE_STAGE_PLOTTING=False")
+            self.logger.info("Skip pre-train plotting because ENABLE_STAGE_PLOTTING=False")
             return
 
         plot_mask = self._resolve_plot_mask(mask_ds, input_ds, target_ds)
@@ -801,13 +801,13 @@ class MLBCExperiment:
             right_ds=target_ds,
             data_type=mode,
             stage=stage,
-            stage_kind="dataset",
+            stage_kind="pre-train",
             residual_label="input-target",
             residual_mean_label="input-target mean",
             lag_steps=lag_steps,
         )
 
-    def _plot_prediction_stage(
+    def _plot_post_train_stage(
         self,
         pred_ds: xr.Dataset,
         input_ds: xr.Dataset,
@@ -817,11 +817,11 @@ class MLBCExperiment:
         mask_ds: xr.Dataset | None = None,
     ) -> None:
         if self._should_skip_train_test_plots():
-            self.logger.info("Skip prediction-stage plotting because skip_train_test_plots=True")
+            self.logger.info("Skip post-train plotting because skip_train_test_plots=True")
             return
 
         if not ENABLE_STAGE_PLOTTING:
-            self.logger.info("Skip prediction-stage plotting because ENABLE_STAGE_PLOTTING=False")
+            self.logger.info("Skip post-train plotting because ENABLE_STAGE_PLOTTING=False")
             return
 
         plot_mask = self._resolve_plot_mask(mask_ds, input_ds, target_ds)
@@ -839,7 +839,7 @@ class MLBCExperiment:
             right_ds=target_ds,
             data_type=mode,
             stage=stage,
-            stage_kind="prediction",
+            stage_kind="post-train",
             residual_label="pred-target",
             residual_mean_label="pred-target mean",
             lag_steps=lag_steps,
@@ -1495,20 +1495,20 @@ class MLBCExperiment:
         log_renderable(Table({f"Test on {test_data_mode.capitalize()} dataset metrics (per variable)": var_cols}).table, logger=self.logger)
 
         pred_ds_raw, pred_ds_masked = self.save(preds, dataset, var_list, preds_store)
-        self._plot_prediction_stage(
+        self._plot_post_train_stage(
             pred_ds=pred_ds_raw,
             input_ds=test_input_ds,
             target_ds=test_target_ds,
             mode=test_data_mode,
-            stage="test_preds_unmasked",
+            stage="post_train_unmasked",
             mask_ds=self.train_mask_ds if test_data_mode == MLBCExperimentMode.TRAIN else self.test_mask_ds,
         )
-        self._plot_prediction_stage(
+        self._plot_post_train_stage(
             pred_ds=pred_ds_masked,
             input_ds=test_input_ds,
             target_ds=test_target_ds,
             mode=test_data_mode,
-            stage="test_preds_masked",
+            stage="post_train_masked",
             mask_ds=self.train_mask_ds if test_data_mode == MLBCExperimentMode.TRAIN else self.test_mask_ds,
         )
 
