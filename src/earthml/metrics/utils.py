@@ -355,9 +355,42 @@ def get_runs_and_metrics(
         mask_name = external_mask_data.name or "__mask__"
         external_mask_data = external_mask_data.to_dataset(name=mask_name)
 
-    mask_runs = external_mask_data if external_mask_data is not None else (
-        loaded_runs.get("mask") if use_saved_mask else None
-    )
+    saved_mask_runs = loaded_runs.get("mask") if use_saved_mask else None
+
+    def _select_mask_for_indexers(
+        mask_ds: xr.Dataset | None,
+        indexers: dict[str, object],
+    ) -> xr.Dataset | None:
+        if mask_ds is None:
+            return None
+
+        mask_indexers = (
+            {
+                dim: value
+                for dim, value in indexers.items()
+                if dim in mask_ds.dims or dim in mask_ds.coords
+            }
+            if indexers else {}
+        )
+        selected = mask_ds.sel(mask_indexers, drop=True) if mask_indexers else mask_ds
+        if selected is not None and selected.data_vars and not bool(selected.to_array().notnull().any()):
+            return None
+        return selected
+
+    def _combine_masks(
+        saved_mask: xr.Dataset | None,
+        external_mask: xr.Dataset | None,
+    ) -> xr.Dataset | None:
+        if saved_mask is None:
+            return external_mask
+        if external_mask is None:
+            return saved_mask
+
+        saved_aligned, external_aligned = xr.align(saved_mask, external_mask, join="inner")
+        saved_valid = saved_aligned.to_array().all("variable")
+        external_valid = external_aligned.to_array().all("variable")
+        combined_valid = saved_valid & external_valid
+        return combined_valid.to_dataset(name="mask")
 
     train_loaded_runs = None
     if calculate_clim_from_train_period:
@@ -446,19 +479,10 @@ def get_runs_and_metrics(
                     prog.advance(run_task)
                 continue
 
-            mask_data = None
-            if mask_runs is not None:
-                mask_indexers = (
-                    {
-                        dim: value
-                        for dim, value in indexers.items()
-                        if dim in mask_runs.dims or dim in mask_runs.coords
-                    }
-                    if indexers else {}
-                )
-                mask_data = mask_runs.sel(mask_indexers, drop=True) if mask_indexers else mask_runs
-                if mask_data is not None and mask_data.data_vars and not bool(mask_data.to_array().notnull().any()):
-                    mask_data = None
+            mask_data = _combine_masks(
+                _select_mask_for_indexers(saved_mask_runs, indexers),
+                _select_mask_for_indexers(external_mask_data, indexers),
+            )
 
             clim_by_model = {truth_model: None, **{m: None for m in model_names_this_run}}
 
