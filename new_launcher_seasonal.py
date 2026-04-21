@@ -31,6 +31,8 @@ if __name__ == "__main__":
     exp_root_folder             = "/Users/jacopodallaglio/ML/experiments_earthML_seasonal_atmo"
     dataset_cache_root          = "/Users/jacopodallaglio/ML/.earthml-dataset-cache"
     earthkit_cache_dir          = "/Users/jacopodallaglio/ML/.earthkit-cache" # if using earthkit datasource
+    external_mask_path          = None # e.g. "/abs/path/to/med_ocean_mask_0p04.nc"
+    external_mask_variable      = None # e.g. "mask"
 
     if experiment_name == "cds-cmcc_oras5":
         variables               = ["sst", "ssh", "sss", "t14d"] # ocean seasonal, e.g. ["sst", "ssh", "sss", "t14d", "t17d"]
@@ -159,6 +161,8 @@ if __name__ == "__main__":
             # Optional
             dask_workers=2,
             memory_limit="8GB",
+            external_mask_path=external_mask_path,
+            external_mask_variable=external_mask_variable,
             only_longest_train_period=only_longest_train_period,
             force_retrain=force_retrain,
             force_rebuild_dataset=force_rebuild_dataset,

@@ -34,6 +34,8 @@ if __name__ == "__main__":
     dataset_cache_root          = "/Users/jacopodallaglio/ML/.earthml-dataset-cache"
     earthkit_cache_dir          = "/Users/jacopodallaglio/ML/.earthkit-cache"       # if using earthkit datasource
     juno_per_sample_regrid      = False
+    external_mask_path          = None # e.g. "/abs/path/to/med_ocean_mask_0p04.nc"
+    external_mask_variable      = None # e.g. "mask"
 
     if experiment_name == "juno-ecmwf_juno-ecmwf":
         variables               = ["msl", "t2m", "d2m", "u10", "v10", "tcc"] # e.g. ["msl", "t2m", "u10", "v10", "d2m", "tcc"]
@@ -258,6 +260,8 @@ if __name__ == "__main__":
             dask_workers=24,
             memory_limit="16GB",
             juno_file_open_workers=juno_file_open_workers,
+            external_mask_path=external_mask_path,
+            external_mask_variable=external_mask_variable,
             only_longest_train_period=only_longest_train_period,
             force_retrain=force_retrain,
             force_rebuild_dataset=force_rebuild_dataset,
