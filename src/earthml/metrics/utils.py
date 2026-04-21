@@ -289,6 +289,7 @@ def get_runs_and_metrics(
     calculate_clim_from_train_period: bool = False,
     use_train_prediction_clim: bool = False,  # only used if calculate_clim_from_train_period is True
     use_saved_mask: bool = True,
+    external_mask_data: xr.Dataset | xr.DataArray | None = None,
     metric_names: str | Sequence[str] | None = None,
     metric_sections: str | Sequence[str] = ("scalar", "map", "timeseries"),
     metric_types: str | Sequence[str] | None = None,
@@ -350,7 +351,13 @@ def get_runs_and_metrics(
     if not available_model_names:
         raise ValueError("No requested comparison models found in loaded runs")
 
-    mask_runs = loaded_runs.get("mask") if use_saved_mask else None
+    if isinstance(external_mask_data, xr.DataArray):
+        mask_name = external_mask_data.name or "__mask__"
+        external_mask_data = external_mask_data.to_dataset(name=mask_name)
+
+    mask_runs = external_mask_data if external_mask_data is not None else (
+        loaded_runs.get("mask") if use_saved_mask else None
+    )
 
     train_loaded_runs = None
     if calculate_clim_from_train_period:
