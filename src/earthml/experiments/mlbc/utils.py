@@ -3,6 +3,9 @@ from datetime import time as datetime_time
 from dateutil.relativedelta import relativedelta
 from typing import Sequence
 
+import numpy as np
+import xarray as xr
+
 from ...base import TimeRange
 
 
@@ -168,3 +171,122 @@ def halved_windows_split_by_cutoff(
         days //= 2
 
     return out
+
+
+def _as_mask_dataset(mask: xr.Dataset | xr.DataArray | None, *, name: str = "mask") -> xr.Dataset | None:
+    if mask is None:
+        return None
+    if isinstance(mask, xr.DataArray):
+        mask_name = mask.name or name
+        return mask.to_dataset(name=mask_name)
+    return mask
+
+
+def coord_resolution(coord: xr.DataArray) -> float | None:
+    values = np.asarray(coord.values, dtype=np.float64)
+    if values.ndim != 1 or values.size < 2:
+        return None
+    diffs = np.diff(values)
+    diffs = diffs[np.isfinite(diffs) & (diffs != 0)]
+    if diffs.size == 0:
+        return None
+    return float(np.abs(diffs).mean())
+
+
+def project_mask_to_reference_grid(
+    mask_ds: xr.Dataset | xr.DataArray | None,
+    reference_ds: xr.Dataset,
+) -> xr.Dataset | None:
+    mask_ds = _as_mask_dataset(mask_ds)
+    if mask_ds is None:
+        return None
+
+    mask_ds = mask_ds.earthml.normalize_dims_and_coords()
+    reference_ds = reference_ds.earthml.normalize_dims_and_coords()
+    projected = mask_ds
+
+    guessed_coords = reference_ds.earthml.guessed_coords
+    for coord_name in (guessed_coords.latitude, guessed_coords.longitude):
+        if coord_name is None or coord_name not in reference_ds.coords or coord_name not in projected.coords:
+            continue
+
+        ref_coord = reference_ds[coord_name]
+        mask_coord = projected[coord_name]
+        if ref_coord.ndim != 1 or mask_coord.ndim != 1:
+            continue
+
+        ref_res = coord_resolution(ref_coord)
+        mask_res = coord_resolution(mask_coord)
+        tol_candidates = [res for res in (ref_res, mask_res) if res is not None and np.isfinite(res)]
+        tolerance = 0.51 * max(tol_candidates) if tol_candidates else None
+
+        if tolerance is None:
+            projected = projected.reindex({coord_name: ref_coord})
+        else:
+            projected = projected.reindex(
+                {coord_name: ref_coord},
+                method="nearest",
+                tolerance=tolerance,
+            )
+
+    return projected
+
+
+def select_mask_for_indexers(
+    mask_ds: xr.Dataset | xr.DataArray | None,
+    indexers: dict[str, object],
+) -> xr.Dataset | None:
+    mask_ds = _as_mask_dataset(mask_ds)
+    if mask_ds is None:
+        return None
+
+    mask_indexers = (
+        {
+            dim: value
+            for dim, value in indexers.items()
+            if dim in mask_ds.dims or dim in mask_ds.coords
+        }
+        if indexers else {}
+    )
+    selected = mask_ds.sel(mask_indexers, drop=True) if mask_indexers else mask_ds
+    if selected is not None and selected.data_vars and not bool(selected.to_array().notnull().any()):
+        return None
+    return selected
+
+
+def combine_masks(
+    saved_mask: xr.Dataset | xr.DataArray | None,
+    external_mask: xr.Dataset | xr.DataArray | None,
+    *,
+    output_name: str = "mask",
+) -> xr.Dataset | None:
+    saved_mask = _as_mask_dataset(saved_mask, name=output_name)
+    external_mask = _as_mask_dataset(external_mask, name=output_name)
+
+    if saved_mask is None:
+        return external_mask
+    if external_mask is None:
+        return saved_mask
+
+    saved_aligned, external_aligned = xr.align(saved_mask, external_mask, join="inner")
+    saved_valid = saved_aligned.to_array().all("variable")
+    external_valid = external_aligned.to_array().all("variable")
+    combined_valid = saved_valid & external_valid
+    return combined_valid.to_dataset(name=output_name)
+
+
+def apply_mask_to_dataset(
+    dataset: xr.Dataset,
+    mask_ds: xr.Dataset | xr.DataArray | None,
+) -> xr.Dataset:
+    projected_mask = project_mask_to_reference_grid(mask_ds, dataset)
+    if projected_mask is None:
+        return dataset.earthml.normalize_dims_and_coords()
+
+    aligned_ds, aligned_mask = xr.align(
+        dataset.earthml.normalize_dims_and_coords(),
+        projected_mask,
+        join="inner",
+    )
+    valid = aligned_mask.to_array().all("variable")
+    return aligned_ds.where(valid)
