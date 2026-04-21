@@ -448,7 +448,15 @@ def get_runs_and_metrics(
 
             mask_data = None
             if mask_runs is not None:
-                mask_data = mask_runs.sel(indexers, drop=True) if indexers else mask_runs
+                mask_indexers = (
+                    {
+                        dim: value
+                        for dim, value in indexers.items()
+                        if dim in mask_runs.dims or dim in mask_runs.coords
+                    }
+                    if indexers else {}
+                )
+                mask_data = mask_runs.sel(mask_indexers, drop=True) if mask_indexers else mask_runs
                 if mask_data is not None and mask_data.data_vars and not bool(mask_data.to_array().notnull().any()):
                     mask_data = None
 
