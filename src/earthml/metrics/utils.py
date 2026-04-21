@@ -32,6 +32,11 @@ from .probabilistic import ProbabilisticMetrics
 from .bundles import build_standard_metric_bundle
 
 from ..experiments.mlbc.load import load_all_exp_from_folder, add_ke_to_runs, harmonize_leadtime_int
+from ..experiments.mlbc.utils import (
+    combine_masks,
+    project_mask_to_reference_grid,
+    select_mask_for_indexers,
+)
 
 
 # ==========================================
@@ -281,54 +286,6 @@ def _compute_metric_bundle(
     return filtered_result
 
 
-def _coord_resolution(coord: xr.DataArray) -> float | None:
-    values = np.asarray(coord.values, dtype=np.float64)
-    if values.ndim != 1 or values.size < 2:
-        return None
-    diffs = np.diff(values)
-    diffs = diffs[np.isfinite(diffs) & (diffs != 0)]
-    if diffs.size == 0:
-        return None
-    return float(np.abs(diffs).mean())
-
-
-def _project_mask_to_reference_grid(
-    mask_ds: xr.Dataset | None,
-    reference_ds: xr.Dataset,
-) -> xr.Dataset | None:
-    if mask_ds is None:
-        return None
-
-    mask_ds = mask_ds.earthml.normalize_dims_and_coords()
-    reference_ds = reference_ds.earthml.normalize_dims_and_coords()
-    projected = mask_ds
-
-    guessed_coords = reference_ds.earthml.guessed_coords
-    for coord_name in (guessed_coords.latitude, guessed_coords.longitude):
-        if coord_name is None or coord_name not in reference_ds.coords or coord_name not in projected.coords:
-            continue
-
-        ref_coord = reference_ds[coord_name]
-        mask_coord = projected[coord_name]
-        if ref_coord.ndim != 1 or mask_coord.ndim != 1:
-            continue
-
-        ref_res = _coord_resolution(ref_coord)
-        mask_res = _coord_resolution(mask_coord)
-        tol_candidates = [res for res in (ref_res, mask_res) if res is not None and np.isfinite(res)]
-        tolerance = 0.51 * max(tol_candidates) if tol_candidates else None
-
-        if tolerance is None:
-            projected = projected.reindex({coord_name: ref_coord})
-        else:
-            projected = projected.reindex(
-                {coord_name: ref_coord},
-                method="nearest",
-                tolerance=tolerance,
-            )
-
-    return projected
-
 def get_runs_and_metrics(
     exp_root: str | Path,
     type_data: str = "test",
@@ -405,41 +362,6 @@ def get_runs_and_metrics(
         external_mask_data = external_mask_data.to_dataset(name=mask_name)
 
     saved_mask_runs = loaded_runs.get("mask") if use_saved_mask else None
-
-    def _select_mask_for_indexers(
-        mask_ds: xr.Dataset | None,
-        indexers: dict[str, object],
-    ) -> xr.Dataset | None:
-        if mask_ds is None:
-            return None
-
-        mask_indexers = (
-            {
-                dim: value
-                for dim, value in indexers.items()
-                if dim in mask_ds.dims or dim in mask_ds.coords
-            }
-            if indexers else {}
-        )
-        selected = mask_ds.sel(mask_indexers, drop=True) if mask_indexers else mask_ds
-        if selected is not None and selected.data_vars and not bool(selected.to_array().notnull().any()):
-            return None
-        return selected
-
-    def _combine_masks(
-        saved_mask: xr.Dataset | None,
-        external_mask: xr.Dataset | None,
-    ) -> xr.Dataset | None:
-        if saved_mask is None:
-            return external_mask
-        if external_mask is None:
-            return saved_mask
-
-        saved_aligned, external_aligned = xr.align(saved_mask, external_mask, join="inner")
-        saved_valid = saved_aligned.to_array().all("variable")
-        external_valid = external_aligned.to_array().all("variable")
-        combined_valid = saved_valid & external_valid
-        return combined_valid.to_dataset(name="mask")
 
     train_loaded_runs = None
     if calculate_clim_from_train_period:
@@ -528,13 +450,13 @@ def get_runs_and_metrics(
                     prog.advance(run_task)
                 continue
 
-            mask_data = _combine_masks(
-                _project_mask_to_reference_grid(
-                    _select_mask_for_indexers(saved_mask_runs, indexers),
+            mask_data = combine_masks(
+                project_mask_to_reference_grid(
+                    select_mask_for_indexers(saved_mask_runs, indexers),
                     truth_data,
                 ),
-                _project_mask_to_reference_grid(
-                    _select_mask_for_indexers(external_mask_data, indexers),
+                project_mask_to_reference_grid(
+                    select_mask_for_indexers(external_mask_data, indexers),
                     truth_data,
                 ),
             )
