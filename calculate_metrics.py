@@ -40,6 +40,7 @@ from rich.text import Text
 
 from earthml import Dask, get_runs_and_metrics
 from earthml.experiments.mlbc.load import get_leadtime_value_and_unit
+from earthml.experiments.mlbc.utils import apply_mask_to_dataset
 from earthml.metrics.utils import metrics_to_df
 from earthml.misc import Table
 from earthml.plots import (
@@ -4626,55 +4627,6 @@ def _load_external_mask_dataset() -> xr.Dataset | None:
     return mask_ds
 
 
-def _coord_resolution(coord: xr.DataArray) -> float | None:
-    values = np.asarray(coord.values, dtype=np.float64)
-    if values.ndim != 1 or values.size < 2:
-        return None
-    diffs = np.diff(values)
-    diffs = diffs[np.isfinite(diffs) & (diffs != 0)]
-    if diffs.size == 0:
-        return None
-    return float(np.abs(diffs).mean())
-
-
-def _project_mask_to_reference_grid(
-    mask_ds: xr.Dataset | None,
-    reference_ds: xr.Dataset,
-) -> xr.Dataset | None:
-    if mask_ds is None:
-        return None
-
-    mask_ds = mask_ds.earthml.normalize_dims_and_coords()
-    reference_ds = reference_ds.earthml.normalize_dims_and_coords()
-    projected = mask_ds
-
-    guessed_coords = reference_ds.earthml.guessed_coords
-    for coord_name in (guessed_coords.latitude, guessed_coords.longitude):
-        if coord_name is None or coord_name not in reference_ds.coords or coord_name not in projected.coords:
-            continue
-
-        ref_coord = reference_ds[coord_name]
-        mask_coord = projected[coord_name]
-        if ref_coord.ndim != 1 or mask_coord.ndim != 1:
-            continue
-
-        ref_res = _coord_resolution(ref_coord)
-        mask_res = _coord_resolution(mask_coord)
-        tol_candidates = [res for res in (ref_res, mask_res) if res is not None and np.isfinite(res)]
-        tolerance = 0.51 * max(tol_candidates) if tol_candidates else None
-
-        if tolerance is None:
-            projected = projected.reindex({coord_name: ref_coord})
-        else:
-            projected = projected.reindex(
-                {coord_name: ref_coord},
-                method="nearest",
-                tolerance=tolerance,
-            )
-
-    return projected
-
-
 def _apply_external_mask_to_runs(
     runs: dict[str, xr.Dataset],
     external_mask_data: xr.Dataset | None,
@@ -4690,14 +4642,7 @@ def _apply_external_mask_to_runs(
             masked_runs[run_name] = ds
             continue
 
-        normalized_ds = ds.earthml.normalize_dims_and_coords()
-        aligned_mask = _project_mask_to_reference_grid(mask_ds, normalized_ds)
-        if aligned_mask is None:
-            masked_runs[run_name] = normalized_ds
-            continue
-        aligned_ds, aligned_mask = xr.align(normalized_ds, aligned_mask, join="inner")
-        valid = aligned_mask.to_array().all("variable")
-        masked_runs[run_name] = aligned_ds.where(valid)
+        masked_runs[run_name] = apply_mask_to_dataset(ds, mask_ds)
 
     return masked_runs
 
