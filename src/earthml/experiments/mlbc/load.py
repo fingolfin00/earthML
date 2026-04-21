@@ -22,6 +22,8 @@ import xarray as xr
 
 from ...logging import get_logger
 from ...sources import build_source, BaseSource
+from ...base import Leadtime
+
 from .dataclasses import MLBCExperimentConfig, MLBCExperimentDatasetRole, MLBCExperimentDataset
 
 
@@ -122,18 +124,10 @@ def _is_int_leadtime(ds, coord="leadtime"):
     return np.issubdtype(ds[coord].dtype, np.integer)
 
 
-def get_leadtime_value_and_unit(leadtime_rd) -> tuple[int, str]:
-    """
-    Convert a relativedelta-like leadtime into the integer/unit pair used by
-    experiment metadata.
-    """
-    if leadtime_rd.hours >= 1:
-        return leadtime_rd.hours, "hours"
-    if leadtime_rd.months >= 1:
-        return leadtime_rd.months, "months"
-    if leadtime_rd.days >= 1:
-        return leadtime_rd.days, "days"
-    raise ValueError(f"Unsupported leadtime: {leadtime_rd}")
+def get_leadtime_value_and_unit(leadtime: Leadtime) -> tuple[int, str]:
+    if not isinstance(leadtime, Leadtime):
+        raise TypeError(f"Expected Leadtime, got {type(leadtime).__name__}")
+    return leadtime.value, leadtime.unit
 
 
 def harmonize_leadtime_int(*datasets, coord="leadtime", method="int_source"):
