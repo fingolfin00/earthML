@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Sequence, Callable, Any, TypeAlias, Literal
+from typing import Sequence, Callable, Any, TypeAlias, Literal, Mapping
 from itertools import product
 import multiprocessing
 
@@ -35,6 +35,8 @@ ProviderKwargs: TypeAlias = dict[str, Any]
 ProviderKwargsSlot: TypeAlias = ProviderKwargs | Sequence[ProviderKwargs]
 ProviderKwargsByMode: TypeAlias = dict[MLBCExperimentMode, ProviderKwargsSlot | Sequence[ProviderKwargsSlot]]
 DatasetRebuildOption: TypeAlias = bool | DatasetRebuildSelector
+ExternalMaskPathOption: TypeAlias = str | Path | Mapping[str, str | Path] | None
+ExternalMaskVariableOption: TypeAlias = str | Mapping[str, str | None] | None
 VALID_FORCE_REBUILD_DATASET_VALUES: tuple[DatasetRebuildSelector, ...] = (
     "train_input",
     "train_target",
@@ -83,8 +85,8 @@ class MLBCExperimentLauncher:
     target_realization_avg      : bool = False  # whether to average over target realizations when loading target data to torch
     realization_as_channel      : bool = False  # whether to use realization a channel dimension
     skip_train_test_plots       : bool = False  # whether to skip train/test diagnostic plot generation
-    external_mask_path          : str | Path | None = None  # optional external mask to apply during train/test common mask creation
-    external_mask_variable      : str | None = None  # optional variable selection within the external mask dataset
+    external_mask_path          : ExternalMaskPathOption = None  # optional mask path, either one shared value or a mapping keyed by region
+    external_mask_variable      : ExternalMaskVariableOption = None  # optional mask variable, either one shared value or a mapping keyed by region
     trim_invalid_border_lines   : bool | None = None  # None enables preset-based auto behavior; True/False explicitly override invalid-border trimming
     force_retrain               : bool = False  # whether to ignore previous training artifacts and restart from scratch
     force_rebuild_dataset       : DatasetRebuildOption = False  # False to reuse saved stores, else rebuild matching dataset stores
@@ -170,6 +172,23 @@ class MLBCExperimentLauncher:
         if self.trim_invalid_border_lines is None:
             return self._default_trim_invalid_border_lines()
         return bool(self.trim_invalid_border_lines)
+
+    @staticmethod
+    def _resolve_region_option(
+        value: Any,
+        *,
+        region_key: str,
+        option_name: str,
+    ) -> Any:
+        if isinstance(value, Mapping):
+            if region_key not in value:
+                available_regions = ", ".join(sorted(map(str, value.keys())))
+                raise KeyError(
+                    f"Missing {option_name} entry for region '{region_key}'. "
+                    f"Available keys: {available_regions}"
+                )
+            return value[region_key]
+        return value
 
 
     @staticmethod
@@ -743,6 +762,16 @@ class MLBCExperimentLauncher:
         exp_gen_config: dict,
     ) -> tuple[str, MLBCDatasetGenerator, MLBCExperimentConfig]:
         dataset = MLBCDatasetGenerator(**exp_gen_config)
+        resolved_external_mask_path = self._resolve_region_option(
+            self.external_mask_path,
+            region_key=dataset.region_key,
+            option_name="external_mask_path",
+        )
+        resolved_external_mask_variable = self._resolve_region_option(
+            self.external_mask_variable,
+            region_key=dataset.region_key,
+            option_name="external_mask_variable",
+        )
 
         exp_cfg = MLBCExperimentConfig(
             name=self.experiment.name,
@@ -758,8 +787,8 @@ class MLBCExperimentLauncher:
             realization_as_channel=self.realization_as_channel,
             output_realizations=self.output_realizations,
             skip_train_test_plots=self.skip_train_test_plots,
-            external_mask_path=self.external_mask_path,
-            external_mask_variable=self.external_mask_variable,
+            external_mask_path=resolved_external_mask_path,
+            external_mask_variable=resolved_external_mask_variable,
             trim_invalid_border_lines=self._resolved_trim_invalid_border_lines(),
             force_rebuild_dataset=self.force_rebuild_dataset,
             dataset_cache_enabled=self.dataset_cache_enabled,
