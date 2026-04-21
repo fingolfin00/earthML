@@ -83,6 +83,8 @@ class MLBCExperimentLauncher:
     target_realization_avg      : bool = False  # whether to average over target realizations when loading target data to torch
     realization_as_channel      : bool = False  # whether to use realization a channel dimension
     skip_train_test_plots       : bool = False  # whether to skip train/test diagnostic plot generation
+    external_mask_path          : str | Path | None = None  # optional external mask to apply during train/test common mask creation
+    external_mask_variable      : str | None = None  # optional variable selection within the external mask dataset
     force_retrain               : bool = False  # whether to ignore previous training artifacts and restart from scratch
     force_rebuild_dataset       : DatasetRebuildOption = False  # False to reuse saved stores, else rebuild matching dataset stores
     weights_filename            : str | Path | None = None  # optional checkpoint/weights file to use for testing instead of generated best weights
@@ -204,6 +206,8 @@ class MLBCExperimentLauncher:
             "options.realization_as_channel": self.realization_as_channel,
             "options.output_realizations": self.output_realizations,
             "options.skip_train_test_plots": self.skip_train_test_plots,
+            "options.external_mask_path": str(self.external_mask_path) if self.external_mask_path is not None else None,
+            "options.external_mask_variable": self.external_mask_variable,
             "options.force_retrain": self.force_retrain,
             "options.force_rebuild_dataset": self.force_rebuild_dataset,
             "options.dataset_cache_enabled": self.dataset_cache_enabled,
@@ -736,6 +740,8 @@ class MLBCExperimentLauncher:
             realization_as_channel=self.realization_as_channel,
             output_realizations=self.output_realizations,
             skip_train_test_plots=self.skip_train_test_plots,
+            external_mask_path=self.external_mask_path,
+            external_mask_variable=self.external_mask_variable,
             force_rebuild_dataset=self.force_rebuild_dataset,
             dataset_cache_enabled=self.dataset_cache_enabled,
             dataset_cache_root=(

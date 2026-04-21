@@ -21,6 +21,7 @@ from lightning.pytorch.loggers import TensorBoardLogger
 from .dataclasses import MLBCExperimentDataset, MLBCExperimentConfig
 from .registry import MLBCExperimentDatasetRole, MLBCExperimentMode
 from .cache import DatasetCacheManager
+from .utils import combine_masks, project_mask_to_reference_grid
 
 from ...sources import build_source, BaseSource, DataSource, XarrayLocalSourceConfig
 from ...misc import Table
@@ -158,6 +159,8 @@ class MLBCExperiment:
             self.train_input_ds, self.train_target_ds = self.config.torch_preprocess_fn(self.train_input_ds, self.train_target_ds)
             self.test_input_ds, self.test_target_ds = self.config.torch_preprocess_fn(self.test_input_ds, self.test_target_ds)
 
+        self.external_mask_ds = self._load_external_mask_dataset()
+
         # Init mask dataset
         mask_filename = "mask"
 
@@ -215,6 +218,39 @@ class MLBCExperiment:
             os.environ.pop("PYTORCH_CUDA_ALLOC_CONF", None)
         else:
             os.environ["PYTORCH_CUDA_ALLOC_CONF"] = cuda_alloc_conf
+
+    def _load_external_mask_dataset(self) -> xr.Dataset | None:
+        mask_path = self.config.external_mask_path
+        if mask_path is None:
+            return None
+
+        mask_path = Path(mask_path).expanduser()
+        if not mask_path.exists():
+            raise FileNotFoundError(f"External mask path not found: {mask_path}")
+
+        if mask_path.is_dir() or mask_path.suffix == ".zarr":
+            mask_ds = xr.open_zarr(mask_path)
+        else:
+            mask_ds = xr.open_dataset(mask_path)
+
+        mask_variable = self.config.external_mask_variable
+        if mask_variable is not None:
+            if mask_variable not in mask_ds.data_vars:
+                raise ValueError(
+                    f"Requested external mask variable {mask_variable!r} not found. "
+                    f"Available variables: {list(mask_ds.data_vars)}"
+                )
+            mask_ds = mask_ds[[mask_variable]]
+
+        if not mask_ds.data_vars:
+            raise ValueError(f"External mask dataset at {mask_path} contains no data variables")
+
+        self.logger.info(
+            "Using external training mask %s with variables=%s",
+            mask_path,
+            list(mask_ds.data_vars),
+        )
+        return mask_ds
 
     @staticmethod
     def _resolve_accelerator_and_device() -> tuple[str, torch.device]:
@@ -875,6 +911,13 @@ class MLBCExperiment:
         target_valid_mask = target_ds.earthml.mask()
 
         common_mask = (input_valid_mask & target_valid_mask).rename("common_mask")
+        external_mask_ds = project_mask_to_reference_grid(self.external_mask_ds, input_ds)
+        if external_mask_ds is not None:
+            common_mask = combine_masks(
+                common_mask.rename("common_mask"),
+                external_mask_ds,
+                output_name="common_mask",
+            )["common_mask"].astype(bool)
 
         mask_ds = xr.Dataset(
             {
