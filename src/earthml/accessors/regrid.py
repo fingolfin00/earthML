@@ -197,7 +197,7 @@ def _cache_base_dir() -> Path:
     cache_dir = os.getenv("EARTHML_CACHE_DIR")
     if cache_dir:
         return Path(cache_dir).expanduser()
-    return Path.home() / ".earthml-cache"
+    return Path(".earthml-cache")
 
 
 def _cache_dir() -> Path:
@@ -713,6 +713,7 @@ class EarthMLRegrid:
                 xe = _import_xesmf()
 
                 if weights_path.exists():
+                    logger.debug(f"Regrid: use weigths in {weights_path}")
                     try:
                         with xr.open_dataset(weights_path, engine="h5netcdf") as ds_weights:
                             ds_weights = ds_weights.load()
@@ -720,6 +721,7 @@ class EarthMLRegrid:
                         with xr.open_dataset(weights_path, engine="scipy") as ds_weights:
                             ds_weights = ds_weights.load()
                 else:
+                    logger.debug(f"Regrid: build weigths and save in {weights_path}")
                     _build_xesmf_weights_on_disk(
                         ds_in_grid=ds_in_grid,
                         ds_out_grid=ds_out_grid,
