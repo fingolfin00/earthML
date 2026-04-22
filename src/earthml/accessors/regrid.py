@@ -24,6 +24,29 @@ _REGRID_GEOMETRY_CACHE_MAX_ITEMS = max(int(os.getenv("EARTHML_REGRID_CACHE_MAX_I
 _REGRID_INTERP_MAP_CACHE = OrderedDict()
 _REGRID_INTERP_MAP_CACHE_MAX_ITEMS = max(int(os.getenv("EARTHML_REGRID_INTERP_CACHE_MAX_ITEMS", "64")), 1)
 
+def _debug_bad_coords(tag, lat2d, lon2d, logger):
+    import numpy as np
+
+    bad = np.isclose(lat2d, -1.0, atol=1e-8) & np.isclose(lon2d, -1.0, atol=1e-8)
+    nbad = int(bad.sum())
+    logger.warning("%s bad coord count=%s shape=%s", tag, nbad, lat2d.shape)
+
+    if nbad:
+        ys, xs = np.argwhere(bad).T
+        logger.warning(
+            "%s y-range=(%s,%s) x-range=(%s,%s) on_border=%s",
+            tag,
+            int(ys.min()), int(ys.max()),
+            int(xs.min()), int(xs.max()),
+            bool((ys == 0).any() or (ys == lat2d.shape[0]-1).any() or (xs == 0).any() or (xs == lat2d.shape[1]-1).any()),
+        )
+        iy, ix = int(ys[0]), int(xs[0])
+        y0, y1 = max(0, iy - 1), min(lat2d.shape[0], iy + 2)
+        x0, x1 = max(0, ix - 1), min(lat2d.shape[1], ix + 2)
+        logger.warning("%s lat neighborhood=%s", tag, lat2d[y0:y1, x0:x1])
+        logger.warning("%s lon neighborhood=%s", tag, lon2d[y0:y1, x0:x1])
+
+
 
 def _import_xesmf():
     # Import lazily so plain dataset loading does not pull xESMF/ESMF native
@@ -697,6 +720,8 @@ class EarthMLRegrid:
                 leading_dims = da_spatial.dims[:-2]
                 leading_shape = data_np.shape[:-2]
                 ny_src, nx_src = data_np.shape[-2:]
+
+                # _debug_bad_coords("before regrid", lat_src_use, lon_src_use, logger)
 
                 ds_in_grid = _build_xesmf_grid(lat_src_use, lon_src_use, mask_2d=mask_2d)
 
