@@ -6,6 +6,9 @@ from pathlib import Path
 import numpy as np
 import cf_xarray
 import xarray as xr
+
+import xesmf as xe
+
 from scipy.interpolate import griddata
 from scipy.spatial import Delaunay, QhullError
 
@@ -17,17 +20,32 @@ logger = get_logger(__name__)
 
 
 _DEFAULT_REGRID_CACHE_DIR = ".earthml-cache/regrid"
+_DEFAULT_REGRID_XESMF_CACHE_DIR = ".earthml-cache/regrid-xesmf"
 _REGRID_GEOMETRY_CACHE = OrderedDict()
 _REGRID_GEOMETRY_CACHE_MAX_ITEMS = max(int(os.getenv("EARTHML_REGRID_CACHE_MAX_ITEMS", "16")), 1)
 _REGRID_INTERP_MAP_CACHE = OrderedDict()
 _REGRID_INTERP_MAP_CACHE_MAX_ITEMS = max(int(os.getenv("EARTHML_REGRID_INTERP_CACHE_MAX_ITEMS", "64")), 1)
 
 
+def _cache_base_dir() -> Path:
+    cache_dir = os.getenv("EARTHML_CACHE_DIR")
+    if cache_dir:
+        return Path(cache_dir).expanduser()
+    return Path.home() / ".earthml-cache"
+
+
 def _cache_dir() -> Path:
     cache_dir = os.getenv("EARTHML_REGRID_CACHE_DIR")
     if cache_dir:
         return Path(cache_dir).expanduser()
-    return Path.cwd() / _DEFAULT_REGRID_CACHE_DIR
+    return _cache_base_dir() / Path(_DEFAULT_REGRID_CACHE_DIR).name
+
+
+def _xesmf_cache_dir() -> Path:
+    cache_dir = os.getenv("EARTHML_REGRID_XESMF_CACHE_DIR")
+    if cache_dir:
+        return Path(cache_dir).expanduser()
+    return _cache_base_dir() / Path(_DEFAULT_REGRID_XESMF_CACHE_DIR).name
 
 
 def _hash_array(arr: np.ndarray) -> str:
@@ -218,7 +236,22 @@ def _load_or_build_curvilinear_interp_map(
     return entry
 
 
-# TODO refactor regrid in one single optimized helper, possibly adding support for xesmf or other fast lib
+def _build_xesmf_grid(
+    lat_2d: np.ndarray,
+    lon_2d: np.ndarray,
+    mask_2d: np.ndarray | None = None,
+) -> xr.Dataset:
+    ds_grid = xr.Dataset(
+        coords={
+            "lat": (("y", "x"), lat_2d),
+            "lon": (("y", "x"), lon_2d),
+        }
+    )
+    if mask_2d is not None:
+        ds_grid["mask"] = xr.DataArray(mask_2d.astype(np.int32), dims=("y", "x"))
+    return ds_grid
+
+
 class EarthMLRegrid:
     def regrid_to_rectilinear(
         self,
@@ -226,6 +259,7 @@ class EarthMLRegrid:
         resolution: float | tuple[float, float],
         vars_to_regrid=None,
         *,
+        backend: str = "xesmf",
         silent: bool = False,
     ) -> xr.Dataset:
         """
@@ -433,8 +467,6 @@ class EarthMLRegrid:
         # ======================================================================
         # Case 2: curvilinear (2D) source -> rectilinear (1D) target
         # ======================================================================
-        _log_info("Regrid: curvilinear (2D) source -> rectilinear (1D) target via scipy.griddata.")
-
         if lat_da.ndim != 2 or lon_da.ndim != 2:
             raise ValueError(
                 "Curvilinear regrid assumes lat/lon either (1D,1D) or (2D,2D). "
@@ -452,124 +484,214 @@ class EarthMLRegrid:
         lat_src_2d = np.asarray(lat_da.values, dtype=np.float64)
         lon_src_2d = _shift_longitudes_near_reference(lon_da.values, lon_center)
 
-        Ny = lat_target.size
-        Nx = lon_target.size
+        if backend == "xesmf":
+            _log_info("Regrid: curvilinear (2D) source -> rectilinear (1D) target via xESMF.")
 
-        geometry_cache_key, geometry = _load_or_build_curvilinear_geometry(
-            lat_src_2d=lat_src_2d,
-            lon_src_2d=lon_src_2d,
-            lat_target=lat_target,
-            lon_target=lon_target,
-            silent=silent,
-        )
-        coord_valid = geometry["coord_valid"]
-        points = geometry["points"]
-        xi = geometry["xi"]
+            lon_out_2d, lat_out_2d = np.meshgrid(lon_target, lat_target)
+            ds_out_grid = _build_xesmf_grid(lat_out_2d, lon_out_2d)
 
-        data_vars_out = {}
+            data_vars_out = {}
+            for name, da in ds.data_vars.items():
+                if name not in vars_to_regrid:
+                    data_vars_out[name] = da
+                    continue
+                if y_dim_src not in da.dims or x_dim_src not in da.dims:
+                    data_vars_out[name] = da
+                    continue
 
-        for name, da in ds.data_vars.items():
-            if name not in vars_to_regrid:
-                data_vars_out[name] = da
-                continue
-
-            if y_dim_src not in da.dims or x_dim_src not in da.dims:
-                data_vars_out[name] = da
-                continue
-
-            _log_info("  Regridding variable '%s' with griddata...", name)
-
-            da_spatial = da.transpose(
-                *[d for d in da.dims if d not in (y_dim_src, x_dim_src)],
-                y_dim_src,
-                x_dim_src,
-            )
-            data_np = da_spatial.values
-
-            leading_dims = da_spatial.dims[:-2]
-            leading_shape = data_np.shape[:-2]
-            ny_src, nx_src = data_np.shape[-2:]
-
-            if (ny_src, nx_src) != lat_src_2d.shape:
-                raise ValueError(
-                    f"Variable '{name}' spatial shape {(ny_src, nx_src)} does not match "
-                    f"lat/lon shape {lat_src_2d.shape}."
+                da_spatial = da.transpose(
+                    *[d for d in da.dims if d not in (y_dim_src, x_dim_src)],
+                    y_dim_src,
+                    x_dim_src,
                 )
+                data_np = da_spatial.values
 
-            arr = data_np.reshape(-1, ny_src * nx_src)
+                leading_dims = da_spatial.dims[:-2]
+                leading_shape = data_np.shape[:-2]
+                ny_src, nx_src = data_np.shape[-2:]
 
-            out_slices = []
-            for i in range(arr.shape[0]):
-                zi = arr[i, :]
-                zi_coord_valid = zi[coord_valid]
-                data_valid = np.isfinite(zi_coord_valid)
-                valid_count = int(data_valid.sum())
-
-                if valid_count == 0:
-                    zi_interp = np.full(xi.shape[0], np.nan, dtype=np.float64)
-                elif valid_count < 3:
-                    # Not enough points for linear triangulation
-                    zi_interp = np.full(xi.shape[0], np.nan, dtype=np.float64)
-                else:
-                    interp_map = _load_or_build_curvilinear_interp_map(
-                        geometry_cache_key=geometry_cache_key,
-                        points=points,
-                        xi=xi,
-                        data_valid_mask=data_valid,
-                        silent=silent,
+                if (ny_src, nx_src) != lat_src_2d.shape:
+                    raise ValueError(
+                        f"Variable '{name}' spatial shape {(ny_src, nx_src)} does not match "
+                        f"lat/lon shape {lat_src_2d.shape}."
                     )
 
-                    if bool(interp_map["usable"]):
-                        zi_interp = np.full(xi.shape[0], np.nan, dtype=np.float64)
-                        inside_idx = interp_map["inside_idx"]
-                        vertices = interp_map["vertices"]
-                        weights = interp_map["weights"]
-                        value_indices = interp_map["value_indices"]
+                # static mask from first slice, or from external/source mask if you have one
+                sample = da_spatial.isel({d: 0 for d in da_spatial.dims[:-2]}) if da_spatial.dims[:-2] else da_spatial
+                mask_2d = np.isfinite(sample.values)
 
-                        if inside_idx.size:
-                            zi_values = zi_coord_valid[value_indices]
-                            zi_interp[inside_idx] = np.einsum(
-                                "ij,ij->i",
-                                zi_values[vertices],
-                                weights,
-                            )
+                ds_in_grid = _build_xesmf_grid(lat_src_2d, lon_src_2d, mask_2d=mask_2d)
+
+                weights_key = hashlib.blake2b(digest_size=16)
+                for arr in (lat_src_2d, lon_src_2d, lat_target, lon_target):
+                    weights_key.update(_hash_array(np.asarray(arr)).encode("ascii"))
+                weights_key.update(b"xesmf")
+                weights_key.update(b"bilinear")
+                weights_key.update(_hash_array(mask_2d.astype(np.int8)).encode("ascii"))
+
+                weights_path = _xesmf_cache_dir() / f"{weights_key.hexdigest()}.nc"
+                weights_path.parent.mkdir(parents=True, exist_ok=True)
+
+                regridder = xe.Regridder(
+                    ds_in_grid,
+                    ds_out_grid,
+                    "bilinear",
+                    unmapped_to_nan=True,
+                    reuse_weights=True,
+                    filename=str(weights_path),
+                )
+
+                out = regridder(da_spatial, keep_attrs=True)
+                # out = np.stack(out_slices, axis=0).reshape(*leading_shape, Ny, Nx)
+
+                out_dims = leading_dims + (lat_name, lon_name)
+                out_coords = {
+                    **{
+                        d: da_spatial.coords[d]
+                        for d in leading_dims
+                        if d in da_spatial.coords
+                    },
+                    lat_name: xr.DataArray(lat_target, dims=(lat_name,)),
+                    lon_name: xr.DataArray(lon_target, dims=(lon_name,)),
+                }
+
+                data_vars_out[name] = xr.DataArray(
+                    out,
+                    dims=out_dims,
+                    coords=out_coords,
+                    attrs=da.attrs,
+                )
+
+            coord_out = {
+                k: v for k, v in ds.coords.items()
+                if k not in (lat_name, lon_name)
+            }
+            coord_out[lat_name] = xr.DataArray(lat_target, dims=(lat_name,))
+            coord_out[lon_name] = xr.DataArray(lon_target, dims=(lon_name,))
+
+            out_ds = xr.Dataset(data_vars_out, coords=coord_out, attrs=ds.attrs)
+            return out_ds
+
+        # scipy.griddata, inpaint NaNs if masked data
+        else:
+            _log_info("Regrid: curvilinear (2D) source -> rectilinear (1D) target via scipy.griddata.")
+
+            Ny = lat_target.size
+            Nx = lon_target.size
+
+            geometry_cache_key, geometry = _load_or_build_curvilinear_geometry(
+                lat_src_2d=lat_src_2d,
+                lon_src_2d=lon_src_2d,
+                lat_target=lat_target,
+                lon_target=lon_target,
+                silent=silent,
+            )
+            coord_valid = geometry["coord_valid"]
+            points = geometry["points"]
+            xi = geometry["xi"]
+
+            data_vars_out = {}
+            for name, da in ds.data_vars.items():
+                if name not in vars_to_regrid:
+                    data_vars_out[name] = da
+                    continue
+                if y_dim_src not in da.dims or x_dim_src not in da.dims:
+                    data_vars_out[name] = da
+                    continue
+                
+                _log_info("  Regridding variable '%s' with griddata...", name)
+
+                da_spatial = da.transpose(
+                    *[d for d in da.dims if d not in (y_dim_src, x_dim_src)],
+                    y_dim_src,
+                    x_dim_src,
+                )
+                data_np = da_spatial.values
+
+                leading_dims = da_spatial.dims[:-2]
+                leading_shape = data_np.shape[:-2]
+                ny_src, nx_src = data_np.shape[-2:]
+
+                if (ny_src, nx_src) != lat_src_2d.shape:
+                    raise ValueError(
+                        f"Variable '{name}' spatial shape {(ny_src, nx_src)} does not match "
+                        f"lat/lon shape {lat_src_2d.shape}."
+                    )
+
+                arr = data_np.reshape(-1, ny_src * nx_src)
+
+                out_slices = []
+                for i in range(arr.shape[0]):
+                    zi = arr[i, :]
+                    zi_coord_valid = zi[coord_valid]
+                    data_valid = np.isfinite(zi_coord_valid)
+                    valid_count = int(data_valid.sum())
+
+                    if valid_count == 0:
+                        zi_interp = np.full(xi.shape[0], np.nan, dtype=np.float64)
+                    elif valid_count < 3:
+                        # Not enough points for linear triangulation
+                        zi_interp = np.full(xi.shape[0], np.nan, dtype=np.float64)
                     else:
-                        zi_interp = griddata(
-                            points[data_valid],
-                            zi_coord_valid[data_valid],
-                            xi,
-                            method="linear",
+                        interp_map = _load_or_build_curvilinear_interp_map(
+                            geometry_cache_key=geometry_cache_key,
+                            points=points,
+                            xi=xi,
+                            data_valid_mask=data_valid,
+                            silent=silent,
                         )
 
-                zi_interp_2d = zi_interp.reshape(Ny, Nx)
-                out_slices.append(zi_interp_2d)
+                        if bool(interp_map["usable"]):
+                            zi_interp = np.full(xi.shape[0], np.nan, dtype=np.float64)
+                            inside_idx = interp_map["inside_idx"]
+                            vertices = interp_map["vertices"]
+                            weights = interp_map["weights"]
+                            value_indices = interp_map["value_indices"]
 
-            out = np.stack(out_slices, axis=0).reshape(*leading_shape, Ny, Nx)
+                            if inside_idx.size:
+                                zi_values = zi_coord_valid[value_indices]
+                                zi_interp[inside_idx] = np.einsum(
+                                    "ij,ij->i",
+                                    zi_values[vertices],
+                                    weights,
+                                )
+                        else:
+                            zi_interp = griddata(
+                                points[data_valid],
+                                zi_coord_valid[data_valid],
+                                xi,
+                                method="linear",
+                            )
 
-            out_dims = leading_dims + (lat_name, lon_name)
-            out_coords = {
-                **{
-                    d: da_spatial.coords[d]
-                    for d in leading_dims
-                    if d in da_spatial.coords
-                },
-                lat_name: xr.DataArray(lat_target, dims=(lat_name,)),
-                lon_name: xr.DataArray(lon_target, dims=(lon_name,)),
+                    zi_interp_2d = zi_interp.reshape(Ny, Nx)
+                    out_slices.append(zi_interp_2d)
+
+                out = np.stack(out_slices, axis=0).reshape(*leading_shape, Ny, Nx)
+
+                out_dims = leading_dims + (lat_name, lon_name)
+                out_coords = {
+                    **{
+                        d: da_spatial.coords[d]
+                        for d in leading_dims
+                        if d in da_spatial.coords
+                    },
+                    lat_name: xr.DataArray(lat_target, dims=(lat_name,)),
+                    lon_name: xr.DataArray(lon_target, dims=(lon_name,)),
+                }
+
+                data_vars_out[name] = xr.DataArray(
+                    out,
+                    dims=out_dims,
+                    coords=out_coords,
+                    attrs=da.attrs,
+                )
+
+            coord_out = {
+                k: v for k, v in ds.coords.items()
+                if k not in (lat_name, lon_name)
             }
+            coord_out[lat_name] = xr.DataArray(lat_target, dims=(lat_name,))
+            coord_out[lon_name] = xr.DataArray(lon_target, dims=(lon_name,))
 
-            data_vars_out[name] = xr.DataArray(
-                out,
-                dims=out_dims,
-                coords=out_coords,
-                attrs=da.attrs,
-            )
-
-        coord_out = {
-            k: v for k, v in ds.coords.items()
-            if k not in (lat_name, lon_name)
-        }
-        coord_out[lat_name] = xr.DataArray(lat_target, dims=(lat_name,))
-        coord_out[lon_name] = xr.DataArray(lon_target, dims=(lon_name,))
-
-        out_ds = xr.Dataset(data_vars_out, coords=coord_out, attrs=ds.attrs)
-        return out_ds
+            out_ds = xr.Dataset(data_vars_out, coords=coord_out, attrs=ds.attrs)
+            return out_ds
