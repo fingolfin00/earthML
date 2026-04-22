@@ -208,10 +208,10 @@ class EarthMLSubset:
             if ny <= 2 or nx <= 2:
                 break
 
-            trim_top = bool(invalid[0].all())
-            trim_bottom = bool(invalid[-1].all())
-            trim_left = bool(invalid[:, 0].all())
-            trim_right = bool(invalid[:, -1].all())
+            trim_top = bool(invalid[0].any())
+            trim_bottom = bool(invalid[-1].any())
+            trim_left = bool(invalid[:, 0].any())
+            trim_right = bool(invalid[:, -1].any())
 
             if not (trim_top or trim_bottom or trim_left or trim_right):
                 break
