@@ -72,6 +72,44 @@ def _invalidate_points_touching_bad_cells(valid_point_mask: np.ndarray) -> np.nd
     return valid_point_mask & (~expanded_bad_points)
 
 
+def _trim_invalid_curvilinear_border(
+    lat_2d: np.ndarray,
+    lon_2d: np.ndarray,
+    valid_2d: np.ndarray,
+    da_spatial: xr.DataArray,
+    y_dim_src: str,
+    x_dim_src: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, xr.DataArray]:
+    lat_2d = np.asarray(lat_2d, dtype=np.float64)
+    lon_2d = np.asarray(lon_2d, dtype=np.float64)
+    valid_2d = np.asarray(valid_2d, dtype=bool)
+
+    while True:
+        invalid = (~valid_2d) | _invalid_curvilinear_coord_mask(lat_2d, lon_2d)
+        ny, nx = invalid.shape
+        if ny <= 2 or nx <= 2:
+            break
+
+        trim_top = bool(invalid[0].any())
+        trim_bottom = bool(invalid[-1].any())
+        trim_left = bool(invalid[:, 0].any())
+        trim_right = bool(invalid[:, -1].any())
+        if not (trim_top or trim_bottom or trim_left or trim_right):
+            break
+
+        y_slice = slice(1, None) if trim_top else slice(0, -1) if trim_bottom else slice(None)
+        x_slice = slice(1, None) if trim_left else slice(0, -1) if trim_right else slice(None)
+        lat_2d = lat_2d[y_slice, x_slice]
+        lon_2d = lon_2d[y_slice, x_slice]
+        valid_2d = valid_2d[y_slice, x_slice]
+        da_spatial = da_spatial.isel({
+            y_dim_src: y_slice,
+            x_dim_src: x_slice,
+        })
+
+    return lat_2d, lon_2d, valid_2d, da_spatial
+
+
 def _crop_curvilinear_valid_bbox(
     lat_2d: np.ndarray,
     lon_2d: np.ndarray,
@@ -97,6 +135,14 @@ def _crop_curvilinear_valid_bbox(
     lon_crop = np.asarray(lon_2d[y0:y1, x0:x1], dtype=np.float64)
     mask_crop = np.asarray(valid_2d[y0:y1, x0:x1], dtype=bool)
     da_crop = da_spatial.isel({y_dim_src: slice(y0, y1), x_dim_src: slice(x0, x1)})
+    lat_crop, lon_crop, mask_crop, da_crop = _trim_invalid_curvilinear_border(
+        lat_crop,
+        lon_crop,
+        mask_crop,
+        da_crop,
+        y_dim_src,
+        x_dim_src,
+    )
     return lat_crop, lon_crop, mask_crop, da_crop
 
 
