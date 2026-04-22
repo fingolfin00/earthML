@@ -28,7 +28,7 @@ dependencies = [
     "h5netcdf>=1.8.1",
     "h5py>=3.15.1",
     "xarray[complete]>=2026.02.0",
-    "esmpy",
+    "esmpy==8.9.1",
     "xesmf>=0.8.10",
     "copernicusmarine>=2.3.0",
 ]
@@ -61,7 +61,7 @@ explicit = true
 
 [tool.uv.sources]
 # Git source for esmpy
-esmpy = { git = "https://github.com/esmf-org/esmf.git", tag = "v8.5.0", subdirectory = "src/addon/esmpy" }
+esmpy = { git = "https://github.com/esmf-org/esmf.git", tag = "v8.9.1", subdirectory = "src/addon/esmpy" }
 
 # Per-platform torch-family routing:
 # - macOS (Apple Silicon + Intel): CPU/macOS wheels, no CUDA deps
