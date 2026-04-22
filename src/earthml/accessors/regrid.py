@@ -33,6 +33,32 @@ def _import_xesmf():
     return xe
 
 
+def _build_xesmf_weights_on_disk(
+    ds_in_grid: xr.Dataset,
+    ds_out_grid: xr.Dataset,
+    weights_path: Path,
+    *,
+    method: str = "bilinear",
+    ignore_degenerate: bool | None = None,
+) -> None:
+    import xesmf.backend as xb
+    import xesmf.frontend as xf
+
+    if weights_path.exists():
+        weights_path.unlink()
+
+    grid_in, _, _ = xf.ds_to_ESMFgrid(ds_in_grid, need_bounds=False, periodic=False)
+    grid_out, _, _ = xf.ds_to_ESMFgrid(ds_out_grid, need_bounds=False, periodic=False)
+    regrid = xb.esmf_regrid_build(
+        grid_in,
+        grid_out,
+        method,
+        filename=str(weights_path),
+        ignore_degenerate=ignore_degenerate,
+    )
+    xb.esmf_regrid_finalize(regrid)
+
+
 def _cache_base_dir() -> Path:
     cache_dir = os.getenv("EARTHML_CACHE_DIR")
     if cache_dir:
@@ -540,14 +566,41 @@ class EarthMLRegrid:
 
                 xe = _import_xesmf()
                 reuse_weights = weights_path.exists()
-                regridder = xe.Regridder(
-                    ds_in_grid,
-                    ds_out_grid,
-                    "bilinear",
-                    unmapped_to_nan=True,
-                    reuse_weights=reuse_weights,
-                    filename=str(weights_path),
-                )
+                try:
+                    regridder = xe.Regridder(
+                        ds_in_grid,
+                        ds_out_grid,
+                        "bilinear",
+                        unmapped_to_nan=True,
+                        reuse_weights=reuse_weights,
+                        filename=str(weights_path),
+                    )
+                except RuntimeError as exc:
+                    if (
+                        not reuse_weights
+                        and "in-memory factors only supported with GNU (gfortran)" in str(exc)
+                    ):
+                        logger.debug(
+                            "xESMF in-memory weight generation is unsupported on this ESMF build; "
+                            "building weights on disk via ESMPy backend: %s",
+                            weights_path,
+                        )
+                        _build_xesmf_weights_on_disk(
+                            ds_in_grid=ds_in_grid,
+                            ds_out_grid=ds_out_grid,
+                            weights_path=weights_path,
+                            method="bilinear",
+                        )
+                        regridder = xe.Regridder(
+                            ds_in_grid,
+                            ds_out_grid,
+                            "bilinear",
+                            unmapped_to_nan=True,
+                            reuse_weights=True,
+                            filename=str(weights_path),
+                        )
+                    else:
+                        raise
 
                 out = regridder(da_spatial, keep_attrs=True)
                 # out = np.stack(out_slices, axis=0).reshape(*leading_shape, Ny, Nx)
