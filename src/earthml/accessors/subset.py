@@ -163,74 +163,6 @@ class EarthMLSubset:
             and lat_coord in ds.coords
         )
 
-    @staticmethod
-    def _is_invalid_curvilinear_coord_pair(lon_vals: np.ndarray, lat_vals: np.ndarray) -> np.ndarray:
-        lon_vals = np.asarray(lon_vals, dtype=np.float64)
-        lat_vals = np.asarray(lat_vals, dtype=np.float64)
-        finite = np.isfinite(lon_vals) & np.isfinite(lat_vals)
-        sentinel = np.isclose(lon_vals, -1.0, atol=1e-8) & np.isclose(lat_vals, -1.0, atol=1e-8)
-        return (~finite) | sentinel
-
-    def _subset_curvilinear_bbox(
-        self,
-        ds: xr.Dataset,
-        *,
-        mask: xr.DataArray,
-        lon_coord: str,
-        lat_coord: str,
-    ) -> xr.Dataset:
-        lat_da = ds[lat_coord]
-        lon_da = ds[lon_coord]
-        if lat_da.ndim != 2 or lon_da.ndim != 2:
-            raise ValueError("Curvilinear subset expects 2D latitude/longitude coordinates.")
-
-        y_dim, x_dim = lon_da.dims
-        mask_np = np.asarray(mask.values, dtype=bool)
-        row_has = np.any(mask_np, axis=1)
-        col_has = np.any(mask_np, axis=0)
-        if not row_has.any() or not col_has.any():
-            raise ValueError("No curvilinear points in requested region.")
-
-        y_idx = np.flatnonzero(row_has)
-        x_idx = np.flatnonzero(col_has)
-        y0, y1 = int(y_idx[0]), int(y_idx[-1]) + 1
-        x0, x1 = int(x_idx[0]), int(x_idx[-1]) + 1
-
-        ds_box = ds.isel({y_dim: slice(y0, y1), x_dim: slice(x0, x1)})
-
-        # Trim invalid outer border lines left behind by the 2D geographic mask.
-        while True:
-            lon_box = np.asarray(ds_box[lon_coord].values, dtype=np.float64)
-            lat_box = np.asarray(ds_box[lat_coord].values, dtype=np.float64)
-            invalid = self._is_invalid_curvilinear_coord_pair(lon_box, lat_box)
-
-            ny, nx = invalid.shape
-            if ny <= 2 or nx <= 2:
-                break
-
-            trim_top = bool(invalid[0].any())
-            trim_bottom = bool(invalid[-1].any())
-            trim_left = bool(invalid[:, 0].any())
-            trim_right = bool(invalid[:, -1].any())
-
-            if not (trim_top or trim_bottom or trim_left or trim_right):
-                break
-
-            indexers = {}
-            if trim_top:
-                indexers[y_dim] = slice(1, None)
-            elif trim_bottom:
-                indexers[y_dim] = slice(0, -1)
-
-            if trim_left:
-                indexers[x_dim] = slice(1, None)
-            elif trim_right:
-                indexers[x_dim] = slice(0, -1)
-
-            ds_box = ds_box.isel(indexers)
-
-        return ds_box
-
     def _build_extra_selection(self, ds: xr.Dataset, data_selection: DataSelection) -> dict:
         """
         Build non-horizontal selections: vertical level and leadtime.
@@ -412,12 +344,7 @@ class EarthMLSubset:
             sel_lat_min = float(np.nanmin(masked_lat.values))
             sel_lat_max = float(np.nanmax(masked_lat.values))
 
-            ds = self._subset_curvilinear_bbox(
-                ds,
-                mask=mask,
-                lon_coord=lon_coord,
-                lat_coord=lat_coord,
-            )
+            ds = ds.where(mask, drop=True)
 
             if selection_d:
                 ds = ds.sel(**selection_d)
