@@ -7,8 +7,6 @@ import numpy as np
 import cf_xarray
 import xarray as xr
 
-import xesmf as xe
-
 from scipy.interpolate import griddata
 from scipy.spatial import Delaunay, QhullError
 
@@ -25,6 +23,14 @@ _REGRID_GEOMETRY_CACHE = OrderedDict()
 _REGRID_GEOMETRY_CACHE_MAX_ITEMS = max(int(os.getenv("EARTHML_REGRID_CACHE_MAX_ITEMS", "16")), 1)
 _REGRID_INTERP_MAP_CACHE = OrderedDict()
 _REGRID_INTERP_MAP_CACHE_MAX_ITEMS = max(int(os.getenv("EARTHML_REGRID_INTERP_CACHE_MAX_ITEMS", "64")), 1)
+
+
+def _import_xesmf():
+    # Import lazily so plain dataset loading does not pull xESMF/ESMF native
+    # libraries into the process before h5netcdf/h5py get initialized.
+    import xesmf as xe
+
+    return xe
 
 
 def _cache_base_dir() -> Path:
@@ -532,6 +538,7 @@ class EarthMLRegrid:
                 weights_path = _xesmf_cache_dir() / f"{weights_key.hexdigest()}.nc"
                 weights_path.parent.mkdir(parents=True, exist_ok=True)
 
+                xe = _import_xesmf()
                 regridder = xe.Regridder(
                     ds_in_grid,
                     ds_out_grid,
