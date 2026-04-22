@@ -737,13 +737,15 @@ class EarthMLRegrid:
                             weights_path=weights_path,
                             method="bilinear",
                         )
+                        with xr.open_dataset(weights_path, engine="h5netcdf") as ds_weights:
+                            ds_weights = ds_weights.load()
                         regridder = xe.Regridder(
                             ds_in_grid,
                             ds_out_grid,
                             "bilinear",
                             unmapped_to_nan=True,
                             reuse_weights=True,
-                            filename=str(weights_path),
+                            weights=ds_weights,
                         )
                     else:
                         raise
