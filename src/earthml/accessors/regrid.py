@@ -44,6 +44,34 @@ def _invalid_curvilinear_coord_mask(
     return (~finite) | sentinel
 
 
+def _invalidate_points_touching_bad_cells(valid_point_mask: np.ndarray) -> np.ndarray:
+    valid_point_mask = np.asarray(valid_point_mask, dtype=bool)
+    if valid_point_mask.ndim != 2:
+        raise ValueError("Expected a 2D valid-point mask for curvilinear grids.")
+
+    ny, nx = valid_point_mask.shape
+    if ny < 2 or nx < 2:
+        return valid_point_mask
+
+    bad_point_mask = ~valid_point_mask
+    bad_cell_mask = (
+        bad_point_mask[:-1, :-1]
+        | bad_point_mask[1:, :-1]
+        | bad_point_mask[:-1, 1:]
+        | bad_point_mask[1:, 1:]
+    )
+
+    if not bad_cell_mask.any():
+        return valid_point_mask
+
+    expanded_bad_points = np.zeros_like(bad_point_mask, dtype=bool)
+    expanded_bad_points[:-1, :-1] |= bad_cell_mask
+    expanded_bad_points[1:, :-1] |= bad_cell_mask
+    expanded_bad_points[:-1, 1:] |= bad_cell_mask
+    expanded_bad_points[1:, 1:] |= bad_cell_mask
+    return valid_point_mask & (~expanded_bad_points)
+
+
 def _crop_curvilinear_valid_bbox(
     lat_2d: np.ndarray,
     lon_2d: np.ndarray,
@@ -54,6 +82,7 @@ def _crop_curvilinear_valid_bbox(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, xr.DataArray]:
     coord_invalid_2d = _invalid_curvilinear_coord_mask(lat_2d, lon_2d)
     valid_2d = np.asarray(data_mask_2d, dtype=bool) & (~coord_invalid_2d)
+    valid_2d = _invalidate_points_touching_bad_cells(valid_2d)
     row_has_valid = np.any(valid_2d, axis=1)
     col_has_valid = np.any(valid_2d, axis=0)
     if not row_has_valid.any() or not col_has_valid.any():
