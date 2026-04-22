@@ -539,12 +539,13 @@ class EarthMLRegrid:
                 weights_path.parent.mkdir(parents=True, exist_ok=True)
 
                 xe = _import_xesmf()
+                reuse_weights = weights_path.exists()
                 regridder = xe.Regridder(
                     ds_in_grid,
                     ds_out_grid,
                     "bilinear",
                     unmapped_to_nan=True,
-                    reuse_weights=True,
+                    reuse_weights=reuse_weights,
                     filename=str(weights_path),
                 )
 
