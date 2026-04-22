@@ -44,70 +44,100 @@ def _invalid_curvilinear_coord_mask(
     return (~finite) | sentinel
 
 
-def _invalidate_points_touching_bad_cells(valid_point_mask: np.ndarray) -> np.ndarray:
-    valid_point_mask = np.asarray(valid_point_mask, dtype=bool)
-    if valid_point_mask.ndim != 2:
-        raise ValueError("Expected a 2D valid-point mask for curvilinear grids.")
-
-    ny, nx = valid_point_mask.shape
-    if ny < 2 or nx < 2:
-        return valid_point_mask
-
-    bad_point_mask = ~valid_point_mask
-    bad_cell_mask = (
-        bad_point_mask[:-1, :-1]
-        | bad_point_mask[1:, :-1]
-        | bad_point_mask[:-1, 1:]
-        | bad_point_mask[1:, 1:]
-    )
-
-    if not bad_cell_mask.any():
-        return valid_point_mask
-
-    expanded_bad_points = np.zeros_like(bad_point_mask, dtype=bool)
-    expanded_bad_points[:-1, :-1] |= bad_cell_mask
-    expanded_bad_points[1:, :-1] |= bad_cell_mask
-    expanded_bad_points[:-1, 1:] |= bad_cell_mask
-    expanded_bad_points[1:, 1:] |= bad_cell_mask
-    return valid_point_mask & (~expanded_bad_points)
-
-
-def _trim_invalid_curvilinear_border(
+def _repair_curvilinear_coords(
     lat_2d: np.ndarray,
     lon_2d: np.ndarray,
-    valid_2d: np.ndarray,
-    da_spatial: xr.DataArray,
-    y_dim_src: str,
-    x_dim_src: str,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, xr.DataArray]:
+    *,
+    invalid_mask: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     lat_2d = np.asarray(lat_2d, dtype=np.float64)
     lon_2d = np.asarray(lon_2d, dtype=np.float64)
-    valid_2d = np.asarray(valid_2d, dtype=bool)
+    invalid = _invalid_curvilinear_coord_mask(lat_2d, lon_2d) if invalid_mask is None else np.asarray(invalid_mask, dtype=bool)
 
-    while True:
-        invalid = (~valid_2d) | _invalid_curvilinear_coord_mask(lat_2d, lon_2d)
-        ny, nx = invalid.shape
-        if ny <= 2 or nx <= 2:
-            break
+    lat_fixed = lat_2d.copy()
+    lon_fixed = lon_2d.copy()
+    original_invalid = invalid.copy()
 
-        trim_top = bool(invalid[0].any())
-        trim_bottom = bool(invalid[-1].any())
-        trim_left = bool(invalid[:, 0].any())
-        trim_right = bool(invalid[:, -1].any())
-        if not (trim_top or trim_bottom or trim_left or trim_right):
-            break
+    ny, nx = lat_fixed.shape
 
-        y_slice = slice(1, None) if trim_top else slice(0, -1) if trim_bottom else slice(None)
-        x_slice = slice(1, None) if trim_left else slice(0, -1) if trim_right else slice(None)
-        lat_2d = lat_2d[y_slice, x_slice]
-        lon_2d = lon_2d[y_slice, x_slice]
-        valid_2d = valid_2d[y_slice, x_slice]
-        da_spatial = da_spatial.isel({
-            y_dim_src: y_slice,
-            x_dim_src: x_slice,
-        })
+    # First pass: repair each row by extending/interpolating from valid neighbors.
+    for iy in range(ny):
+        row_bad = invalid[iy]
+        if not row_bad.any():
+            continue
+        valid_idx = np.flatnonzero(~row_bad)
+        if valid_idx.size == 0:
+            continue
 
-    return lat_2d, lon_2d, valid_2d, da_spatial
+        first = int(valid_idx[0])
+        last = int(valid_idx[-1])
+
+        # Fill interior gaps by linear interpolation along x.
+        if valid_idx.size >= 2:
+            xp = valid_idx.astype(np.float64)
+            x_all = np.arange(nx, dtype=np.float64)
+            lat_interp = np.interp(x_all, xp, lat_fixed[iy, valid_idx])
+            lon_interp = np.interp(x_all, xp, lon_fixed[iy, valid_idx])
+            gap_mask = row_bad & (np.arange(nx) > first) & (np.arange(nx) < last)
+            lat_fixed[iy, gap_mask] = lat_interp[gap_mask]
+            lon_fixed[iy, gap_mask] = lon_interp[gap_mask]
+
+        # Extend left using the first local step if available.
+        if first > 0:
+            if valid_idx.size >= 2:
+                step_lat = lat_fixed[iy, valid_idx[1]] - lat_fixed[iy, first]
+                step_lon = lon_fixed[iy, valid_idx[1]] - lon_fixed[iy, first]
+            else:
+                step_lat = 0.0
+                step_lon = 0.0
+            for ix in range(first - 1, -1, -1):
+                lat_fixed[iy, ix] = lat_fixed[iy, ix + 1] - step_lat
+                lon_fixed[iy, ix] = lon_fixed[iy, ix + 1] - step_lon
+
+        # Extend right using the last local step if available.
+        if last < nx - 1:
+            if valid_idx.size >= 2:
+                step_lat = lat_fixed[iy, last] - lat_fixed[iy, valid_idx[-2]]
+                step_lon = lon_fixed[iy, last] - lon_fixed[iy, valid_idx[-2]]
+            else:
+                step_lat = 0.0
+                step_lon = 0.0
+            for ix in range(last + 1, nx):
+                lat_fixed[iy, ix] = lat_fixed[iy, ix - 1] + step_lat
+                lon_fixed[iy, ix] = lon_fixed[iy, ix - 1] + step_lon
+
+    # Second pass: any rows that were fully invalid borrow from the nearest repaired row.
+    still_bad = _invalid_curvilinear_coord_mask(lat_fixed, lon_fixed)
+    row_all_bad = np.all(still_bad, axis=1)
+    good_rows = np.flatnonzero(~row_all_bad)
+    if good_rows.size:
+        for iy in np.flatnonzero(row_all_bad):
+            nearest = int(good_rows[np.argmin(np.abs(good_rows - iy))])
+            lat_fixed[iy, :] = lat_fixed[nearest, :]
+            lon_fixed[iy, :] = lon_fixed[nearest, :]
+
+    # Final fallback: column-wise interpolation for any remaining isolated invalid points.
+    still_bad = _invalid_curvilinear_coord_mask(lat_fixed, lon_fixed)
+    if still_bad.any():
+        for ix in range(nx):
+            col_bad = still_bad[:, ix]
+            if not col_bad.any():
+                continue
+            valid_idx = np.flatnonzero(~col_bad)
+            if valid_idx.size == 0:
+                continue
+            if valid_idx.size == 1:
+                lat_fixed[col_bad, ix] = lat_fixed[valid_idx[0], ix]
+                lon_fixed[col_bad, ix] = lon_fixed[valid_idx[0], ix]
+                continue
+            yp = valid_idx.astype(np.float64)
+            y_all = np.arange(ny, dtype=np.float64)
+            lat_interp = np.interp(y_all, yp, lat_fixed[valid_idx, ix])
+            lon_interp = np.interp(y_all, yp, lon_fixed[valid_idx, ix])
+            lat_fixed[col_bad, ix] = lat_interp[col_bad]
+            lon_fixed[col_bad, ix] = lon_interp[col_bad]
+
+    return lat_fixed, lon_fixed, original_invalid
 
 
 def _crop_curvilinear_valid_bbox(
@@ -118,9 +148,8 @@ def _crop_curvilinear_valid_bbox(
     y_dim_src: str,
     x_dim_src: str,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, xr.DataArray]:
-    coord_invalid_2d = _invalid_curvilinear_coord_mask(lat_2d, lon_2d)
+    lat_2d, lon_2d, coord_invalid_2d = _repair_curvilinear_coords(lat_2d, lon_2d)
     valid_2d = np.asarray(data_mask_2d, dtype=bool) & (~coord_invalid_2d)
-    valid_2d = _invalidate_points_touching_bad_cells(valid_2d)
     row_has_valid = np.any(valid_2d, axis=1)
     col_has_valid = np.any(valid_2d, axis=0)
     if not row_has_valid.any() or not col_has_valid.any():
@@ -135,14 +164,6 @@ def _crop_curvilinear_valid_bbox(
     lon_crop = np.asarray(lon_2d[y0:y1, x0:x1], dtype=np.float64)
     mask_crop = np.asarray(valid_2d[y0:y1, x0:x1], dtype=bool)
     da_crop = da_spatial.isel({y_dim_src: slice(y0, y1), x_dim_src: slice(x0, x1)})
-    lat_crop, lon_crop, mask_crop, da_crop = _trim_invalid_curvilinear_border(
-        lat_crop,
-        lon_crop,
-        mask_crop,
-        da_crop,
-        y_dim_src,
-        x_dim_src,
-    )
     return lat_crop, lon_crop, mask_crop, da_crop
 
 
