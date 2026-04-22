@@ -44,6 +44,33 @@ def _invalid_curvilinear_coord_mask(
     return (~finite) | sentinel
 
 
+def _crop_curvilinear_valid_bbox(
+    lat_2d: np.ndarray,
+    lon_2d: np.ndarray,
+    data_mask_2d: np.ndarray,
+    da_spatial: xr.DataArray,
+    y_dim_src: str,
+    x_dim_src: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, xr.DataArray]:
+    coord_invalid_2d = _invalid_curvilinear_coord_mask(lat_2d, lon_2d)
+    valid_2d = np.asarray(data_mask_2d, dtype=bool) & (~coord_invalid_2d)
+    row_has_valid = np.any(valid_2d, axis=1)
+    col_has_valid = np.any(valid_2d, axis=0)
+    if not row_has_valid.any() or not col_has_valid.any():
+        raise ValueError("Curvilinear source grid has no valid support after masking invalid coordinates.")
+
+    y_idx = np.flatnonzero(row_has_valid)
+    x_idx = np.flatnonzero(col_has_valid)
+    y0, y1 = int(y_idx[0]), int(y_idx[-1]) + 1
+    x0, x1 = int(x_idx[0]), int(x_idx[-1]) + 1
+
+    lat_crop = np.asarray(lat_2d[y0:y1, x0:x1], dtype=np.float64)
+    lon_crop = np.asarray(lon_2d[y0:y1, x0:x1], dtype=np.float64)
+    mask_crop = np.asarray(valid_2d[y0:y1, x0:x1], dtype=bool)
+    da_crop = da_spatial.isel({y_dim_src: slice(y0, y1), x_dim_src: slice(x0, x1)})
+    return lat_crop, lon_crop, mask_crop, da_crop
+
+
 def _build_xesmf_weights_on_disk(
     ds_in_grid: xr.Dataset,
     ds_out_grid: xr.Dataset,
@@ -562,13 +589,23 @@ class EarthMLRegrid:
                 # static mask from first slice, or from external/source mask if you have one
                 sample = da_spatial.isel({d: 0 for d in da_spatial.dims[:-2]}) if da_spatial.dims[:-2] else da_spatial
                 data_mask_2d = np.isfinite(sample.values)
-                coord_invalid_2d = _invalid_curvilinear_coord_mask(lat_src_2d, lon_src_2d)
-                mask_2d = data_mask_2d & (~coord_invalid_2d)
+                lat_src_use, lon_src_use, mask_2d, da_spatial = _crop_curvilinear_valid_bbox(
+                    lat_2d=lat_src_2d,
+                    lon_2d=lon_src_2d,
+                    data_mask_2d=data_mask_2d,
+                    da_spatial=da_spatial,
+                    y_dim_src=y_dim_src,
+                    x_dim_src=x_dim_src,
+                )
+                data_np = da_spatial.values
+                leading_dims = da_spatial.dims[:-2]
+                leading_shape = data_np.shape[:-2]
+                ny_src, nx_src = data_np.shape[-2:]
 
-                ds_in_grid = _build_xesmf_grid(lat_src_2d, lon_src_2d, mask_2d=mask_2d)
+                ds_in_grid = _build_xesmf_grid(lat_src_use, lon_src_use, mask_2d=mask_2d)
 
                 weights_key = hashlib.blake2b(digest_size=16)
-                for arr in (lat_src_2d, lon_src_2d, lat_target, lon_target):
+                for arr in (lat_src_use, lon_src_use, lat_target, lon_target):
                     weights_key.update(_hash_array(np.asarray(arr)).encode("ascii"))
                 weights_key.update(b"xesmf")
                 weights_key.update(b"bilinear")
