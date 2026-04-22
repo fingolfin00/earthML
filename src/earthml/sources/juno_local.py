@@ -100,7 +100,7 @@ class JunoLocalSource(MFXarrayLocalSource):
         self.engine = config.engine
 
         self.leadtime = config.leadtime
-        self.elements = self._get_data_filenames(self.leadtime, config.file_name_config)
+        self.elements = self._get_data_filenames(config.file_name_config)
 
         self.select_area_after_request = self.config.select_area_after_request
 
@@ -630,7 +630,6 @@ class JunoLocalSource(MFXarrayLocalSource):
 
     def _get_data_filenames(
         self,
-        leadtime: Leadtime,
         config: JunoLocalSourceFileNameConfig,
     ) -> Sample:
         """Get the data filenames for the given data selection."""
@@ -640,6 +639,7 @@ class JunoLocalSource(MFXarrayLocalSource):
 
         for date in self.date_range:
             attempts = self._candidate_file_attempts_for_date(date, include_exact=True)
+            logger.debug("%s Sample [%s] candidate file names: %s", SOURCE_CTX, date, str(attempts))
             found = False
 
             for attempt in attempts:
