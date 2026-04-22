@@ -246,7 +246,18 @@ class MLBCExperiment:
         if mask_path.is_dir() or mask_path.suffix == ".zarr":
             mask_ds = xr.open_zarr(mask_path)
         else:
-            mask_ds = xr.open_dataset(mask_path)
+            open_errors: list[str] = []
+            for engine in ("h5netcdf", "scipy"):
+                try:
+                    mask_ds = xr.open_dataset(mask_path, engine=engine)
+                    break
+                except Exception as exc:
+                    open_errors.append(f"{engine}: {exc!r}")
+            else:
+                raise OSError(
+                    f"Failed to open external mask dataset {mask_path} with supported engines. "
+                    + " | ".join(open_errors)
+                )
 
         mask_variable = self.config.external_mask_variable
         if mask_variable is not None:
