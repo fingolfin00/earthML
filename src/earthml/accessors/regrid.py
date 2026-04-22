@@ -33,6 +33,17 @@ def _import_xesmf():
     return xe
 
 
+def _invalid_curvilinear_coord_mask(
+    lat_2d: np.ndarray,
+    lon_2d: np.ndarray,
+) -> np.ndarray:
+    lat_2d = np.asarray(lat_2d, dtype=np.float64)
+    lon_2d = np.asarray(lon_2d, dtype=np.float64)
+    finite = np.isfinite(lat_2d) & np.isfinite(lon_2d)
+    sentinel = np.isclose(lat_2d, -1.0, atol=1e-8) & np.isclose(lon_2d, -1.0, atol=1e-8)
+    return (~finite) | sentinel
+
+
 def _build_xesmf_weights_on_disk(
     ds_in_grid: xr.Dataset,
     ds_out_grid: xr.Dataset,
@@ -550,7 +561,9 @@ class EarthMLRegrid:
 
                 # static mask from first slice, or from external/source mask if you have one
                 sample = da_spatial.isel({d: 0 for d in da_spatial.dims[:-2]}) if da_spatial.dims[:-2] else da_spatial
-                mask_2d = np.isfinite(sample.values)
+                data_mask_2d = np.isfinite(sample.values)
+                coord_invalid_2d = _invalid_curvilinear_coord_mask(lat_src_2d, lon_src_2d)
+                mask_2d = data_mask_2d & (~coord_invalid_2d)
 
                 ds_in_grid = _build_xesmf_grid(lat_src_2d, lon_src_2d, mask_2d=mask_2d)
 
