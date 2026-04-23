@@ -2009,6 +2009,10 @@ def run_stage_plot_bundle(
         plot_specs=plot_specs,
         **shared_kwargs,
     )
+    plot_stage_power_spectrum_timeseries(
+        plot_specs=plot_specs,
+        **shared_kwargs,
+    )
     plot_stage_temporal_mean_maps(
         plot_specs=plot_specs,
         **shared_kwargs,
