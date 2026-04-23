@@ -289,7 +289,7 @@ MedFSGridToken: TypeAlias = Literal["T", "T_h", "U", "U_h", "V", "V_h", "W"]
 MedFSVersion: TypeAlias = Literal["6.8", "6.82", "7.1", "8", "9", "10"]
 
 def _medfs_grid_token(var_name: str, medfs_ver: MedFSVersion) -> MedFSGridToken:
-    OLD_VERSIONS = {"6.8", "6.82", "7.1"}
+    OLD_VERSIONS = {}
     if var_name in {"sozotaux", "vozocrtx"}:
         return "U"
     if var_name == "ssu":
@@ -328,7 +328,7 @@ def juno_medfs_forecast_daily(
     root_path: str | Path = "/data/products/MFS/MFS_EAS6v8/bulletin",
     engine: str = "h5netcdf",
     regrid_resolution: float | None = None,
-    per_sample_regrid: bool = False,
+    per_sample_regrid: bool = True,
     file_path_date_format: str = "%Y%m%d",
     file_date_format: str = "%Y%m%d",
     file_open_workers: int | None = 1,
@@ -354,8 +354,9 @@ def juno_medfs_forecast_daily(
             file_name_config=file_name_config,
             path_configs=[
                 JunoLocalSourcePathConfig(
-                    start_date="2022-01-01",
-                    end_date="2022-10-17",
+                    start_date="2021-12-23", # first available EAS6v8 forecast reference time (to get target time: +9 day)
+                    # end_date="2022-10-26", # last available EAS6v8 forecast reference time
+                    end_date="2022-10-02", # last available EAS6v8 analysis
                     root_path="/data/products/MFS/MFS_EAS6v8/bulletin",
                     file_name_config=JunoLocalSourceFileNameConfig(
                         file_path_header=file_path_header,
@@ -370,8 +371,10 @@ def juno_medfs_forecast_daily(
                     ),
                 ),
                 JunoLocalSourcePathConfig(
-                    start_date="2022-10-18",
-                    end_date="2022-11-14",
+                    # start_date="2022-09-10", # first available EAS8v82 forecast reference time (to get target time: +9 day)
+                    start_date="2022-10-03", # first available EAS6v82 analysis
+                    # end_date="2023-02-07", # last available EAS6v82 forecast reference time
+                    end_date="2022-12-22", # day before of first available EAS7v1 analysis - 9 days (max leadtime)
                     root_path="/data/products/MFS/MFS_EAS6v82/bulletin",
                     file_name_config=JunoLocalSourceFileNameConfig(
                         file_path_header=file_path_header,
@@ -386,8 +389,10 @@ def juno_medfs_forecast_daily(
                     ),
                 ),
                 JunoLocalSourcePathConfig(
-                    start_date="2022-11-15",
-                    end_date="2023-11-21",
+                    # start_date="2022-10-27", # first available EAS7v1 forecast reference time (to get target time: +9 day)
+                    start_date="2022-12-23", # first available EAS7v1 analysis - 9 days (max leadtime)
+                    # end_date="2024-03-27", # last available EAS7v1 forecast reference time
+                    end_date="2023-12-01", # day before of first available EAS8 forecast reference
                     root_path="/data/products/MFS/MFS_EAS7v1/bulletin",
                     file_name_config=JunoLocalSourceFileNameConfig(
                         file_path_header=file_path_header,
@@ -401,9 +406,10 @@ def juno_medfs_forecast_daily(
                         realizations=1,
                     ),
                 ),
-                JunoLocalSourcePathConfig(
-                    start_date="2023-11-22",
-                    end_date="2024-11-11",
+                JunoLocalSourcePathConfig( # here forecast -1, 0 also available
+                    start_date="2023-12-02", # first available EAS8 forecast reference time (to get target time: +9 day)
+                    # end_date="2025-02-09", # last available EAS8 forecast reference time
+                    end_date="2024-11-20", # day before of first available EAS9 forecast
                     root_path="/data/products/MFS/MFS_EAS8/bulletin",
                     file_name_config=JunoLocalSourceFileNameConfig(
                         file_path_header=file_path_header,
@@ -418,8 +424,9 @@ def juno_medfs_forecast_daily(
                     ),
                 ),
                 JunoLocalSourcePathConfig(
-                    start_date="2024-11-12",
-                    end_date="2025-11-4",
+                    start_date="2024-11-21", # first available EAS9 forecast reference time (to get target time: +9 day)
+                    # end_date="2026-01-14", # last available EAS9 forecast reference time
+                    end_date="2025-11-12", # day before of first available EAS10 forecast
                     root_path="/data/products/MFS/MFS_EAS9/bulletin",
                     file_name_config=JunoLocalSourceFileNameConfig(
                         file_path_header=file_path_header,
@@ -434,8 +441,8 @@ def juno_medfs_forecast_daily(
                     ),
                 ),
                 JunoLocalSourcePathConfig(
-                    start_date="2025-11-5",
-                    end_date=None,
+                    start_date="2025-11-13", # first available EAS10 forecast reference time (to get target time: +9 day)
+                    end_date=None, # up to now
                     root_path="/data/products/MFS/MedFS_EAS10/bulletin",
                     file_name_config=JunoLocalSourceFileNameConfig(
                         file_path_header=file_path_header,
@@ -459,16 +466,16 @@ def juno_medfs_forecast_daily(
     )
 
 # MedFS EAS10 analysis
+
 @register_provider("ocean.juno.medfs.analysis.daily")
 def juno_medfs_analysis_daily(
     var_name: str,
     leadtime_value: int,
     leadtime_unit: LeadtimeUnit,
-    # root_path: str | Path = "/data/products/MFS/MFS_EAS9/analysis_daily_mean",
     root_path: str | Path = "/data/products/MFS/MedFS_EAS10/analysis_daily_mean",
     engine: str = "h5netcdf",
     regrid_resolution: float | None = None,
-    per_sample_regrid: bool = False,
+    per_sample_regrid: bool = True,
     file_path_date_format: str = "%Y/%m",
     file_date_format: str = "%Y%m%d",
     file_open_workers: int | None = 1,
@@ -476,18 +483,10 @@ def juno_medfs_analysis_daily(
 ) -> SourceConfigContainer:
     leadtime = Leadtime("leadtime", leadtime_unit, 0)
 
+    data_type_suf = "a"
+    file_path_header=""
+    file_path_suffix=""
     file_name_config = JunoLocalSourceFileNameConfig(
-        file_path_header="",
-        file_path_suffix="",
-        file_path_date_format=file_path_date_format,
-        # file_header="medfs-eas9_1d_",
-        # 2022: medfs-eas9_1d_20221231_ALL_grid_T.nc -> 2023:  medfs-eas10_1d_20230101_ALL_grid_T.nc
-        # 20251005: conventions changes: medfs-eas10_1d_20251005_ALL_grid_T.nc -> medfs-eas10_1d_20251021_20251006_ALL_grid_T.nc
-        file_header="medfs-*_1d_*",
-        file_suffix=f"_ALL_grid_{_medfs_grid_token(var_name, 10)}.nc",
-        file_date_format=file_date_format,
-        both_data_and_previous_date_in_file=False,
-        date_separator="-",
         realizations=1,
     )
 
@@ -500,6 +499,113 @@ def juno_medfs_analysis_daily(
             per_sample_regrid=per_sample_regrid,
             file_open_workers=file_open_workers,
             file_name_config=file_name_config,
+            path_configs=[
+                JunoLocalSourcePathConfig(
+                    # start_date="2021-11-29", # first available EAS6v8 analysis
+                    start_date="2022-01-01", # first available EAS6v8 forecast reference time + 9 days (max leadtime)
+                    end_date="2022-10-02", # last available EAS6v8 analysis
+                    root_path="/data/products/MFS/MFS_EAS6v8/analysis_daily_mean",
+                    file_name_config=JunoLocalSourceFileNameConfig(
+                        file_path_header=file_path_header,
+                        file_path_suffix=file_path_suffix,
+                        file_path_date_format=file_path_date_format,
+                        file_header="mfs_eas6v8-",
+                        file_suffix=f"-{data_type_suf}-{_medfs_grid_token(var_name, 6.8)}.nc",
+                        file_date_format=file_date_format,
+                        both_data_and_previous_date_in_file=True,
+                        date_separator="-",
+                        realizations=1,
+                    ),
+                ),
+                JunoLocalSourcePathConfig(
+                    start_date="2022-10-03", # first avaialable EAS6v82 analysis
+                    # end_date="2022-11-04", # day before of first available EAS7v1 forecast reference time + 9 days (max leadtime)
+                    end_date="2022-12-31", # day before of first avaialable EAS7v1 analysis
+                    # end_date="2023-01-15", # last available EAS6v82 analysis
+                    root_path="/data/products/MFS/MFS_EAS6v82/analysis_daily_mean",
+                    file_name_config=JunoLocalSourceFileNameConfig(
+                        file_path_header=file_path_header,
+                        file_path_suffix=file_path_suffix,
+                        file_path_date_format=file_path_date_format,
+                        file_header="mfs_eas6v8-",
+                        file_suffix=f"-{data_type_suf}-{_medfs_grid_token(var_name, 6.82)}.nc",
+                        file_date_format=file_date_format,
+                        both_data_and_previous_date_in_file=True,
+                        date_separator="-",
+                        realizations=1,
+                    ),
+                ),
+                JunoLocalSourcePathConfig(
+                    start_date="2023-01-01", # first avaialable EAS7v1 analysis
+                    end_date="2023-12-10", # day before of first available EAS8 forecast reference + 9 days (max leadtime)
+                    # end_date="2024-03-10", # last available EAS7v1 analysis
+                    root_path="/data/products/MFS/MFS_EAS7v1/analysis_daily_mean",
+                    file_name_config=JunoLocalSourceFileNameConfig(
+                        file_path_header=file_path_header,
+                        file_path_suffix=file_path_suffix,
+                        file_path_date_format=file_path_date_format,
+                        file_header="mfs_eas7-",
+                        file_suffix=f"-{data_type_suf}-{_medfs_grid_token(var_name, 7.1)}.nc",
+                        file_date_format=file_date_format,
+                        both_data_and_previous_date_in_file=True,
+                        date_separator="-",
+                        realizations=1,
+                    ),
+                ),
+                JunoLocalSourcePathConfig(
+                    # start_date="2015-01-01", # first avaialable EAS8 analysis
+                    start_date="2023-12-11", # first available EAS8 forecast reference + 9 days (max leadtime)
+                    # end_date="2025-01-19", # last available EAS8 analysis
+                    end_date="2024-11-29", # day before of first available EAS9 forecast reference + 9 days (max leadtime)
+                    root_path="/data/products/MFS/MFS_EAS8/analysis_daily_mean",
+                    file_name_config=JunoLocalSourceFileNameConfig(
+                        file_path_header=file_path_header,
+                        file_path_suffix=file_path_suffix,
+                        file_path_date_format=file_path_date_format,
+                        file_header="medfs-eas8_1d_",
+                        file_suffix=f"_ALL_grid_{_medfs_grid_token(var_name, 8)}.nc",
+                        file_date_format=file_date_format,
+                        both_data_and_previous_date_in_file=True,
+                        date_separator="_",
+                        realizations=1,
+                    ),
+                ),
+                JunoLocalSourcePathConfig(
+                    # start_date="2015-01-01", # first avaialable EAS9 analysis
+                    start_date="2024-11-30", # first available EAS9 forecast reference + 9 days (max leadtime)
+                    # end_date="2025-12-21", # last available EAS9 analysis
+                    end_date="2025-11-21", # day before of first available EAS10 forecast reference + 9 days (max leadtime)
+                    root_path="/data/products/MFS/MFS_EAS9/analysis_daily_mean",
+                    file_name_config=JunoLocalSourceFileNameConfig(
+                        file_path_header=file_path_header,
+                        file_path_suffix=file_path_suffix,
+                        file_path_date_format=file_path_date_format,
+                        file_header="medfs-eas9_1d_",
+                        file_suffix=f"_ALL_grid_{_medfs_grid_token(var_name, 9)}.nc",
+                        file_date_format=file_date_format,
+                        both_data_and_previous_date_in_file=True,
+                        date_separator="_",
+                        realizations=1,
+                    ),
+                ),
+                JunoLocalSourcePathConfig(
+                    start_date="2025-11-22", # first available EAS10 forecast reference + 9 days (max leadtime)
+                    # start_date="2019-01-01", # first avaialable EAS10 analysis
+                    end_date=None, # up to now
+                    root_path="/data/products/MFS/MedFS_EAS10/analysis_daily_mean",
+                    file_name_config=JunoLocalSourceFileNameConfig(
+                        file_path_header=file_path_header,
+                        file_path_suffix=file_path_suffix,
+                        file_path_date_format=file_path_date_format,
+                        file_header="medfs-eas10_1d_",
+                        file_suffix=f"_ALL_grid_{_medfs_grid_token(var_name, 10)}.nc",
+                        file_date_format=file_date_format,
+                        both_data_and_previous_date_in_file=True,
+                        date_separator="_",
+                        realizations=1,
+                    ),
+                ),
+            ],
             regrid_config=RegridConfig(
                 regrid_resolution=regrid_resolution,
                 regrid_vars=[var_name],
