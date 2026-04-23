@@ -1,6 +1,7 @@
 import os
 from datetime import datetime
 
+os.environ["ESMFMKFILE"] = "/Users/jacopodallaglio/ML/earthML/.esmf/lib/libO/Darwin.gfortranclang.64.openmpi.default/esmf.mk"
 os.environ.setdefault("KMP_WARNINGS", "0")
 os.environ.setdefault("OMP_MAX_ACTIVE_LEVELS", "1")
 
@@ -29,7 +30,7 @@ if __name__ == "__main__":
     extra_exp_suffix            = "" # additional custom suffix to add to exp name (and resulting folder), e.g. "_debug" or "_try1"
 
     exp_root_folder             = "/Users/jacopodallaglio/ML/experiments_earthML_seasonal_atmo"
-    dataset_cache_root          = "/Users/jacopodallaglio/ML/.earthml-dataset-cache"
+    dataset_cache_root          = "/Users/jacopodallaglio/ML/.earthml-dataset-cache-atmo"
     earthkit_cache_dir          = "/Users/jacopodallaglio/ML/.earthkit-cache" # if using earthkit datasource
     external_mask_path          = None # e.g. "/abs/path/to/med_ocean_mask_0p04.nc"
     external_mask_variable      = None # e.g. "mask"
@@ -164,7 +165,7 @@ if __name__ == "__main__":
             net=net,
             # Optional
             dask_workers=2,
-            memory_limit="8GB",
+            memory_limit="32GB",
             external_mask_path=external_mask_path,
             external_mask_variable=external_mask_variable,
             only_longest_train_period=only_longest_train_period,
