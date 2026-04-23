@@ -872,6 +872,19 @@ def _shade_model_color(color: str | None, *, weight: float) -> str | None:
     return mcolors.to_hex(shaded)
 
 
+def _build_model_difference_da(
+    corrected: xr.DataArray,
+    reference: xr.DataArray,
+) -> xr.DataArray | None:
+    join_dims = [dim for dim in corrected.dims if dim in reference.dims]
+    if not join_dims:
+        return None
+    corrected_aligned, reference_aligned = xr.align(corrected, reference, join="inner")
+    if corrected_aligned.size == 0 or reference_aligned.size == 0:
+        return None
+    return corrected_aligned - reference_aligned
+
+
 def _combined_leadtime_legend_values(
     plot_data: dict[str, xr.DataArray],
     *,
@@ -3095,7 +3108,9 @@ def save_field_timeseries_plots(
                         metric_label = format_metric_label(metric_name, base_unit=base_unit)
                         filename_context = _context_filename_suffix(context_values)
                         fig, ax = plt.subplots(figsize=(12, 5.5))
+                        diff_fig, diff_ax = plt.subplots(figsize=(12, 5.5))
                         plotted = False
+                        diff_plotted = False
                         show_legend = any(_has_multi_realization(da) for da in per_model_ts.values())
 
                         for model_name, da in per_model_ts.items():
@@ -3173,7 +3188,77 @@ def save_field_timeseries_plots(
 
                         if not plotted:
                             plt.close(fig)
+                            plt.close(diff_fig)
                             continue
+
+                        diff_model_data: dict[str, xr.DataArray] = {}
+                        corrected_model = MODEL_KNOBS["corrected_model"]
+                        reference_model = MODEL_KNOBS["reference_model"]
+                        corrected_da = per_model_ts.get(corrected_model)
+                        reference_da = per_model_ts.get(reference_model)
+                        if corrected_da is not None and reference_da is not None:
+                            diff_da = _build_model_difference_da(corrected_da, reference_da)
+                            if diff_da is not None and diff_da.size > 0:
+                                diff_model_data[DIFFERENCE_MODEL] = diff_da
+                                diff_show_legend = _has_multi_realization(diff_da)
+                                diff_leadtime_values = _leadtime_values(diff_da) if combine_leadtimes else []
+                                if combine_leadtimes and "leadtime" in diff_da.dims and diff_leadtime_values:
+                                    shade_weight_map = _leadtime_shade_weight_map(diff_leadtime_values)
+                                    linestyle_map = _leadtime_linestyle_map(diff_leadtime_values)
+                                    for leadtime_value in diff_leadtime_values:
+                                        da_lt = diff_da.sel(leadtime=leadtime_value, drop=True)
+                                        if leadtime_style == "shade":
+                                            line_color = _shade_model_color(
+                                                MODEL_COLORS.get(DIFFERENCE_MODEL, MODEL_COLORS.get(corrected_model)),
+                                                weight=shade_weight_map[leadtime_value],
+                                            )
+                                            mean_ls = "-"
+                                            members_ls = "--"
+                                        else:
+                                            line_color = MODEL_COLORS.get(DIFFERENCE_MODEL, MODEL_COLORS.get(corrected_model))
+                                            mean_ls = linestyle_map[leadtime_value]
+                                            members_ls = mean_ls
+
+                                        plot_realization_timeseries(
+                                            da_lt,
+                                            members=_members_arg(da_lt, enable_spread=diff_show_legend),
+                                            ax=diff_ax,
+                                            x_dim=time_dim,
+                                            ens_dim=_realization_dim(da_lt) or "realization",
+                                            x_label="Time",
+                                            y_label=f"Delta {metric_label}",
+                                            label=MODEL_DISPLAY_NAMES.get(DIFFERENCE_MODEL, DIFFERENCE_MODEL),
+                                            mean_label=(
+                                                MODEL_DISPLAY_NAMES.get(DIFFERENCE_MODEL, DIFFERENCE_MODEL)
+                                                if leadtime_value == diff_leadtime_values[-1]
+                                                else None
+                                            ),
+                                            color=line_color,
+                                            plot_members=plot_realization_members,
+                                            members_ls=members_ls,
+                                            members_alpha=0.08,
+                                            mean_ls=mean_ls,
+                                            mean_alpha=1.0,
+                                            spread_alpha=0.12,
+                                            eager_compute=disable_flox,
+                                        )
+                                        diff_plotted = True
+                                else:
+                                    plot_realization_timeseries(
+                                        diff_da,
+                                        members=_members_arg(diff_da, enable_spread=diff_show_legend),
+                                        ax=diff_ax,
+                                        x_dim=time_dim,
+                                        ens_dim=_realization_dim(diff_da) or "realization",
+                                        x_label="Time",
+                                        y_label=f"Delta {metric_label}",
+                                        label=MODEL_DISPLAY_NAMES.get(DIFFERENCE_MODEL, DIFFERENCE_MODEL),
+                                        mean_label=MODEL_DISPLAY_NAMES.get(DIFFERENCE_MODEL, DIFFERENCE_MODEL),
+                                        color=MODEL_COLORS.get(DIFFERENCE_MODEL, MODEL_COLORS.get(corrected_model)),
+                                        plot_members=plot_realization_members,
+                                        eager_compute=disable_flox,
+                                    )
+                                    diff_plotted = True
 
                         _set_title_and_subtitle(
                             fig,
@@ -3215,6 +3300,39 @@ def save_field_timeseries_plots(
                             f"Saved metric timeseries for metric={metric_name} type={metric_type} region={plot_region or 'unknown'} to:",
                             plot_path,
                         )
+
+                        if diff_plotted:
+                            _set_title_and_subtitle(
+                                diff_fig,
+                                diff_ax,
+                                title=f"Delta {metric_label} timeseries ({format_variable_display_name(variable)})",
+                                subtitle=_plot_context_subtitle(
+                                    context_values,
+                                    leadtime_unit=leadtime_unit,
+                                    filters=filters,
+                                ),
+                            )
+                            diff_ax.axhline(0.0, color="0.3", lw=1.0, ls=":")
+                            if combine_leadtimes:
+                                _set_combined_leadtime_legend(
+                                    diff_ax,
+                                    plot_data=diff_model_data,
+                                    truth_model=None,
+                                    leadtime_unit=leadtime_unit,
+                                    leadtime_style=leadtime_style,
+                                )
+                            elif _has_multi_realization(next(iter(diff_model_data.values()))):
+                                diff_ax.legend(fontsize=9)
+                            diff_fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
+
+                            diff_path = metric_folder / f"{filename}_diff.png"
+                            diff_fig.savefig(diff_path, bbox_inches="tight", dpi=150)
+                            saved_paths.append(diff_path)
+                            debug_print(
+                                f"Saved diff metric timeseries for metric={metric_name} type={metric_type} region={plot_region or 'unknown'} to:",
+                                diff_path,
+                            )
+                        plt.close(diff_fig)
 
     return saved_paths
 
