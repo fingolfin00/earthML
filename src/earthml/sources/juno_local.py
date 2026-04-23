@@ -76,6 +76,7 @@ class JunoLocalSourceConfig:
     engine                      : str
     regrid_config               : RegridConfig
     per_sample_regrid           : bool = False
+    per_product_regrid          : bool = False
     file_name_config            : JunoLocalSourceFileNameConfig | None = None
     path_configs                : list[JunoLocalSourcePathConfig] = field(default_factory=list)
     select_area_after_request   : bool = True
@@ -105,9 +106,12 @@ class JunoLocalSource(MFXarrayLocalSource):
         self.select_area_after_request = self.config.select_area_after_request
 
         self.per_sample_regrid = bool(config.per_sample_regrid)
+        self.per_product_regrid = bool(config.per_product_regrid)
+        if self.per_sample_regrid and self.per_product_regrid:
+            raise ValueError("per_sample_regrid and per_product_regrid cannot both be True")
         self.sample_regrid_resolution = config.regrid_config.regrid_resolution
         self.regrid_vars = config.regrid_config.regrid_vars if config.regrid_config.regrid_vars is not None else self.var_name_list
-        self.regrid_resolution = None if self.per_sample_regrid else self.sample_regrid_resolution
+        self.regrid_resolution = None if (self.per_sample_regrid or self.per_product_regrid) else self.sample_regrid_resolution
 
         self.cfgrib_idx_path = str(config.cfgrib_idx_path)
         if self.engine == "cfgrib" and self.cfgrib_idx_path:
@@ -263,7 +267,9 @@ class JunoLocalSource(MFXarrayLocalSource):
                 "files": exact_files,
             })
 
-        if date_config.minus_timedelta is not None:
+        allow_shifted_fallback = not self.per_product_regrid
+
+        if allow_shifted_fallback and date_config.minus_timedelta is not None:
             minus_date = pd.Timestamp(date) - date_config.minus_timedelta
             minus_glob = self._build_data_glob(
                 config=date_config,
@@ -279,7 +285,7 @@ class JunoLocalSource(MFXarrayLocalSource):
                 "files": minus_files,
             })
 
-        if date_config.plus_timedelta is not None:
+        if allow_shifted_fallback and date_config.plus_timedelta is not None:
             plus_date = pd.Timestamp(date) + date_config.plus_timedelta
             plus_glob = self._build_data_glob(
                 config=date_config,
@@ -430,6 +436,32 @@ class JunoLocalSource(MFXarrayLocalSource):
 
         return self.path, self.config.file_name_config
 
+    def _product_key_for_date(self, date) -> tuple[str, str, str, str, str, str, str]:
+        previous_date = pd.Timestamp(date) - self.leadtime.to_timedelta()
+        root_path, file_name_config = self._resolve_path_config(previous_date)
+        return (
+            str(Path(root_path)),
+            file_name_config.file_header,
+            file_name_config.file_suffix,
+            file_name_config.file_path_header,
+            file_name_config.file_path_suffix,
+            file_name_config.file_date_format,
+            file_name_config.date_separator,
+        )
+
+    @staticmethod
+    def _product_label(product_key: tuple[str, str, str, str, str, str, str]) -> str:
+        root_path, file_header, file_suffix, *_ = product_key
+        root_name = Path(root_path).name or root_path
+        return f"{root_name}:{file_header}{file_suffix}"
+
+    def _group_dates_by_product(self, dates: list[pd.Timestamp]) -> dict[tuple[str, str, str, str, str, str, str], list[pd.Timestamp]]:
+        groups: dict[tuple[str, str, str, str, str, str, str], list[pd.Timestamp]] = {}
+        for date in dates:
+            key = self._product_key_for_date(date)
+            groups.setdefault(key, []).append(date)
+        return groups
+
     def _open_sample_dataset(
         self,
         sample: list[Path],
@@ -439,6 +471,7 @@ class JunoLocalSource(MFXarrayLocalSource):
         selected_vars: list,
         has_shifted_samples: bool,
         lock,
+        apply_regrid: bool,
     ) -> xr.Dataset | None:
         t0 = time.perf_counter()
         if len(sample) > 1:
@@ -559,7 +592,7 @@ class JunoLocalSource(MFXarrayLocalSource):
                     {realization_concat_dim: ds_sample[realization_concat_dim]}
                 )
 
-        ds_sample = self._normalize_sample_dataset(ds_sample, date)
+        ds_sample = self._normalize_sample_dataset(ds_sample, date, apply_regrid=apply_regrid)
         logger.debug(
             "%s sample load timing date=%s files=%s total=%.3fs",
             SOURCE_CTX,
@@ -569,7 +602,7 @@ class JunoLocalSource(MFXarrayLocalSource):
         )
         return ds_sample
 
-    def _normalize_sample_dataset(self, ds_sample: xr.Dataset, date) -> xr.Dataset | None:
+    def _normalize_sample_dataset(self, ds_sample: xr.Dataset, date, *, apply_regrid: bool) -> xr.Dataset | None:
         t0 = time.perf_counter()
         if "_has_var" not in ds_sample:
             raise ValueError(f"{date}: ds_sample has no _has_var flag")
@@ -611,7 +644,7 @@ class JunoLocalSource(MFXarrayLocalSource):
                 f"{date}: unsupported longitude coord {lon_name!r} with ndim={lon_da.ndim}"
             )
 
-        if self.per_sample_regrid and self.sample_regrid_resolution is not None:
+        if apply_regrid and self.sample_regrid_resolution is not None:
             ds_sample = ds_sample.earthml.regrid_to_rectilinear(
                 region=self.data_selection.region,
                 resolution=self.sample_regrid_resolution,
@@ -672,6 +705,215 @@ class JunoLocalSource(MFXarrayLocalSource):
 
         return s
 
+    def _load_samples_for_dates(
+        self,
+        *,
+        dates: list[pd.Timestamp],
+        realization_concat_dim: str,
+        selected_vars: list,
+        has_shifted_samples: bool,
+        lock,
+        apply_regrid: bool,
+        progress_label: str,
+    ) -> dict[pd.Timestamp, xr.Dataset]:
+        samples_d: dict[pd.Timestamp, xr.Dataset] = {}
+        samples = [self.elements.samples[date] for date in dates]
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            console=get_console(),
+        ) as prog:
+            task = prog.add_task(progress_label, total=len(samples))
+
+            def _load_for_date(sample, date):
+                assert isinstance(sample, list), f"Sample should be a list but it is {type(sample)}"
+                return self._open_sample_dataset(
+                    sample,
+                    date,
+                    realization_concat_dim=realization_concat_dim,
+                    selected_vars=selected_vars,
+                    has_shifted_samples=has_shifted_samples,
+                    lock=lock,
+                    apply_regrid=apply_regrid,
+                )
+
+            if self.file_open_workers == 1:
+                for sample, date in zip(samples, dates):
+                    ds_sample = _load_for_date(sample, date)
+                    if ds_sample is None:
+                        self.elements.missed.add(date)
+                        logger.debug("%s Juno local sample [%s] returned None", SOURCE_CTX, date)
+                    else:
+                        samples_d[date] = ds_sample
+                        logger.debug("%s Juno local, vars in sample [%s]: %s", SOURCE_CTX, date, ds_sample.data_vars)
+                    prog.advance(task)
+            else:
+                workers = min(self.file_open_workers, len(samples))
+                logger.info("%s Opening Juno local samples with %s worker threads", SOURCE_CTX, workers)
+                future_to_date = {}
+
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    for sample, date in zip(samples, dates):
+                        future = pool.submit(_load_for_date, sample, date)
+                        future_to_date[future] = date
+
+                    for future in as_completed(future_to_date):
+                        date = future_to_date[future]
+                        ds_sample = future.result()
+                        if ds_sample is None:
+                            self.elements.missed.add(date)
+                            logger.debug("%s Juno local sample [%s] returned None", SOURCE_CTX, date)
+                        else:
+                            samples_d[date] = ds_sample
+                            logger.debug("%s Juno local, vars in sample [%s]: %s", SOURCE_CTX, date, ds_sample.data_vars)
+                        prog.advance(task)
+
+        return samples_d
+
+    def _align_samples_to_shared_lon_grid(
+        self,
+        samples_d: dict[Any, xr.Dataset],
+        *,
+        label: str,
+    ) -> dict[Any, xr.Dataset]:
+        if not samples_d:
+            return samples_d
+
+        valid_keys = sorted(samples_d)
+        ref_key = valid_keys[0]
+        ref_lon_name = samples_d[ref_key].earthml.guessed_coords.longitude
+        ref_lon_da = samples_d[ref_key][ref_lon_name]
+        ref_lon = np.asarray(ref_lon_da.values, dtype=np.float64)
+        ref_lon = np.round(ref_lon, 10)
+
+        if ref_lon_da.ndim == 1:
+            ref_lon = np.unique(ref_lon)
+            logger.info("%s %s inferred reference 1D lon size: %s", SOURCE_CTX, label, ref_lon.size)
+        elif ref_lon_da.ndim == 2:
+            logger.info("%s %s inferred reference 2D lon shape: %s", SOURCE_CTX, label, ref_lon.shape)
+        else:
+            raise ValueError(
+                f"{ref_key}: unsupported reference longitude coord {ref_lon_name!r} "
+                f"with ndim={ref_lon_da.ndim}"
+            )
+
+        out: dict[Any, xr.Dataset] = {}
+        for key, ds_sample in samples_d.items():
+            lon_name = ds_sample.earthml.guessed_coords.longitude
+            lon_da = ds_sample[lon_name]
+            vals = np.asarray(lon_da.values, dtype=np.float64)
+            vals = np.round(vals, 10)
+
+            if lon_da.ndim != ref_lon_da.ndim:
+                raise ValueError(
+                    f"{key}: longitude ndim mismatch {lon_da.ndim} vs ref {ref_lon_da.ndim}"
+                )
+
+            if lon_da.ndim == 1:
+                if vals.size != ref_lon.size:
+                    raise ValueError(
+                        f"{key}: longitude size mismatch {vals.size} vs ref {ref_lon.size}"
+                    )
+                if not np.allclose(vals, ref_lon, atol=1e-8, rtol=0.0):
+                    diff = np.max(np.abs(vals - ref_lon))
+                    raise ValueError(
+                        f"{key}: longitude grid differs from reference, max abs diff={diff}"
+                    )
+                out[key] = ds_sample.assign_coords({lon_name: ref_lon})
+                continue
+
+            if vals.shape != ref_lon.shape:
+                raise ValueError(
+                    f"{key}: longitude shape mismatch {vals.shape} vs ref {ref_lon.shape}"
+                )
+            if not np.allclose(vals, ref_lon, atol=1e-8, rtol=0.0):
+                diff = np.max(np.abs(vals - ref_lon))
+                raise ValueError(
+                    f"{key}: longitude grid differs from reference, max abs diff={diff}"
+                )
+            out[key] = ds_sample.assign_coords({lon_name: (lon_da.dims, ref_lon)})
+
+        return out
+
+    def _trim_samples_to_valid_realizations(
+        self,
+        samples_d: dict[pd.Timestamp, xr.Dataset],
+        *,
+        realization_concat_dim: str,
+    ) -> dict[pd.Timestamp, xr.Dataset]:
+        validity_tasks = []
+        validity_dates = []
+
+        for date, ds in samples_d.items():
+            time_dim = ds.earthml.guessed_dims.time
+            dims = tuple(
+                d for d in (realization_concat_dim, time_dim)
+                if d is not None and d in ds["_has_var"].dims
+            )
+            validity_tasks.append(ds["_has_var"].any(dim=dims))
+            validity_dates.append(date)
+
+        validity_values = dask.compute(*validity_tasks) if validity_tasks else ()
+
+        samples_len = []
+        missing_samples = []
+        filtered: dict[pd.Timestamp, xr.Dataset] = {}
+
+        for date, ds, has_any in zip(validity_dates, (samples_d[d] for d in validity_dates), validity_values):
+            ok = bool(has_any.item())
+            if ok:
+                filtered[date] = ds
+                samples_len.append(ds.sizes.get(realization_concat_dim, 1))
+            else:
+                missing_samples.append(date)
+
+        if not samples_len:
+            raise ValueError(
+                f"No valid samples found for {self.source_name}. "
+                f"Total candidates={len(samples_d)}, missing_samples={len(missing_samples)}"
+            )
+
+        min_R = min(samples_len)
+        for date, ds in filtered.items():
+            if realization_concat_dim in ds.dims:
+                dsR = ds.isel({realization_concat_dim: slice(0, min_R)})
+                R = dsR.sizes[realization_concat_dim]
+                filtered[date] = dsR.assign_coords({realization_concat_dim: np.arange(R)})
+
+        self.elements.missed.update(pd.to_datetime(missing_samples).to_pydatetime().tolist())
+        return filtered
+
+    def _concat_samples_by_time(
+        self,
+        samples_d: dict[pd.Timestamp, xr.Dataset],
+    ) -> xr.Dataset:
+        if not samples_d:
+            raise ValueError(
+                f"No datasets left to concatenate for {self.source_name} after removing missed samples."
+            )
+
+        ref_date = sorted(samples_d)[0]
+        concat_time_dim = (
+            samples_d[ref_date].earthml.guessed_dims.time
+            or samples_d[ref_date].earthml.guessed_coords.time
+            or "time"
+        )
+        times = np.array(sorted(samples_d.keys()), dtype="datetime64[ns]")
+        objs = [samples_d[d] for d in sorted(samples_d)]
+        ds_all = xr.concat(
+            objs=objs,
+            dim=xr.IndexVariable(concat_time_dim, times),
+            coords="minimal",
+            compat="override",
+            join="outer",
+            combine_attrs="drop_conflicts",
+        )
+        return ds_all
+
 
     def _get_data(self) -> xr.Dataset:
         samples = [s for date, s in self.elements.samples.items() if date not in self.elements.missed]
@@ -691,7 +933,6 @@ class JunoLocalSource(MFXarrayLocalSource):
             len(self.elements.missed),
         )
 
-        samples_d: dict[pd.Timestamp, xr.Dataset] = {}
         lock = SerializableLock()
 
         common_args = {
@@ -725,61 +966,106 @@ class JunoLocalSource(MFXarrayLocalSource):
 
         is_var_list = isinstance(self.data_selection.variable, list)
         selected_vars = self.data_selection.variable if is_var_list else [self.data_selection.variable]
+        if self.per_product_regrid and self.sample_regrid_resolution is not None:
+            product_groups = self._group_dates_by_product(dates)
+            logger.info(
+                "%s Per-product regrid enabled: %s active product groups",
+                SOURCE_CTX,
+                len(product_groups),
+            )
+            for product_key, group_dates in product_groups.items():
+                logger.info(
+                    "%s Product group %s has %s samples",
+                    SOURCE_CTX,
+                    self._product_label(product_key),
+                    len(group_dates),
+                )
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TimeElapsedColumn(),
-            console=get_console(),
-        ) as prog:
-            task = prog.add_task("Opening local Juno samples", total=len(samples))
-
-            def _load_for_date(sample, date):
-                assert isinstance(sample, list), f"Sample should be a list but it is {type(sample)}"
-                return self._open_sample_dataset(
-                    sample,
-                    date,
+            product_datasets: dict[pd.Timestamp, xr.Dataset] = {}
+            for product_key, group_dates in product_groups.items():
+                label = self._product_label(product_key)
+                group_samples_d = self._load_samples_for_dates(
+                    dates=group_dates,
                     realization_concat_dim=realization_concat_dim,
                     selected_vars=selected_vars,
                     has_shifted_samples=has_shifted_samples,
                     lock=lock,
+                    apply_regrid=False,
+                    progress_label=f"Opening local Juno samples ({label})",
+                )
+                if not group_samples_d:
+                    logger.warning("%s Product group %s produced no valid native samples", SOURCE_CTX, label)
+                    continue
+
+                dbg_sample_k = next(iter(group_samples_d))
+                logger.debug(
+                    "%s Juno local, size of native ds[%s] for %s after open_mfdataset: %s",
+                    SOURCE_CTX,
+                    dbg_sample_k,
+                    label,
+                    group_samples_d[dbg_sample_k].sizes,
                 )
 
-            if self.file_open_workers == 1:
-                for sample, date in zip(samples, dates):
-                    ds_sample = _load_for_date(sample, date)
-                    if ds_sample is None:
-                        self.elements.missed.add(date)
-                    else:
-                        samples_d[date] = ds_sample
-                    if ds_sample is None:
-                        self.elements.missed.add(date)
-                        logger.debug("%s Juno local sample [%s] returned None", SOURCE_CTX, date)
-                    else:
-                        samples_d[date] = ds_sample
-                        logger.debug("%s Juno local, vars in sample [%s]: %s", SOURCE_CTX, date, ds_sample.data_vars)
-                    prog.advance(task)
-            else:
-                workers = min(self.file_open_workers, len(samples))
-                logger.info("%s Opening Juno local samples with %s worker threads", SOURCE_CTX, workers)
-                future_to_date = {}
+                group_samples_d = self._align_samples_to_shared_lon_grid(group_samples_d, label=f"{label} native")
+                group_samples_d = self._trim_samples_to_valid_realizations(
+                    group_samples_d,
+                    realization_concat_dim=realization_concat_dim,
+                )
+                if not group_samples_d:
+                    logger.warning("%s Product group %s left no native samples after validity filtering", SOURCE_CTX, label)
+                    continue
 
-                with ThreadPoolExecutor(max_workers=workers) as pool:
-                    for sample, date in zip(samples, dates):
-                        future = pool.submit(_load_for_date, sample, date)
-                        future_to_date[future] = date
+                product_ds = self._concat_samples_by_time(group_samples_d)
+                logger.info("%s Regridding product group %s after native concat", SOURCE_CTX, label)
+                product_ds = product_ds.earthml.regrid_to_rectilinear(
+                    region=self.data_selection.region,
+                    resolution=self.sample_regrid_resolution,
+                    vars_to_regrid=self.regrid_vars,
+                    silent=True,
+                )
+                product_datasets[min(group_samples_d)] = product_ds
 
-                    for future in as_completed(future_to_date):
-                        date = future_to_date[future]
-                        ds_sample = future.result()
-                        if ds_sample is None:
-                            self.elements.missed.add(date)
-                        else:
-                            samples_d[date] = ds_sample
-                        prog.advance(task)
-                        logger.debug(f"{SOURCE_CTX} Juno local, vars in sample [{date}]: {ds_sample.data_vars}")
+            if not product_datasets:
+                raise ValueError(f"No product datasets left to concatenate for {self.source_name}.")
+
+            product_datasets = self._align_samples_to_shared_lon_grid(
+                product_datasets,
+                label="regridded product datasets",
+            )
+
+            global_min_R = min(ds.sizes.get(realization_concat_dim, 1) for ds in product_datasets.values())
+            for key, ds in product_datasets.items():
+                if realization_concat_dim in ds.dims:
+                    dsR = ds.isel({realization_concat_dim: slice(0, global_min_R)})
+                    R = dsR.sizes[realization_concat_dim]
+                    product_datasets[key] = dsR.assign_coords({realization_concat_dim: np.arange(R)})
+
+            first_key = sorted(product_datasets)[0]
+            concat_time_dim = (
+                product_datasets[first_key].earthml.guessed_dims.time
+                or product_datasets[first_key].earthml.guessed_coords.time
+                or "time"
+            )
+            ds_all = xr.concat(
+                objs=[product_datasets[k] for k in sorted(product_datasets)],
+                dim=concat_time_dim,
+                coords="minimal",
+                compat="override",
+                join="outer",
+                combine_attrs="drop_conflicts",
+            )
+            logger.info("%s Juno local, size of ds after per-product concat+regrid: %s", SOURCE_CTX, ds_all.sizes)
+            return ds_all
+
+        samples_d = self._load_samples_for_dates(
+            dates=dates,
+            realization_concat_dim=realization_concat_dim,
+            selected_vars=selected_vars,
+            has_shifted_samples=has_shifted_samples,
+            lock=lock,
+            apply_regrid=self.per_sample_regrid,
+            progress_label="Opening local Juno samples",
+        )
 
         if samples_d:
             dbg_sample_k = next(iter(samples_d))
@@ -790,135 +1076,12 @@ class JunoLocalSource(MFXarrayLocalSource):
                 samples_d[dbg_sample_k].sizes,
             )
 
-        # Infer resolution from first valid sample
-        valid_dates = sorted(samples_d)
-        ref_date = valid_dates[0]
-        ref_lon_name = samples_d[ref_date].earthml.guessed_coords.longitude
-        ref_lon_da = samples_d[ref_date][ref_lon_name]
-        ref_lon = np.asarray(ref_lon_da.values, dtype=np.float64)
-        ref_lon = np.round(ref_lon, 10)
-
-        if ref_lon_da.ndim == 1:
-            ref_lon = np.unique(ref_lon)  # remove exact duplicates on regular grids
-            logger.info("%s Juno local inferred reference 1D lon size: %s", SOURCE_CTX, ref_lon.size)
-        elif ref_lon_da.ndim == 2:
-            logger.info("%s Juno local inferred reference 2D lon shape: %s", SOURCE_CTX, ref_lon.shape)
-        else:
-            raise ValueError(
-                f"{ref_date}: unsupported reference longitude coord {ref_lon_name!r} "
-                f"with ndim={ref_lon_da.ndim}"
-            )
-
-        # Enforce same lon convention to all samples
-        for date, ds_sample in samples_d.items():
-            lon_name = ds_sample.earthml.guessed_coords.longitude
-            lon_da = ds_sample[lon_name]
-            vals = np.asarray(lon_da.values, dtype=np.float64)
-            vals = np.round(vals, 10)
-
-            if lon_da.ndim != ref_lon_da.ndim:
-                raise ValueError(
-                    f"{date}: longitude ndim mismatch {lon_da.ndim} vs ref {ref_lon_da.ndim}"
-                )
-
-            if lon_da.ndim == 1:
-                if vals.size != ref_lon.size:
-                    raise ValueError(
-                        f"{date}: longitude size mismatch {vals.size} vs ref {ref_lon.size}"
-                    )
-
-                if not np.allclose(vals, ref_lon, atol=1e-8, rtol=0.0):
-                    diff = np.max(np.abs(vals - ref_lon))
-                    raise ValueError(
-                        f"{date}: longitude grid differs from reference, max abs diff={diff}"
-                    )
-
-                samples_d[date] = ds_sample.assign_coords({lon_name: ref_lon})
-                continue
-
-            if vals.shape != ref_lon.shape:
-                raise ValueError(
-                    f"{date}: longitude shape mismatch {vals.shape} vs ref {ref_lon.shape}"
-                )
-
-            if not np.allclose(vals, ref_lon, atol=1e-8, rtol=0.0):
-                diff = np.max(np.abs(vals - ref_lon))
-                raise ValueError(
-                    f"{date}: longitude grid differs from reference, max abs diff={diff}"
-                )
-
-            samples_d[date] = ds_sample.assign_coords({lon_name: (lon_da.dims, ref_lon)})
-
-        # Batch validity checks instead of one compute() per sample
-        validity_tasks = []
-        validity_dates = []
-
-        for date, ds in samples_d.items():
-            time_dim = ds.earthml.guessed_dims.time
-            dims = tuple(
-                d for d in (realization_concat_dim, time_dim)
-                if d is not None and d in ds["_has_var"].dims
-            )
-            validity_tasks.append(ds["_has_var"].any(dim=dims))
-            validity_dates.append(date)
-
-        validity_values = dask.compute(*validity_tasks) if validity_tasks else ()
-
-        samples_len = []
-        missing_samples = []
-
-        for date, ds, has_any in zip(validity_dates, (samples_d[d] for d in validity_dates), validity_values):
-            ok = bool(has_any.item())
-            if ok:
-                samples_len.append(ds.sizes.get(realization_concat_dim, 1))
-            else:
-                # Store dates with no valid realizations
-                missing_samples.append(date)
-
-        if not samples_len:
-            raise ValueError(
-                f"No valid samples found for {self.source_name}. "
-                f"Total candidates={len(samples_d)}, missing_samples={len(missing_samples)}"
-            )
-
-        # Use only min_R realizations per sample
-        min_R = min(samples_len)
-
-        for date, ds in samples_d.items():
-            if realization_concat_dim in ds.dims:
-                dsR = ds.isel({realization_concat_dim: slice(0, min_R)})
-                R = dsR.sizes[realization_concat_dim]
-                samples_d[date] = dsR.assign_coords({realization_concat_dim: np.arange(R)})
-
-        self.elements.missed.update(pd.to_datetime(missing_samples).to_pydatetime().tolist())
-
-        # Concatenate
-        times = np.array(
-            [d for d in sorted(samples_d.keys()) if d not in self.elements.missed],
-            dtype="datetime64[ns]",
+        samples_d = self._align_samples_to_shared_lon_grid(samples_d, label="Juno local")
+        samples_d = self._trim_samples_to_valid_realizations(
+            samples_d,
+            realization_concat_dim=realization_concat_dim,
         )
-        objs = [samples_d[d] for d in sorted(samples_d) if d not in self.elements.missed]
-
-        if not objs:
-            raise ValueError(
-                f"No datasets left to concatenate for {self.source_name} after removing missed samples."
-            )
-
-        concat_time_dim = (
-            samples_d[ref_date].earthml.guessed_dims.time
-            or samples_d[ref_date].earthml.guessed_coords.time
-            or "time"
-        )
-        # TODO add progress bar to concat too?
-        ds_all = xr.concat(
-            objs=objs,
-            dim=xr.IndexVariable(concat_time_dim, times),
-            coords="minimal",
-            compat="override",
-            join="outer",
-            combine_attrs="drop_conflicts",
-        )
-        # progress(ds_all) # show progress bar (concat lazy, not working)
-        logger.info("%s Juno local, size of ds after concat: %s", ds_all.sizes, SOURCE_CTX)
+        ds_all = self._concat_samples_by_time(samples_d)
+        logger.info("%s Juno local, size of ds after concat: %s", SOURCE_CTX, ds_all.sizes)
 
         return ds_all
