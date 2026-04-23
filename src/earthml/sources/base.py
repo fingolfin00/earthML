@@ -52,7 +52,7 @@ class BaseSource(ABC):
         self.select_area_after_request = False
         self.regrid_resolution = None
         self.convert_unit = None
-        self.corruption_check_mode = "bookkeeping"
+        self.corruption_check_mode = "light"
 
     def __add__(self, other: "BaseSource") -> "BaseSource":
         if not isinstance(other, BaseSource):
