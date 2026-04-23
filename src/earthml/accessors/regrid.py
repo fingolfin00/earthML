@@ -2,6 +2,7 @@ from collections import OrderedDict
 import hashlib
 import os
 from pathlib import Path
+import threading
 
 import numpy as np
 import cf_xarray
@@ -23,6 +24,8 @@ _REGRID_GEOMETRY_CACHE = OrderedDict()
 _REGRID_GEOMETRY_CACHE_MAX_ITEMS = max(int(os.getenv("EARTHML_REGRID_CACHE_MAX_ITEMS", "16")), 1)
 _REGRID_INTERP_MAP_CACHE = OrderedDict()
 _REGRID_INTERP_MAP_CACHE_MAX_ITEMS = max(int(os.getenv("EARTHML_REGRID_INTERP_CACHE_MAX_ITEMS", "64")), 1)
+_XESMF_WEIGHTS_LOCKS: dict[str, threading.Lock] = {}
+_XESMF_WEIGHTS_LOCKS_GUARD = threading.Lock()
 
 def _debug_bad_coords(tag, lat2d, lon2d, logger):
     import numpy as np
@@ -54,6 +57,16 @@ def _import_xesmf():
     import xesmf as xe
 
     return xe
+
+
+def _get_xesmf_weights_lock(weights_path: Path) -> threading.Lock:
+    key = str(weights_path.resolve())
+    with _XESMF_WEIGHTS_LOCKS_GUARD:
+        lock = _XESMF_WEIGHTS_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _XESMF_WEIGHTS_LOCKS[key] = lock
+        return lock
 
 
 def _invalid_curvilinear_coord_mask(
@@ -201,8 +214,11 @@ def _build_xesmf_weights_on_disk(
     import xesmf.backend as xb
     import xesmf.frontend as xf
 
-    if weights_path.exists():
-        weights_path.unlink()
+    tmp_path = weights_path.with_name(
+        f"{weights_path.name}.tmp-{os.getpid()}-{threading.get_ident()}"
+    )
+    if tmp_path.exists():
+        tmp_path.unlink()
 
     grid_in, _, _ = xf.ds_to_ESMFgrid(ds_in_grid, need_bounds=False, periodic=False)
     grid_out, _, _ = xf.ds_to_ESMFgrid(ds_out_grid, need_bounds=False, periodic=False)
@@ -210,10 +226,15 @@ def _build_xesmf_weights_on_disk(
         grid_in,
         grid_out,
         method,
-        filename=str(weights_path),
+        filename=str(tmp_path),
         ignore_degenerate=ignore_degenerate,
     )
     xb.esmf_regrid_finalize(regrid)
+
+    if not tmp_path.exists():
+        raise RuntimeError(f"ESMF failed to generate temporary weights file: {tmp_path}")
+
+    tmp_path.replace(weights_path)
 
 
 def _cache_base_dir() -> Path:
@@ -734,33 +755,35 @@ class EarthMLRegrid:
 
                 weights_path = _xesmf_cache_dir() / f"{weights_key.hexdigest()}.nc"
                 weights_path.parent.mkdir(parents=True, exist_ok=True)
+                weights_lock = _get_xesmf_weights_lock(weights_path)
 
                 xe = _import_xesmf()
 
-                if weights_path.exists():
-                    logger.debug(f"Regrid: use weigths in {weights_path}")
-                    try:
-                        with xr.open_dataset(weights_path, engine="h5netcdf") as ds_weights:
-                            ds_weights = ds_weights.load()
-                    except OSError:
-                        with xr.open_dataset(weights_path, engine="scipy") as ds_weights:
-                            ds_weights = ds_weights.load()
-                else:
-                    logger.debug(f"Regrid: build weigths and save in {weights_path}")
-                    _build_xesmf_weights_on_disk(
-                        ds_in_grid=ds_in_grid,
-                        ds_out_grid=ds_out_grid,
-                        weights_path=weights_path,
-                        method="bilinear",
-                    )
-                    if not weights_path.exists():
-                        raise RuntimeError(f"ESMF failed to generate weights file: {weights_path}")
-                    try:
-                        with xr.open_dataset(weights_path, engine="h5netcdf") as ds_weights:
-                            ds_weights = ds_weights.load()
-                    except OSError:
-                        with xr.open_dataset(weights_path, engine="scipy") as ds_weights:
-                            ds_weights = ds_weights.load()
+                with weights_lock:
+                    if weights_path.exists():
+                        logger.debug(f"Regrid: use weigths in {weights_path}")
+                        try:
+                            with xr.open_dataset(weights_path, engine="h5netcdf") as ds_weights:
+                                ds_weights = ds_weights.load()
+                        except OSError:
+                            with xr.open_dataset(weights_path, engine="scipy") as ds_weights:
+                                ds_weights = ds_weights.load()
+                    else:
+                        logger.debug(f"Regrid: build weigths and save in {weights_path}")
+                        _build_xesmf_weights_on_disk(
+                            ds_in_grid=ds_in_grid,
+                            ds_out_grid=ds_out_grid,
+                            weights_path=weights_path,
+                            method="bilinear",
+                        )
+                        if not weights_path.exists():
+                            raise RuntimeError(f"ESMF failed to generate weights file: {weights_path}")
+                        try:
+                            with xr.open_dataset(weights_path, engine="h5netcdf") as ds_weights:
+                                ds_weights = ds_weights.load()
+                        except OSError:
+                            with xr.open_dataset(weights_path, engine="scipy") as ds_weights:
+                                ds_weights = ds_weights.load()
                 regridder = xe.Regridder(
                     ds_in_grid,
                     ds_out_grid,
