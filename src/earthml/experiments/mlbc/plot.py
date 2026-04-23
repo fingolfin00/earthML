@@ -630,6 +630,22 @@ def _build_anomaly_variance_ds(ds: xr.Dataset, window: int | None = None) -> xr.
     return anom_ds.rolling({time_dim: window}, center=True, min_periods=min_periods).var()
 
 
+def _build_spatial_std_ds(ds: xr.Dataset) -> xr.Dataset:
+    std_vars: dict[str, xr.DataArray] = {}
+    for var_name, da in ds.data_vars.items():
+        if var_name in BOOKKEEPING_VARS:
+            continue
+        time_dim = da.earthml.guessed_dims.time
+        rdim = da.earthml.guessed_dims.realization
+        keep_dims = tuple(dim for dim in (time_dim, rdim) if dim is not None and dim in da.dims)
+        reduce_dims = tuple(dim for dim in da.dims if dim not in keep_dims)
+        if not reduce_dims:
+            std_vars[var_name] = da
+            continue
+        std_vars[var_name] = da.earthml.geo_std(reduce_dims).load()
+    return xr.Dataset(std_vars)
+
+
 def _build_anomaly_autocorr_ds(ds: xr.Dataset, nlags: int | None = None) -> xr.Dataset:
     time_dim = ds.earthml.guessed_dims.time
     if time_dim is None or time_dim not in ds.dims:
@@ -789,6 +805,8 @@ def plot_stage_timeseries(
                 y_label = _format_y_label(var, unit=base_unit)
             elif y_label_mode == "variance":
                 y_label = _format_y_label(var, unit=_square_unit(base_unit), quantity="Variance")
+            elif y_label_mode == "std":
+                y_label = _format_y_label(var, unit=base_unit, quantity="Std")
             elif y_label_mode == "autocorr":
                 y_label = "Autocorrelation"
             elif y_label_mode == "power_spectrum":
@@ -1500,6 +1518,34 @@ def plot_stage_variance_timeseries(
     )
 
 
+def plot_stage_std_timeseries(
+    *,
+    logger,
+    plots_folder_path: Path,
+    plot_specs: list[PlotSpec],
+    data_type: str,
+    stage: str,
+    stage_kind: str,
+) -> None:
+    std_plot_specs = [
+        {
+            **spec,
+            "ds": _build_spatial_std_ds(spec["ds"]),
+        }
+        for spec in plot_specs
+    ]
+    plot_stage_timeseries(
+        logger=logger,
+        plots_folder_path=plots_folder_path,
+        plot_specs=std_plot_specs,
+        data_type=data_type,
+        stage=stage,
+        stage_kind=f"{stage_kind} spatial std",
+        filename_suffix="std_timeseries",
+        y_label_mode="std",
+    )
+
+
 def plot_stage_autocorr_timeseries(
     *,
     logger,
@@ -1953,6 +1999,10 @@ def run_stage_plot_bundle(
     plot_stage_timeseries(
         plot_specs=plot_specs,
         filename_suffix="raw_timeseries",
+        **shared_kwargs,
+    )
+    plot_stage_std_timeseries(
+        plot_specs=plot_specs,
         **shared_kwargs,
     )
     plot_stage_minus_climatology_timeseries(
