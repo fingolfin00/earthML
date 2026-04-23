@@ -834,6 +834,7 @@ class MLBCExperiment:
             ],
             correction_specs=[],
             scatter_specs=[],
+            histogram_specs=[],
             data_type=mode,
             stage=stage,
             stage_kind="pre-train",
@@ -909,6 +910,20 @@ class MLBCExperiment:
                     "left_ds": input_ds,
                     "right_ds": target_ds,
                     "label": "input vs target",
+                    "color": "tab:green",
+                },
+            ],
+            histogram_specs=[
+                {
+                    "left_ds": pred_ds,
+                    "right_ds": target_ds,
+                    "label": "pred-target",
+                    "color": "tab:blue",
+                },
+                {
+                    "left_ds": input_ds,
+                    "right_ds": target_ds,
+                    "label": "input-target",
                     "color": "tab:green",
                 },
             ],

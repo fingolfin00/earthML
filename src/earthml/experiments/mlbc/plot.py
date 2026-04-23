@@ -21,6 +21,7 @@ PlotSpec = dict[str, Any]
 ResidualSpec = dict[str, Any]
 CorrectionSpec = dict[str, Any]
 ScatterSpec = dict[str, Any]
+HistogramSpec = dict[str, Any]
 DEFAULT_PLOT_CONFIG = build_plot_config()
 BOOKKEEPING_VARS = {"_has_var"}
 METRIC_SPECS = [
@@ -598,6 +599,19 @@ def _reduced_scatter_pair(
     right_values = np.asarray(right_mean.values, dtype=np.float64).ravel()
     valid = np.isfinite(left_values) & np.isfinite(right_values)
     return left_values[valid], right_values[valid]
+
+
+def _reduced_difference_values(
+    left_ds: xr.Dataset,
+    right_ds: xr.Dataset,
+    *,
+    var: str,
+) -> np.ndarray:
+    diff_ds = _build_residual_ds(left_ds, right_ds, var=var)
+    diff_name = _resolve_plot_var_name(diff_ds, var)
+    diff_da = diff_ds[diff_name]
+    values = np.asarray(diff_da.values, dtype=np.float64).ravel()
+    return values[np.isfinite(values)]
 
 
 def _build_anomaly_variance_ds(ds: xr.Dataset, window: int | None = None) -> xr.Dataset:
@@ -1225,6 +1239,96 @@ def plot_stage_target_scatter(
             plt.close(fig)
 
 
+def plot_stage_error_histogram(
+    *,
+    logger,
+    plots_folder_path: Path,
+    histogram_specs: list[HistogramSpec],
+    data_type: str,
+    stage: str,
+    stage_kind: str,
+) -> None:
+    stage_plot_folder = _get_stage_plot_folder(plots_folder_path, data_type)
+    logger.info(
+        "Generate %s error histograms for %s (%s) in %s",
+        stage_kind,
+        data_type,
+        stage,
+        stage_plot_folder,
+    )
+
+    if not histogram_specs:
+        logger.debug("Skip %s error histogram plotting for %s: no histogram datasets.", stage_kind, data_type)
+        return
+
+    common_vars = [
+        var for var in _data_vars_for_plotting(histogram_specs[0]["left_ds"])
+        if all(
+            var in spec["left_ds"].data_vars or len(_data_vars_for_plotting(spec["left_ds"])) == 1
+            for spec in histogram_specs
+        ) and all(
+            var in spec["right_ds"].data_vars or len(_data_vars_for_plotting(spec["right_ds"])) == 1
+            for spec in histogram_specs
+        )
+    ]
+    if not common_vars:
+        logger.debug("Skip %s error histogram plotting for %s: no common variables.", stage_kind, data_type)
+        return
+
+    for var in common_vars:
+        fig, ax = plt.subplots(figsize=(7.0, 4.5))
+        try:
+            plotted = False
+            all_values: list[np.ndarray] = []
+            for spec in histogram_specs:
+                values = _reduced_difference_values(spec["left_ds"], spec["right_ds"], var=var)
+                if values.size == 0:
+                    continue
+                plotted = True
+                all_values.append(values)
+                ax.hist(
+                    values,
+                    bins=40,
+                    alpha=0.35,
+                    color=spec["color"],
+                    label=spec["label"],
+                    density=True,
+                )
+
+            if not plotted:
+                plt.close(fig)
+                continue
+
+            combined = np.concatenate(all_values)
+            finite = combined[np.isfinite(combined)]
+            if finite.size:
+                lo = float(finite.min())
+                hi = float(finite.max())
+                lo, hi = _expand_degenerate_limits(lo, hi)
+                ax.set_xlim(lo, hi)
+
+            unit = _get_var_unit(histogram_specs[0]["left_ds"], var)
+            ax.axvline(0.0, color="0.25", linewidth=1.0, linestyle=":")
+            ax.set_xlabel(_format_y_label(var, unit=unit, quantity="Error"))
+            ax.set_ylabel("Density")
+            ax.legend()
+            ax.grid(True, alpha=0.25)
+            ax.set_title(var)
+            fig.tight_layout()
+            fig.savefig(stage_plot_folder.joinpath(f"{stage}_{var}_error_histogram.png"), dpi=200)
+        except Exception as exc:
+            logger.warning(
+                "Failed to generate %s error histogram for %s/%s/%s: %s",
+                stage_kind,
+                data_type,
+                stage,
+                var,
+                repr(exc),
+            )
+        finally:
+            plt.close(fig)
+
+
 def plot_stage_lag_diagnostic(
     *,
     logger,
@@ -1829,6 +1933,7 @@ def run_stage_plot_bundle(
     residual_specs: list[ResidualSpec],
     correction_specs: list[CorrectionSpec] | None = None,
     scatter_specs: list[ScatterSpec] | None = None,
+    histogram_specs: list[HistogramSpec] | None = None,
     data_type: str,
     stage: str,
     stage_kind: str,
@@ -1836,6 +1941,7 @@ def run_stage_plot_bundle(
 ) -> None:
     correction_specs = [] if correction_specs is None else correction_specs
     scatter_specs = [] if scatter_specs is None else scatter_specs
+    histogram_specs = [] if histogram_specs is None else histogram_specs
     shared_kwargs = dict(
         logger=logger,
         plots_folder_path=plots_folder_path,
@@ -1879,6 +1985,10 @@ def run_stage_plot_bundle(
     )
     plot_stage_target_scatter(
         scatter_specs=scatter_specs,
+        **shared_kwargs,
+    )
+    plot_stage_error_histogram(
+        histogram_specs=histogram_specs,
         **shared_kwargs,
     )
     plot_stage_lag_diagnostic(
