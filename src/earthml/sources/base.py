@@ -235,6 +235,7 @@ class BaseSource(ABC):
             ds = ds.earthml.convert_unit(self.convert_unit)
 
         # Normalize dims
+        logger.debug("Normalize dims and coords")
         ds = ds.earthml.normalize_dims_and_coords()
 
         # Remove corrupted timesteps and update missed (in class and in ds)
