@@ -893,9 +893,9 @@ def plot_stage_lag_diagnostic(
                 corr_next,
             )
 
-            ax.plot(x, input_mean.values, color="tab:blue", linewidth=2.0, label="input(t)")
+            ax.plot(x, input_mean.values, color="tab:green", linewidth=2.0, label="input(t)")
             ax.plot(x, target_mean.values, color="tab:orange", linewidth=2.0, label="target(t)")
-            ax.plot(x, target_prev.values, color="tab:green", linewidth=1.5, linestyle="--", label=f"target(t-{lag_steps_eff})")
+            ax.plot(x, target_prev.values, color="tab:blue", linewidth=1.5, linestyle="--", label=f"target(t-{lag_steps_eff})")
             ax.plot(x, target_next.values, color="tab:red", linewidth=1.5, linestyle="--", label=f"target(t+{lag_steps_eff})")
             ax.set_xlabel("Time")
             ax.set_ylabel(_format_y_label(var, unit=_get_var_unit(left_ds, var)))

@@ -815,7 +815,7 @@ class MLBCExperiment:
 
         plot_mask = self._resolve_plot_mask(mask_ds, input_ds, target_ds)
         plot_specs = [
-            {"ds": input_ds, "mask": plot_mask, "label": "input", "mean_label": "input mean", "color": "tab:blue"},
+            {"ds": input_ds, "mask": plot_mask, "label": "input", "mean_label": "input mean", "color": "tab:green"},
             {"ds": target_ds, "mask": plot_mask, "label": "target", "mean_label": "target mean", "color": "tab:orange"},
         ]
         lag_steps = self._requested_lag_steps(mode, input_ds)
@@ -829,7 +829,7 @@ class MLBCExperiment:
                     "right_ds": target_ds,
                     "label": "input-target",
                     "mean_label": "input-target mean",
-                    "color": "tab:blue",
+                    "color": "tab:green",
                 }
             ],
             data_type=mode,
@@ -862,8 +862,8 @@ class MLBCExperiment:
 
         plot_mask = self._resolve_plot_mask(mask_ds, input_ds, target_ds)
         plot_specs = [
-            {"ds": pred_ds, "mask": plot_mask, "label": "pred", "mean_label": "pred mean", "color": "tab:green"},
-            {"ds": input_ds, "mask": plot_mask, "label": "input", "mean_label": "input mean", "color": "tab:blue"},
+            {"ds": pred_ds, "mask": plot_mask, "label": "pred", "mean_label": "pred mean", "color": "tab:blue"},
+            {"ds": input_ds, "mask": plot_mask, "label": "input", "mean_label": "input mean", "color": "tab:green"},
             {"ds": target_ds, "mask": plot_mask, "label": "target", "mean_label": "target mean", "color": "tab:orange"},
         ]
         lag_steps = self._requested_lag_steps(mode, input_ds)
@@ -877,14 +877,14 @@ class MLBCExperiment:
                     "right_ds": target_ds,
                     "label": "pred-target",
                     "mean_label": "pred-target mean",
-                    "color": "tab:green",
+                    "color": "tab:blue",
                 },
                 {
                     "left_ds": input_ds,
                     "right_ds": target_ds,
                     "label": "input-target",
                     "mean_label": "input-target mean",
-                    "color": "tab:blue",
+                    "color": "tab:green",
                 },
             ],
             data_type=mode,
