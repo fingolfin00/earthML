@@ -19,6 +19,7 @@ from ...plots.timeseries import _reduce_for_timeseries
 
 PlotSpec = dict[str, Any]
 ResidualSpec = dict[str, Any]
+CorrectionSpec = dict[str, Any]
 DEFAULT_PLOT_CONFIG = build_plot_config()
 BOOKKEEPING_VARS = {"_has_var"}
 METRIC_SPECS = [
@@ -987,6 +988,109 @@ def plot_stage_bias_timeseries(
             plt.close(fig)
 
 
+def plot_stage_correction_timeseries(
+    *,
+    logger,
+    plots_folder_path: Path,
+    correction_specs: list[CorrectionSpec],
+    data_type: str,
+    stage: str,
+    stage_kind: str,
+    anomaly: bool = False,
+) -> None:
+    stage_plot_folder = _get_stage_plot_folder(plots_folder_path, data_type)
+    logger.info(
+        "Generate %s correction plots for %s (%s) in %s",
+        stage_kind,
+        data_type,
+        stage,
+        stage_plot_folder,
+    )
+
+    if not correction_specs:
+        logger.debug("Skip %s correction plotting for %s: no correction datasets.", stage_kind, data_type)
+        return
+
+    left_ds = correction_specs[0]["left_ds"]
+    right_ds = correction_specs[0]["right_ds"]
+    time_dim = left_ds.earthml.guessed_dims.time
+    if time_dim is None or time_dim not in left_ds.dims or time_dim not in right_ds.dims:
+        logger.debug("Skip %s correction plotting for %s: no common time dimension.", stage_kind, data_type)
+        return
+
+    sanitized_specs: list[CorrectionSpec] = []
+    for spec in correction_specs:
+        spec_left_ds = spec["left_ds"]
+        spec_right_ds = spec["right_ds"]
+        if time_dim not in spec_left_ds.dims or time_dim not in spec_right_ds.dims:
+            continue
+        sanitized_specs.append(
+            {
+                **spec,
+                "left_ds": _sanitize_plot_time_coords(spec_left_ds, x_dim=time_dim),
+                "right_ds": _sanitize_plot_time_coords(spec_right_ds, x_dim=time_dim),
+            }
+        )
+
+    if not sanitized_specs:
+        logger.debug("Skip %s correction plotting for %s: no correction datasets share the common time dimension.", stage_kind, data_type)
+        return
+
+    common_vars = [
+        var for var in _data_vars_for_plotting(sanitized_specs[0]["left_ds"])
+        if all(
+            var in spec["left_ds"].data_vars or len(_data_vars_for_plotting(spec["left_ds"])) == 1
+            for spec in sanitized_specs
+        ) and all(
+            var in spec["right_ds"].data_vars or len(_data_vars_for_plotting(spec["right_ds"])) == 1
+            for spec in sanitized_specs
+        )
+    ]
+    if not common_vars:
+        logger.debug("Skip %s correction plotting for %s: no common variables.", stage_kind, data_type)
+        return
+
+    for var in common_vars:
+        fig, ax = plt.subplots(figsize=(10, 4))
+        try:
+            y_label = _format_y_label(var, unit=_get_var_unit(sanitized_specs[0]["left_ds"], var))
+            for spec in sanitized_specs:
+                correction_ds = (
+                    _build_anomaly_residual_ds(spec["left_ds"], spec["right_ds"], var=var)
+                    if anomaly else
+                    _build_residual_ds(spec["left_ds"], spec["right_ds"], var=var)
+                )
+                _plot_single_timeseries(
+                    logger=logger,
+                    ax=ax,
+                    ds=correction_ds,
+                    var=var,
+                    time_dim=time_dim,
+                    stage_kind=f"{stage_kind} correction",
+                    data_type=data_type,
+                    label=spec["label"],
+                    mean_label=spec["mean_label"],
+                    color=spec["color"],
+                    y_label=y_label,
+                )
+            ax.axhline(0.0, color="black", linewidth=1.0, linestyle=":")
+            ax.legend()
+            fig.tight_layout()
+            suffix = "anomaly_correction_timeseries" if anomaly else "raw_correction_timeseries"
+            fig.savefig(stage_plot_folder.joinpath(f"{stage}_{var}_{suffix}.png"), dpi=200)
+        except Exception as exc:
+            logger.warning(
+                "Failed to generate %s correction plot for %s/%s/%s: %s",
+                stage_kind,
+                data_type,
+                stage,
+                var,
+                repr(exc),
+            )
+        finally:
+            plt.close(fig)
+
+
 def plot_stage_lag_diagnostic(
     *,
     logger,
@@ -1513,11 +1617,13 @@ def run_stage_plot_bundle(
     plots_folder_path: Path,
     plot_specs: list[PlotSpec],
     residual_specs: list[ResidualSpec],
+    correction_specs: list[CorrectionSpec] | None = None,
     data_type: str,
     stage: str,
     stage_kind: str,
     lag_steps: int | None = None,
 ) -> None:
+    correction_specs = [] if correction_specs is None else correction_specs
     shared_kwargs = dict(
         logger=logger,
         plots_folder_path=plots_folder_path,
@@ -1549,6 +1655,10 @@ def run_stage_plot_bundle(
     )
     plot_stage_bias_timeseries(
         residual_specs=residual_specs,
+        **shared_kwargs,
+    )
+    plot_stage_correction_timeseries(
+        correction_specs=correction_specs,
         **shared_kwargs,
     )
     plot_stage_lag_diagnostic(

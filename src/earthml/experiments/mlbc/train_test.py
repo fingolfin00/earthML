@@ -832,6 +832,7 @@ class MLBCExperiment:
                     "color": "tab:green",
                 }
             ],
+            correction_specs=[],
             data_type=mode,
             stage=stage,
             stage_kind="pre-train",
@@ -886,6 +887,15 @@ class MLBCExperiment:
                     "mean_label": "input-target mean",
                     "color": "tab:green",
                 },
+            ],
+            correction_specs=[
+                {
+                    "left_ds": pred_ds,
+                    "right_ds": input_ds,
+                    "label": "pred-input",
+                    "mean_label": "pred-input mean",
+                    "color": "tab:blue",
+                }
             ],
             data_type=mode,
             stage=stage,
