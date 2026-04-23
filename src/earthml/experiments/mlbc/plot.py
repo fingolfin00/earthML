@@ -594,6 +594,7 @@ def _reduced_scatter_pair(
 
     exclude_align_dims = tuple(dim for dim in (left_rdim, right_rdim) if dim is not None)
     left_mean, right_mean = xr.align(left_mean, right_mean, join="inner", exclude=exclude_align_dims)
+    left_mean, right_mean = xr.broadcast(left_mean, right_mean)
 
     left_values = np.asarray(left_mean.values, dtype=np.float64).ravel()
     right_values = np.asarray(right_mean.values, dtype=np.float64).ravel()
