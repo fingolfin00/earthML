@@ -1458,6 +1458,82 @@ def plot_stage_bias_maps(
                 )
 
 
+def plot_stage_correction_maps(
+    *,
+    logger,
+    plots_folder_path: Path,
+    correction_specs: list[CorrectionSpec],
+    data_type: str,
+    stage: str,
+    stage_kind: str,
+    anomaly: bool = False,
+) -> None:
+    stage_plot_folder = _get_stage_plot_folder(plots_folder_path, data_type)
+    logger.info(
+        "Generate %s correction maps for %s (%s) in %s",
+        stage_kind,
+        data_type,
+        stage,
+        stage_plot_folder,
+    )
+
+    if not correction_specs:
+        logger.debug("Skip %s correction maps for %s: no correction datasets.", stage_kind, data_type)
+        return
+
+    common_vars = [
+        var for var in _data_vars_for_plotting(correction_specs[0]["left_ds"])
+        if all(
+            var in spec["left_ds"].data_vars or len(_data_vars_for_plotting(spec["left_ds"])) == 1
+            for spec in correction_specs
+        ) and all(
+            var in spec["right_ds"].data_vars or len(_data_vars_for_plotting(spec["right_ds"])) == 1
+            for spec in correction_specs
+        )
+    ]
+    if not common_vars:
+        logger.debug("Skip %s correction maps for %s: no common variables.", stage_kind, data_type)
+        return
+
+    for var in common_vars:
+        correction_map_specs: list[tuple[CorrectionSpec, xr.Dataset]] = []
+        for spec in correction_specs:
+            correction_ds = (
+                _build_anomaly_residual_ds(spec["left_ds"], spec["right_ds"], var=var)
+                if anomaly else
+                _build_residual_ds(spec["left_ds"], spec["right_ds"], var=var)
+            )
+            correction_map_specs.append((spec, correction_ds))
+
+        shared_vmin, shared_vmax = _compute_shared_symmetric_map_limits(
+            [_select_plot_var_flexible(dataset, var) for _, dataset in correction_map_specs]
+        )
+
+        for spec, correction_ds in correction_map_specs:
+            try:
+                unit = _get_var_unit(spec["left_ds"], var)
+                suffix = "anomaly_correction_map" if anomaly else "raw_correction_map"
+                plot_temporal_mean_map(
+                    _select_plot_var_flexible(correction_ds, var),
+                    save_path=stage_plot_folder.joinpath(f"{stage}_{var}_{spec['label']}_{suffix}.png"),
+                    cbar_label=_format_map_cbar_label(var, unit),
+                    cmap="RdBu_r",
+                    nan_color="#4a4a4a",
+                    vmin=shared_vmin,
+                    vmax=shared_vmax,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to generate %s correction map for %s/%s/%s/%s: %s",
+                    stage_kind,
+                    data_type,
+                    stage,
+                    var,
+                    spec["label"],
+                    repr(exc),
+                )
+
+
 def plot_stage_metric_timeseries(
     *,
     logger,
@@ -1655,6 +1731,10 @@ def run_stage_plot_bundle(
     )
     plot_stage_bias_timeseries(
         residual_specs=residual_specs,
+        **shared_kwargs,
+    )
+    plot_stage_correction_maps(
+        correction_specs=correction_specs,
         **shared_kwargs,
     )
     plot_stage_correction_timeseries(
