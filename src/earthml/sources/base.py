@@ -52,6 +52,7 @@ class BaseSource(ABC):
         self.select_area_after_request = False
         self.regrid_resolution = None
         self.convert_unit = None
+        self.corruption_check_mode = "bookkeeping"
 
     def __add__(self, other: "BaseSource") -> "BaseSource":
         if not isinstance(other, BaseSource):
@@ -107,23 +108,74 @@ class BaseSource(ABC):
         if time_dim is None:
             return ds
 
-        keep = xr.ones_like(ds[time_dim], dtype=bool)
+        mode = getattr(self, "corruption_check_mode", "full")
+        if mode not in {"bookkeeping", "light", "full"}:
+            raise ValueError(
+                f"Unsupported corruption_check_mode={mode!r}. "
+                "Expected one of {'bookkeeping', 'light', 'full'}."
+            )
 
-        for var in [v for v in ds.data_vars if v != "_has_var"]:
-            da = ds[var]
-            if time_dim not in da.dims:
-                continue
+        status_keep = None
+        if "_has_var" in ds and time_dim in ds["_has_var"].dims:
+            status_da = ds["_has_var"]
+            reduce_dims = [d for d in status_da.dims if d != time_dim]
+            status_keep = status_da.any(dim=reduce_dims) if reduce_dims else status_da.astype(bool)
 
-            reduce_dims = [d for d in da.dims if d != time_dim]
+        if mode == "bookkeeping":
+            if status_keep is None:
+                logger.warning(
+                    "%s: corruption_check_mode='bookkeeping' requested but _has_var is unavailable; "
+                    "falling back to full scan",
+                    self.source_name,
+                )
+                mode = "full"
+            else:
+                keep = status_keep
+                logger.info("%s: using _has_var bookkeeping to determine valid timesteps", self.source_name)
 
-            # Select corrupted timestep, mean over non-time dims is NaN
-            ts_mean = da.mean(dim=reduce_dims, skipna=True) if reduce_dims else da
-            keep = keep & ts_mean.notnull()
+        elif mode == "light":
+            if status_keep is not None:
+                keep = status_keep
+                logger.info(
+                    "%s: using light corruption check (_has_var plus per-variable non-null scan)",
+                    self.source_name,
+                )
+            else:
+                keep = xr.ones_like(ds[time_dim], dtype=bool)
+                logger.info(
+                    "%s: _has_var unavailable, using light corruption check without bookkeeping",
+                    self.source_name,
+                )
 
-            logger.info("%s: var=%s, non-null timesteps=%s/%s", self.source_name, var, int(ts_mean.notnull().sum()), ts_mean.size)
+            for var in [v for v in ds.data_vars if v != "_has_var"]:
+                da = ds[var]
+                if time_dim not in da.dims:
+                    continue
+
+                reduce_dims = [d for d in da.dims if d != time_dim]
+                valid = da.notnull().any(dim=reduce_dims) if reduce_dims else da.notnull()
+                keep = keep & valid
+
+        elif mode == "full":
+            keep = xr.ones_like(ds[time_dim], dtype=bool)
+            logger.info("%s: using full corruption check", self.source_name)
+
+            for var in [v for v in ds.data_vars if v != "_has_var"]:
+                da = ds[var]
+                if time_dim not in da.dims:
+                    continue
+
+                reduce_dims = [d for d in da.dims if d != time_dim]
+
+                # Select corrupted timestep, mean over non-time dims is NaN
+                ts_mean = da.mean(dim=reduce_dims, skipna=True) if reduce_dims else da
+                keep = keep & ts_mean.notnull()
 
         # Compute only the 1D mask (cheaper)
         keep = keep.compute() if hasattr(keep.data, "compute") else keep
+
+        n_keep = int(np.asarray(keep.values, dtype=bool).sum())
+        logger.info("%s: non-null timesteps=%s/%s", self.source_name, n_keep, keep.size)
 
         # Return a python set of python datetimes
         corrupted_sel = ds[time_dim].where(~keep, drop=True)
