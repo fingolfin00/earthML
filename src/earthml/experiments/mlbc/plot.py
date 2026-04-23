@@ -20,6 +20,7 @@ from ...plots.timeseries import _reduce_for_timeseries
 PlotSpec = dict[str, Any]
 ResidualSpec = dict[str, Any]
 CorrectionSpec = dict[str, Any]
+ScatterSpec = dict[str, Any]
 DEFAULT_PLOT_CONFIG = build_plot_config()
 BOOKKEEPING_VARS = {"_has_var"}
 METRIC_SPECS = [
@@ -559,6 +560,46 @@ def _build_anomaly_bias_ds(
     return _build_bias_ds(left_anom, right_anom, var=var)
 
 
+def _reduced_scatter_pair(
+    left_ds: xr.Dataset,
+    right_ds: xr.Dataset,
+    *,
+    var: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    left_name = _resolve_plot_var_name(left_ds, var)
+    right_name = _resolve_plot_var_name(right_ds, var)
+
+    left_var = left_ds[left_name]
+    right_var = right_ds[right_name]
+
+    time_dim = left_var.earthml.guessed_dims.time
+    left_rdim = left_var.earthml.guessed_dims.realization
+    right_rdim = right_var.earthml.guessed_dims.realization
+
+    left_keep_dims = tuple(dim for dim in (time_dim, left_rdim) if dim is not None and dim in left_var.dims)
+    right_keep_dims = tuple(dim for dim in (time_dim, right_rdim) if dim is not None and dim in right_var.dims)
+
+    left_mean = _reduce_for_timeseries(left_var, keep_dims=left_keep_dims)
+    right_mean = _reduce_for_timeseries(right_var, keep_dims=right_keep_dims)
+
+    if (
+        left_rdim is not None
+        and right_rdim is not None
+        and left_rdim == right_rdim
+        and left_mean.sizes.get(left_rdim, 1) > 1
+        and right_mean.sizes.get(right_rdim, 1) == 1
+    ):
+        right_mean = right_mean.squeeze(right_rdim, drop=True)
+
+    exclude_align_dims = tuple(dim for dim in (left_rdim, right_rdim) if dim is not None)
+    left_mean, right_mean = xr.align(left_mean, right_mean, join="inner", exclude=exclude_align_dims)
+
+    left_values = np.asarray(left_mean.values, dtype=np.float64).ravel()
+    right_values = np.asarray(right_mean.values, dtype=np.float64).ravel()
+    valid = np.isfinite(left_values) & np.isfinite(right_values)
+    return left_values[valid], right_values[valid]
+
+
 def _build_anomaly_variance_ds(ds: xr.Dataset, window: int | None = None) -> xr.Dataset:
     time_dim = ds.earthml.guessed_dims.time
     if time_dim is None or time_dim not in ds.dims:
@@ -1081,6 +1122,99 @@ def plot_stage_correction_timeseries(
         except Exception as exc:
             logger.warning(
                 "Failed to generate %s correction plot for %s/%s/%s: %s",
+                stage_kind,
+                data_type,
+                stage,
+                var,
+                repr(exc),
+            )
+        finally:
+            plt.close(fig)
+
+
+def plot_stage_target_scatter(
+    *,
+    logger,
+    plots_folder_path: Path,
+    scatter_specs: list[ScatterSpec],
+    data_type: str,
+    stage: str,
+    stage_kind: str,
+) -> None:
+    stage_plot_folder = _get_stage_plot_folder(plots_folder_path, data_type)
+    logger.info(
+        "Generate %s target scatter plots for %s (%s) in %s",
+        stage_kind,
+        data_type,
+        stage,
+        stage_plot_folder,
+    )
+
+    if not scatter_specs:
+        logger.debug("Skip %s target scatter plotting for %s: no scatter datasets.", stage_kind, data_type)
+        return
+
+    common_vars = [
+        var for var in _data_vars_for_plotting(scatter_specs[0]["left_ds"])
+        if all(
+            var in spec["left_ds"].data_vars or len(_data_vars_for_plotting(spec["left_ds"])) == 1
+            for spec in scatter_specs
+        ) and all(
+            var in spec["right_ds"].data_vars or len(_data_vars_for_plotting(spec["right_ds"])) == 1
+            for spec in scatter_specs
+        )
+    ]
+    if not common_vars:
+        logger.debug("Skip %s target scatter plotting for %s: no common variables.", stage_kind, data_type)
+        return
+
+    for var in common_vars:
+        fig, ax = plt.subplots(figsize=(5.5, 5.5))
+        try:
+            all_values: list[np.ndarray] = []
+            plotted = False
+            for spec in scatter_specs:
+                x_values, y_values = _reduced_scatter_pair(spec["left_ds"], spec["right_ds"], var=var)
+                if x_values.size == 0 or y_values.size == 0:
+                    continue
+                plotted = True
+                all_values.extend((x_values, y_values))
+                ax.scatter(
+                    x_values,
+                    y_values,
+                    s=12,
+                    alpha=0.28,
+                    color=spec["color"],
+                    edgecolors="none",
+                    label=spec["label"],
+                )
+
+            if not plotted:
+                plt.close(fig)
+                continue
+
+            combined = np.concatenate(all_values)
+            finite = combined[np.isfinite(combined)]
+            if finite.size:
+                lo = float(finite.min())
+                hi = float(finite.max())
+                lo, hi = _expand_degenerate_limits(lo, hi)
+                ax.plot([lo, hi], [lo, hi], color="0.25", linewidth=1.0, linestyle=":")
+                ax.set_xlim(lo, hi)
+                ax.set_ylim(lo, hi)
+
+            unit = _get_var_unit(scatter_specs[0]["left_ds"], var)
+            axis_label = _format_y_label(var, unit=unit)
+            ax.set_xlabel(f"Comparison Field {axis_label}")
+            ax.set_ylabel(f"Target {axis_label}")
+            ax.legend()
+            ax.grid(True, alpha=0.25)
+            ax.set_title(var)
+            fig.tight_layout()
+            fig.savefig(stage_plot_folder.joinpath(f"{stage}_{var}_target_scatter.png"), dpi=200)
+        except Exception as exc:
+            logger.warning(
+                "Failed to generate %s target scatter plot for %s/%s/%s: %s",
                 stage_kind,
                 data_type,
                 stage,
@@ -1694,12 +1828,14 @@ def run_stage_plot_bundle(
     plot_specs: list[PlotSpec],
     residual_specs: list[ResidualSpec],
     correction_specs: list[CorrectionSpec] | None = None,
+    scatter_specs: list[ScatterSpec] | None = None,
     data_type: str,
     stage: str,
     stage_kind: str,
     lag_steps: int | None = None,
 ) -> None:
     correction_specs = [] if correction_specs is None else correction_specs
+    scatter_specs = [] if scatter_specs is None else scatter_specs
     shared_kwargs = dict(
         logger=logger,
         plots_folder_path=plots_folder_path,
@@ -1739,6 +1875,10 @@ def run_stage_plot_bundle(
     )
     plot_stage_correction_timeseries(
         correction_specs=correction_specs,
+        **shared_kwargs,
+    )
+    plot_stage_target_scatter(
+        scatter_specs=scatter_specs,
         **shared_kwargs,
     )
     plot_stage_lag_diagnostic(
