@@ -954,9 +954,18 @@ class MLBCExperiment:
         target_ds: xr.Dataset,
         data_type: str,
     ):
+        def _spatialize_mask(mask: xr.DataArray) -> xr.DataArray:
+            lat_dim = mask.earthml.guessed_dims.latitude
+            lon_dim = mask.earthml.guessed_dims.longitude
+            keep_dims = {dim for dim in (lat_dim, lon_dim) if dim is not None}
+            reduce_dims = [dim for dim in mask.dims if dim not in keep_dims]
+            if reduce_dims:
+                mask = mask.all(dim=reduce_dims)
+            return mask
+
         # Create common mask and save
-        input_valid_mask = input_ds.earthml.mask()
-        target_valid_mask = target_ds.earthml.mask()
+        input_valid_mask = _spatialize_mask(input_ds.earthml.mask())
+        target_valid_mask = _spatialize_mask(target_ds.earthml.mask())
 
         common_mask = (input_valid_mask & target_valid_mask).rename("common_mask")
         external_mask_ds = project_mask_to_reference_grid(self.external_mask_ds, input_ds)
