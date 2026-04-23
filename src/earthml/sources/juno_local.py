@@ -102,9 +102,6 @@ class JunoLocalSource(MFXarrayLocalSource):
         self.engine = config.engine
 
         self.leadtime = config.leadtime
-        self.elements = self._get_data_filenames(config.file_name_config)
-
-        self.select_area_after_request = self.config.select_area_after_request
 
         self.per_sample_regrid = bool(config.per_sample_regrid)
         self.per_product_regrid = bool(config.per_product_regrid)
@@ -114,6 +111,10 @@ class JunoLocalSource(MFXarrayLocalSource):
         self.sample_regrid_resolution = config.regrid_config.regrid_resolution
         self.regrid_vars = config.regrid_config.regrid_vars if config.regrid_config.regrid_vars is not None else self.var_name_list
         self.regrid_resolution = None if (self.per_sample_regrid or self.per_product_regrid) else self.sample_regrid_resolution
+
+        self.select_area_after_request = self.config.select_area_after_request
+
+        self.elements = self._get_data_filenames(config.file_name_config)
 
         self.cfgrib_idx_path = str(config.cfgrib_idx_path)
         if self.engine == "cfgrib" and self.cfgrib_idx_path:
