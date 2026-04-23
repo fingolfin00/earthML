@@ -498,6 +498,10 @@ def _build_ds_minus_climatology_ds(ds: xr.Dataset) -> xr.Dataset:
     time_dim = ds.earthml.guessed_dims.time
     if time_dim is None or time_dim not in ds.dims:
         raise ValueError("Cannot compute dataset minus climatology without a time dimension.")
+    try:
+        ds = ds.unify_chunks()
+    except ValueError:
+        pass
     clim_ds = _build_climatology_ds(ds)
     return ds.groupby(f"{time_dim}.month") - clim_ds
 
