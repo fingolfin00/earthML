@@ -823,13 +823,18 @@ class MLBCExperiment:
             logger=self.logger,
             plots_folder_path=self.plots_folder_path,
             plot_specs=plot_specs,
-            left_ds=input_ds,
-            right_ds=target_ds,
+            residual_specs=[
+                {
+                    "left_ds": input_ds,
+                    "right_ds": target_ds,
+                    "label": "input-target",
+                    "mean_label": "input-target mean",
+                    "color": "tab:blue",
+                }
+            ],
             data_type=mode,
             stage=stage,
             stage_kind="pre-train",
-            residual_label="input-target",
-            residual_mean_label="input-target mean",
             lag_steps=lag_steps,
         )
 
@@ -866,13 +871,25 @@ class MLBCExperiment:
             logger=self.logger,
             plots_folder_path=self.plots_folder_path,
             plot_specs=plot_specs,
-            left_ds=pred_ds,
-            right_ds=target_ds,
+            residual_specs=[
+                {
+                    "left_ds": pred_ds,
+                    "right_ds": target_ds,
+                    "label": "pred-target",
+                    "mean_label": "pred-target mean",
+                    "color": "tab:green",
+                },
+                {
+                    "left_ds": input_ds,
+                    "right_ds": target_ds,
+                    "label": "input-target",
+                    "mean_label": "input-target mean",
+                    "color": "tab:blue",
+                },
+            ],
             data_type=mode,
             stage=stage,
             stage_kind="post-train",
-            residual_label="pred-target",
-            residual_mean_label="pred-target mean",
             lag_steps=lag_steps,
         )
 
