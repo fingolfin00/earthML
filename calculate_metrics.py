@@ -109,7 +109,7 @@ BASE_FILTERS = {
     # Default analysis slice shared across timeseries, maps, tables and profiles unless overridden below.
     # For scoreboard and metric-vs-delta-metric plots, use dedicated filters below
     "leadtime": [1, 2, 3, 4, 5, 6],
-    "variable": ["t2m"], # None, ["t2m"]
+    "variable": None, # None, ["t2m"]
     "region": ["ConUS", "Europe"], # ConUS, Europe
     # "leadtime": [6],
     # "variable": ["sst"],
@@ -132,7 +132,7 @@ FIELD_TIMESERIES_KNOBS = {
     # Visual encoding for leadtime when combine_leadtimes is enabled.
     # "shade" uses lighter/darker shades of the model color.
     # "linestyle" uses different line styles while keeping the model color fixed.
-    "leadtime_style": "linestyle",
+    "leadtime_style": "shade",
     # When True, draw individual realization members in field-timeseries plots.
     "plot_realization_members": True,
     # Disable flox/numbagg in field-timeseries plotting. Useful on some clusters
@@ -172,6 +172,7 @@ METRIC_PROFILE_PLOT_KNOBS = {
     # Per-output overrides on top of BASE_FILTERS.
     "filters": {
         "variable": ["t2m", "msl", "d2m", "u10", "v10", "msl"],
+        # "variable": ["sst", "ssh", "sss", "t14d"],
         "leadtime": None,
         "region": None,
         "train_period": None,
@@ -189,6 +190,8 @@ METRIC_PROFILE_PLOT_KNOBS = {
         # "nmae": "deterministic_with_ensemble_overlay",
         "bias": "deterministic_with_ensemble_overlay",
         "clim_acc": "deterministic_with_ensemble_overlay",
+        "variance_ratio": "deterministic_with_ensemble_overlay",
+        "error_std": "deterministic_with_ensemble_overlay",
         # "nbias": "deterministic_with_ensemble_overlay",
         "crps": "probabilistic",
         "spread": "probabilistic",
@@ -205,6 +208,7 @@ METRIC_PROFILE_PLOT_KNOBS = {
         "nmae": "deterministic_with_ensemble_overlay",
         "r2": "deterministic_with_ensemble_overlay",
         "clim_acc": "deterministic_with_ensemble_overlay",
+        "variance_ratio": "deterministic_with_ensemble_overlay",
     },
 }
 
@@ -280,7 +284,7 @@ SCOREBOARD_KNOBS = {
         "loss": "mseloss",
         "train_period": None,
         "leadtime": [1, 2, 3, 4, 5, 6],
-        "region": ["ConUS"], # ConUS, Europe
+        "region": ["ConUS", "Europe"], # ConUS, Europe
         # "region": ["CentralPacific"], # CentralPacific, NorthAtlantic
     },
     "mode": "relative",  # "absolute" or "relative"
@@ -291,6 +295,7 @@ SCOREBOARD_KNOBS = {
         "nmae": "ensemble",
         "nbias": "ensemble",
         # "crps": "probabilistic",
+        "variance_ratio": "ensemble",
         "rmse_skill_clim": "ensemble",
         "clim_acc": "ensemble",
         "spatial_acc": "ensemble",
@@ -302,6 +307,7 @@ SCOREBOARD_KNOBS = {
         "ncrmse": "RdBu_r",
         "nmae": "RdBu_r",
         "nbias": "RdBu_r",
+        "variance_ratio": "RdBu_r",
         "rmse_skill_clim": "RdBu",
         "clim_acc": "RdBu",
         "spatial_acc": "RdBu",
