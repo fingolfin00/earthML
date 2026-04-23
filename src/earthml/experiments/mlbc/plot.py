@@ -13,6 +13,7 @@ from scipy.signal import welch
 
 from ...metrics import CorrelationMetrics, DeterministicMetrics
 from ...plots import plot_realization_timeseries, plot_temporal_mean_map, build_plot_config, get_var_units
+from ...plots.maps import _reduce_for_temporal_mean_map
 from ...plots.timeseries import _reduce_for_timeseries
 
 
@@ -288,6 +289,32 @@ def _infer_lag_steps(ds: xr.Dataset, *, time_dim: str) -> int:
 
 def _format_map_cbar_label(var: str, unit: str | None) -> str:
     return f"{var} [{unit}]" if unit else var
+
+
+def _expand_degenerate_limits(vmin: float, vmax: float) -> tuple[float, float]:
+    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin != vmax:
+        return vmin, vmax
+    delta = max(abs(vmin) * 1e-6, 1e-12)
+    return vmin - delta, vmax + delta
+
+
+def _compute_shared_map_limits(datasets: list[xr.Dataset | xr.DataArray]) -> tuple[float | None, float | None]:
+    finite_mins: list[float] = []
+    finite_maxs: list[float] = []
+
+    for dataset in datasets:
+        da = _reduce_for_temporal_mean_map(dataset)
+        values = np.asarray(da.values, dtype=np.float64)
+        finite_values = values[np.isfinite(values)]
+        if finite_values.size == 0:
+            continue
+        finite_mins.append(float(finite_values.min()))
+        finite_maxs.append(float(finite_values.max()))
+
+    if not finite_mins:
+        return None, None
+
+    return _expand_degenerate_limits(min(finite_mins), max(finite_maxs))
 
 
 def _metric_display_name(metric_name: str) -> str:
@@ -1035,6 +1062,14 @@ def plot_stage_temporal_mean_maps(
         return
 
     for var in common_vars:
+        map_datasets: list[xr.Dataset] = []
+        for spec in plot_specs:
+            try:
+                map_datasets.append(_select_plot_var_flexible(spec["ds"], var))
+            except Exception:
+                continue
+        shared_vmin, shared_vmax = _compute_shared_map_limits(map_datasets)
+
         for spec in plot_specs:
             try:
                 ds_var = _select_plot_var_flexible(spec["ds"], var)
@@ -1044,6 +1079,8 @@ def plot_stage_temporal_mean_maps(
                     save_path=stage_plot_folder.joinpath(f"{stage}_{var}_{spec['label']}_temporal_mean_map.png"),
                     cbar_label=_format_map_cbar_label(var, unit),
                     nan_color="#4a4a4a",
+                    vmin=shared_vmin,
+                    vmax=shared_vmax,
                 )
             except Exception as exc:
                 logger.warning(
@@ -1171,6 +1208,17 @@ def plot_stage_metric_maps(
 
     for metric_name, metric_ds in metric_datasets.items():
         for var in common_vars:
+            metric_map_specs: list[tuple[PlotSpec, xr.Dataset]] = []
+            for spec in model_specs:
+                model_metric_ds = _select_metric_model_ds(metric_ds, spec["label"])
+                if var not in model_metric_ds.data_vars and len(_data_vars_for_plotting(model_metric_ds)) != 1:
+                    continue
+                metric_map_specs.append((spec, _select_plot_var_flexible(model_metric_ds, var)))
+
+            shared_vmin, shared_vmax = _compute_shared_map_limits(
+                [dataset for _, dataset in metric_map_specs]
+            )
+
             for spec in model_specs:
                 try:
                     model_metric_ds = _select_metric_model_ds(metric_ds, spec["label"])
@@ -1182,6 +1230,8 @@ def plot_stage_metric_maps(
                         save_path=stage_plot_folder.joinpath(f"{stage}_{var}_{spec['label']}_{metric_name}_map.png"),
                         cbar_label=_format_metric_label(metric_name, unit=metric_unit),
                         nan_color="#4a4a4a",
+                        vmin=shared_vmin,
+                        vmax=shared_vmax,
                     )
                 except Exception as exc:
                     logger.warning(
