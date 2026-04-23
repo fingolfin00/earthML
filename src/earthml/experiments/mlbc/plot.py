@@ -1608,6 +1608,116 @@ def plot_stage_power_spectrum_timeseries(
     )
 
 
+def plot_stage_error_power_spectrum_timeseries(
+    *,
+    logger,
+    plots_folder_path: Path,
+    residual_specs: list[ResidualSpec],
+    data_type: str,
+    stage: str,
+    stage_kind: str,
+) -> None:
+    if not residual_specs:
+        logger.debug("Skip %s error power spectrum for %s: no residual datasets.", stage_kind, data_type)
+        return
+
+    period_unit = _infer_period_unit(residual_specs[0]["left_ds"])
+    common_vars = [
+        var for var in _data_vars_for_plotting(residual_specs[0]["left_ds"])
+        if all(
+            var in spec["left_ds"].data_vars or len(_data_vars_for_plotting(spec["left_ds"])) == 1
+            for spec in residual_specs
+        ) and all(
+            var in spec["right_ds"].data_vars or len(_data_vars_for_plotting(spec["right_ds"])) == 1
+            for spec in residual_specs
+        )
+    ]
+    if not common_vars:
+        logger.debug("Skip %s error power spectrum for %s: no common variables.", stage_kind, data_type)
+        return
+
+    for var in common_vars:
+        plot_specs = []
+        for spec in residual_specs:
+            residual_ds = _build_residual_ds(spec["left_ds"], spec["right_ds"], var=var)
+            power_ds = _build_anomaly_power_spectrum_ds(residual_ds)
+            plot_specs.append(
+                {
+                    "ds": power_ds,
+                    "label": spec["label"],
+                    "mean_label": spec["mean_label"],
+                    "color": spec["color"],
+                }
+            )
+        plot_stage_timeseries(
+            logger=logger,
+            plots_folder_path=plots_folder_path,
+            plot_specs=plot_specs,
+            data_type=data_type,
+            stage=stage,
+            stage_kind=f"{stage_kind} error power spectrum",
+            x_dim="frequency",
+            x_label=f"Period [{period_unit}]",
+            filename_suffix="anomaly_error_power_spectrum_timeseries",
+            y_label_mode="power_spectrum",
+        )
+
+
+def plot_stage_correction_power_spectrum_timeseries(
+    *,
+    logger,
+    plots_folder_path: Path,
+    correction_specs: list[CorrectionSpec],
+    data_type: str,
+    stage: str,
+    stage_kind: str,
+) -> None:
+    if not correction_specs:
+        logger.debug("Skip %s correction power spectrum for %s: no correction datasets.", stage_kind, data_type)
+        return
+
+    period_unit = _infer_period_unit(correction_specs[0]["left_ds"])
+    common_vars = [
+        var for var in _data_vars_for_plotting(correction_specs[0]["left_ds"])
+        if all(
+            var in spec["left_ds"].data_vars or len(_data_vars_for_plotting(spec["left_ds"])) == 1
+            for spec in correction_specs
+        ) and all(
+            var in spec["right_ds"].data_vars or len(_data_vars_for_plotting(spec["right_ds"])) == 1
+            for spec in correction_specs
+        )
+    ]
+    if not common_vars:
+        logger.debug("Skip %s correction power spectrum for %s: no common variables.", stage_kind, data_type)
+        return
+
+    for var in common_vars:
+        plot_specs = []
+        for spec in correction_specs:
+            correction_ds = _build_residual_ds(spec["left_ds"], spec["right_ds"], var=var)
+            power_ds = _build_anomaly_power_spectrum_ds(correction_ds)
+            plot_specs.append(
+                {
+                    "ds": power_ds,
+                    "label": spec["label"],
+                    "mean_label": spec["mean_label"],
+                    "color": spec["color"],
+                }
+            )
+        plot_stage_timeseries(
+            logger=logger,
+            plots_folder_path=plots_folder_path,
+            plot_specs=plot_specs,
+            data_type=data_type,
+            stage=stage,
+            stage_kind=f"{stage_kind} correction power spectrum",
+            x_dim="frequency",
+            x_label=f"Period [{period_unit}]",
+            filename_suffix="anomaly_correction_power_spectrum_timeseries",
+            y_label_mode="power_spectrum",
+        )
+
+
 def plot_stage_temporal_mean_maps(
     *,
     logger,
@@ -2011,6 +2121,14 @@ def run_stage_plot_bundle(
     )
     plot_stage_power_spectrum_timeseries(
         plot_specs=plot_specs,
+        **shared_kwargs,
+    )
+    plot_stage_error_power_spectrum_timeseries(
+        residual_specs=residual_specs,
+        **shared_kwargs,
+    )
+    plot_stage_correction_power_spectrum_timeseries(
+        correction_specs=correction_specs,
         **shared_kwargs,
     )
     plot_stage_temporal_mean_maps(
