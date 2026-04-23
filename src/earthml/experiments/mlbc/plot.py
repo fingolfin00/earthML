@@ -510,6 +510,54 @@ def _build_anomaly_residual_ds(
     return _build_residual_ds(left_anom, right_anom, var=var)
 
 
+def _build_bias_ds(
+    left_ds: xr.Dataset,
+    right_ds: xr.Dataset,
+    *,
+    var: str,
+) -> xr.Dataset:
+    left_name = _resolve_plot_var_name(left_ds, var)
+    right_name = _resolve_plot_var_name(right_ds, var)
+
+    left_var = left_ds[left_name]
+    right_var = right_ds[right_name]
+
+    time_dim = left_var.earthml.guessed_dims.time
+    left_rdim = left_var.earthml.guessed_dims.realization
+    right_rdim = right_var.earthml.guessed_dims.realization
+
+    left_keep_dims = tuple(dim for dim in (time_dim, left_rdim) if dim is not None and dim in left_var.dims)
+    right_keep_dims = tuple(dim for dim in (time_dim, right_rdim) if dim is not None and dim in right_var.dims)
+
+    left_mean = _reduce_for_timeseries(left_var, keep_dims=left_keep_dims)
+    right_mean = _reduce_for_timeseries(right_var, keep_dims=right_keep_dims)
+
+    if (
+        left_rdim is not None
+        and right_rdim is not None
+        and left_rdim == right_rdim
+        and left_mean.sizes.get(left_rdim, 1) > 1
+        and right_mean.sizes.get(right_rdim, 1) == 1
+    ):
+        right_mean = right_mean.squeeze(right_rdim, drop=True)
+
+    exclude_align_dims = tuple(dim for dim in (left_rdim, right_rdim) if dim is not None)
+    left_mean, right_mean = xr.align(left_mean, right_mean, join="inner", exclude=exclude_align_dims)
+
+    return (left_mean - right_mean).to_dataset(name=var)
+
+
+def _build_anomaly_bias_ds(
+    left_ds: xr.Dataset,
+    right_ds: xr.Dataset,
+    *,
+    var: str,
+) -> xr.Dataset:
+    left_anom = _build_ds_minus_climatology_ds(left_ds)
+    right_anom = _build_ds_minus_climatology_ds(right_ds)
+    return _build_bias_ds(left_anom, right_anom, var=var)
+
+
 def _build_anomaly_variance_ds(ds: xr.Dataset, window: int | None = None) -> xr.Dataset:
     time_dim = ds.earthml.guessed_dims.time
     if time_dim is None or time_dim not in ds.dims:
@@ -826,6 +874,109 @@ def plot_stage_residual_timeseries(
         except Exception as exc:
             logger.warning(
                 "Failed to generate %s residual plot for %s/%s/%s: %s",
+                stage_kind,
+                data_type,
+                stage,
+                var,
+                repr(exc),
+            )
+        finally:
+            plt.close(fig)
+
+
+def plot_stage_bias_timeseries(
+    *,
+    logger,
+    plots_folder_path: Path,
+    residual_specs: list[ResidualSpec],
+    data_type: str,
+    stage: str,
+    stage_kind: str,
+    anomaly: bool = False,
+) -> None:
+    stage_plot_folder = _get_stage_plot_folder(plots_folder_path, data_type)
+    logger.info(
+        "Generate %s bias plots for %s (%s) in %s",
+        stage_kind,
+        data_type,
+        stage,
+        stage_plot_folder,
+    )
+
+    if not residual_specs:
+        logger.debug("Skip %s bias plotting for %s: no residual datasets.", stage_kind, data_type)
+        return
+
+    left_ds = residual_specs[0]["left_ds"]
+    right_ds = residual_specs[0]["right_ds"]
+    time_dim = left_ds.earthml.guessed_dims.time
+    if time_dim is None or time_dim not in left_ds.dims or time_dim not in right_ds.dims:
+        logger.debug("Skip %s bias plotting for %s: no common time dimension.", stage_kind, data_type)
+        return
+
+    sanitized_specs: list[ResidualSpec] = []
+    for spec in residual_specs:
+        spec_left_ds = spec["left_ds"]
+        spec_right_ds = spec["right_ds"]
+        if time_dim not in spec_left_ds.dims or time_dim not in spec_right_ds.dims:
+            continue
+        sanitized_specs.append(
+            {
+                **spec,
+                "left_ds": _sanitize_plot_time_coords(spec_left_ds, x_dim=time_dim),
+                "right_ds": _sanitize_plot_time_coords(spec_right_ds, x_dim=time_dim),
+            }
+        )
+
+    if not sanitized_specs:
+        logger.debug("Skip %s bias plotting for %s: no residual datasets share the common time dimension.", stage_kind, data_type)
+        return
+
+    common_vars = [
+        var for var in _data_vars_for_plotting(sanitized_specs[0]["left_ds"])
+        if all(
+            var in spec["left_ds"].data_vars or len(_data_vars_for_plotting(spec["left_ds"])) == 1
+            for spec in sanitized_specs
+        ) and all(
+            var in spec["right_ds"].data_vars or len(_data_vars_for_plotting(spec["right_ds"])) == 1
+            for spec in sanitized_specs
+        )
+    ]
+    if not common_vars:
+        logger.debug("Skip %s bias plotting for %s: no common variables.", stage_kind, data_type)
+        return
+
+    for var in common_vars:
+        fig, ax = plt.subplots(figsize=(10, 4))
+        try:
+            y_label = _format_y_label(var, unit=_get_var_unit(sanitized_specs[0]["left_ds"], var))
+            for spec in sanitized_specs:
+                bias_ds = (
+                    _build_anomaly_bias_ds(spec["left_ds"], spec["right_ds"], var=var)
+                    if anomaly else
+                    _build_bias_ds(spec["left_ds"], spec["right_ds"], var=var)
+                )
+                _plot_single_timeseries(
+                    logger=logger,
+                    ax=ax,
+                    ds=bias_ds,
+                    var=var,
+                    time_dim=time_dim,
+                    stage_kind=f"{stage_kind} bias",
+                    data_type=data_type,
+                    label=spec["label"],
+                    mean_label=spec["mean_label"],
+                    color=spec["color"],
+                    y_label=y_label,
+                )
+            ax.axhline(0.0, color="black", linewidth=1.0, linestyle=":")
+            ax.legend()
+            fig.tight_layout()
+            suffix = "anomaly_bias_timeseries" if anomaly else "raw_bias_timeseries"
+            fig.savefig(stage_plot_folder.joinpath(f"{stage}_{var}_{suffix}.png"), dpi=200)
+        except Exception as exc:
+            logger.warning(
+                "Failed to generate %s bias plot for %s/%s/%s: %s",
                 stage_kind,
                 data_type,
                 stage,
@@ -1393,6 +1544,10 @@ def run_stage_plot_bundle(
         **shared_kwargs,
     )
     plot_stage_residual_timeseries(
+        residual_specs=residual_specs,
+        **shared_kwargs,
+    )
+    plot_stage_bias_timeseries(
         residual_specs=residual_specs,
         **shared_kwargs,
     )
