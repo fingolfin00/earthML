@@ -77,6 +77,7 @@ class JunoLocalSourceConfig:
     regrid_config               : RegridConfig
     per_sample_regrid           : bool = False
     per_product_regrid          : bool = False
+    corruption_check_mode       : Literal["bookkeeping", "light", "full"] = "full"
     file_name_config            : JunoLocalSourceFileNameConfig | None = None
     path_configs                : list[JunoLocalSourcePathConfig] = field(default_factory=list)
     select_area_after_request   : bool = True
@@ -109,6 +110,7 @@ class JunoLocalSource(MFXarrayLocalSource):
         self.per_product_regrid = bool(config.per_product_regrid)
         if self.per_sample_regrid and self.per_product_regrid:
             raise ValueError("per_sample_regrid and per_product_regrid cannot both be True")
+        self.corruption_check_mode = config.corruption_check_mode
         self.sample_regrid_resolution = config.regrid_config.regrid_resolution
         self.regrid_vars = config.regrid_config.regrid_vars if config.regrid_config.regrid_vars is not None else self.var_name_list
         self.regrid_resolution = None if (self.per_sample_regrid or self.per_product_regrid) else self.sample_regrid_resolution

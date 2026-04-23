@@ -329,6 +329,7 @@ def juno_medfs_forecast_daily(
     engine: str = "h5netcdf",
     regrid_resolution: float | None = None,
     per_product_regrid: bool = True,
+    corruption_check_mode: Literal["bookkeeping", "light", "full"] = "bookkeeping",
     file_path_date_format: str = "%Y%m%d",
     file_date_format: str = "%Y%m%d",
     file_open_workers: int | None = 1,
@@ -350,6 +351,7 @@ def juno_medfs_forecast_daily(
             root_path=Path(root_path),
             engine=engine,
             per_product_regrid=per_product_regrid,
+            corruption_check_mode=corruption_check_mode,
             file_open_workers=file_open_workers,
             file_name_config=file_name_config,
             path_configs=[
@@ -476,6 +478,7 @@ def juno_medfs_analysis_daily(
     engine: str = "h5netcdf",
     regrid_resolution: float | None = None,
     per_product_regrid: bool = True,
+    corruption_check_mode: Literal["bookkeeping", "light", "full"] = "bookkeeping",
     file_path_date_format: str = "%Y/%m",
     file_date_format: str = "%Y%m%d",
     file_open_workers: int | None = 1,
@@ -497,6 +500,7 @@ def juno_medfs_analysis_daily(
             root_path=Path(root_path),
             engine=engine,
             per_product_regrid=per_product_regrid,
+            corruption_check_mode=corruption_check_mode,
             file_open_workers=file_open_workers,
             file_name_config=file_name_config,
             path_configs=[

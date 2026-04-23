@@ -24,6 +24,7 @@ def juno_forecast_hourly(
     minus_hours: int = 1,
     plus_hours: int = 1,
     file_open_workers: int | None = 1,
+    corruption_check_mode: str = "full",
 ) -> SourceConfigContainer:
     leadtime = Leadtime("leadtime", leadtime_unit, leadtime_value)
 
@@ -34,6 +35,7 @@ def juno_forecast_hourly(
             root_path=Path(root_path),
             engine=engine,
             per_sample_regrid=per_sample_regrid,
+            corruption_check_mode=corruption_check_mode,
             cfgrib_idx_path=cfgrib_idx_path,
             file_open_workers=file_open_workers,
             file_name_config=JunoLocalSourceFileNameConfig(
@@ -72,6 +74,7 @@ def juno_analysis_6hourly(
     minus_hours: int = 1,
     plus_hours: int = 1,
     file_open_workers: int | None = 1,
+    corruption_check_mode: str = "full",
 ) -> SourceConfigContainer:
     leadtime = Leadtime("leadtime", leadtime_unit, 0)
 
@@ -82,6 +85,7 @@ def juno_analysis_6hourly(
             root_path=Path(root_path),
             engine=engine,
             per_sample_regrid=per_sample_regrid,
+            corruption_check_mode=corruption_check_mode,
             cfgrib_idx_path=cfgrib_idx_path,
             file_open_workers=file_open_workers,
             file_name_config=JunoLocalSourceFileNameConfig(
