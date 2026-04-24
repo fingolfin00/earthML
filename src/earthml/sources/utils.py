@@ -3,8 +3,9 @@ from pathlib import Path
 
 from datetime import datetime, timedelta
 
-import re, time, shutil
+import re, time, shutil, math
 
+import xarray as xr
 import earthkit.data as ekd
 
 from ..logging import get_logger
@@ -157,3 +158,94 @@ def generate_hours(
         if current.hour == 0:  # wrapped past midnight
             break
     return times
+
+
+# Save Zarr utils
+def _chunk_nbytes(da: xr.DataArray, chunk_sizes: dict[str, int]) -> int:
+    n_items = 1
+    for dim in da.dims:
+        n_items *= max(1, int(chunk_sizes.get(dim, da.sizes[dim])))
+    return n_items * da.dtype.itemsize
+
+def _safe_zarr_chunks_for_var(
+    da: xr.DataArray,
+    *,
+    time_dim: str | None,
+    target_bytes: int,
+    hard_limit_bytes: int,
+) -> tuple[int, ...] | None:
+    if not da.dims:
+        return None
+
+    chunk_sizes = {dim: int(da.sizes[dim]) for dim in da.dims}
+
+    if time_dim is not None and time_dim in chunk_sizes:
+        chunk_sizes[time_dim] = min(chunk_sizes[time_dim], 8)
+
+    while _chunk_nbytes(da, chunk_sizes) > hard_limit_bytes:
+        candidate_dims = [
+            dim for dim in da.dims
+            if chunk_sizes[dim] > 1 and dim != "realization"
+        ]
+        if not candidate_dims:
+            break
+
+        non_time_dims = [dim for dim in candidate_dims if dim != time_dim]
+        split_dim = max(non_time_dims or candidate_dims, key=lambda dim: chunk_sizes[dim])
+        chunk_sizes[split_dim] = max(1, math.ceil(chunk_sizes[split_dim] / 2))
+
+    while _chunk_nbytes(da, chunk_sizes) > target_bytes:
+        candidate_dims = [
+            dim for dim in da.dims
+            if chunk_sizes[dim] > 1 and dim != "realization"
+        ]
+        if not candidate_dims:
+            break
+
+        non_time_dims = [dim for dim in candidate_dims if dim != time_dim]
+        split_dim = max(non_time_dims or candidate_dims, key=lambda dim: chunk_sizes[dim])
+        chunk_sizes[split_dim] = max(1, math.ceil(chunk_sizes[split_dim] / 2))
+
+    return tuple(int(chunk_sizes[dim]) for dim in da.dims)
+
+def save_zarr(
+    ds: xr.Dataset,
+    filepath: str | Path,
+    consolidated: bool = False,
+):
+    from zarr.codecs import BloscCodec
+
+    store = Path(filepath)
+    logger.info("Saving dataset to %s", store)
+
+    if "_has_var" in ds:
+        logger.info("Dropping bookkeeping variable _has_var before saving %s", store)
+        ds_to_save = ds.drop_vars("_has_var", errors="ignore")
+
+    time_dim = ds_to_save.earthml.guessed_dims.time
+    target_bytes = 128 * 1024 * 1024
+    hard_limit_bytes = 2_000_000_000
+    compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
+    encoding_zarr = {}
+
+    for name, var in ds_to_save.variables.items():
+        encoding = {"compressors": compressor}
+        if hasattr(var, "dims") and hasattr(var, "dtype"):
+            chunks = _safe_zarr_chunks_for_var(
+                var,
+                time_dim=time_dim,
+                target_bytes=target_bytes,
+                hard_limit_bytes=hard_limit_bytes,
+            )
+            if chunks is not None:
+                encoding["chunks"] = chunks
+                logger.info("Zarr chunks for %s: dims=%s chunks=%s", name, var.dims, chunks)
+        encoding_zarr[name] = encoding
+
+    ds_to_save.to_zarr(
+        store,
+        encoding=encoding_zarr,
+        mode='w',
+        consolidated=consolidated,
+        align_chunks=True,
+    )

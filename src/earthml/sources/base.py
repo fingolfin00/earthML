@@ -14,10 +14,11 @@ import pandas as pd
 import xarray as xr
 
 from dask.distributed import wait, progress
-from zarr.codecs import BloscCodec
 
 from ..base.dataclasses import TimeRange
 from ..logging import get_logger
+
+from .utils import save_zarr
 from .dataclasses import DataSource, Sample
 
 
@@ -288,7 +289,6 @@ class BaseSource(ABC):
 
         return self.ds
 
-
     def reload(
         self,
         show_dask_progress: bool = True,
@@ -296,55 +296,6 @@ class BaseSource(ABC):
         """Force data reload"""
         self.ds = None
         return self.load(show_dask_progress=show_dask_progress)
-
-    @staticmethod
-    def _chunk_nbytes(da: xr.DataArray, chunk_sizes: dict[str, int]) -> int:
-        n_items = 1
-        for dim in da.dims:
-            n_items *= max(1, int(chunk_sizes.get(dim, da.sizes[dim])))
-        return n_items * da.dtype.itemsize
-
-    def _safe_zarr_chunks_for_var(
-        self,
-        da: xr.DataArray,
-        *,
-        time_dim: str | None,
-        target_bytes: int,
-        hard_limit_bytes: int,
-    ) -> tuple[int, ...] | None:
-        if not da.dims:
-            return None
-
-        chunk_sizes = {dim: int(da.sizes[dim]) for dim in da.dims}
-
-        if time_dim is not None and time_dim in chunk_sizes:
-            chunk_sizes[time_dim] = min(chunk_sizes[time_dim], 8)
-
-        while self._chunk_nbytes(da, chunk_sizes) > hard_limit_bytes:
-            candidate_dims = [
-                dim for dim in da.dims
-                if chunk_sizes[dim] > 1 and dim != "realization"
-            ]
-            if not candidate_dims:
-                break
-
-            non_time_dims = [dim for dim in candidate_dims if dim != time_dim]
-            split_dim = max(non_time_dims or candidate_dims, key=lambda dim: chunk_sizes[dim])
-            chunk_sizes[split_dim] = max(1, math.ceil(chunk_sizes[split_dim] / 2))
-
-        while self._chunk_nbytes(da, chunk_sizes) > target_bytes:
-            candidate_dims = [
-                dim for dim in da.dims
-                if chunk_sizes[dim] > 1 and dim != "realization"
-            ]
-            if not candidate_dims:
-                break
-
-            non_time_dims = [dim for dim in candidate_dims if dim != time_dim]
-            split_dim = max(non_time_dims or candidate_dims, key=lambda dim: chunk_sizes[dim])
-            chunk_sizes[split_dim] = max(1, math.ceil(chunk_sizes[split_dim] / 2))
-
-        return tuple(int(chunk_sizes[dim]) for dim in da.dims)
 
 
     def save(
@@ -355,39 +306,8 @@ class BaseSource(ABC):
         """Save dataset in Zarr format in filepath"""
         if self.ds is None:
             self.ds = self.load()
-        ds_to_save = self.ds.drop_vars("_has_var", errors="ignore")
-        store = Path(filepath)
-        logger.info("Saving dataset to %s", store)
-        if "_has_var" in self.ds:
-            logger.info("Dropping bookkeeping variable _has_var before saving %s", store)
-        time_dim = self.ds.earthml.guessed_dims.time
-        target_bytes = 128 * 1024 * 1024
-        hard_limit_bytes = 2_000_000_000
-        compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
-        encoding_zarr = {}
 
-        for name, var in ds_to_save.variables.items():
-            encoding = {"compressors": compressor}
-            if hasattr(var, "dims") and hasattr(var, "dtype"):
-                chunks = self._safe_zarr_chunks_for_var(
-                    var,
-                    time_dim=time_dim,
-                    target_bytes=target_bytes,
-                    hard_limit_bytes=hard_limit_bytes,
-                )
-                if chunks is not None:
-                    encoding["chunks"] = chunks
-                    logger.info("Zarr chunks for %s: dims=%s chunks=%s", name, var.dims, chunks)
-            encoding_zarr[name] = encoding
-
-        ds_to_save.to_zarr(
-            store,
-            encoding=encoding_zarr,
-            mode='w',
-            consolidated=consolidated,
-            align_chunks=True,
-        )
-
+        save_zarr(self.ds, filepath, consolidated)
 
     def _debug_check_per_var(self, ds, print_str: str):
         for var in [v for v in ds.data_vars if v != "_has_var"]:
