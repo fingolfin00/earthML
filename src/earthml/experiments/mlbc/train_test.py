@@ -23,11 +23,12 @@ from .registry import MLBCExperimentDatasetRole, MLBCExperimentMode
 from .cache import DatasetCacheManager
 from .utils import combine_masks, project_mask_to_reference_grid
 
-from ...sources import build_source, BaseSource, DataSource, XarrayLocalSourceConfig
+from ...sources import save_zarr, build_source, BaseSource, DataSource, XarrayLocalSourceConfig
 from ...misc import Table
 from ...logging import get_logger, log_renderable
 from ...neural import XarrayDataset, Normalize, EpochRandomSplitDataModule
 from ...neural.nets import build_net
+
 from .plot import (
     export_lightning_curves,
     run_stage_plot_bundle,
@@ -1950,9 +1951,6 @@ class MLBCExperiment:
             raise ValueError(f"Unknown predictions store for mask selection: {preds_store}")
         pred_ds_masked = pred_ds_raw.where(mask_ds["common_mask"] == 1)
 
-        compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
-        encoding_zarr = {v.name: {"compressors": compressor} for v in var_list}
+        save_zarr(pred_ds_masked, preds_store, self.consolidated_zarr)
 
-        self.logger.info("Save preds to %s", preds_store)
-        pred_ds_masked.to_zarr(preds_store, encoding=encoding_zarr, mode="w", consolidated=self.consolidated_zarr)
         return pred_ds_raw, pred_ds_masked
