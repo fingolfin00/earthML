@@ -370,6 +370,7 @@ def juno_medfs_forecast_daily(
                         both_data_and_previous_date_in_file=True,
                         date_separator="-",
                         realizations=1,
+                        fill_value=0.0,
                     ),
                 ),
                 JunoLocalSourcePathConfig(
@@ -388,6 +389,7 @@ def juno_medfs_forecast_daily(
                         both_data_and_previous_date_in_file=True,
                         date_separator="-",
                         realizations=1,
+                        fill_value=0.0,
                     ),
                 ),
                 JunoLocalSourcePathConfig(
@@ -406,6 +408,7 @@ def juno_medfs_forecast_daily(
                         both_data_and_previous_date_in_file=True,
                         date_separator="-",
                         realizations=1,
+                        fill_value=0.0,
                     ),
                 ),
                 JunoLocalSourcePathConfig( # here forecast -1, 0 also available
@@ -519,6 +522,7 @@ def juno_medfs_analysis_daily(
                         both_data_and_previous_date_in_file=False,
                         date_separator="-",
                         realizations=1,
+                        fill_value=0.0,
                     ),
                 ),
                 JunoLocalSourcePathConfig(
@@ -537,6 +541,7 @@ def juno_medfs_analysis_daily(
                         both_data_and_previous_date_in_file=False,
                         date_separator="-",
                         realizations=1,
+                        fill_value=0.0,
                     ),
                 ),
                 JunoLocalSourcePathConfig(
@@ -554,6 +559,7 @@ def juno_medfs_analysis_daily(
                         both_data_and_previous_date_in_file=False,
                         date_separator="-",
                         realizations=1,
+                        fill_value=0.0,
                     ),
                 ),
                 JunoLocalSourcePathConfig(
