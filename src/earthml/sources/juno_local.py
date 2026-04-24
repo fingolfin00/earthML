@@ -59,6 +59,7 @@ class JunoLocalSourceFileNameConfig:
     realizations                        : int | Literal["all"] = 1
     minus_timedelta                     : timedelta | None = None
     plus_timedelta                      : timedelta | None = None
+    fill_value                          : float | None = None
 
 
 @dataclass
@@ -480,6 +481,10 @@ class JunoLocalSource(MFXarrayLocalSource):
         if len(sample) > 1:
             sample = sorted(sample, key=self._realization_key)
 
+        previous_date = pd.Timestamp(date) - self.leadtime.to_timedelta()
+        _, date_config = self._resolve_path_config(previous_date)
+        fill_value = date_config.fill_value
+
         common_args = {
             "combine": "nested",
             "coords": "minimal" if has_shifted_samples else "different",
@@ -489,7 +494,7 @@ class JunoLocalSource(MFXarrayLocalSource):
             "parallel": True,
             "decode_timedelta": True,
             "backend_kwargs": {},
-            "preprocess": partial(preprocess_mfdataset, data=self.data_selection),
+            "preprocess": partial(preprocess_mfdataset, data=self.data_selection, fill_value=fill_value),
             "decode_cf": True,
             "errors": "warn",
             "lock": lock,
@@ -530,6 +535,7 @@ class JunoLocalSource(MFXarrayLocalSource):
                         data=self.data_selection,
                         var_name=var.name,
                         date=date,
+                        fill_value=fill_value,
                     )
 
                     def _open_mfdataset_local(local_args=var_args):
@@ -576,6 +582,7 @@ class JunoLocalSource(MFXarrayLocalSource):
                     data=self.data_selection,
                     var_name=var.name,
                     date=date,
+                    fill_value=fill_value,
                 )
 
                 def _open_mfdataset_local(local_args=args):

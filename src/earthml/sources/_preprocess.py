@@ -108,7 +108,13 @@ def _select_vertical_level(
     return ds, da, time.perf_counter() - t0
 
 
-def preprocess_mfdataset(ds: xr.Dataset, data: DataSelection, var_name: str | None = None, date = None) -> xr.Dataset:
+def preprocess_mfdataset(
+    ds: xr.Dataset,
+    data: DataSelection,
+    var_name: str | None = None,
+    date = None,
+    fill_value: float | None = None,
+) -> xr.Dataset:
     import numpy as np
     import cf_xarray, earthml  # noqa
     import xarray as xr
@@ -187,7 +193,12 @@ def preprocess_mfdataset(ds: xr.Dataset, data: DataSelection, var_name: str | No
     da = ds[var_name]
     t_var1 = time.perf_counter()
 
+    # Select vertical level
     ds, da, level_select_s = _select_vertical_level(ds, da, data)
+
+    # Handle NaNs
+    if fill_value is not None:
+        da = da.where(da != fill_value)
 
     # Select leadtime if present
     leadtime_select_s = 0.0
