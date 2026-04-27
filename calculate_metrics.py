@@ -1149,6 +1149,22 @@ def _metric_output_group(metric_type: str) -> str:
     return "deterministic" if metric_type == "deterministic" else "ensemble"
 
 
+def _profile_template_df(
+    metric_type: str,
+    *,
+    df_det: pd.DataFrame,
+    df_ens: pd.DataFrame,
+    df_prob: pd.DataFrame,
+) -> pd.DataFrame:
+    if metric_type == "probabilistic":
+        return df_prob
+    if metric_type == "deterministic":
+        return df_det
+    if metric_type == "deterministic_with_ensemble_overlay":
+        return df_ens
+    raise ValueError(f"Unsupported metric profile plot mode {metric_type!r}")
+
+
 def _build_climatology_da(da: xr.DataArray) -> xr.DataArray:
     time_dim = da.earthml.guessed_dims.time
     if time_dim is None or time_dim not in da.dims:
@@ -1390,6 +1406,28 @@ def _build_strict_member_matrix(
 
     members = pd.pivot(df, index=x_axis, columns="realization", values="value").reindex(x_values)
     return members if not members.empty else None
+
+
+def _build_deterministic_profile_series(
+    df: pd.DataFrame,
+    *,
+    x_axis: str,
+    x_values: list[object],
+) -> tuple[pd.Series, pd.DataFrame | None]:
+    empty_series = pd.Series(index=pd.Index(x_values, name=x_axis), dtype=float)
+    if df.empty:
+        return empty_series, None
+
+    if "realization" in df.columns:
+        members = _build_strict_member_matrix(df, x_axis=x_axis, x_values=x_values)
+        if members is not None and pd.notna(members.to_numpy()).any():
+            mean_values = np.nanmean(members.to_numpy(), axis=1)
+            return (
+                pd.Series(mean_values, index=pd.Index(x_values, name=x_axis), dtype=float),
+                members,
+            )
+
+    return _build_strict_profile_series(df, x_axis=x_axis, x_values=x_values), None
 
 
 def _safe_relative_change(
@@ -3757,7 +3795,12 @@ def save_metrics_vs_parameter_plots(
                 df_plot_det = df_plot_det[df_plot_det["variable"] == variable_mask]
                 df_plot_prob = df_plot_prob[df_plot_prob["variable"] == variable_mask]
 
-            df_template = df_plot_prob if metric_type == "probabilistic" else df_plot_ens
+            df_template = _profile_template_df(
+                metric_type,
+                df_det=df_plot_det,
+                df_ens=df_plot_ens,
+                df_prob=df_plot_prob,
+            )
             if df_template.empty or x_axis not in df_template.columns:
                 continue
 
@@ -3790,7 +3833,12 @@ def save_metrics_vs_parameter_plots(
                     df_context_det = df_context_det[df_context_det[col] == value]
                     df_context_prob = df_context_prob[df_context_prob[col] == value]
 
-                df_context_template = df_context_prob if metric_type == "probabilistic" else df_context_ens
+                df_context_template = _profile_template_df(
+                    metric_type,
+                    df_det=df_context_det,
+                    df_ens=df_context_ens,
+                    df_prob=df_context_prob,
+                )
                 x_values = _ordered_profile_axis_values(df_context_template, x_axis=x_axis, variables=variables)
                 if not x_values:
                     continue
@@ -3810,6 +3858,7 @@ def save_metrics_vs_parameter_plots(
                 diff_plotted = False
                 rel_plotted = False
                 probabilistic_series: dict[tuple[str, object], pd.Series] = {}
+                deterministic_series: dict[tuple[str, object], pd.Series] = {}
                 deterministic_mean_series: dict[tuple[str, object], pd.Series] = {}
                 deterministic_member_matrices: dict[tuple[str, object], pd.DataFrame] = {}
                 deterministic_ensemble_series: dict[tuple[str, object], pd.Series] = {}
@@ -3843,6 +3892,52 @@ def save_metrics_vs_parameter_plots(
                                 alpha=alpha,
                                 color=base_color,
                                 label=f"{model_label}{shade_suffix}",
+                            )
+                        elif metric_type == "deterministic":
+                            df_model_det = df_context_det[df_context_det["model"] == model_name]
+                            if shade_value is not None:
+                                df_model_det = df_model_det[df_model_det[shade_by] == shade_value]
+
+                            y_det, y_members = _build_deterministic_profile_series(
+                                df_model_det,
+                                x_axis=x_axis,
+                                x_values=x_values,
+                            )
+                            if not pd.notna(y_det).any():
+                                continue
+
+                            plotted = True
+                            deterministic_series[(str(model_name), shade_value)] = y_det
+                            if y_members is not None:
+                                y_member_values = y_members.to_numpy()
+                                ax.fill_between(
+                                    x_positions,
+                                    np.nanmin(y_member_values, axis=1),
+                                    np.nanmax(y_member_values, axis=1),
+                                    color=base_color,
+                                    alpha=0.16 * alpha,
+                                    linewidth=0.0,
+                                )
+                                for member_idx in range(y_member_values.shape[1]):
+                                    ax.plot(
+                                        x_positions,
+                                        y_member_values[:, member_idx],
+                                        color=base_color,
+                                        alpha=0.06 * alpha,
+                                        linewidth=0.8,
+                                        linestyle="--",
+                                        marker="o",
+                                        markersize=2.5,
+                                    )
+
+                            ax.plot(
+                                x_positions,
+                                y_det.values,
+                                marker="o",
+                                linewidth=2.0,
+                                alpha=alpha,
+                                color=base_color,
+                                label=f"{model_label} {metric_name}{shade_suffix}",
                             )
                         elif metric_type == "deterministic_with_ensemble_overlay":
                             df_model_ens = df_context_ens[df_context_ens["model"] == model_name]
@@ -3942,6 +4037,35 @@ def save_metrics_vs_parameter_plots(
                     if metric_type == "probabilistic":
                         ref_series = probabilistic_series.get((MODEL_KNOBS["reference_model"], shade_value))
                         corr_series = probabilistic_series.get((MODEL_KNOBS["corrected_model"], shade_value))
+                        if ref_series is not None and corr_series is not None:
+                            diff_series = corr_series - ref_series
+                            if pd.notna(diff_series).any():
+                                diff_plotted = True
+                                diff_ax.plot(
+                                    x_positions,
+                                    diff_series.values,
+                                    marker="o",
+                                    linewidth=2.0,
+                                    alpha=alpha,
+                                    color=difference_color,
+                                    label=f"{MODEL_DISPLAY_NAMES[DIFFERENCE_MODEL]}{shade_suffix}",
+                                )
+
+                                rel_series = _safe_relative_change(diff_series, ref_series)
+                                if pd.notna(rel_series).any():
+                                    rel_plotted = True
+                                    rel_ax.plot(
+                                        x_positions,
+                                        rel_series.values,
+                                        marker="o",
+                                        linewidth=2.0,
+                                        alpha=alpha,
+                                        color=difference_color,
+                                        label=f"{MODEL_DISPLAY_NAMES[DIFFERENCE_MODEL]}{shade_suffix}",
+                                    )
+                    elif metric_type == "deterministic":
+                        ref_series = deterministic_series.get((MODEL_KNOBS["reference_model"], shade_value))
+                        corr_series = deterministic_series.get((MODEL_KNOBS["corrected_model"], shade_value))
                         if ref_series is not None and corr_series is not None:
                             diff_series = corr_series - ref_series
                             if pd.notna(diff_series).any():
@@ -4224,7 +4348,12 @@ def save_combined_variable_metric_profiles(
         df_plot_det = df_det[df_det["metric"] == metric_name]
         df_plot_prob = df_prob[df_prob["metric"] == metric_name]
 
-        df_template = df_plot_prob if metric_type == "probabilistic" else df_plot_ens
+        df_template = _profile_template_df(
+            metric_type,
+            df_det=df_plot_det,
+            df_ens=df_plot_ens,
+            df_prob=df_plot_prob,
+        )
         if df_template.empty or x_axis not in df_template.columns:
             continue
 
@@ -4257,7 +4386,12 @@ def save_combined_variable_metric_profiles(
                 df_context_det = df_context_det[df_context_det[col] == value]
                 df_context_prob = df_context_prob[df_context_prob[col] == value]
 
-            df_context_template = df_context_prob if metric_type == "probabilistic" else df_context_ens
+            df_context_template = _profile_template_df(
+                metric_type,
+                df_det=df_context_det,
+                df_ens=df_context_ens,
+                df_prob=df_context_prob,
+            )
             x_values = _ordered_profile_axis_values(df_context_template, x_axis=x_axis, variables=variables)
             if not x_values:
                 continue
@@ -4281,6 +4415,7 @@ def save_combined_variable_metric_profiles(
             transformed_variables: list[str] = []
             transformed_shade_values: list[object] = []
             probabilistic_series: dict[tuple[str, str, object], pd.Series] = {}
+            deterministic_series: dict[tuple[str, str, object], pd.Series] = {}
             deterministic_mean_series: dict[tuple[str, str, object], pd.Series] = {}
             deterministic_member_matrices: dict[tuple[str, str, object], pd.DataFrame] = {}
             deterministic_ensemble_series: dict[tuple[str, str, object], pd.Series] = {}
@@ -4296,7 +4431,12 @@ def save_combined_variable_metric_profiles(
 
                 model_values = [
                     value for value in pd.unique(
-                        (df_var_prob if metric_type == "probabilistic" else df_var_ens)["model"]
+                        _profile_template_df(
+                            metric_type,
+                            df_det=df_var_det,
+                            df_ens=df_var_ens,
+                            df_prob=df_var_prob,
+                        )["model"]
                     ) if pd.notna(value)
                 ]
 
@@ -4331,6 +4471,60 @@ def save_combined_variable_metric_profiles(
                                 alpha=alpha,
                                 color=variable_color,
                                 linestyle=_model_linestyle(str(model_name), probabilistic=True),
+                                label="_nolegend_",
+                            )
+                        elif metric_type == "deterministic":
+                            df_model_det = df_var_det[df_var_det["model"] == model_name]
+                            if shade_value is not None:
+                                df_model_det = df_model_det[df_model_det[shade_by] == shade_value]
+
+                            y_det, y_members = _build_deterministic_profile_series(
+                                df_model_det,
+                                x_axis=x_axis,
+                                x_values=x_values,
+                            )
+                            if not pd.notna(y_det).any():
+                                continue
+
+                            plotted = True
+                            deterministic_series[(str(variable), str(model_name), shade_value)] = y_det
+                            if variable not in plotted_variables:
+                                plotted_variables.append(variable)
+                            if model_name not in plotted_models:
+                                plotted_models.append(model_name)
+                            if shade_value is not None and shade_value not in plotted_shade_values:
+                                plotted_shade_values.append(shade_value)
+                            if y_members is not None:
+                                y_member_values = y_members.to_numpy()
+                                ax.fill_between(
+                                    x_positions,
+                                    np.nanmin(y_member_values, axis=1),
+                                    np.nanmax(y_member_values, axis=1),
+                                    color=variable_color,
+                                    alpha=0.16 * alpha,
+                                    linewidth=0.0,
+                                )
+                                for member_idx in range(y_member_values.shape[1]):
+                                    ax.plot(
+                                        x_positions,
+                                        y_member_values[:, member_idx],
+                                        color=variable_color,
+                                        alpha=0.06 * alpha,
+                                        linewidth=0.8,
+                                        linestyle="--",
+                                        marker="o",
+                                        markersize=2.5,
+                                        label="_nolegend_",
+                                    )
+                            ax.plot(
+                                x_positions,
+                                y_det.values,
+                                color=variable_color,
+                                linewidth=2.0,
+                                alpha=alpha,
+                                linestyle=_model_linestyle(str(model_name)),
+                                marker="o",
+                                markersize=5,
                                 label="_nolegend_",
                             )
                         elif metric_type == "deterministic_with_ensemble_overlay":
@@ -4442,6 +4636,41 @@ def save_combined_variable_metric_profiles(
                     if metric_type == "probabilistic":
                         ref_series = probabilistic_series.get((str(variable), MODEL_KNOBS["reference_model"], shade_value))
                         corr_series = probabilistic_series.get((str(variable), MODEL_KNOBS["corrected_model"], shade_value))
+                        if ref_series is not None and corr_series is not None:
+                            diff_series = corr_series - ref_series
+                            if pd.notna(diff_series).any():
+                                diff_plotted = True
+                                if variable not in transformed_variables:
+                                    transformed_variables.append(variable)
+                                if shade_value is not None and shade_value not in transformed_shade_values:
+                                    transformed_shade_values.append(shade_value)
+                                diff_ax.plot(
+                                    x_positions,
+                                    diff_series.values,
+                                    marker="o",
+                                    linewidth=2.0,
+                                    alpha=alpha,
+                                    color=variable_color,
+                                    linestyle="-",
+                                    label="_nolegend_",
+                                )
+
+                                rel_series = _safe_relative_change(diff_series, ref_series)
+                                if pd.notna(rel_series).any():
+                                    rel_plotted = True
+                                    rel_ax.plot(
+                                        x_positions,
+                                        rel_series.values,
+                                        marker="o",
+                                        linewidth=2.0,
+                                        alpha=alpha,
+                                        color=variable_color,
+                                        linestyle="-",
+                                        label="_nolegend_",
+                                    )
+                    elif metric_type == "deterministic":
+                        ref_series = deterministic_series.get((str(variable), MODEL_KNOBS["reference_model"], shade_value))
+                        corr_series = deterministic_series.get((str(variable), MODEL_KNOBS["corrected_model"], shade_value))
                         if ref_series is not None and corr_series is not None:
                             diff_series = corr_series - ref_series
                             if pd.notna(diff_series).any():
