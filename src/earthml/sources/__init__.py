@@ -1,12 +1,13 @@
 from ._runtime import configure_sources_runtime
+
+configure_sources_runtime()
+
 from .base import BaseSource
 from .dataclasses import SourceConfig, SourceConfigContainer, RegridConfig, DataSource
 from .registry import get_source_class, build_source
 from .registry import _SOURCES as _REGISTRY_SOURCES
 from .registry import _SOURCE_CONFIGS as _REGISTRY_SOURCE_CONFIGS
 from .utils import save_zarr
-
-configure_sources_runtime()
 
 __all__ = [
     "BaseSource",
