@@ -1813,8 +1813,9 @@ class MLBCExperiment:
                 if C_model % R_out != 0:
                     raise ValueError(f"C_model={C_model} not divisible by R_out={R_out}")
                 C = C_model // R_out
-                # (C*R, T, H, W) -> (R, C, T, H, W) -> (C, R, T, H, W)
-                x = x.unflatten(0, (R_out, C)).permute(1, 0, 2, 3, 4).contiguous()
+                # Inverse of dataset packing:
+                # (C, T, R, H, W) -> transpose(0, 2, 1, 3, 4) -> (C*R, T, H, W)
+                x = x.unflatten(0, (C, R_out)).contiguous()
 
         else:
             # Here realizations are flattened into N if R_out>1, else N is time

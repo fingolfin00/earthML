@@ -89,8 +89,10 @@ class XarrayDataset(Dataset):
             # X: merge R into C
             if self.x_np_filled.ndim == 5:  # (C,T,R,H,W)
                 C, T, R, H, W = self.x_np_filled.shape
-                x_np_filled_ = self.x_np_filled.reshape(C * R, T, H, W)          # (C*R,T,H,W)
-                mask_x_np_   = self.mask_x_np.reshape(C * R, T, H, W)
+                # Move realizations next to channels before flattening so time
+                # remains a true time axis after packing.
+                x_np_filled_ = self.x_np_filled.transpose(0, 2, 1, 3, 4).reshape(C * R, T, H, W)
+                mask_x_np_   = self.mask_x_np.transpose(0, 2, 1, 3, 4).reshape(C * R, T, H, W)
             else:  # (C,T,H,W)
                 x_np_filled_ = self.x_np_filled                                  # (C,T,H,W)
                 mask_x_np_   = self.mask_x_np
@@ -131,8 +133,8 @@ class XarrayDataset(Dataset):
 
                 # Fold R into channels: (C,T,R,H,W) -> (C*R,T,H,W)
                 C, T, R, H, W = y_rep.shape
-                y_np_filled_ = y_rep.reshape(C * R, T, H, W)  # (Cout*R_in, T, H, W)
-                mask_y_np_   = m_rep.reshape(C * R, T, H, W)  # (Cout*R_in, T, H, W)
+                y_np_filled_ = y_rep.transpose(0, 2, 1, 3, 4).reshape(C * R, T, H, W)
+                mask_y_np_   = m_rep.transpose(0, 2, 1, 3, 4).reshape(C * R, T, H, W)
 
             else:
                 raise ValueError(f"Unsupported output_realizations={output_realizations}")
