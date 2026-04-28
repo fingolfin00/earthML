@@ -152,10 +152,11 @@ class MLBCExperimentLauncher:
         if self.juno_file_open_workers is None:
             self.juno_file_open_workers = multiprocessing.cpu_count()
 
-        # If realization_as_channel is true use provided input and output channel dims,
-        # else infer both from the number of variables.
-        n_classes = self.net.n_classes if self.realization_as_channel else len(self.variables)
-        base_n_channels = self.net.n_channels if self.realization_as_channel else len(self.variables)
+        # Each generated experiment uses a single input/target variable pair.
+        # When realizations are not folded into channels, the per-run tensors are
+        # single-channel regardless of how many variables the launcher iterates over.
+        n_classes = self.net.n_classes if self.realization_as_channel else 1
+        base_n_channels = self.net.n_channels if self.realization_as_channel else 1
 
         # Append one mask channel per input channel or one single mask channel if realization_as_channel=True
         if self.pass_mask_as_input_extra_channel:
