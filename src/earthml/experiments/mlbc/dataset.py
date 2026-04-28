@@ -104,7 +104,7 @@ class MLBCDatasetGenerator:
             f"_{str(self.leadtime_input.value)}{self.leadtime_input.unit}_{self.region.name}"
             f"_{train_start:%Y%m%d}-{train_end:%Y%m%d}"
             f"_{test_start:%Y%m%d}-{test_end:%Y%m%d}"
-            f"{self.experiment.suffix}"
+            f"{self.experiment.run_name_suffix}"
         )
 
     @property

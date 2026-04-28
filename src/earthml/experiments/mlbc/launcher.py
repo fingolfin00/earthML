@@ -237,7 +237,7 @@ class MLBCExperimentLauncher:
         return {
             "experiment.type": self.experiment.type,
             "experiment.name": self.experiment.name,
-            "experiment.suffix": self.experiment.suffix,
+            "experiment.run_name_suffix": self.experiment.run_name_suffix,
             "experiment.root_path": str(self.experiment.root_path),
             "run.mode": self.run_mode,
             "run.planned_runs": len(exp_gen_cfgs),
@@ -807,6 +807,7 @@ class MLBCExperimentLauncher:
         exp_cfg = MLBCExperimentConfig(
             name=self.experiment.name,
             work_path=dataset.experiment_path,
+            run_name_suffix=self.experiment.run_name_suffix,
             net=resolved_net,
             train_dataset=dataset.train,
             test_dataset=dataset.test,

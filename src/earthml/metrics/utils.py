@@ -387,7 +387,7 @@ def get_runs_and_metrics(
     truth_runs = loaded_runs[truth_model]
 
     # These are the experiment axes created by load_all_exp_from_folder
-    run_dims = [dim for dim in ("leadtime", "train_period", "loss") if dim in truth_runs.dims]
+    run_dims = [dim for dim in ("leadtime", "train_period", "loss", "variant") if dim in truth_runs.dims]
 
     run_indexers = _build_run_indexers(truth_runs, run_dims, run_filters=run_filters)
 

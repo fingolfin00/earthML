@@ -116,6 +116,7 @@ BASE_FILTERS = {
     # "region": ["CentralPacific"], # CentralPacific, NorthAtlantic
     "train_period": None,
     "loss": None,
+    "variant": None,
 }
 
 FIELD_TIMESERIES_KNOBS = {
@@ -179,7 +180,7 @@ METRIC_PROFILE_PLOT_KNOBS = {
         "loss": None,
     },
     # Pick the x-axis used for metric profile plots.
-    "x_axis": "leadtime",  # "leadtime", "train_period", "loss", "variable"
+    "x_axis": "leadtime",  # "leadtime", "train_period", "loss", "variant", "variable"
     # Each metric maps to the plotting mode expected by save_metrics_vs_parameter_plots.
     "metrics": {
         "r2": "deterministic_with_ensemble_overlay",
@@ -281,7 +282,7 @@ SCOREBOARD_KNOBS = {
     # These act only when the dimension is not already on an axis.
     "filters": {
         "variable": None,
-        "loss": "mseloss",
+        "loss": None,
         "train_period": None,
         "leadtime": [1, 2, 3, 4, 5, 6],
         "region": ["ConUS", "Europe"], # ConUS, Europe
@@ -319,7 +320,7 @@ SCOREBOARD_KNOBS = {
         # "crps": (-0.2, 0.2),
     },
     # Pick which metadata dimensions span the scoreboard grid.
-    "row_axis": "variable",  # e.g. "train_period", "loss", "leadtime", "variable"
+    "row_axis": "variable",  # e.g. "train_period", "loss", "variant", "leadtime", "variable"
     "col_axis": "leadtime",
     "annotate": True,
 }
@@ -380,8 +381,8 @@ MODEL_DISPLAY_NAMES = {
 NORMALIZED_METRICS = {"nrmse", "ncrmse", "nmae", "nbias", "r2"}
 VARIABLE_SUBFOLDERS = ("timeseries", "maps", "profiles", "tables")
 OUTPUT_GROUP_SUBFOLDERS = ("field", "deterministic", "ensemble") # ensemble containes also probabilistic metrics
-RUN_CONTEXT_DIMS = ("leadtime", "train_period", "loss", "region")
-TABLE_CONTEXT_FIELDS = ("train_period", "loss", "leadtime", "region")
+RUN_CONTEXT_DIMS = ("leadtime", "train_period", "loss", "variant", "region")
+TABLE_CONTEXT_FIELDS = ("train_period", "loss", "variant", "leadtime", "region")
 
 
 METRIC_DISPLAY_NAMES = {
@@ -420,6 +421,7 @@ AXIS_DISPLAY_NAMES = {
     "variable": "",
     "leadtime": "Lead time",
     "loss": "Loss",
+    "variant": "Variant",
     "train_period": "Train period",
     "region": "Region",
     "model": "Model",
@@ -613,7 +615,7 @@ def _merge_selection_values(existing: object | None, new_value: object | None) -
 
 def _build_load_selection(*filter_sets: dict | None) -> dict[str, object]:
     selection: dict[str, object] = {}
-    tracked_keys = ("variable", "leadtime", "train_period", "loss", "region")
+    tracked_keys = ("variable", "leadtime", "train_period", "loss", "variant", "region")
 
     for key in tracked_keys:
         merged_value: object | None = []
@@ -1252,7 +1254,7 @@ def _context_selection_entries(
         labels = {
             dim: _scalar_coord_value(data, dim)
             for dim in dims_present
-            if _scalar_coord_value(data, dim) is not None
+            if _scalar_coord_value(data, dim) is not None and str(_scalar_coord_value(data, dim)) != ""
         }
         return [({}, labels)]
 
@@ -1262,10 +1264,11 @@ def _context_selection_entries(
         labels = {}
         for dim in dims_present:
             if dim in selection:
-                labels[dim] = selection[dim]
+                if str(selection[dim]) != "":
+                    labels[dim] = selection[dim]
             else:
                 scalar_value = _scalar_coord_value(data, dim)
-                if scalar_value is not None:
+                if scalar_value is not None and str(scalar_value) != "":
                     labels[dim] = scalar_value
         entries.append((selection, labels))
     return entries
@@ -1314,6 +1317,8 @@ def _ordered_profile_axis_values(
     values = [value for value in pd.unique(df[x_axis]) if pd.notna(value)]
     if x_axis == "leadtime":
         return sorted(values)
+    if x_axis == "variant":
+        return sorted(values, key=lambda value: (str(value) != "", str(value)))
     if x_axis == "variable":
         ordered_variables = _ordered_unique_variables(variables)
         return [value for value in ordered_variables if value in values]
@@ -1323,6 +1328,8 @@ def _ordered_profile_axis_values(
 def _format_profile_axis_tick(value: object, *, x_axis: str) -> str:
     if x_axis == "variable":
         return format_variable_display_name(str(value))
+    if x_axis == "variant":
+        return str(value) if str(value) != "" else "default"
     return str(value)
 
 
@@ -1633,7 +1640,7 @@ def _merge_filename_contexts(*contexts: dict[str, object]) -> str:
 def _ordered_context_filename_suffix(
     context_values: dict[str, object],
     *,
-    priority_fields: tuple[str, ...] = ("train_period", "loss", "leadtime"),
+    priority_fields: tuple[str, ...] = ("train_period", "loss", "variant", "leadtime"),
 ) -> str:
     if not context_values:
         return "all"
@@ -3737,7 +3744,7 @@ def save_metrics_vs_parameter_plots(
 ) -> list[Path]:
     saved_paths: list[Path] = []
     model_colors = MODEL_COLORS
-    supported_axes = {"leadtime", "train_period", "loss", "variable", "region"}
+    supported_axes = {"leadtime", "train_period", "loss", "variant", "variable", "region"}
     if x_axis not in supported_axes:
         raise ValueError(f"Unsupported metric profile axis {x_axis!r}. Expected one of {sorted(supported_axes)}.")
 
@@ -3819,16 +3826,20 @@ def save_metrics_vs_parameter_plots(
                 if not isinstance(group_key, tuple):
                     group_key = (group_key,)
 
-                context_values = {
+                context_filters = {
                     col: value
                     for col, value in zip(context_columns, group_key)
                     if not pd.isna(value)
+                }
+                context_values = {
+                    col: value for col, value in context_filters.items()
+                    if str(value) != ""
                 }
 
                 df_context_ens = df_plot_ens.copy()
                 df_context_det = df_plot_det.copy()
                 df_context_prob = df_plot_prob.copy()
-                for col, value in context_values.items():
+                for col, value in context_filters.items():
                     df_context_ens = df_context_ens[df_context_ens[col] == value]
                     df_context_det = df_context_det[df_context_det[col] == value]
                     df_context_prob = df_context_prob[df_context_prob[col] == value]
@@ -4246,8 +4257,8 @@ def save_metrics_vs_parameter_plots(
                     current_ax.set_xticks(x_positions)
                     current_ax.set_xticklabels(
                         [_format_profile_axis_tick(value, x_axis=x_axis) for value in x_values],
-                        rotation=30 if x_axis in {"train_period", "loss", "variable"} else 0,
-                        ha="right" if x_axis in {"train_period", "loss", "variable"} else "center",
+                        rotation=30 if x_axis in {"train_period", "loss", "variant", "variable"} else 0,
+                        ha="right" if x_axis in {"train_period", "loss", "variant", "variable"} else "center",
                     )
                     current_ax.grid(True, linestyle="--", alpha=0.35)
 
@@ -4372,16 +4383,20 @@ def save_combined_variable_metric_profiles(
             if not isinstance(group_key, tuple):
                 group_key = (group_key,)
 
-            context_values = {
+            context_filters = {
                 col: value
                 for col, value in zip(context_columns, group_key)
                 if not pd.isna(value)
+            }
+            context_values = {
+                col: value for col, value in context_filters.items()
+                if str(value) != ""
             }
 
             df_context_ens = df_plot_ens.copy()
             df_context_det = df_plot_det.copy()
             df_context_prob = df_plot_prob.copy()
-            for col, value in context_values.items():
+            for col, value in context_filters.items():
                 df_context_ens = df_context_ens[df_context_ens[col] == value]
                 df_context_det = df_context_det[df_context_det[col] == value]
                 df_context_prob = df_context_prob[df_context_prob[col] == value]
@@ -4856,8 +4871,8 @@ def save_combined_variable_metric_profiles(
                 current_ax.set_xticks(x_positions)
                 current_ax.set_xticklabels(
                     [_format_profile_axis_tick(value, x_axis=x_axis) for value in x_values],
-                    rotation=30 if x_axis in {"train_period", "loss", "variable"} else 0,
-                    ha="right" if x_axis in {"train_period", "loss", "variable"} else "center",
+                    rotation=30 if x_axis in {"train_period", "loss", "variant", "variable"} else 0,
+                    ha="right" if x_axis in {"train_period", "loss", "variant", "variable"} else "center",
                 )
                 current_ax.grid(True, linestyle="--", alpha=0.35)
 

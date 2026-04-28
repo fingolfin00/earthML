@@ -27,7 +27,7 @@ class MLBCExperimentLauncherConfig:
     type        : MLBCExperimentType
     name        : MLBCExperimentName
     root_path   : str | Path
-    suffix      : str
+    run_name_suffix: str
 
 @dataclass(frozen=True)
 class MLBCExperimentDataset:
@@ -78,6 +78,7 @@ class MLBCExperimentConfig:
     train_dataset               : MLBCExperimentDataset | List[MLBCExperimentDataset]
     test_dataset                : MLBCExperimentDataset | List[MLBCExperimentDataset]
     # Optional # TODO create a dedicated dataclass
+    run_name_suffix             : Optional[str]                    = None              # full launcher suffix, e.g. "_mseloss_debug"
     anomaly                     : Optional[bool]                    = False             # train on anomaly wrt input and target climatologies
     inpaint_nan                 : Optional[bool]                    = False             # whether to inpaint nan values in input and target datasets (after loading, before torch dataset generation)
     per_epoch_resplit           : Optional[bool]                    = False             # resplit train and validation sets per epoch with different seed

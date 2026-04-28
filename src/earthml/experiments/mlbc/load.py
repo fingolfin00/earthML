@@ -245,6 +245,40 @@ def _load_saved_experiment(
     return exp_path, experiment
 
 
+def _normalize_experiment_variant(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value).lstrip("_").strip()
+
+
+def _resolve_run_name_suffix(config: MLBCExperimentConfig, exp_path: Path) -> str:
+    explicit_suffix = getattr(config, "run_name_suffix", None)
+    if explicit_suffix is not None and str(explicit_suffix) != "":
+        return str(explicit_suffix)
+
+    loss_name = getattr(getattr(config, "net", None), "loss", "") or ""
+    loss_suffix = f"_{str(loss_name).lower()}" if loss_name else ""
+    run_name = exp_path.name
+
+    if loss_suffix:
+        idx = run_name.rfind(loss_suffix)
+        if idx != -1:
+            return run_name[idx:]
+
+    return loss_suffix
+
+
+def _resolve_experiment_variant(config: MLBCExperimentConfig, exp_path: Path) -> str:
+    full_suffix = _resolve_run_name_suffix(config, exp_path)
+    loss_name = getattr(getattr(config, "net", None), "loss", "") or ""
+    loss_suffix = f"_{str(loss_name).lower()}" if loss_name else ""
+
+    if loss_suffix and full_suffix.startswith(loss_suffix):
+        return _normalize_experiment_variant(full_suffix[len(loss_suffix):])
+
+    return _normalize_experiment_variant(full_suffix)
+
+
 def _source_with_root_path(
     source: BaseSource,
     root_path: str | Path,
@@ -509,6 +543,7 @@ def load_all_exp_from_folder(
                     experiment = joblib.load(entry.path)
                     experiment = _rehydrate_saved_experiment(current_path, experiment)
                     config: MLBCExperimentConfig = experiment["config"]
+                    config.run_name_suffix = _resolve_run_name_suffix(config, current_path)
                     configs.append(config)
         except FileNotFoundError:
             continue
@@ -565,6 +600,7 @@ def load_all_exp_from_folder(
 
             region = datasource_input.data_selection.region.name
             loss = config.net.loss.lower()
+            variant = _resolve_experiment_variant(config, Path(config.work_path))
 
             group_name = _CANONICAL_VARIABLE_NAMES.get(var_input, var_input)
             if show_progress:
@@ -572,7 +608,7 @@ def load_all_exp_from_folder(
                     task,
                     description=(
                         f"Loading {group_name} | leadtime={leadtime} {leadtime_unit} | "
-                        f"region={region} | loss={loss}"
+                        f"region={region} | loss={loss} | variant={variant or '<default>'}"
                     ),
                 )
 
@@ -596,6 +632,16 @@ def load_all_exp_from_folder(
                 if show_progress:
                     prog.advance(task)
                 continue
+            variant_filters = (run_filters or {}).get("variant")
+            if variant_filters is not None:
+                variant_filters = [
+                    _normalize_experiment_variant(value)
+                    for value in _normalize_selection_values(variant_filters)
+                ]
+            if not _matches_selection(variant, variant_filters):
+                if show_progress:
+                    prog.advance(task)
+                continue
 
             run_dict, size = _load_single_exp(
                 exp_cfg=config,
@@ -607,7 +653,7 @@ def load_all_exp_from_folder(
                 show_dask_progress=not show_progress,
             )
 
-            size_key = (leadtime, train_period, region, loss)
+            size_key = (leadtime, train_period, region, loss, variant)
             grouped_sizes.setdefault(group_name, {})[size_key] = size
 
             if only_sizes:
@@ -632,7 +678,7 @@ def load_all_exp_from_folder(
                     )
                     continue
 
-                for dim in ["train_period", "loss", "region"]:
+                for dim in ["train_period", "loss", "variant", "region"]:
                     if dim in ds.dims or dim in ds.coords:
                         raise ValueError(f"{dim} already exists in dataset")
 
@@ -654,6 +700,7 @@ def load_all_exp_from_folder(
                     {
                         "train_period": [train_period],
                         "loss": [loss],
+                        "variant": [variant],
                         "region": [region],
                     }
                 )
