@@ -97,12 +97,17 @@ def plot_metric_vs_diff(
             return fields[0].replace("_", " ").title()
         return " + ".join(field.replace("_", " ").title() for field in fields)
 
+    def _field_display_name(field: str) -> str:
+        return field.replace("_", " ").title()
+
     def _encoding_column_name(role: str, fields: tuple[str, ...]) -> str:
         if len(fields) == 1:
             return fields[0]
         return f"__{role}_{'_'.join(fields)}__"
 
     def _format_encoding_component(field: str, value: object) -> str:
+        if value is None or (isinstance(value, str) and value == "") or pd.isna(value):
+            return "none"
         if field == "leadtime":
             return f"{value}{leadtime_unit}" if leadtime_unit else str(value)
         return str(value)
@@ -111,8 +116,8 @@ def plot_metric_vs_diff(
         if len(fields) == 1:
             return _format_encoding_component(fields[0], value)
         components = value if isinstance(value, tuple) else (value,)
-        return " | ".join(
-            _format_encoding_component(field, component)
+        return ", ".join(
+            f"{_field_display_name(field)}={_format_encoding_component(field, component)}"
             for field, component in zip(fields, components)
         )
 
