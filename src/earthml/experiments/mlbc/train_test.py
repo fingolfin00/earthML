@@ -198,14 +198,20 @@ class MLBCExperiment:
         base_loss_params["net"] = net_cfg
 
         # Initialize model
-        self.model = build_net(
-            name=self.config.net.name,
+        net_kwargs = dict(
             learning_rate=self.config.net.learning_rate,
             loss=self.config.net.loss,
             loss_params=base_loss_params,
             norm=self.config.net.norm_strategy,
             supervised=self.config.net.supervised,
+            n_channels=self.config.net.n_channels,
+            n_classes=self.config.net.n_classes,
             **self.config.net.extra_net_args,
+        )
+
+        self.model = build_net(
+            name=self.config.net.name,
+            **net_kwargs,
         ).to(self.device)
 
         # Log model info
@@ -1409,6 +1415,7 @@ class MLBCExperiment:
             target_realization_avg=self.config.target_realization_avg,
             realization_as_channel=self.config.realization_as_channel,
             output_realizations=self.config.output_realizations,
+            pass_mask_as_input_extra_channel=self.config.pass_mask_as_input_extra_channel,
         )
 
         # Compute stats

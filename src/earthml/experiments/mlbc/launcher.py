@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Sequence, Callable, Any, TypeAlias, Literal, Mapping
 from itertools import product
 import multiprocessing
@@ -93,6 +93,7 @@ class MLBCExperimentLauncher:
     weights_filename            : str | Path | None = None  # optional checkpoint/weights file to use for testing instead of generated best weights
     dataset_cache_enabled       : bool = False  # whether to reuse shared source-role datasets across experiments
     dataset_cache_root          : str | Path | None = None  # optional override for the shared dataset cache root
+    pass_mask_as_input_extra_channel: bool = False # C -> 2C
 
 
     def __post_init__(self):
@@ -151,16 +152,38 @@ class MLBCExperimentLauncher:
         if self.juno_file_open_workers is None:
             self.juno_file_open_workers = multiprocessing.cpu_count()
 
-        # If realization_as_channel is true use provided input and output channel dims, else infer from number of variables
-        n_channels, n_classes = (self.net.n_channels, self.net.n_classes) if self.realization_as_channel else (len(self.variables), len(self.variables))
-        # Determine output realizations from requested n_channels and n_classes
-        if n_classes==1:
-            self.output_realizations = "deterministic"
+        # If realization_as_channel is true use provided input and output channel dims,
+        # else infer both from the number of variables.
+        n_classes = self.net.n_classes if self.realization_as_channel else len(self.variables)
+        base_n_channels = self.net.n_channels if self.realization_as_channel else len(self.variables)
+
+        # Append one mask channel per input channel or one single mask channel if realization_as_channel=True
+        if self.pass_mask_as_input_extra_channel:
+            if self.realization_as_channel:
+                n_channels = base_n_channels + 1
+            else:
+                n_channels = 2 * base_n_channels
         else:
-            if n_classes==n_channels:
+            n_channels = base_n_channels
+
+        self.base_n_channels = base_n_channels
+        self.effective_n_channels = n_channels
+        self.effective_n_classes = n_classes
+
+        # Determine target layout from the target channels only.
+        # The extra mask channels affect inputs, not outputs.
+        if self.realization_as_channel:
+            if n_classes == 1:
+                self.output_realizations = "deterministic"
+            elif n_classes == base_n_channels:
                 self.output_realizations = "ensemble"
             else:
-                raise ValueError(f"Unsupported combo input n_channels={n_channels}, output n_classes={n_classes}")
+                raise ValueError(
+                    f"Unsupported realization_as_channel=True combo: "
+                    f"base_n_channels={base_n_channels}, effective_n_channels={n_channels}, n_classes={n_classes}"
+                )
+        else:
+            self.output_realizations = "deterministic"
 
     def _default_trim_invalid_border_lines(self) -> bool:
         return self.experiment.name in {
@@ -254,8 +277,9 @@ class MLBCExperimentLauncher:
             "net.accumulate_grad_batches": self.net.accumulate_grad_batches,
             "net.train_percent": self.net.train_percent,
             "net.earlystopping_patience": self.net.earlystopping_patience,
-            "net.n_channels": self.net.n_channels,
-            "net.n_classes": self.net.n_classes,
+            "net.base_n_channels": self.base_n_channels,
+            "net.n_channels": self.effective_n_channels,
+            "net.n_classes": self.effective_n_classes,
         }
 
 
@@ -773,10 +797,16 @@ class MLBCExperimentLauncher:
             option_name="external_mask_variable",
         )
 
+        resolved_net = replace(
+            self.net,
+            n_channels=self.effective_n_channels,
+            n_classes=self.effective_n_classes,
+        )
+
         exp_cfg = MLBCExperimentConfig(
             name=self.experiment.name,
             work_path=dataset.experiment_path,
-            net=self.net,
+            net=resolved_net,
             train_dataset=dataset.train,
             test_dataset=dataset.test,
             anomaly=self.anomaly,
@@ -797,6 +827,7 @@ class MLBCExperimentLauncher:
                 if self.dataset_cache_root is not None
                 else Path(self.experiment.root_path) / "dataset_cache"
             ),
+            pass_mask_as_input_extra_channel=self.pass_mask_as_input_extra_channel,
         )
 
         return dataset.experiment_run_name, dataset, exp_cfg
