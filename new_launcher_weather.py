@@ -139,6 +139,12 @@ if __name__ == "__main__":
                 end_train_date          = datetime(2022, 6, 9)
                 start_test_date         = datetime(2025, 1, 1)
                 end_test_date           = datetime(2025, 1, 2)
+            if experiment_name == "juno-medfs_juno-medfs":
+                start_train_date        = datetime(2021, 11, 24)
+                # start_train_date        = datetime(2023, 11, 24)
+                end_train_date          = datetime(2023, 11, 30)
+                start_test_date         = datetime(2026, 1, 1)
+                end_test_date           = datetime(2026, 1, 5)
 
     # Set test periods and data providers
     juno_location_cutoff = datetime(2025, 10, 14)
