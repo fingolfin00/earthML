@@ -285,16 +285,20 @@ class XarrayDataset(Dataset):
         x, y = self.x[idx], self.y[idx]              # shapes: (C,H,W)
         mx, my = self.x_mask[idx], self.y_mask[idx]
 
-        if self.transform_x:
-            x = self.transform_x(x, **self.transform_x_args)
-        if self.transform_y:
-            y = self.transform_y(y, **self.transform_y_args)
-
         if self.torch_mask == "target":
             mask = my # use target mask
         elif self.torch_mask == "input":
             mask = mx # use input mask
         if self.torch_mask == "both":
             mask = mx & my # combine input and target masks
+
+        if self.transform_x:
+            x = self.transform_x(x, **self.transform_x_args)
+
+        if self.transform_y:
+            y = self.transform_y(y, **self.transform_y_args)
+
+        x = x.masked_fill(~mx, 0.0)
+        y = y.masked_fill(~my, 0.0)
 
         return x, y, mask
