@@ -179,7 +179,8 @@ METRIC_PROFILE_PLOT_KNOBS = {
         "train_period": None,
         "loss": None,
     },
-    # Pick the x-axis used for metric profile plots.
+    # Pick the x-axis used for metric profile plots. `x_axis` can combine
+    # multiple context dimensions, e.g. ("loss", "variant") or "loss,region".
     "x_axis": "leadtime",  # "leadtime", "train_period", "loss", "variant", "variable"
     # Each metric maps to the plotting mode expected by save_metrics_vs_parameter_plots.
     "metrics": {
@@ -758,14 +759,15 @@ def _apply_df_filters_except_axis(
     df: pd.DataFrame,
     *,
     filters: dict | None,
-    x_axis: str,
+    x_axis: str | Sequence[str],
 ) -> pd.DataFrame:
     if not filters:
         return df
+    x_axis_fields = set(_normalize_profile_axis_fields(x_axis))
     effective_filters = {
         col: allowed
         for col, allowed in filters.items()
-        if col != x_axis
+        if col not in x_axis_fields
     }
     return _apply_df_filters(df, effective_filters)
 
@@ -1341,32 +1343,111 @@ def _sanitize_filename_fragment(text: str) -> str:
     return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in text).strip("_") or "all"
 
 
+def _normalize_profile_axis_fields(x_axis: str | Sequence[str]) -> tuple[str, ...]:
+    if isinstance(x_axis, str):
+        normalized = x_axis
+        for delimiter in (",", "+", "|"):
+            normalized = normalized.replace(delimiter, ",")
+        fields = [field.strip() for field in normalized.split(",") if field.strip()]
+        return tuple(fields)
+    return tuple(str(field).strip() for field in x_axis if str(field).strip())
+
+
+def _profile_axis_column_name(x_axis: str | Sequence[str]) -> str:
+    x_axis_fields = _normalize_profile_axis_fields(x_axis)
+    if len(x_axis_fields) == 1:
+        return x_axis_fields[0]
+    return f"__profile_x_axis_{'_'.join(x_axis_fields)}__"
+
+
+def _ensure_profile_axis_column(df: pd.DataFrame, *, x_axis: str | Sequence[str]) -> pd.DataFrame:
+    x_axis_fields = _normalize_profile_axis_fields(x_axis)
+    if len(x_axis_fields) == 1:
+        return df
+    if any(field not in df.columns for field in x_axis_fields):
+        return df
+    out = df.copy()
+    out[_profile_axis_column_name(x_axis_fields)] = list(
+        out.loc[:, list(x_axis_fields)].itertuples(index=False, name=None)
+    )
+    return out
+
+
+def _profile_axis_value_present(value: object) -> bool:
+    if isinstance(value, tuple):
+        return all(not pd.isna(component) for component in value)
+    return pd.notna(value)
+
+
+def _format_profile_axis_component(field: str, value: object) -> str:
+    if field == "variable":
+        return format_variable_display_name(str(value))
+    if field == "variant":
+        return str(value) if str(value) != "" else "default"
+    return str(value)
+
+
+def _profile_axis_sort_key(
+    value: object,
+    *,
+    x_axis_fields: tuple[str, ...],
+    variables: list[str],
+) -> tuple[object, ...]:
+    variable_order = {variable: idx for idx, variable in enumerate(_ordered_unique_variables(variables))}
+    components = value if isinstance(value, tuple) else (value,)
+    sort_key: list[object] = []
+    for field, component in zip(x_axis_fields, components):
+        if pd.isna(component):
+            sort_key.append((2, ""))
+            continue
+        if field == "leadtime":
+            sort_key.append((0, component))
+        elif field == "variant":
+            sort_key.append((0, str(component) != "", str(component)))
+        elif field == "variable":
+            sort_key.append((0, variable_order.get(str(component), len(variable_order)), str(component)))
+        else:
+            sort_key.append((0, str(component)))
+    return tuple(sort_key)
+
+
+def _profile_axis_filename_fragment(x_axis: str | Sequence[str]) -> str:
+    return _sanitize_filename_fragment("_".join(_normalize_profile_axis_fields(x_axis)))
+
+
 def _ordered_profile_axis_values(
     df: pd.DataFrame,
     *,
-    x_axis: str,
+    x_axis: str | Sequence[str],
     variables: list[str],
 ) -> list[object]:
-    if x_axis not in df.columns:
+    x_axis_fields = _normalize_profile_axis_fields(x_axis)
+    x_axis_column = _profile_axis_column_name(x_axis_fields)
+    if x_axis_column not in df.columns:
         return []
 
-    values = [value for value in pd.unique(df[x_axis]) if pd.notna(value)]
-    if x_axis == "leadtime":
+    values = [value for value in pd.unique(df[x_axis_column]) if _profile_axis_value_present(value)]
+    if len(x_axis_fields) == 1 and x_axis_fields[0] == "leadtime":
         return sorted(values)
-    if x_axis == "variant":
+    if len(x_axis_fields) == 1 and x_axis_fields[0] == "variant":
         return sorted(values, key=lambda value: (str(value) != "", str(value)))
-    if x_axis == "variable":
+    if len(x_axis_fields) == 1 and x_axis_fields[0] == "variable":
         ordered_variables = _ordered_unique_variables(variables)
         return [value for value in ordered_variables if value in values]
+    if len(x_axis_fields) > 1:
+        return sorted(values, key=lambda value: _profile_axis_sort_key(value, x_axis_fields=x_axis_fields, variables=variables))
     return values
 
 
-def _format_profile_axis_tick(value: object, *, x_axis: str) -> str:
-    if x_axis == "variable":
-        return format_variable_display_name(str(value))
-    if x_axis == "variant":
-        return str(value) if str(value) != "" else "default"
-    return str(value)
+def _format_profile_axis_tick(value: object, *, x_axis: str | Sequence[str]) -> str:
+    x_axis_fields = _normalize_profile_axis_fields(x_axis)
+    if len(x_axis_fields) == 1:
+        return _format_profile_axis_component(x_axis_fields[0], value)
+    components = value if isinstance(value, tuple) else (value,)
+    return ", ".join(
+        f"{AXIS_DISPLAY_NAMES.get(field, field.replace('_', ' ').title())}={_format_profile_axis_component(field, component)}"
+        for field, component in zip(x_axis_fields, components)
+    )
 
 
 def _format_duplicate_profile_key(
@@ -1387,7 +1468,7 @@ def _format_duplicate_profile_key(
 def _build_strict_profile_series(
     df: pd.DataFrame,
     *,
-    x_axis: str,
+    x_axis: str | Sequence[str],
     x_values: list[object],
 ) -> pd.Series:
     if df.empty:
@@ -1420,7 +1501,7 @@ def _build_strict_profile_series(
 def _build_strict_member_matrix(
     df: pd.DataFrame,
     *,
-    x_axis: str,
+    x_axis: str | Sequence[str],
     x_values: list[object],
 ) -> pd.DataFrame | None:
     if df.empty or "realization" not in df.columns:
@@ -1576,10 +1657,17 @@ def _resolve_metric_map_cmap(metric_name: str) -> str:
     return MAP_PLOT_KNOBS["metric_cmaps"].get(metric_name, MAP_PLOT_KNOBS["metric_cmap_default"])
 
 
-def format_axis_display_name(axis_name: str, *, leadtime_unit: str | None = None) -> str:
-    if axis_name == "leadtime" and leadtime_unit:
+def format_axis_display_name(axis_name: str | Sequence[str], *, leadtime_unit: str | None = None) -> str:
+    axis_fields = _normalize_profile_axis_fields(axis_name)
+    if len(axis_fields) > 1:
+        return " + ".join(
+            format_axis_display_name(field, leadtime_unit=leadtime_unit if field == "leadtime" else None)
+            for field in axis_fields
+        )
+    axis_field = axis_fields[0]
+    if axis_field == "leadtime" and leadtime_unit:
         return f"Lead time [{leadtime_unit}]"
-    return AXIS_DISPLAY_NAMES.get(axis_name, axis_name.replace("_", " ").title())
+    return AXIS_DISPLAY_NAMES.get(axis_field, axis_field.replace("_", " ").title())
 
 
 def _format_context_label(*, field: str, value: object, leadtime_unit: str | None = None) -> str:
@@ -1733,14 +1821,15 @@ def _metric_vs_deltametric_specs(knobs: dict[str, object]) -> list[dict[str, str
 def _profile_context_columns(
     df: pd.DataFrame,
     *,
-    x_axis: str,
+    x_axis: str | Sequence[str],
     shade_by: str | None = None,
 ) -> list[str]:
+    x_axis_fields = set(_normalize_profile_axis_fields(x_axis))
     return [
         col for col in RUN_CONTEXT_DIMS
         if (
             col in df.columns
-            and col != x_axis
+            and col not in x_axis_fields
             and col != shade_by
             and df[col].nunique(dropna=False) > 1
         )
@@ -3819,8 +3908,16 @@ def save_metrics_vs_parameter_plots(
     saved_paths: list[Path] = []
     model_colors = MODEL_COLORS
     supported_axes = {"leadtime", "train_period", "loss", "variant", "variable", "region"}
-    if x_axis not in supported_axes:
-        raise ValueError(f"Unsupported metric profile axis {x_axis!r}. Expected one of {sorted(supported_axes)}.")
+    x_axis_fields = _normalize_profile_axis_fields(x_axis)
+    unsupported_axes = [field for field in x_axis_fields if field not in supported_axes]
+    if unsupported_axes:
+        raise ValueError(
+            f"Unsupported metric profile axis {x_axis!r}. "
+            f"Unsupported fields={unsupported_axes!r}. Expected fields from {sorted(supported_axes)}."
+        )
+    if len(x_axis_fields) > 1 and "variable" in x_axis_fields:
+        raise ValueError("Combined metric profile x_axis does not support 'variable' as one of the combined fields.")
+    x_axis_column = _profile_axis_column_name(x_axis_fields)
 
     metric_names = list(METRIC_PROFILE_PLOT_KNOBS["metrics"])
     df_det = build_scalar_metric_df(
@@ -3849,18 +3946,22 @@ def save_metrics_vs_parameter_plots(
     df_ens = df_ens[df_ens["metric"].isin(metric_names)]
     df_prob = df_prob[df_prob["metric"].isin(metric_names)]
 
+    df_det = _ensure_profile_axis_column(df_det, x_axis=x_axis_fields)
+    df_ens = _ensure_profile_axis_column(df_ens, x_axis=x_axis_fields)
+    df_prob = _ensure_profile_axis_column(df_prob, x_axis=x_axis_fields)
+
     df_det = _apply_df_filters_except_axis(df_det, filters=filters, x_axis=x_axis)
     df_ens = _apply_df_filters_except_axis(df_ens, filters=filters, x_axis=x_axis)
     df_prob = _apply_df_filters_except_axis(df_prob, filters=filters, x_axis=x_axis)
 
-    panel_variables = [None] if x_axis == "variable" else variables
+    panel_variables = [None] if x_axis_fields == ("variable",) else variables
 
     for variable in panel_variables:
         profile_variable = variable if variable is not None else "all_variables"
         if progress is not None and task_id is not None:
             progress.update(
                 task_id,
-                description=f"Generating {profile_variable} metric profiles ({x_axis})",
+                description=f"Generating {profile_variable} metric profiles ({format_axis_display_name(x_axis)})",
             )
         CONSOLE.print(f"Metric profile variable: {variable if variable is not None else 'all_variables'}")
         output_folder = _profile_output_folder(plot_root=plot_folder, variable=variable)
@@ -3882,13 +3983,13 @@ def save_metrics_vs_parameter_plots(
                 df_ens=df_plot_ens,
                 df_prob=df_plot_prob,
             )
-            if df_template.empty or x_axis not in df_template.columns:
+            if df_template.empty or x_axis_column not in df_template.columns:
                 continue
 
             context_columns = _profile_context_columns(
                 df_template,
                 x_axis=x_axis,
-                shade_by=None if shade_by == x_axis else shade_by,
+                shade_by=None if shade_by in x_axis_fields else shade_by,
             )
             grouped_items = (
                 list(df_template.groupby(context_columns, dropna=False, sort=True))
@@ -3933,7 +4034,7 @@ def save_metrics_vs_parameter_plots(
                 rel_fig, rel_ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 5.5), squeeze=True)
                 x_positions = np.arange(len(x_values))
 
-                if shade_by != x_axis and shade_by in df_context_template.columns:
+                if shade_by not in x_axis_fields and shade_by in df_context_template.columns:
                     shade_values = [value for value in pd.unique(df_context_template[shade_by]) if pd.notna(value)]
                 else:
                     shade_values = [None]
@@ -3962,7 +4063,7 @@ def save_metrics_vs_parameter_plots(
                                 df_model = df_model[df_model[shade_by] == shade_value]
                             y_series = _build_strict_profile_series(
                                 df_model,
-                                x_axis=x_axis,
+                                x_axis=x_axis_column,
                                 x_values=x_values,
                             )
                             if not pd.notna(y_series).any():
@@ -3985,7 +4086,7 @@ def save_metrics_vs_parameter_plots(
 
                             y_det, y_members = _build_deterministic_profile_series(
                                 df_model_det,
-                                x_axis=x_axis,
+                                x_axis=x_axis_column,
                                 x_values=x_values,
                             )
                             if not pd.notna(y_det).any():
@@ -4033,12 +4134,12 @@ def save_metrics_vs_parameter_plots(
 
                             y_ens = _build_strict_profile_series(
                                 df_model_ens,
-                                x_axis=x_axis,
+                                x_axis=x_axis_column,
                                 x_values=x_values,
                             )
                             y_members = _build_strict_member_matrix(
                                 df_model_det,
-                                x_axis=x_axis,
+                                x_axis=x_axis_column,
                                 x_values=x_values,
                             )
                             if y_members is None and not pd.notna(y_ens).any():
@@ -4051,7 +4152,7 @@ def save_metrics_vs_parameter_plots(
                                     plotted = True
                                     deterministic_mean_series[(str(model_name), shade_value)] = pd.Series(
                                         y_mean,
-                                        index=pd.Index(x_values, name=x_axis),
+                                        index=pd.Index(x_values, name=x_axis_column),
                                         dtype=float,
                                     )
                                     deterministic_member_matrices[(str(model_name), shade_value)] = y_members
@@ -4284,7 +4385,7 @@ def save_metrics_vs_parameter_plots(
                 axis_label = format_axis_display_name(x_axis, leadtime_unit=leadtime_unit.strip() if leadtime_unit else None)
                 title_subject = (
                     "all variables"
-                    if x_axis == "variable"
+                    if x_axis_fields == ("variable",)
                     else format_variable_display_name(str(variable))
                 )
                 metric_label = format_metric_label(
@@ -4331,8 +4432,8 @@ def save_metrics_vs_parameter_plots(
                     current_ax.set_xticks(x_positions)
                     current_ax.set_xticklabels(
                         [_format_profile_axis_tick(value, x_axis=x_axis) for value in x_values],
-                        rotation=30 if x_axis in {"train_period", "loss", "variant", "variable"} else 0,
-                        ha="right" if x_axis in {"train_period", "loss", "variant", "variable"} else "center",
+                        rotation=30 if any(field in {"train_period", "loss", "variant", "variable", "region"} for field in x_axis_fields) else 0,
+                        ha="right" if any(field in {"train_period", "loss", "variant", "variable", "region"} for field in x_axis_fields) else "center",
                     )
                     current_ax.grid(True, linestyle="--", alpha=0.35)
 
@@ -4344,7 +4445,7 @@ def save_metrics_vs_parameter_plots(
                         current_ax.legend(fontsize=9)
                     current_fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
 
-                file_axis = _sanitize_filename_fragment(x_axis)
+                file_axis = _profile_axis_filename_fragment(x_axis)
                 filename = f"{metric_name}_vs_{file_axis}"
                 context_suffix = _context_filename_suffix(context_values)
                 if context_suffix != "all":
@@ -4378,20 +4479,22 @@ def save_combined_variable_metric_profiles(
     variables: list[str],
     plot_folder: Path,
     leadtime_unit: str,
-    x_axis: str,
+    x_axis: str | Sequence[str],
     filters: dict | None,
     shade_by: str,
     shade_label: str,
     progress: Progress | None = None,
     task_id: int | None = None,
 ) -> list[Path]:
-    if x_axis == "variable":
-        raise ValueError("Combined variable metric profiles do not support x_axis='variable'.")
+    x_axis_fields = _normalize_profile_axis_fields(x_axis)
+    if "variable" in x_axis_fields:
+        raise ValueError("Combined variable metric profiles do not support x_axis containing 'variable'.")
 
     saved_paths: list[Path] = []
     variable_colors = get_variable_colors(variables=variables)
     metric_modes = METRIC_PROFILE_PLOT_KNOBS["combined_variable_metrics"]
     metric_names = list(metric_modes)
+    x_axis_column = _profile_axis_column_name(x_axis_fields)
 
     df_det = build_scalar_metric_df(
         metrics=metrics,
@@ -4419,6 +4522,10 @@ def save_combined_variable_metric_profiles(
     df_ens = df_ens[df_ens["metric"].isin(metric_names)]
     df_prob = df_prob[df_prob["metric"].isin(metric_names)]
 
+    df_det = _ensure_profile_axis_column(df_det, x_axis=x_axis_fields)
+    df_ens = _ensure_profile_axis_column(df_ens, x_axis=x_axis_fields)
+    df_prob = _ensure_profile_axis_column(df_prob, x_axis=x_axis_fields)
+
     df_det = _apply_df_filters_except_axis(df_det, filters=filters, x_axis=x_axis)
     df_ens = _apply_df_filters_except_axis(df_ens, filters=filters, x_axis=x_axis)
     df_prob = _apply_df_filters_except_axis(df_prob, filters=filters, x_axis=x_axis)
@@ -4439,13 +4546,13 @@ def save_combined_variable_metric_profiles(
             df_ens=df_plot_ens,
             df_prob=df_plot_prob,
         )
-        if df_template.empty or x_axis not in df_template.columns:
+        if df_template.empty or x_axis_column not in df_template.columns:
             continue
 
         context_columns = _profile_context_columns(
             df_template,
             x_axis=x_axis,
-            shade_by=None if shade_by == x_axis else shade_by,
+            shade_by=None if shade_by in x_axis_fields else shade_by,
         )
         grouped_items = (
             list(df_template.groupby(context_columns, dropna=False, sort=True))
@@ -4490,7 +4597,7 @@ def save_combined_variable_metric_profiles(
             rel_fig, rel_ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 5.5), squeeze=True)
             x_positions = np.arange(len(x_values))
 
-            if shade_by != x_axis and shade_by in df_context_template.columns:
+            if shade_by not in x_axis_fields and shade_by in df_context_template.columns:
                 shade_values = [value for value in pd.unique(df_context_template[shade_by]) if pd.notna(value)]
             else:
                 shade_values = [None]
@@ -4539,7 +4646,7 @@ def save_combined_variable_metric_profiles(
                                 df_model = df_model[df_model[shade_by] == shade_value]
                             y_series = _build_strict_profile_series(
                                 df_model,
-                                x_axis=x_axis,
+                                x_axis=x_axis_column,
                                 x_values=x_values,
                             )
                             if not pd.notna(y_series).any():
@@ -4569,7 +4676,7 @@ def save_combined_variable_metric_profiles(
 
                             y_det, y_members = _build_deterministic_profile_series(
                                 df_model_det,
-                                x_axis=x_axis,
+                                x_axis=x_axis_column,
                                 x_values=x_values,
                             )
                             if not pd.notna(y_det).any():
@@ -4625,12 +4732,12 @@ def save_combined_variable_metric_profiles(
 
                             y_ens = _build_strict_profile_series(
                                 df_model_ens,
-                                x_axis=x_axis,
+                                x_axis=x_axis_column,
                                 x_values=x_values,
                             )
                             y_members = _build_strict_member_matrix(
                                 df_model_det,
-                                x_axis=x_axis,
+                                x_axis=x_axis_column,
                                 x_values=x_values,
                             )
                             if y_members is None and not pd.notna(y_ens).any():
@@ -4643,7 +4750,7 @@ def save_combined_variable_metric_profiles(
                                     plotted = True
                                     deterministic_mean_series[(str(variable), str(model_name), shade_value)] = pd.Series(
                                         y_mean,
-                                        index=pd.Index(x_values, name=x_axis),
+                                        index=pd.Index(x_values, name=x_axis_column),
                                         dtype=float,
                                     )
                                     deterministic_member_matrices[(str(variable), str(model_name), shade_value)] = y_members
@@ -4945,8 +5052,8 @@ def save_combined_variable_metric_profiles(
                 current_ax.set_xticks(x_positions)
                 current_ax.set_xticklabels(
                     [_format_profile_axis_tick(value, x_axis=x_axis) for value in x_values],
-                    rotation=30 if x_axis in {"train_period", "loss", "variant", "variable"} else 0,
-                    ha="right" if x_axis in {"train_period", "loss", "variant", "variable"} else "center",
+                    rotation=30 if any(field in {"train_period", "loss", "variant", "variable", "region"} for field in x_axis_fields) else 0,
+                    ha="right" if any(field in {"train_period", "loss", "variant", "variable", "region"} for field in x_axis_fields) else "center",
                 )
                 current_ax.grid(True, linestyle="--", alpha=0.35)
 
@@ -4990,7 +5097,7 @@ def save_combined_variable_metric_profiles(
                 )
                 rel_fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
 
-            filename = f"all_variables_{metric_name}_vs_{_sanitize_filename_fragment(x_axis)}"
+            filename = f"all_variables_{metric_name}_vs_{_profile_axis_filename_fragment(x_axis)}"
             context_suffix = _context_filename_suffix(context_values)
             if context_suffix != "all":
                 filename = f"{filename}_{context_suffix}"
@@ -5273,9 +5380,11 @@ def main() -> None:
             )
 
         if GLOBAL_KNOBS["enable_metric_profile_plots"]:
-            profile_total = 1 if METRIC_PROFILE_PLOT_KNOBS["x_axis"] == "variable" else len(metric_profile_variables)
+            profile_x_axis = METRIC_PROFILE_PLOT_KNOBS["x_axis"]
+            profile_x_axis_fields = _normalize_profile_axis_fields(profile_x_axis)
+            profile_total = 1 if profile_x_axis_fields == ("variable",) else len(metric_profile_variables)
             profile_task = progress.add_task(
-                f"Generating metric profiles ({METRIC_PROFILE_PLOT_KNOBS['x_axis']})",
+                f"Generating metric profiles ({format_axis_display_name(profile_x_axis)})",
                 total=profile_total,
             )
             profile_plot_paths = save_metrics_vs_parameter_plots(
@@ -5284,7 +5393,7 @@ def main() -> None:
                 plot_folder=PLOT_FOLDER,
                 leadtime_unit=f" {leadtime_unit}" if leadtime_unit else "",
                 variable_units=variable_units,
-                x_axis=METRIC_PROFILE_PLOT_KNOBS["x_axis"],
+                x_axis=profile_x_axis,
                 filters=metric_profile_filters,
                 shade_by=METRIC_PROFILE_PLOT_KNOBS["shade_by"],
                 shade_label=METRIC_PROFILE_PLOT_KNOBS["shade_label"],
@@ -5298,7 +5407,7 @@ def main() -> None:
 
         if METRIC_PROFILE_PLOT_KNOBS["enable_combined_variable_profiles"]:
             combined_profile_task = progress.add_task(
-                f"Generating combined variable profiles ({METRIC_PROFILE_PLOT_KNOBS['x_axis']})",
+                f"Generating combined variable profiles ({format_axis_display_name(METRIC_PROFILE_PLOT_KNOBS['x_axis'])})",
                 total=1,
             )
             combined_profile_paths = save_combined_variable_metric_profiles(
