@@ -1465,6 +1465,14 @@ def _format_duplicate_profile_key(
     return ", ".join(parts)
 
 
+def _profile_axis_index(x_values: list[object], *, x_axis: str | Sequence[str]) -> pd.Index:
+    # Force tuple-valued composite axes to stay a plain object Index instead of
+    # being auto-promoted by pandas into a MultiIndex.
+    values = np.empty(len(x_values), dtype=object)
+    values[:] = list(x_values)
+    return pd.Index(values, name=x_axis)
+
+
 def _build_strict_profile_series(
     df: pd.DataFrame,
     *,
@@ -1472,7 +1480,7 @@ def _build_strict_profile_series(
     x_values: list[object],
 ) -> pd.Series:
     if df.empty:
-        return pd.Series(index=pd.Index(x_values, name=x_axis), dtype=float)
+        return pd.Series(index=_profile_axis_index(x_values, x_axis=x_axis), dtype=float)
 
     duplicate_counts = (
         df.groupby([x_axis], dropna=False)
@@ -1535,10 +1543,10 @@ def _build_strict_member_matrix(
 def _build_deterministic_profile_series(
     df: pd.DataFrame,
     *,
-    x_axis: str,
+    x_axis: str | Sequence[str],
     x_values: list[object],
 ) -> tuple[pd.Series, pd.DataFrame | None]:
-    empty_series = pd.Series(index=pd.Index(x_values, name=x_axis), dtype=float)
+    empty_series = pd.Series(index=_profile_axis_index(x_values, x_axis=x_axis), dtype=float)
     if df.empty:
         return empty_series, None
 
@@ -1547,7 +1555,7 @@ def _build_deterministic_profile_series(
         if members is not None and pd.notna(members.to_numpy()).any():
             mean_values = np.nanmean(members.to_numpy(), axis=1)
             return (
-                pd.Series(mean_values, index=pd.Index(x_values, name=x_axis), dtype=float),
+                pd.Series(mean_values, index=_profile_axis_index(x_values, x_axis=x_axis), dtype=float),
                 members,
             )
 
