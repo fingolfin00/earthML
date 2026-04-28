@@ -263,16 +263,52 @@ METRIC_VS_DELTAMETRIC_PLOT_KNOBS = {
         # "region": ["CentralPacific"], # CentralPacific, NorthAtlantic
         "train_period": None,
         "loss": None,
+        "variant": None,
     },
-    # x-axis: how much the ML correction changes the chosen metric.
-    "delta_metric": "nrmse",
-    "delta_metric_type": "ensemble",
-    # y-axis: the forecast quality to compare against.
-    "forecast_metric": "r2",
-    "forecast_metric_type": "ensemble",
-    # Visual encodings for the scatter plot.
+    # Optional multi-plot override. When provided, one plot is generated for
+    # each item while the visual settings below stay shared.
+    "metric_pairs": [
+        {
+            "forecast_metric": "r2",
+            "forecast_metric_type": "ensemble",
+            "delta_metric": "nrmse",
+            "delta_metric_type": "ensemble",
+        },
+        {
+            "forecast_metric": "r2",
+            "forecast_metric_type": "ensemble",
+            "delta_metric": "nmae",
+            "delta_metric_type": "ensemble",
+        },
+        {
+            "forecast_metric": "nrmse",
+            "forecast_metric_type": "ensemble",
+            "delta_metric": "nrmse",
+            "delta_metric_type": "ensemble",
+        },
+        {
+            "forecast_metric": "clim_acc",
+            "forecast_metric_type": "ensemble",
+            "delta_metric": "nmae",
+            "delta_metric_type": "ensemble",
+        },
+        {
+            "forecast_metric": "spread_error_ratio",
+            "forecast_metric_type": "probabilistic",
+            "delta_metric": "crps",
+            "delta_metric_type": "probabilistic",
+        },
+    ],
+    # # x-axis: how much the ML correction changes the chosen metric.
+    # "delta_metric": "nrmse",
+    # "delta_metric_type": "ensemble",
+    # # y-axis: the forecast quality to compare against.
+    # "forecast_metric": "r2",
+    # "forecast_metric_type": "ensemble",
+    # Visual encodings for the scatter plot. `marker_by` can combine multiple
+    # context dimensions, e.g. ("variant", "loss") or "variant,loss,region".
     "color_by": "variable",
-    "marker_by": "region",
+    "marker_by": ("loss", "variant"),
     "shade_by": "leadtime",  # e.g. "loss", "total_months"
     "shade_label": "Leadtime",
     "point_size": 30,
@@ -455,7 +491,7 @@ def build_scalar_metric_df(
     metric_name: str | None,
     metric_type: str,
     diff: str,
-    models: tuple[str, str] | None = None,
+    models: Sequence[str] | None = None,
 ) -> pd.DataFrame:
     metric_names = (metric_name,) if metric_name is not None else GLOBAL_KNOBS["metric_names"]
     return metrics_to_df(
@@ -1654,6 +1690,44 @@ def _ordered_context_filename_suffix(
         if field not in priority_fields
     )
     return _context_filename_suffix(dict(ordered_items))
+
+
+def _metric_vs_deltametric_specs(knobs: dict[str, object]) -> list[dict[str, str]]:
+    metric_pairs = knobs.get("metric_pairs")
+    if metric_pairs is None:
+        return [
+            {
+                "forecast_metric": str(knobs["forecast_metric"]),
+                "forecast_metric_type": str(knobs["forecast_metric_type"]),
+                "delta_metric": str(knobs["delta_metric"]),
+                "delta_metric_type": str(knobs["delta_metric_type"]),
+            }
+        ]
+
+    if not isinstance(metric_pairs, (list, tuple)) or not metric_pairs:
+        raise ValueError("METRIC_VS_DELTAMETRIC_PLOT_KNOBS['metric_pairs'] must be a non-empty list when provided.")
+
+    specs: list[dict[str, str]] = []
+    required_keys = (
+        "forecast_metric",
+        "forecast_metric_type",
+        "delta_metric",
+        "delta_metric_type",
+    )
+    for idx, pair in enumerate(metric_pairs):
+        if not isinstance(pair, dict):
+            raise ValueError(
+                "Each METRIC_VS_DELTAMETRIC_PLOT_KNOBS['metric_pairs'] item must be a dict "
+                f"with keys {required_keys!r}. Problem at index {idx}: {pair!r}"
+            )
+        missing = [key for key in required_keys if key not in pair or pair[key] is None or str(pair[key]) == ""]
+        if missing:
+            raise ValueError(
+                "Each METRIC_VS_DELTAMETRIC_PLOT_KNOBS['metric_pairs'] item must define "
+                f"{required_keys!r}. Missing {missing!r} at index {idx}."
+            )
+        specs.append({key: str(pair[key]) for key in required_keys})
+    return specs
 
 
 def _profile_context_columns(
@@ -5102,6 +5176,7 @@ def main() -> None:
         selected_regions=map_region_values or None,
     )
     diff_region = _single_filter_value(metric_vs_deltametric_filters, "region")
+    metric_vs_deltametric_specs = _metric_vs_deltametric_specs(METRIC_VS_DELTAMETRIC_PLOT_KNOBS)
     metric_vs_deltametric_filename_context = _merge_filename_contexts(
         _filters_filename_context(metric_vs_deltametric_filters),
     )
@@ -5153,39 +5228,44 @@ def main() -> None:
             CONSOLE.print("Skipping maps: GLOBAL_KNOBS['enable_maps'] is False")
 
         if GLOBAL_KNOBS["enable_metric_vs_deltametric_plot"]:
-            diff_task = progress.add_task("Generating metric-vs-delta-metric plot", total=1)
-            df_nodiff = build_scalar_metric_df(
-                metrics=metrics,
-                variables=variables,
-                metric_name=METRIC_VS_DELTAMETRIC_PLOT_KNOBS["forecast_metric"],
-                metric_type=METRIC_VS_DELTAMETRIC_PLOT_KNOBS["forecast_metric_type"],
-                diff="no",
+            diff_task = progress.add_task(
+                "Generating metric-vs-delta-metric plot",
+                total=len(metric_vs_deltametric_specs),
             )
-            df_delta = build_scalar_metric_df(
-                metrics=metrics,
-                variables=variables,
-                metric_name=METRIC_VS_DELTAMETRIC_PLOT_KNOBS["delta_metric"],
-                metric_type=METRIC_VS_DELTAMETRIC_PLOT_KNOBS["delta_metric_type"],
-                diff="delta",
-                models=COMPARISON_MODELS,
-            )
+            for metric_spec in metric_vs_deltametric_specs:
+                df_nodiff = build_scalar_metric_df(
+                    metrics=metrics,
+                    variables=variables,
+                    metric_name=metric_spec["forecast_metric"],
+                    metric_type=metric_spec["forecast_metric_type"],
+                    diff="no",
+                    models=(MODEL_KNOBS["reference_model"],),
+                )
+                df_delta = build_scalar_metric_df(
+                    metrics=metrics,
+                    variables=variables,
+                    metric_name=metric_spec["delta_metric"],
+                    metric_type=metric_spec["delta_metric_type"],
+                    diff="delta",
+                    models=COMPARISON_MODELS,
+                )
 
-            plot_path = save_metric_vs_deltametric_plot(
-                df_nodiff=df_nodiff,
-                df_delta=df_delta,
-                plot_folder=PLOT_FOLDER,
-                forecast_metric=METRIC_VS_DELTAMETRIC_PLOT_KNOBS["forecast_metric"],
-                delta_metric=METRIC_VS_DELTAMETRIC_PLOT_KNOBS["delta_metric"],
-                leadtime_unit=f" {leadtime_unit}" if leadtime_unit else "",
-                region=diff_region,
-                filters=metric_vs_deltametric_filters,
-                variable_unit=variable_units.get(_single_filter_value(metric_vs_deltametric_filters, "variable")),
-                shade_by=METRIC_VS_DELTAMETRIC_PLOT_KNOBS["shade_by"],
-                shade_label=METRIC_VS_DELTAMETRIC_PLOT_KNOBS["shade_label"],
-                filename_context_suffix=metric_vs_deltametric_filename_context,
-            )
-            progress.advance(diff_task)
-            debug_print("Saved leadtime-vs-global-metrics plot to:", plot_path)
+                plot_path = save_metric_vs_deltametric_plot(
+                    df_nodiff=df_nodiff,
+                    df_delta=df_delta,
+                    plot_folder=PLOT_FOLDER,
+                    forecast_metric=metric_spec["forecast_metric"],
+                    delta_metric=metric_spec["delta_metric"],
+                    leadtime_unit=f" {leadtime_unit}" if leadtime_unit else "",
+                    region=diff_region,
+                    filters=metric_vs_deltametric_filters,
+                    variable_unit=variable_units.get(_single_filter_value(metric_vs_deltametric_filters, "variable")),
+                    shade_by=METRIC_VS_DELTAMETRIC_PLOT_KNOBS["shade_by"],
+                    shade_label=METRIC_VS_DELTAMETRIC_PLOT_KNOBS["shade_label"],
+                    filename_context_suffix=metric_vs_deltametric_filename_context,
+                )
+                progress.advance(diff_task)
+                debug_print("Saved leadtime-vs-global-metrics plot to:", plot_path)
         else:
             CONSOLE.print(
                 "Skipping metric-vs-delta-metric plot: "

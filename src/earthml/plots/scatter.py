@@ -43,11 +43,11 @@ def plot_metric_vs_diff(
     fit_bootstrap_seed: int | None = 0,
     # Visual
     group_cols=None,
-    color_by: str = "variable",
-    marker_by: str = "leadtime",
-    shade_by: str = "total_months",
+    color_by: str | Sequence[str] = "variable",
+    marker_by: str | Sequence[str] = "leadtime",
+    shade_by: str | Sequence[str] = "total_months",
     shade_label: str | None = None,
-    agg="mean",
+    agg=None,
     figsize=(12, 12),
     cmap_name="tab10",
     variable_colors: dict[str, str] | None = None,
@@ -75,28 +75,91 @@ def plot_metric_vs_diff(
     """
     Scatter plot: x = diff_metric, y = forecast_metric.
     Color, marker and shade encodings are controlled by ``color_by``,
-    ``marker_by`` and ``shade_by``.
+    ``marker_by`` and ``shade_by``. Each encoding can be a single column
+    name or a sequence / delimited string of column names to combine into a
+    single visual grouping. The scatter never aggregates points: all shared
+    run-context columns are preserved during the merge unless filtered out.
 
     Returns (fig, ax, merged_df).
     """
 
-    encoding_fields = [color_by, marker_by, shade_by]
+    def _normalize_encoding_fields(field_spec: str | Sequence[str]) -> tuple[str, ...]:
+        if isinstance(field_spec, str):
+            normalized = field_spec
+            for delimiter in (",", "+", "|"):
+                normalized = normalized.replace(delimiter, ",")
+            fields = [field.strip() for field in normalized.split(",") if field.strip()]
+            return tuple(fields)
+        return tuple(str(field).strip() for field in field_spec if str(field).strip())
+
+    def _encoding_label(fields: tuple[str, ...]) -> str:
+        if len(fields) == 1:
+            return fields[0].replace("_", " ").title()
+        return " + ".join(field.replace("_", " ").title() for field in fields)
+
+    def _encoding_column_name(role: str, fields: tuple[str, ...]) -> str:
+        if len(fields) == 1:
+            return fields[0]
+        return f"__{role}_{'_'.join(fields)}__"
+
+    def _format_encoding_component(field: str, value: object) -> str:
+        if field == "leadtime":
+            return f"{value}{leadtime_unit}" if leadtime_unit else str(value)
+        return str(value)
+
+    def _format_encoding_value(fields: tuple[str, ...], value: object) -> str:
+        if len(fields) == 1:
+            return _format_encoding_component(fields[0], value)
+        components = value if isinstance(value, tuple) else (value,)
+        return " | ".join(
+            _format_encoding_component(field, component)
+            for field, component in zip(fields, components)
+        )
+
+    def _ensure_unique_keys(df: pd.DataFrame, key_cols: tuple[str, ...], label: str) -> None:
+        if df.empty:
+            return
+        duplicated = df.duplicated(subset=list(key_cols), keep=False)
+        if not duplicated.any():
+            return
+        duplicate_rows = df.loc[duplicated, list(key_cols)].drop_duplicates().head(5)
+        sample = duplicate_rows.to_dict(orient="records")
+        raise ValueError(
+            f"{label} contains duplicate rows for merge keys {key_cols!r}. "
+            "Scatter plots no longer aggregate automatically; please filter or "
+            f"encode the extra varying dimensions explicitly. Sample duplicate keys: {sample!r}"
+        )
+
+    color_fields = _normalize_encoding_fields(color_by)
+    marker_fields = _normalize_encoding_fields(marker_by)
+    shade_fields = _normalize_encoding_fields(shade_by)
+    if not color_fields:
+        raise ValueError("color_by must reference at least one column")
+    if not marker_fields:
+        raise ValueError("marker_by must reference at least one column")
+    if not shade_fields:
+        raise ValueError("shade_by must reference at least one column")
+
+    if agg not in (None, "none"):
+        raise ValueError(
+            "plot_metric_vs_diff no longer aggregates points. "
+            "Use filters or visual encodings to separate additional context dimensions."
+        )
+
+    encoding_fields = [*color_fields, *marker_fields, *shade_fields]
 
     if group_cols is None:
-        group_cols = tuple(dict.fromkeys(field for field in encoding_fields if field))
+        group_cols = ()
     else:
         group_cols = tuple(dict.fromkeys(group_cols))
 
-    if shade_by not in group_cols:
-        raise ValueError(f"shade_by={shade_by!r} must be included in group_cols={group_cols!r}")
-    if color_by not in group_cols:
-        raise ValueError(f"color_by={color_by!r} must be included in group_cols={group_cols!r}")
-    if marker_by not in group_cols:
-        raise ValueError(f"marker_by={marker_by!r} must be included in group_cols={group_cols!r}")
+    color_col = _encoding_column_name("color_by", color_fields)
+    marker_col = _encoding_column_name("marker_by", marker_fields)
+    shade_col = _encoding_column_name("shade_by", shade_fields)
 
-    shade_label = shade_label or shade_by.replace("_", " ").title()
-    color_label = color_by.replace("_", " ").title()
-    marker_label = marker_by.replace("_", " ").title()
+    shade_label = shade_label or _encoding_label(shade_fields)
+    color_label = _encoding_label(color_fields)
+    marker_label = _encoding_label(marker_fields)
 
     def lighten(color, amount):
         r, g, b = mcolors.to_rgb(color)
@@ -113,47 +176,45 @@ def plot_metric_vs_diff(
             out = out[out[col].isin(values)]
         return out
 
-    # Aggregate forecast metric
     df_fc = fc_metrics_df[fc_metrics_df["metric"] == forecast_metric].copy()
-    # df_fc = _apply_filters(df_fc)
-
-    if agg == "mean":
-        df_fc = (
-            df_fc.groupby(list(group_cols), as_index=False)["value"]
-            .mean()
-            .rename(columns={"value": y_metric_name})
-        )
-    elif callable(agg):
-        df_fc = (
-            df_fc.groupby(list(group_cols), as_index=False)["value"]
-            .apply(agg)
-            .rename(columns={"value": y_metric_name})
-        )
-    else:
-        raise ValueError("agg must be 'mean' or a callable")
-
-    # Aggregate diff metric
     df_diff = diff_metrics_df[diff_metrics_df["metric"] == diff_metric].copy()
-    # df_diff = _apply_filters(df_diff)
 
-    if agg == "mean":
-        df_diff = (
-            df_diff.groupby(list(group_cols), as_index=False)["value"]
-            .mean()
-            .rename(columns={"value": x_metric_name})
-        )
-    elif callable(agg):
-        df_diff = (
-            df_diff.groupby(list(group_cols), as_index=False)["value"]
-            .apply(agg)
-            .rename(columns={"value": x_metric_name})
-        )
-    else:
-        raise ValueError("agg must be 'mean' or a callable")
+    df_fc = _apply_filters(df_fc)
+    df_diff = _apply_filters(df_diff)
 
-    # Merge
-    df = df_fc.merge(df_diff, on=list(group_cols), how="inner")
-    df = _apply_filters(df)
+    excluded_merge_cols = {"metric", "value", "model"}
+    shared_context_cols = tuple(
+        col
+        for col in df_fc.columns
+        if col in df_diff.columns and col not in excluded_merge_cols
+    )
+    merge_cols = tuple(dict.fromkeys((*shared_context_cols, *group_cols)))
+
+    missing_merge_fields = [field for field in encoding_fields if field not in merge_cols]
+    if missing_merge_fields:
+        raise ValueError(
+            f"Missing required merge columns for plot encodings: {missing_merge_fields!r}. "
+            f"Available merge columns={merge_cols!r}."
+        )
+
+    _ensure_unique_keys(df_fc, merge_cols, "Forecast metric dataframe")
+    _ensure_unique_keys(df_diff, merge_cols, "Delta metric dataframe")
+
+    df_fc = df_fc.rename(columns={"value": y_metric_name})
+    df_diff = df_diff.rename(columns={"value": x_metric_name})
+    df = df_fc.merge(
+        df_diff[list(merge_cols) + [x_metric_name]],
+        on=list(merge_cols),
+        how="inner",
+    )
+
+    for fields, column_name in (
+        (color_fields, color_col),
+        (marker_fields, marker_col),
+        (shade_fields, shade_col),
+    ):
+        if len(fields) > 1:
+            df[column_name] = list(df.loc[:, list(fields)].itertuples(index=False, name=None))
 
     # Safety: if nothing to plot
     fig, ax = plt.subplots(figsize=figsize)
@@ -164,19 +225,14 @@ def plot_metric_vs_diff(
         ax.grid(alpha=grid_alpha)
         return fig, ax, df
 
-    color_values = sorted(df[color_by].dropna().unique())
-    marker_values = sorted(df[marker_by].dropna().unique())
-    shade_values = sorted(df[shade_by].unique())
+    color_values = sorted(df[color_col].dropna().unique())
+    marker_values = sorted(df[marker_col].dropna().unique())
+    shade_values = sorted(df[shade_col].unique())
 
     cmap = plt.get_cmap(cmap_name)
 
-    def _format_legend_value(field: str, value: object) -> str:
-        if field == "leadtime":
-            return f"{value}{leadtime_unit}" if leadtime_unit else str(value)
-        return str(value)
-
     def _base_color_for_group(group_value, idx: int):
-        if color_by == "variable" and variable_colors and str(group_value) in variable_colors:
+        if len(color_fields) == 1 and color_fields[0] == "variable" and variable_colors and str(group_value) in variable_colors:
             return variable_colors[str(group_value)]
         return cmap(idx % cmap.N)
 
@@ -191,9 +247,9 @@ def plot_metric_vs_diff(
 
             for mi, marker_value in enumerate(marker_values):
                 dsub = df[
-                    (df[color_by] == color_value)
-                    & (df[shade_by] == shade_value)
-                    & (df[marker_by] == marker_value)
+                    (df[color_col] == color_value)
+                    & (df[shade_col] == shade_value)
+                    & (df[marker_col] == marker_value)
                 ]
                 if dsub.empty:
                     continue
@@ -228,7 +284,7 @@ def plot_metric_vs_diff(
                 raise ValueError("fit_color_mode must be 'period' or 'black'")
 
             for mi, marker_value in enumerate(marker_values):
-                dsub = df[(df[shade_by] == shade_value) & (df[marker_by] == marker_value)]
+                dsub = df[(df[shade_col] == shade_value) & (df[marker_col] == marker_value)]
 
                 if len(dsub) < fit_min_points:
                     continue
@@ -320,7 +376,7 @@ def plot_metric_vs_diff(
                 markersize=7,
                 markerfacecolor=_base_color_for_group(group_value, ci),
                 markeredgecolor=edgecolor,
-                label=legend_labels[ci] if legend_labels else _format_legend_value(color_by, group_value),
+                label=legend_labels[ci] if legend_labels else _format_encoding_value(color_fields, group_value),
             )
             for ci, group_value in enumerate(color_values)
         ]
@@ -334,7 +390,10 @@ def plot_metric_vs_diff(
         for pi, shade_value in enumerate(shade_values):
             amt = shade_strength * (1.0 - pi / denom)
             shade = lighten(neutral_base, amt)
-            label = f"{shade_value}M" if shade_by == "total_months" else str(shade_value)
+            if len(shade_fields) == 1 and shade_fields[0] == "total_months":
+                label = f"{shade_value}M"
+            else:
+                label = _format_encoding_value(shade_fields, shade_value)
             shade_handles.append(
                 Line2D(
                     [0], [0],
@@ -375,7 +434,7 @@ def plot_metric_vs_diff(
                 markerfacecolor="white",
                 markeredgecolor="black",
                 lw=fit_lw if fit_lines else 0,
-                label=_format_legend_value(marker_by, marker_value),
+                label=_format_encoding_value(marker_fields, marker_value),
             )
             for i, marker_value in enumerate(marker_values)
         ]
