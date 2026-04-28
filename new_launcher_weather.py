@@ -17,6 +17,7 @@ if __name__ == "__main__":
     max_retries                 = 4
     force_retrain               = False
     force_rebuild_dataset       = False # False, "all", "train", "test", "input", "target", "train_input", "train_target", "test_input", "test_target"
+    skip_train_test_plots       = False # whether to skip train/test diagnostic plots and Lightning curve exports
     dataset_cache_enabled       = True
     log_level                   = "info" # debug, info
     weights_filename            = None # e.g. "/abs/path/to/custom_weights.ckpt"; if set, testing uses this file and training is skipped
@@ -28,7 +29,7 @@ if __name__ == "__main__":
     run_mode                    = "train_test_on_train" # train_test_on_train, train_test, prepare, train, test
     experiment_mode             = "full" # full, short, debug
     only_longest_train_period   = True # only train on the largest train period (if False, train on all periods, which can be much slower but allows to see variability across train periods)
-    extra_exp_suffix            = "" # additional custom suffix to add to exp name (and resulting folder), e.g. "_debug" or "_try1"
+    experiment_variant          = "" # optional base run variant added to the folder name, e.g. "debug" or "try1"
 
     exp_root_folder             = "/Users/jacopodallaglio/ML/experiments_earthML_ocean_weather"
     dataset_cache_root          = "/Users/jacopodallaglio/ML/.earthml-dataset-cache"
@@ -49,7 +50,7 @@ if __name__ == "__main__":
     inpaint_nan                 = True # whether to inpaint nan values in input and target datasets (after loading, before torch dataset generation)
     anomaly                     = False # if True, predict anomaly (i.e. remove climatology from target variable), otherwise predict absolute values
     per_epoch_resplit           = False # if True, split test and validation randomly per epoch with a different seed, if False only one initial split for all epochs (fixed seed)
-    skip_train_test_plots       = False # whether to skip train/test diagnostic plots and Lightning curve exports
+    pass_mask_as_input_extra_channel = False # if True an extra mask input channel (one per-channel if realization_as_channel is False) is passed to the trainer
 
     if experiment_name == "juno-ecmwf_juno-ecmwf":
         start_train_date            = datetime(2019, 10, 11)
@@ -81,8 +82,8 @@ if __name__ == "__main__":
         freq                        = "1d"
         regrid_resolution           = 0.04
 
-    target_realization_avg      = False # average over realizations for target variable (if True, add _taravg suffix to exp_suffix)
-    realization_as_channel      = False # use realization a channel dim (if True, add _rasc suffix to exp_suffix)
+    target_realization_avg      = False # average over realizations for target variable (if True, append taravg to the variant)
+    realization_as_channel      = False # use realization as a channel dim (if True, append rasc to the variant)
     n_input_realizations        = 30 # used only if realization_as_channel = True
 
     # Hyperparams
@@ -212,12 +213,19 @@ if __name__ == "__main__":
     # ----------------------------------------------------------------------------------
     for loss_d in losses:
         loss_name, loss_params = next(iter(loss_d.keys())), next(iter(loss_d.values()))
+        variant_parts = [experiment_variant] if experiment_variant else []
+        if target_realization_avg:
+            variant_parts.append("taravg")
+        if realization_as_channel:
+            variant_parts.append("rasc")
+        variant_name = "_".join(variant_parts)
+        variant_suffix = f"_{variant_name}" if variant_name else ""
 
         launcher_cfg = MLBCExperimentLauncherConfig(
             type=experiment_type,
             name=experiment_name,
             root_path=exp_root_folder,
-            suffix=f"_{loss_name.lower()}{extra_exp_suffix}",
+            run_name_suffix=f"_{loss_name.lower()}{variant_suffix}",
         )
 
         net = MLBCNeuralNet(
@@ -271,6 +279,7 @@ if __name__ == "__main__":
             dataset_cache_enabled=dataset_cache_enabled,
             dataset_cache_root=dataset_cache_root,
             weights_filename=weights_filename,
+            pass_mask_as_input_extra_channel=pass_mask_as_input_extra_channel,
             # Providers args
             earthkit_cache_dir=earthkit_cache_dir,
             regrid_resolution=regrid_resolution,
