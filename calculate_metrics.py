@@ -4519,9 +4519,12 @@ def save_metrics_vs_parameter_plots(
 
                 file_axis = _profile_axis_filename_fragment(x_axis)
                 filename = f"{metric_name}_vs_{file_axis}"
-                context_suffix = _context_filename_suffix(context_values)
-                if context_suffix != "all":
-                    filename = f"{filename}_{context_suffix}"
+                filename_context_suffix = _merge_filename_contexts(
+                    _filters_filename_context(filters),
+                    context_values,
+                )
+                if filename_context_suffix:
+                    filename = f"{filename}_{filename_context_suffix}"
                 plot_path = output_folder / f"{filename}.png"
                 fig.savefig(plot_path, bbox_inches="tight", dpi=150)
                 plt.close(fig)
@@ -5175,9 +5178,12 @@ def save_combined_variable_metric_profiles(
                 rel_fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
 
             filename = f"all_variables_{metric_name}_vs_{_profile_axis_filename_fragment(x_axis)}"
-            context_suffix = _context_filename_suffix(context_values)
-            if context_suffix != "all":
-                filename = f"{filename}_{context_suffix}"
+            filename_context_suffix = _merge_filename_contexts(
+                _filters_filename_context(filters),
+                context_values,
+            )
+            if filename_context_suffix:
+                filename = f"{filename}_{filename_context_suffix}"
             plot_path = output_folder / f"{filename}.png"
             fig.savefig(plot_path, bbox_inches="tight", dpi=150)
             plt.close(fig)
