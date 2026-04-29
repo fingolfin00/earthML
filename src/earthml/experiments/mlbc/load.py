@@ -114,16 +114,21 @@ def _drop_auxiliary_merge_metadata_many(
     ]
 
 
-def _normalize_selection_values(values: object) -> list[object]:
+def _normalize_selection_values(values: object, *, keep_empty: bool = False) -> list[object]:
     if values is None:
         return []
     if isinstance(values, (list, tuple, set)):
-        return [value for value in values if value is not None and str(value) != ""]
+        return [
+            value for value in values
+            if value is not None and (keep_empty or str(value) != "")
+        ]
+    if not keep_empty and str(values) == "":
+        return []
     return [values]
 
 
-def _matches_selection(value: object, allowed: object) -> bool:
-    allowed_values = _normalize_selection_values(allowed)
+def _matches_selection(value: object, allowed: object, *, keep_empty: bool = False) -> bool:
+    allowed_values = _normalize_selection_values(allowed, keep_empty=keep_empty)
     if not allowed_values:
         return True
     value_str = str(value)
@@ -638,9 +643,9 @@ def load_all_exp_from_folder(
             if variant_filters is not None:
                 variant_filters = [
                     _normalize_experiment_variant(value)
-                    for value in _normalize_selection_values(variant_filters)
+                    for value in _normalize_selection_values(variant_filters, keep_empty=True)
                 ]
-            if not _matches_selection(variant, variant_filters):
+            if not _matches_selection(variant, variant_filters, keep_empty=True):
                 if show_progress:
                     prog.advance(task)
                 continue

@@ -629,7 +629,12 @@ def _build_run_indexers(
         allowed = None if run_filters is None else run_filters.get(dim)
         if allowed is not None:
             allowed_values = allowed if isinstance(allowed, (list, tuple, set)) else [allowed]
-            allowed_strings = {str(value) for value in allowed_values if value is not None and str(value) != ""}
+            keep_empty = dim == "variant"
+            allowed_strings = {
+                str(value)
+                for value in allowed_values
+                if value is not None and (keep_empty or str(value) != "")
+            }
             values = [value for value in values if str(value) in allowed_strings]
         coord_values.append(values)
 

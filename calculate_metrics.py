@@ -632,18 +632,34 @@ def _filter_variables_by_filters(
     return [variable for variable in ordered_variables if str(variable) in allowed_set]
 
 
-def _merge_selection_values(existing: object | None, new_value: object | None) -> object | None:
+def _selection_filter_values(values: object, *, keep_empty: bool = False) -> list[object]:
+    if values is None:
+        return []
+    if isinstance(values, (list, tuple, set)):
+        return [
+            value for value in values
+            if value is not None and (keep_empty or str(value) != "")
+        ]
+    if not keep_empty and str(values) == "":
+        return []
+    return [values]
+
+
+def _merge_selection_values(
+    existing: object | None,
+    new_value: object | None,
+    *,
+    keep_empty: bool = False,
+) -> object | None:
     if new_value is None:
         return None
-    new_values = new_value if isinstance(new_value, (list, tuple, set)) else [new_value]
-    normalized_new = [value for value in new_values if value is not None and str(value) != ""]
+    normalized_new = _selection_filter_values(new_value, keep_empty=keep_empty)
     if not normalized_new:
         return existing
     if existing is None:
         return list(dict.fromkeys(normalized_new))
 
-    existing_values = existing if isinstance(existing, (list, tuple, set)) else [existing]
-    merged = [value for value in existing_values if value is not None and str(value) != ""]
+    merged = _selection_filter_values(existing, keep_empty=keep_empty)
     for value in normalized_new:
         if str(value) not in {str(item) for item in merged}:
             merged.append(value)
@@ -657,18 +673,22 @@ def _build_load_selection(*filter_sets: dict | None) -> dict[str, object]:
     for key in tracked_keys:
         merged_value: object | None = []
         saw_filters = False
+        keep_empty = key == "variant"
 
         for filters in filter_sets:
             if not filters:
                 continue
             saw_filters = True
-            merged_value = _merge_selection_values(merged_value, filters.get(key))
+            merged_value = _merge_selection_values(
+                merged_value,
+                filters.get(key),
+                keep_empty=keep_empty,
+            )
             if merged_value is None:
                 break
 
         if saw_filters and merged_value is not None:
-            values = merged_value if isinstance(merged_value, (list, tuple, set)) else [merged_value]
-            cleaned = [value for value in values if value is not None and str(value) != ""]
+            cleaned = _selection_filter_values(merged_value, keep_empty=keep_empty)
             if cleaned:
                 selection[key] = cleaned
 
@@ -1783,7 +1803,7 @@ def _context_filename_suffix(context_values: dict[str, object]) -> str:
     if not context_values:
         return "all"
     return "__".join(
-        f"{field}_{_sanitize_filename_fragment(str(value))}"
+        f"{field}_{_sanitize_filename_fragment('default' if field == 'variant' and str(value) == '' else str(value))}"
         for field, value in context_values.items()
     )
 
@@ -1797,12 +1817,19 @@ def _filters_filename_context(filters: dict | None) -> dict[str, object]:
         if value is None:
             continue
         if isinstance(value, (list, tuple, set)):
-            values = [item for item in value if item is not None and str(item) != ""]
+            values = _selection_filter_values(value, keep_empty=(key == "variant"))
             if not values:
                 continue
-            context[key] = values[0] if len(values) == 1 else "-".join(map(str, values))
+            context[key] = (
+                ("default" if key == "variant" and str(values[0]) == "" else values[0])
+                if len(values) == 1
+                else "-".join(
+                    "default" if key == "variant" and str(item) == "" else str(item)
+                    for item in values
+                )
+            )
             continue
-        context[key] = value
+        context[key] = "default" if key == "variant" and str(value) == "" else value
     return context
 
 
