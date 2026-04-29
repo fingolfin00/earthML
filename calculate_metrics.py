@@ -1439,6 +1439,21 @@ def _ordered_profile_axis_values(
     return values
 
 
+def _profile_axis_source_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "model" not in df.columns:
+        return df
+
+    for preferred_model in (
+        MODEL_KNOBS["corrected_model"],
+        MODEL_KNOBS["reference_model"],
+        MODEL_KNOBS["truth_model"],
+    ):
+        df_model = df[df["model"] == preferred_model]
+        if not df_model.empty:
+            return df_model
+    return df
+
+
 def _format_profile_axis_tick(value: object, *, x_axis: str | Sequence[str]) -> str:
     x_axis_fields = _normalize_profile_axis_fields(x_axis)
     if len(x_axis_fields) == 1:
@@ -4033,7 +4048,11 @@ def save_metrics_vs_parameter_plots(
                     df_ens=df_context_ens,
                     df_prob=df_context_prob,
                 )
-                x_values = _ordered_profile_axis_values(df_context_template, x_axis=x_axis, variables=variables)
+                x_values = _ordered_profile_axis_values(
+                    _profile_axis_source_df(df_context_template),
+                    x_axis=x_axis,
+                    variables=variables,
+                )
                 if not x_values:
                     continue
 
@@ -4160,7 +4179,7 @@ def save_metrics_vs_parameter_plots(
                                     plotted = True
                                     deterministic_mean_series[(str(model_name), shade_value)] = pd.Series(
                                         y_mean,
-                                        index=pd.Index(x_values, name=x_axis_column),
+                                        index=_profile_axis_index(x_values, x_axis=x_axis_column),
                                         dtype=float,
                                     )
                                     deterministic_member_matrices[(str(model_name), shade_value)] = y_members
@@ -4596,7 +4615,11 @@ def save_combined_variable_metric_profiles(
                 df_ens=df_context_ens,
                 df_prob=df_context_prob,
             )
-            x_values = _ordered_profile_axis_values(df_context_template, x_axis=x_axis, variables=variables)
+            x_values = _ordered_profile_axis_values(
+                _profile_axis_source_df(df_context_template),
+                x_axis=x_axis,
+                variables=variables,
+            )
             if not x_values:
                 continue
 
@@ -4758,7 +4781,7 @@ def save_combined_variable_metric_profiles(
                                     plotted = True
                                     deterministic_mean_series[(str(variable), str(model_name), shade_value)] = pd.Series(
                                         y_mean,
-                                        index=pd.Index(x_values, name=x_axis_column),
+                                        index=_profile_axis_index(x_values, x_axis=x_axis_column),
                                         dtype=float,
                                     )
                                     deterministic_member_matrices[(str(variable), str(model_name), shade_value)] = y_members
