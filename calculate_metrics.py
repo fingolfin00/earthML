@@ -755,6 +755,13 @@ def _apply_df_filters(df: pd.DataFrame, filters: dict | None) -> pd.DataFrame:
     return out
 
 
+def _filters_without_keys(filters: dict | None, excluded_keys: Collection[str]) -> dict | None:
+    if not filters:
+        return filters
+    excluded = {str(key) for key in excluded_keys}
+    return {key: value for key, value in filters.items() if key not in excluded}
+
+
 def _apply_df_filters_except_axis(
     df: pd.DataFrame,
     *,
@@ -1415,11 +1422,39 @@ def _profile_axis_filename_fragment(x_axis: str | Sequence[str]) -> str:
     return _sanitize_filename_fragment("_".join(_normalize_profile_axis_fields(x_axis)))
 
 
+def _matches_profile_axis_filters(
+    value: object,
+    *,
+    x_axis_fields: Sequence[str],
+    filters: dict | None,
+) -> bool:
+    if not filters:
+        return True
+
+    if len(x_axis_fields) == 1:
+        components = (value,)
+    else:
+        if not isinstance(value, tuple) or len(value) != len(x_axis_fields):
+            return False
+        components = value
+
+    for field, component in zip(x_axis_fields, components):
+        allowed = filters.get(field)
+        if allowed is None:
+            continue
+        allowed_values = allowed if isinstance(allowed, (list, tuple, set)) else [allowed]
+        normalized_allowed = {str(item) for item in allowed_values if item is not None}
+        if str(component) not in normalized_allowed:
+            return False
+    return True
+
+
 def _ordered_profile_axis_values(
     df: pd.DataFrame,
     *,
     x_axis: str | Sequence[str],
     variables: list[str],
+    filters: dict | None = None,
 ) -> list[object]:
     x_axis_fields = _normalize_profile_axis_fields(x_axis)
     x_axis_column = _profile_axis_column_name(x_axis_fields)
@@ -1427,6 +1462,11 @@ def _ordered_profile_axis_values(
         return []
 
     values = [value for value in pd.unique(df[x_axis_column]) if _profile_axis_value_present(value)]
+    values = [
+        value
+        for value in values
+        if _matches_profile_axis_filters(value, x_axis_fields=x_axis_fields, filters=filters)
+    ]
     if len(x_axis_fields) == 1 and x_axis_fields[0] == "leadtime":
         return sorted(values)
     if len(x_axis_fields) == 1 and x_axis_fields[0] == "variant":
@@ -4052,6 +4092,7 @@ def save_metrics_vs_parameter_plots(
                     _profile_axis_source_df(df_context_template),
                     x_axis=x_axis,
                     variables=variables,
+                    filters=filters,
                 )
                 if not x_values:
                     continue
@@ -4619,6 +4660,7 @@ def save_combined_variable_metric_profiles(
                 _profile_axis_source_df(df_context_template),
                 x_axis=x_axis,
                 variables=variables,
+                filters=filters,
             )
             if not x_values:
                 continue
@@ -5246,6 +5288,10 @@ def main() -> None:
     scalar_table_filters = _merge_filters(BASE_FILTERS, TABLE_KNOBS["scalar_filters"])
     normalized_table_filters = _merge_filters(BASE_FILTERS, TABLE_KNOBS["normalized_filters"])
     scoreboard_filters = SCOREBOARD_KNOBS["filters"]
+    profile_load_filters = _filters_without_keys(
+        metric_profile_filters,
+        _normalize_profile_axis_fields(METRIC_PROFILE_PLOT_KNOBS["x_axis"]),
+    )
 
     enabled_filter_sets: list[dict | None] = []
     if GLOBAL_KNOBS["enable_field_timeseries"]:
@@ -5255,7 +5301,7 @@ def main() -> None:
     if GLOBAL_KNOBS["enable_metric_vs_deltametric_plot"]:
         enabled_filter_sets.append(metric_vs_deltametric_filters)
     if GLOBAL_KNOBS["enable_metric_profile_plots"]:
-        enabled_filter_sets.append(metric_profile_filters)
+        enabled_filter_sets.append(profile_load_filters)
     if GLOBAL_KNOBS["enable_scalar_tables"]:
         enabled_filter_sets.extend((scalar_table_filters, normalized_table_filters))
     if GLOBAL_KNOBS["enable_scoreboard"]:
