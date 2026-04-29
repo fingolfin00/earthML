@@ -33,8 +33,10 @@ logger = get_logger(__name__)
 _CANONICAL_VARIABLE_NAMES = {
     "sosstsst": "sst",
     "thetao": "sst",
+    "votemper": "sst",
     "sst": "sst",
     "sosaline": "sss",
+    "vosaline": "sss",
     "sss": "sss",
     "sos": "sss",
     "so": "sss",
