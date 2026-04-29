@@ -1,4 +1,4 @@
-from typing import Sequence
+from typing import Collection, Sequence
 import logging
 import multiprocessing
 import os
