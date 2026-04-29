@@ -1460,6 +1460,10 @@ def _ordered_profile_axis_values(
     x_axis_column = _profile_axis_column_name(x_axis_fields)
     if x_axis_column not in df.columns:
         return []
+    if "value" in df.columns:
+        df = df[df["value"].notna()]
+        if df.empty:
+            return []
 
     values = [value for value in pd.unique(df[x_axis_column]) if _profile_axis_value_present(value)]
     values = [
