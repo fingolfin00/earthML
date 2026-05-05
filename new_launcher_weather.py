@@ -113,7 +113,7 @@ if __name__ == "__main__":
     if realization_as_channel:
         losses.append(
             {"EmpiricalCRPSLoss": dict(
-                loss={"num_realizations": n_input_realizations, "fair": True, "packed_dim": 1, "variance_type": "spatial", "latitudes": False},
+                loss={"num_realizations": n_input_realizations, "fair": True, "packed_dim": 1},
                 net={},
             )}
         )
