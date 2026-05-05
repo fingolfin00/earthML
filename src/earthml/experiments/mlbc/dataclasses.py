@@ -6,7 +6,7 @@ from pathlib import Path
 import xarray as xr
 
 from ...sources import DataSource, EarthkitSourceConfig, JunoLocalSourceConfig, CopernicusmarineSourceConfig, XarrayLocalSourceConfig
-from .registry import MLBCExperimentType, MLBCExperimentName, MLBCExperimentDatasetRole
+from .registry import MLBCExperimentType, MLBCExperimentName, MLBCExperimentDatasetRole, MLBCExperimentMode
 
 PreprocessFn = Callable[[xr.Dataset, xr.Dataset], Tuple[xr.Dataset, xr.Dataset]]
 DatasetRebuildSelector = Literal[
