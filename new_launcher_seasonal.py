@@ -40,11 +40,14 @@ if __name__ == "__main__":
         variables               = ["sst", "ssh", "sss", "t14d"] # ocean seasonal, e.g. ["sst", "ssh", "sss", "t14d", "t17d"]
         regions                 = ["pacific", "natlantic"] # e.g. ["pacific", "natlantic", "satlantic", "indian"]
     if experiment_name == "cds-cmcc_era5":
+        # variables               = ["v10"] # atmo seasonal e.g. ["t2m", "tp", "u10", "v10"] (tp wrong)
         variables               = ["t2m", "msl", "u10", "v10", "d2m"] # atmo seasonal e.g. ["t2m", "tp", "u10", "v10"] (tp wrong)
+        # regions                 = ["conus"] # e.g. ["conus", "europe"]
         regions                 = ["conus", "europe"] # e.g. ["conus", "europe"]
+    # leadtimes                   = (6,)
     leadtimes                   = (1, 2, 3, 4, 5, 6)
 
-    inpaint_nan                 = True # whether to inpaint nan values in input and target datasets (after loading, before torch dataset generation)
+    inpaint_nan                 = False # whether to inpaint nan values in input and target datasets (after loading, before torch dataset generation)
     anomaly                     = False # if True, predict anomaly (i.e. remove climatology from target variable), otherwise predict absolute values
     per_epoch_resplit           = False # if True, split test and validation randomly per epoch with a different seed, if False only one initial split for all epochs (fixed seed)
     pass_mask_as_input_extra_channel = False # if True an extra mask input channel (one per-channel if realization_as_channel is False) is passed to the trainer
@@ -69,7 +72,7 @@ if __name__ == "__main__":
     cuda_alloc_conf             = "expandable_segments:True" # None disables PYTORCH_CUDA_ALLOC_CONF, or set e.g. "expandable_segments:True"
 
     losses = [
-        # {"MSELoss": dict(loss={}, net={})},
+        {"MSELoss": dict(loss={}, net={})},
         # {"GeoMSELoss": dict(loss={"latitudes": True}, net={})},
         # {"MaskedMSELoss": dict(loss={}, net={})},
         {"VarNormMaskMSELoss": {"variance_type": "spatial", "latitudes": False}}, # channel, geochannel, spatial, temporal, geotemporal
@@ -87,7 +90,7 @@ if __name__ == "__main__":
     if realization_as_channel:
         losses.append(
             {"EmpiricalCRPSLoss": dict(
-                loss={"num_realizations": n_input_realizations, "fair": True, "packed_dim": 1, "variance_type": "spatial", "latitudes": False},
+                loss={"num_realizations": n_input_realizations, "fair": True, "packed_dim": 1},
                 net={},
             )}
         )
@@ -122,6 +125,12 @@ if __name__ == "__main__":
             variant_parts.append("taravg")
         if realization_as_channel:
             variant_parts.append("rasc")
+        if anomaly:
+            variant_parts.append("anomaly")
+        if inpaint_nan:
+            variant_parts.append("inpaintnan")
+        if pass_mask_as_input_extra_channel:
+            variant_parts.append("masc")
         variant_name = "_".join(variant_parts)
         variant_suffix = f"_{variant_name}" if variant_name else ""
 
