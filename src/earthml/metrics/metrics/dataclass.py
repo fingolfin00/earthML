@@ -4,7 +4,7 @@ from typing import Sequence
 import numpy as np
 import xarray as xr
 
-from ..logging import get_logger
+from ...logging import get_logger
 
 
 logger = get_logger(__name__)

@@ -26,17 +26,21 @@ import xarray as xr
 # import xskillscore as xs
 # from scipy.stats import t as student_t
 
-from .deterministic import DeterministicMetrics
-from .correlation import CorrelationMetrics
-from .probabilistic import ProbabilisticMetrics
+from .metrics.deterministic import DeterministicMetrics
+from .metrics.correlation import CorrelationMetrics
+from .metrics.probabilistic import ProbabilisticMetrics
 from .bundles import build_standard_metric_bundle
 
-from ..experiments.mlbc.load import load_all_exp_from_folder, add_ke_to_runs, harmonize_leadtime_int
-from ..experiments.mlbc.utils import (
+from ..experiments.mlbc import (
+    load_all_exp_from_folder,
+    add_ke_to_runs,
+    harmonize_leadtime_int,
     combine_masks,
     project_mask_to_reference_grid,
     select_mask_for_indexers,
+    MLBCExperimentMode,
 )
+from ..experiments.mlbc.utils import apply_mask_to_dataset
 
 
 # ==========================================
@@ -288,7 +292,7 @@ def _compute_metric_bundle(
 
 def get_runs_and_metrics(
     exp_root: str | Path,
-    type_data: str = "test",
+    exp_mode: MLBCExperimentMode = "test",
     load_models: Sequence[str] = ("an", "fc", "pr"),
     variables: Sequence[str] | None = None,
     run_filters: dict[str, object] | None = None,
@@ -296,6 +300,7 @@ def get_runs_and_metrics(
     use_train_prediction_clim: bool = False,  # only used if calculate_clim_from_train_period is True
     use_saved_mask: bool = True,
     external_mask_data: xr.Dataset | xr.DataArray | None = None,
+    apply_external_mask_to_runs: bool = False,
     metric_names: str | Sequence[str] | None = None,
     metric_sections: str | Sequence[str] = ("scalar", "map", "timeseries"),
     metric_types: str | Sequence[str] | None = None,
@@ -314,8 +319,8 @@ def get_runs_and_metrics(
 
     loaded_runs, _ = load_all_exp_from_folder(
         exp_root=exp_root,
-        type_data=type_data,
-        load_train_preds=(type_data == "train"),
+        exp_mode=exp_mode,
+        load_train_preds=(exp_mode == "train"),
         load_models=models,
         variables=variables,
         run_filters=run_filters,
@@ -367,7 +372,7 @@ def get_runs_and_metrics(
     if calculate_clim_from_train_period:
         train_loaded_runs, _ = load_all_exp_from_folder(
             exp_root=exp_root,
-            type_data="train",
+            exp_mode="train",
             load_train_preds=use_train_prediction_clim,
             load_models=models,
             variables=variables,
@@ -612,7 +617,16 @@ def get_runs_and_metrics(
                 if show_progress and runs_list:
                     prog.advance(combine_task)
 
-    return runs, metrics, tuple(last_clim_by_model.get(model_name) for model_name in models)
+    runs_for_return = runs
+    if apply_external_mask_to_runs and external_mask_data is not None:
+        # Keep metric computation on the original loaded runs and only mask the
+        # returned field datasets for downstream consumers such as plotting.
+        runs_for_return = {
+            model_name: ds if model_name == "mask" else apply_mask_to_dataset(ds, external_mask_data)
+            for model_name, ds in runs.items()
+        }
+
+    return runs_for_return, metrics, tuple(last_clim_by_model.get(model_name) for model_name in models)
 
 
 def _build_run_indexers(

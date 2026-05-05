@@ -1,0 +1,422 @@
+from pathlib import Path
+
+import numpy as np
+import xarray as xr
+
+from rich.progress import Progress
+
+from ...logging import get_logger
+from ...plots import plot_temporal_mean_map
+
+from .dataclasses import CalculateMetricsConfig
+from .utils import (
+    _apply_xarray_filters,
+    _context_selection_entries,
+    _realization_dim,
+    _get_da_unit,
+    _format_variable_display_name,
+    _ensure_grouped_output_folders,
+    _get_variable_output_item_folder,
+    _resolved_single_region_label,
+    _format_metric_label,
+)
+
+
+logger = get_logger(__name__)
+
+
+def _reduce_extra_map_dims(da: xr.DataArray) -> xr.DataArray:
+    lat_dim = da.earthml.guessed_dims.latitude
+    lon_dim = da.earthml.guessed_dims.longitude
+    time_dim = da.earthml.guessed_dims.time
+    realization_dim = da.earthml.guessed_dims.realization
+    keep_dims = {dim for dim in (lat_dim, lon_dim, time_dim, realization_dim) if dim is not None}
+    reduce_dims = [dim for dim in da.dims if dim not in keep_dims]
+    if reduce_dims:
+        da = da.mean(dim=reduce_dims, skipna=True)
+    return da
+
+def _collapse_realization_for_map(da: xr.DataArray) -> xr.DataArray:
+    realization_dim = _realization_dim(da)
+    if realization_dim is not None and realization_dim in da.dims:
+        da = da.mean(dim=realization_dim, skipna=True)
+    return da
+
+def _map_realization_slices(
+    da: xr.DataArray,
+    *,
+    realization_mode: str,
+) -> list[tuple[object | None, xr.DataArray]]:
+    realization_dim = _realization_dim(da)
+    if realization_mode == "members" and realization_dim is not None and da.sizes.get(realization_dim, 1) > 1:
+        return [
+            (
+                value.item() if isinstance(value, np.generic) else value,
+                da.sel({realization_dim: value}, drop=True).load(),
+            )
+            for value in da[realization_dim].values.tolist()
+        ]
+    return [(None, _collapse_realization_for_map(da).load())]
+
+def _map_title(*parts: str | None) -> str:
+    return " | ".join(part for part in parts if part)
+
+def _region_extent_for_plot(
+    *,
+    data: xr.DataArray,
+    context_values: dict[str, object] | None,
+    filters: dict | None,
+    region_extents: dict[str, tuple[float, float, float, float]] | None,
+) -> tuple[float, float, float, float] | None:
+    if not region_extents:
+        return None
+
+    region_name = ""
+    if context_values and context_values.get("region") is not None:
+        region_name = str(context_values["region"])
+    if not region_name:
+        region_name = _resolved_single_region_label(data, filters=filters)
+    if region_name and region_name in region_extents:
+        return region_extents[region_name]
+    if len(region_extents) == 1:
+        return next(iter(region_extents.values()))
+    return None
+
+
+def save_field_and_metric_map_plots(
+    load_models: list,
+    *,
+    runs: dict[str, xr.Dataset],
+    metrics: dict[str, dict[str, xr.Dataset]],
+    variables: list[str],
+    plot_folder: Path,
+    leadtime_unit: str,
+    filters: dict | None,
+    config: CalculateMetricsConfig,
+    realization_mode: bool = True,
+    region_extents: dict[str, tuple[float, float, float, float]] | None = None,
+    progress: Progress | None = None,
+    task_id: int | None = None,
+) -> list[Path]:
+    saved_paths: list[Path] = []
+    model_order = [model_name for model_name in load_models if model_name in runs]
+    if realization_mode not in {"mean", "members"}:
+        raise ValueError(
+            f"Unsupported map realization mode {realization_mode!r}. Expected 'mean' or 'members'."
+        )
+
+    def _count_total_map_plots() -> int:
+        total = 0
+        for variable in variables:
+            for model_name in model_order:
+                ds = runs.get(model_name)
+                if ds is None or variable not in ds.data_vars:
+                    continue
+
+                da = _apply_xarray_filters(ds[variable], filters)
+                for selection, context_values in _context_selection_entries(da):
+                    da_sel = da.sel({dim: value for dim, value in selection.items() if dim in da.dims}, drop=True)
+                    if da_sel.size == 0:
+                        continue
+                    da_sel = _reduce_extra_map_dims(da_sel)
+                    total += sum(1 for _ in _map_realization_slices(da_sel, realization_mode=realization_mode))
+
+            for metric_type, section_dict in metrics.items():
+                ds_map = section_dict.get("map", xr.Dataset())
+                if not isinstance(ds_map, xr.Dataset) or variable not in ds_map.data_vars:
+                    continue
+
+                da_var = _apply_xarray_filters(ds_map[variable], filters)
+                if "metric" not in da_var.dims:
+                    continue
+
+                metric_values = [str(value) for value in da_var["metric"].values.tolist()]
+                model_values = (
+                    [str(value) for value in da_var["model"].values.tolist()]
+                    if "model" in da_var.dims
+                    else [None]
+                )
+
+                for metric_name in metric_values:
+                    da_metric = da_var.sel(metric=metric_name, drop=True)
+                    for selection, context_values in _context_selection_entries(da_metric):
+                        per_model_maps: dict[str, dict[object | None, xr.DataArray]] = {}
+
+                        for model_name in model_values:
+                            da_model = da_metric.sel(model=model_name, drop=True) if model_name is not None else da_metric
+                            if da_model.size == 0:
+                                continue
+                            da_sel = da_model.sel(
+                                {dim: value for dim, value in selection.items() if dim in da_model.dims},
+                                drop=True,
+                            )
+                            if da_sel.size == 0:
+                                continue
+                            da_sel = _reduce_extra_map_dims(da_sel)
+                            per_model_maps[str(model_name)] = dict(
+                                _map_realization_slices(
+                                    da_sel,
+                                    realization_mode=realization_mode,
+                                )
+                            )
+
+                        if not per_model_maps:
+                            continue
+
+                        total += sum(len(realization_maps) for realization_maps in per_model_maps.values())
+
+                        reference_model = config.models.reference_model
+                        corrected_model = config.models.corrected_model
+                        if reference_model in per_model_maps and corrected_model in per_model_maps:
+                            reference_realizations = per_model_maps[reference_model]
+                            corrected_realizations = per_model_maps[corrected_model]
+                            total += sum(
+                                1
+                                for realization_value in corrected_realizations
+                                if realization_value in reference_realizations
+                            )
+
+        return total
+
+    total_plots = _count_total_map_plots()
+    if progress is not None and task_id is not None:
+        progress.update(task_id, total=total_plots, completed=0, description="Generating maps")
+
+    for variable in variables:
+        logger.info(f"Map variable: {variable}")
+        _ensure_grouped_output_folders(
+            plot_root=plot_folder,
+            variable=variable,
+            subfolder="maps",
+        )
+        field_maps_folder = _get_variable_output_item_folder(
+            plot_root=plot_folder,
+            variable=variable,
+            subfolder="maps",
+            output_group="field",
+            item_name="fields",
+        )
+
+        for model_name in model_order:
+            ds = runs.get(model_name)
+            if ds is None or variable not in ds.data_vars:
+                continue
+
+            da = _apply_xarray_filters(ds[variable], filters)
+            for selection, context_values in _context_selection_entries(da):
+                da_sel = da.sel({dim: value for dim, value in selection.items() if dim in da.dims}, drop=True)
+                if da_sel.size == 0:
+                    continue
+                da_sel = _reduce_extra_map_dims(da_sel)
+                base_unit = _get_da_unit(da_sel)
+                for realization_value, da_plot in _map_realization_slices(
+                    da_sel,
+                    realization_mode=realization_mode,
+                ):
+                    plot_region = _resolved_single_region_label(da_plot, filters=filters)
+                    extent = _region_extent_for_plot(
+                        data=da_plot,
+                        context_values=context_values,
+                        filters=filters,
+                        region_extents=region_extents,
+                    )
+                    save_path = field_maps_folder / (
+                        f"field_{model_name}_{_context_filename_suffix(context_values)}"
+                        f"{_realization_filename_fragment(realization_value)}_temporal_mean_map.png"
+                    )
+                    if progress is not None and task_id is not None:
+                        progress.update(
+                            task_id,
+                            description=f"Maps | {variable} | field | {model_name}",
+                        )
+                    plot_temporal_mean_map(
+                        da_plot,
+                        save_path=save_path,
+                        title=_map_title(
+                            _format_variable_display_name(variable),
+                            config.models.display_names.get(model_name, str(model_name)),
+                            f"Temporal mean{_realization_label(realization_value)}",
+                            _context_title_suffix(context_values, leadtime_unit=leadtime_unit),
+                        ),
+                        extent=extent,
+                        cbar_label=_map_cbar_label(variable=variable, unit=base_unit),
+                        cmap=config.maps.field_cmap,
+                        lon_tick_step=config.maps.lon_tick_step,
+                        lat_tick_step=config.maps.lat_tick_step,
+                    )
+                    saved_paths.append(save_path)
+                    if progress is not None and task_id is not None:
+                        progress.advance(task_id)
+                    logger.debug(f"Saved field map for model={model_name} region={plot_region or 'unknown'} to: {save_path}")
+
+        for metric_type, section_dict in metrics.items():
+            ds_map = section_dict.get("map", xr.Dataset())
+            if not isinstance(ds_map, xr.Dataset) or variable not in ds_map.data_vars:
+                continue
+
+            da_var = _apply_xarray_filters(ds_map[variable], filters)
+            if "metric" not in da_var.dims:
+                continue
+
+            metric_values = [str(value) for value in da_var["metric"].values.tolist()]
+            model_values = (
+                [str(value) for value in da_var["model"].values.tolist()]
+                if "model" in da_var.dims
+                else [None]
+            )
+
+            for metric_name in metric_values:
+                da_metric = da_var.sel(metric=metric_name, drop=True)
+                context_source = da_metric
+                for selection, context_values in _context_selection_entries(context_source):
+                    per_model_maps: dict[str, dict[object | None, xr.DataArray]] = {}
+                    base_unit: str | None = None
+
+                    for model_name in model_values:
+                        da_model = da_metric.sel(model=model_name, drop=True) if model_name is not None else da_metric
+                        if da_model.size == 0:
+                            continue
+                        da_sel = da_model.sel(
+                            {dim: value for dim, value in selection.items() if dim in da_model.dims},
+                            drop=True,
+                        )
+                        if da_sel.size == 0:
+                            continue
+                        da_sel = _reduce_extra_map_dims(da_sel)
+                        per_model_maps[str(model_name)] = dict(
+                            _map_realization_slices(
+                                da_sel,
+                                realization_mode=realization_mode,
+                            )
+                        )
+                        if base_unit is None:
+                            base_unit = _get_da_unit(da_sel) or _get_da_unit(
+                                runs.get(config.models.truth_model, xr.Dataset()),
+                                variable,
+                            )
+
+                    if not per_model_maps:
+                        continue
+
+                    context_suffix = _context_title_suffix(context_values, leadtime_unit=leadtime_unit)
+                    sample_da = next(iter(next(iter(per_model_maps.values())).values()))
+                    extent = _region_extent_for_plot(
+                        data=sample_da,
+                        context_values=context_values,
+                        filters=filters,
+                        region_extents=region_extents,
+                    )
+                    metric_label = _format_metric_label(metric_name, base_unit=base_unit)
+                    shared_vmin, shared_vmax = _shared_map_limits(
+                        *(da for per_model in per_model_maps.values() for da in per_model.values())
+                    )
+
+                    for model_name, realization_maps in per_model_maps.items():
+                        metric_folder = _get_variable_output_item_folder(
+                            plot_root=plot_folder,
+                            variable=variable,
+                            subfolder="maps",
+                            output_group=_metric_output_group(metric_type),
+                            item_name=metric_name,
+                        )
+                        for realization_value, da_sel in realization_maps.items():
+                            map_region = _resolved_single_region_label(da_sel, filters=filters)
+                            filename_parts = [metric_type, metric_name, model_name, _context_filename_suffix(context_values)]
+                            save_path = metric_folder / (
+                                f"{'_'.join(filename_parts)}{_realization_filename_fragment(realization_value)}_map.png"
+                            )
+
+                            if progress is not None and task_id is not None:
+                                progress.update(
+                                    task_id,
+                                    description=f"Maps | {variable} | {metric_type} | {metric_name}",
+                                )
+                            plot_temporal_mean_map(
+                                da_sel,
+                                save_path=save_path,
+                                title=_map_title(
+                                    metric_label,
+                                    config.models.display_names.get(model_name, model_name),
+                                    f"{context_suffix}{_realization_label(realization_value)}" if context_suffix else _realization_label(realization_value).lstrip(" |"),
+                                ),
+                                extent=extent,
+                                cbar_label=_map_cbar_label(variable=variable, unit=base_unit),
+                                cmap=_resolve_metric_map_cmap(metric_name),
+                                vmin=shared_vmin,
+                                vmax=shared_vmax,
+                                lon_tick_step=MAP_PLOT_KNOBS["lon_tick_step"],
+                                lat_tick_step=MAP_PLOT_KNOBS["lat_tick_step"],
+                            )
+                            saved_paths.append(save_path)
+                            if progress is not None and task_id is not None:
+                                progress.advance(task_id)
+                            logger.debug(
+                                f"Saved metric map for metric={metric_name} "
+                                f"model={model_name} region={map_region or 'unknown'} to: {save_path}"
+                            )
+
+                    reference_model = MODEL_KNOBS["reference_model"]
+                    corrected_model = MODEL_KNOBS["corrected_model"]
+                    difference_model = DIFFERENCE_MODEL
+                    if reference_model in per_model_maps and corrected_model in per_model_maps:
+                        metric_folder = _get_variable_output_item_folder(
+                            plot_root=plot_folder,
+                            variable=variable,
+                            subfolder="maps",
+                            output_group=_metric_output_group(metric_type),
+                            item_name=metric_name,
+                        )
+                        reference_realizations = per_model_maps[reference_model]
+                        corrected_realizations = per_model_maps[corrected_model]
+                        common_realizations = [
+                            realization_value
+                            for realization_value in corrected_realizations
+                            if realization_value in reference_realizations
+                        ]
+                        diff_maps = [
+                            (
+                                realization_value,
+                                corrected_realizations[realization_value] - reference_realizations[realization_value],
+                            )
+                            for realization_value in common_realizations
+                        ]
+                        if diff_maps:
+                            diff_vmin, diff_vmax = _symmetric_map_limits(
+                                xr.concat([diff_da for _, diff_da in diff_maps], dim="_diff_map")
+                            )
+                            for realization_value, diff_da in diff_maps:
+                                diff_region = _resolved_single_region_label(diff_da, filters=filters)
+                                diff_save_path = metric_folder / (
+                                    f"{metric_type}_{metric_name}_{difference_model}_{_context_filename_suffix(context_values)}"
+                                    f"{_realization_filename_fragment(realization_value)}_map.png"
+                                )
+                                if progress is not None and task_id is not None:
+                                    progress.update(
+                                        task_id,
+                                        description=f"Maps | {variable} | diff | {metric_name}",
+                                    )
+                                plot_temporal_mean_map(
+                                    diff_da,
+                                    save_path=diff_save_path,
+                                    title=_map_title(
+                                        metric_label,
+                                        MODEL_DISPLAY_NAMES[difference_model],
+                                        f"{context_suffix}{_realization_label(realization_value)}" if context_suffix else _realization_label(realization_value).lstrip(" |"),
+                                    ),
+                                    extent=extent,
+                                    cbar_label=_map_cbar_label(variable=variable, unit=base_unit),
+                                    cmap="RdBu_r",
+                                    vmin=diff_vmin,
+                                    vmax=diff_vmax,
+                                    lon_tick_step=MAP_PLOT_KNOBS["lon_tick_step"],
+                                    lat_tick_step=MAP_PLOT_KNOBS["lat_tick_step"],
+                                )
+                                saved_paths.append(diff_save_path)
+                                if progress is not None and task_id is not None:
+                                    progress.advance(task_id)
+                                logger.debug(
+                                    f"Saved diff map for metric={metric_name} "
+                                    f"model={difference_model} region={diff_region or 'unknown'} to: {diff_save_path}"
+                                )
+
+    return saved_paths

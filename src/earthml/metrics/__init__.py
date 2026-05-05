@@ -1,6 +1,6 @@
-from .deterministic import DeterministicMetrics
-from .correlation import CorrelationMetrics
-from .probabilistic import ProbabilisticMetrics
+from .metrics.deterministic import DeterministicMetrics
+from .metrics.correlation import CorrelationMetrics
+from .metrics.probabilistic import ProbabilisticMetrics
 
 from .utils import get_runs_and_metrics, metrics_to_df
 

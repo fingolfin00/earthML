@@ -1,9 +1,9 @@
 from typing import Any
 import xarray as xr
 
-from .deterministic import DeterministicMetrics
-from .correlation import CorrelationMetrics
-from .probabilistic import ProbabilisticMetrics
+from .metrics.deterministic import DeterministicMetrics
+from .metrics.correlation import CorrelationMetrics
+from .metrics.probabilistic import ProbabilisticMetrics
 
 
 def _stack_metric_section(section_metrics: dict[str, xr.Dataset]) -> xr.Dataset:
