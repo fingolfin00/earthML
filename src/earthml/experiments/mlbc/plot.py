@@ -11,7 +11,8 @@ import numpy as np
 import xarray as xr
 from scipy.signal import welch
 
-from ...metrics import CorrelationMetrics, DeterministicMetrics
+from ...metrics.metrics.correlation import CorrelationMetrics
+from ...metrics.metrics.deterministic import DeterministicMetrics
 from ...plots import plot_realization_timeseries, plot_temporal_mean_map, build_plot_config, get_var_units
 from ...plots.maps import _reduce_for_temporal_mean_map
 from ...plots.timeseries import _reduce_for_timeseries
