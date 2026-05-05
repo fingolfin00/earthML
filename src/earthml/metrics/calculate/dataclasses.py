@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ItemsView, Literal
@@ -26,6 +27,20 @@ class CalculateMetricsFilters:
         if key not in self.__dataclass_fields__:
             return default
         return getattr(self, key)
+
+    def __getitem__(self, key: str) -> Any:
+        if key not in self.__dataclass_fields__:
+            raise KeyError(key)
+        return getattr(self, key)
+
+    def __contains__(self, key: object) -> bool:
+        return isinstance(key, str) and key in self.__dataclass_fields__
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.__dataclass_fields__)
+
+    def __len__(self) -> int:
+        return len(self.__dataclass_fields__)
 
     def items(self) -> ItemsView[str, Any]:
         return {
