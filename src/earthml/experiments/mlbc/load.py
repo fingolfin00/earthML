@@ -24,7 +24,7 @@ from ...logging import get_logger
 from ...sources import build_source, BaseSource
 from ...base import Leadtime
 
-from .dataclasses import MLBCExperimentConfig, MLBCExperimentDatasetRole, MLBCExperimentDataset
+from .dataclasses import MLBCExperimentConfig, MLBCExperimentDatasetRole, MLBCExperimentDataset, MLBCExperimentMode
 
 
 logger = get_logger(__name__)
@@ -355,7 +355,7 @@ def _prefer_valid_time_for_alignment(
 
 def _load_single_exp(
     exp_cfg: MLBCExperimentConfig | str | Path,
-    type_data: str,
+    exp_mode: MLBCExperimentMode,
     load_train_preds: bool = False,
     load_models: Sequence[str] | None = None,
     variables: Sequence[str] | None = None,
@@ -369,8 +369,8 @@ def _load_single_exp(
     need_an = "an" in load_models
     need_pr = "pr" in load_models
 
-    source: dict[MLBCExperimentDatasetRole, BaseSource] = experiment[f"{type_data}_data"]
-    mask_exp: MLBCExperimentDataset = experiment[f"{type_data}_mask_data"]
+    source: dict[MLBCExperimentDatasetRole, BaseSource] = experiment[f"{exp_mode}_data"]
+    mask_exp: MLBCExperimentDataset = experiment[f"{exp_mode}_mask_data"]
     mask_source = build_source(
         name=mask_exp.datasource.source,
         params={
@@ -383,7 +383,7 @@ def _load_single_exp(
         "input": len(source["input"].elements.samples),
         "target": len(source["target"].elements.samples),
     }
-    if need_pr and (type_data == "test" or load_train_preds) and "prediction" in source:
+    if need_pr and (exp_mode == "test" or load_train_preds) and "prediction" in source:
         n_valid_samples["prediction"] = len(source["prediction"].elements.samples)
 
     if only_sizes:
@@ -393,7 +393,7 @@ def _load_single_exp(
     if need_fc:
         source["input"] = _source_with_root_path(
             source["input"],
-            exp_path / f"{type_data}_input.zarr",
+            exp_path / f"{exp_mode}_input.zarr",
         )
         fc: xr.Dataset = source["input"].reload(
             show_dask_progress=show_dask_progress,
@@ -402,16 +402,16 @@ def _load_single_exp(
     if need_an:
         source["target"] = _source_with_root_path(
             source["target"],
-            exp_path / f"{type_data}_target.zarr",
+            exp_path / f"{exp_mode}_target.zarr",
         )
         an: xr.Dataset = source["target"].reload(
             show_dask_progress=show_dask_progress,
         ).earthml.normalize_dims_and_coords()
 
-    if need_pr and (type_data == "test" or load_train_preds) and "prediction" in source:
+    if need_pr and (exp_mode == "test" or load_train_preds) and "prediction" in source:
         source["prediction"] = _source_with_root_path(
             source["prediction"],
-            exp_path / f"{type_data}_preds.zarr",
+            exp_path / f"{exp_mode}_preds.zarr",
         )
         pr: xr.Dataset = source["prediction"].reload(
             show_dask_progress=show_dask_progress,
@@ -422,7 +422,7 @@ def _load_single_exp(
 
     mask = _source_with_root_path(
         mask_source,
-        exp_path / f"mask/{type_data}_mask.zarr",
+        exp_path / f"mask/{exp_mode}_mask.zarr",
     ).reload(
         show_dask_progress=show_dask_progress,
     )
@@ -447,7 +447,7 @@ def _load_single_exp(
 
 def load_exp(
     exp_configs,
-    type_data: str,
+    exp_mode: MLBCExperimentMode,
     load_train_preds: bool = False,
     load_models: Sequence[str] | None = None,
     variables: Sequence[str] | None = None,
@@ -456,7 +456,7 @@ def load_exp(
     if isinstance(exp_configs, (MLBCExperimentConfig, str, Path)):
         return _load_single_exp(
             exp_cfg=exp_configs,
-            type_data=type_data,
+            exp_mode=exp_mode,
             load_train_preds=load_train_preds,
             load_models=load_models,
             variables=variables,
@@ -469,7 +469,7 @@ def load_exp(
         for key, cfg in exp_configs.items():
             runs, sizes = _load_single_exp(
                 exp_cfg=cfg,
-                type_data=type_data,
+                exp_mode=exp_mode,
                 load_train_preds=load_train_preds,
                 load_models=load_models,
                 variables=variables,
@@ -484,7 +484,7 @@ def load_exp(
 
 def load_all_exp_from_folder(
     exp_root: str | Path,
-    type_data: str,
+    exp_mode: MLBCExperimentMode,
     load_train_preds: bool = False,
     load_models: Sequence[str] | None = None,
     variables: Sequence[str] | None = None,
@@ -510,20 +510,20 @@ def load_all_exp_from_folder(
     load_models = {"fc", "an", "pr"} if load_models is None else set(load_models)
     need_fc = "fc" in load_models
     need_an = "an" in load_models
-    need_pr = "pr" in load_models and (type_data == "test" or load_train_preds)
+    need_pr = "pr" in load_models and (exp_mode == "test" or load_train_preds)
 
     def _has_required_artifacts(exp_dir: Path) -> bool:
         required = [exp_dir / cfg_name]
 
         if need_fc:
-            required.append(exp_dir / f"{type_data}_input.zarr")
+            required.append(exp_dir / f"{exp_mode}_input.zarr")
         if need_an:
-            required.append(exp_dir / f"{type_data}_target.zarr")
+            required.append(exp_dir / f"{exp_mode}_target.zarr")
         if need_pr:
-            required.append(exp_dir / f"{type_data}_preds.zarr")
+            required.append(exp_dir / f"{exp_mode}_preds.zarr")
 
         # mask is always loaded by _load_single_exp
-        required.append(exp_dir / "mask" / f"{type_data}_mask.zarr")
+        required.append(exp_dir / "mask" / f"{exp_mode}_mask.zarr")
 
         return all(path.exists() for path in required)
 
@@ -652,7 +652,7 @@ def load_all_exp_from_folder(
 
             run_dict, size = _load_single_exp(
                 exp_cfg=config,
-                type_data=type_data,
+                exp_mode=exp_mode,
                 load_train_preds=load_train_preds,
                 load_models=load_models,
                 variables=variables,
