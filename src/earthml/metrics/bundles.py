@@ -1,6 +1,8 @@
 from typing import Any
+
 import xarray as xr
 
+from .calculate.constants import METRIC_KIND, METRIC_SECTIONS
 from .metrics.deterministic import DeterministicMetrics
 from .metrics.correlation import CorrelationMetrics
 from .metrics.probabilistic import ProbabilisticMetrics
@@ -49,13 +51,14 @@ def build_standard_metric_bundle(
     """
     Build a standard bundle of metrics grouped by output type.
 
-    The returned bundle contains 9 sections in the form:
+    The returned bundle contains 12 sections in the form:
     - 'scalar_<metric_type>': metrics reduced over time and space
     - 'map_<metric_type>': metrics reduced over time
     - 'timeseries_<metric_type>': metrics reduced over latitude and longitude
     where metric_type can be:
-    - deterministic
-    - ensemble
+    - all_dims
+    - spatial_mean
+    - ensemble_mean
     - probabilistic
 
     Within each section, metrics are concatenated along a new 'metric'
@@ -105,24 +108,24 @@ def build_standard_metric_bundle(
     map_dims = deterministic.dims.time
     ts_dims = (deterministic.dims.latitude, deterministic.dims.longitude)
 
-    reduce_dims = {
-        "scalar": full_dims,
-        "map": map_dims,
-        "timeseries": ts_dims,
-    }
-
-    sections = ("deterministic", "ensemble", "probabilistic")
-
+    reduce_dims = dict(
+        zip(
+            METRIC_KIND,
+            (full_dims, ts_dims, map_dims),
+            strict=True,
+        )
+    )
     section_metrics = {
-        s: {"scalar": {}, "map": {}, "timeseries": {}}
-        for s in sections
+        metric_type: {kind: {} for kind in reduce_dims}
+        for metric_type in METRIC_SECTIONS
     }
 
     # ------------------
-    # Deterministic
+    # All dims
     # ------------------
-    for section, dims in reduce_dims.items():
-        sm = section_metrics["deterministic"][section]
+    for kind, dims in reduce_dims.items():
+        sm = section_metrics["all_dims"][kind]
+
         sm["rmse"] = deterministic.rmse(metric_mean_dims=dims)
         sm["rmse_skill_clim"] = deterministic.rmse_skill_clim(metric_mean_dims=dims, period=clim_period)
         sm["crmse"] = deterministic.crmse(metric_mean_dims=dims)
@@ -137,13 +140,32 @@ def build_standard_metric_bundle(
         sm["nbias"] = deterministic.nbias(metric_mean_dims=dims, norm=norm)
 
     # ------------------
-    # Ensemble
+    # Spatial mean
+    # ------------------
+    sdims, tdim = ts_dims, map_dims
+    sm = section_metrics["spatial_mean"]["scalar"]
+
+    sm["rmse"] = deterministic.rmse_of_mean(sdims, tdim)
+    sm["rmse_skill_clim"] = deterministic.rmse_skill_clim_of_mean(sdims, tdim, period=clim_period)
+    sm["crmse"] = deterministic.crmse_of_mean(sdims, tdim)
+    sm["mae"] = deterministic.mae_of_mean(sdims, tdim)
+    sm["bias"] = deterministic.bias_of_mean(sdims, tdim)
+    sm["error_std"] = deterministic.error_std_of_mean(sdims, tdim)
+    sm["variance_ratio"] = deterministic.variance_ratio_of_mean(sdims, tdim)
+    sm["r2"] = deterministic.r2_of_mean(sdims, tdim)
+    sm["nrmse"] = deterministic.nrmse_of_mean(sdims, tdim, norm=norm)
+    sm["ncrmse"] = deterministic.ncrmse_of_mean(sdims, tdim, norm=norm)
+    sm["nmae"] = deterministic.nmae_of_mean(sdims, tdim, norm=norm)
+    sm["nbias"] = deterministic.nbias_of_mean(sdims, tdim, norm=norm)
+
+    # ------------------
+    # Ensemble mean
     # ------------------
     if has_realization:
         rdim = realization_dim
 
-        for section, dims in reduce_dims.items():
-            sm = section_metrics["ensemble"][section]
+        for kind, dims in reduce_dims.items():
+            sm = section_metrics["ensemble_mean"][kind]
 
             sm["rmse"] = deterministic.rmse_of_mean(rdim, dims)
             sm["rmse_skill_clim"] = deterministic.rmse_skill_clim_of_mean(rdim, dims, period=clim_period)
@@ -162,8 +184,8 @@ def build_standard_metric_bundle(
     # Probabilistic
     # ------------------
     if probabilistic is not None and has_realization:
-        for section, dims in reduce_dims.items():
-            sm = section_metrics["probabilistic"][section]
+        for kind, dims in reduce_dims.items():
+            sm = section_metrics["probabilistic"][kind]
 
             sm["crps"] = probabilistic.crps(dims)
             sm["spread"] = probabilistic.spread(dims)
@@ -174,18 +196,21 @@ def build_standard_metric_bundle(
     # Correlation
     # ------------------
     if correlation is not None:
-        for section, dims in reduce_dims.items():
-            sm = section_metrics["deterministic"][section]
-
+        for kind, dims in reduce_dims.items():
+            sm = section_metrics["all_dims"][kind]
             sm["corr"] = correlation.corr(dims)
             sm["clim_acc"] = correlation.clim_anom_corr(dims, period=clim_period)
             sm["spatial_acc"] = correlation.spatial_anom_corr(dims)
 
+        sm = section_metrics["spatial_mean"]["scalar"]
+        sm["corr"] = correlation.corr_of_mean(sdims, tdim)
+        sm["clim_acc"] = correlation.clim_anom_corr_of_mean(sdims, tdim, period=clim_period)
+
         if has_realization:
             rdim = realization_dim
 
-            for section, dims in reduce_dims.items():
-                sm = section_metrics["ensemble"][section]
+            for kind, dims in reduce_dims.items():
+                sm = section_metrics["ensemble_mean"][kind]
 
                 sm["corr"] = correlation.corr_of_mean(rdim, dims)
                 sm["clim_acc"] = correlation.clim_anom_corr_of_mean(rdim, dims, period=clim_period)
@@ -196,10 +221,9 @@ def build_standard_metric_bundle(
     # ------------------
     result = {}
 
-    for s in sections:
-        result[f"scalar_{s}"] = _stack_metric_section(section_metrics[s]["scalar"])
-        result[f"map_{s}"] = _stack_metric_section(section_metrics[s]["map"])
-        result[f"timeseries_{s}"] = _stack_metric_section(section_metrics[s]["timeseries"])
+    for metric_type in METRIC_SECTIONS:
+        for kind in METRIC_KIND:
+            result[f"{kind}_{metric_type}"] = _stack_metric_section(section_metrics[metric_type][kind])
 
     # ------------------
     # Attributes

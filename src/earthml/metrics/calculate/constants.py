@@ -8,16 +8,24 @@ CALCULATE_METRICS_ITEMS = (
 )
 
 PROFILE_METRIC_MODES = (
-    "deterministic",
-    "ensemble",
+    "all_dims",
+    "spatial_mean",
+    "ensemble_mean",
     "probabilistic",
-    "deterministic_with_ensemble_overlay",
+    "all_dims_with_ensemble_overlay",
 )
 
-SUMMARY_METRIC_TYPES = (
-    "deterministic",
-    "ensemble",
+METRIC_SECTIONS = (
+    "all_dims",
+    "spatial_mean",
+    "ensemble_mean",
     "probabilistic",
+)
+
+METRIC_KIND = (
+    "scalar",
+    "timeseries",
+    "map",
 )
 
 SCOREBOARD_MODES = (
@@ -44,7 +52,7 @@ NORMALIZED_METRICS = {
 }
 
 VARIABLE_SUBFOLDERS = ("timeseries", "maps", "profiles", "tables")
-OUTPUT_GROUP_SUBFOLDERS = ("field", "deterministic", "ensemble") # ensemble containes also probabilistic metrics
+OUTPUT_GROUP_SUBFOLDERS = ("field", "all_dims", "ensemble_mean", "spatial_mean", "probabilistic")
 
 # Display constants
 VARIABLE_COLORS = {
@@ -143,27 +151,27 @@ PROFILE_COMBINED_VARS_METRICS = {
 METRIC_VS_DELTA_PAIRS = [
     {
         "forecast_metric": "r2",
-        "forecast_metric_type": "ensemble",
+        "forecast_metric_type": "ensemble_mean",
         "delta_metric": "nrmse",
-        "delta_metric_type": "ensemble",
+        "delta_metric_type": "ensemble_mean",
     },
     {
         "forecast_metric": "r2",
-        "forecast_metric_type": "ensemble",
+        "forecast_metric_type": "ensemble_mean",
         "delta_metric": "nmae",
-        "delta_metric_type": "ensemble",
+        "delta_metric_type": "ensemble_mean",
     },
     {
         "forecast_metric": "nrmse",
-        "forecast_metric_type": "ensemble",
+        "forecast_metric_type": "ensemble_mean",
         "delta_metric": "nrmse",
-        "delta_metric_type": "ensemble",
+        "delta_metric_type": "ensemble_mean",
     },
     {
         "forecast_metric": "clim_acc",
-        "forecast_metric_type": "ensemble",
+        "forecast_metric_type": "ensemble_mean",
         "delta_metric": "nmae",
-        "delta_metric_type": "ensemble",
+        "delta_metric_type": "ensemble_mean",
     },
     {
         "forecast_metric": "spread_error_ratio",
@@ -175,16 +183,16 @@ METRIC_VS_DELTA_PAIRS = [
 
 # Scoreboard
 SCOREBOARD_METRICS = {
-    "r2": "ensemble",
-    "nrmse": "ensemble",
-    "ncrmse": "ensemble",
-    "nmae": "ensemble",
-    "nbias": "ensemble",
+    "r2": "ensemble_mean",
+    "nrmse": "ensemble_mean",
+    "ncrmse": "ensemble_mean",
+    "nmae": "ensemble_mean",
+    "nbias": "ensemble_mean",
     # "crps": "probabilistic",
-    "variance_ratio": "ensemble",
-    "rmse_skill_clim": "ensemble",
-    "clim_acc": "ensemble",
-    "spatial_acc": "ensemble",
+    "variance_ratio": "ensemble_mean",
+    "rmse_skill_clim": "ensemble_mean",
+    "clim_acc": "ensemble_mean",
+    "spatial_acc": "ensemble_mean",
     "spread_error_ratio": "probabilistic",
 }
 
