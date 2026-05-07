@@ -106,6 +106,34 @@ def _map_realization_slices(
         ]
     return [(None, _collapse_realization_for_map(da).load())]
 
+def _map_realization_count(
+    da: xr.DataArray,
+    *,
+    realization_mode: str,
+) -> int:
+    realization_dim = _realization_dim(da)
+    if realization_mode == "members" and realization_dim is not None:
+        return int(da.sizes.get(realization_dim, 0))
+    return 1
+
+def _common_map_realization_count(
+    reference_da: xr.DataArray,
+    corrected_da: xr.DataArray,
+    *,
+    realization_mode: str,
+) -> int:
+    if realization_mode != "members":
+        return 1
+
+    reference_dim = _realization_dim(reference_da)
+    corrected_dim = _realization_dim(corrected_da)
+    if reference_dim is None or corrected_dim is None:
+        return 1
+
+    reference_values = set(reference_da[reference_dim].values.tolist())
+    corrected_values = set(corrected_da[corrected_dim].values.tolist())
+    return len(reference_values & corrected_values)
+
 def _map_title(*parts: str | None) -> str:
     return " | ".join(part for part in parts if part)
 
@@ -167,7 +195,7 @@ def save_field_and_metric_map_plots(
                     if da_sel.size == 0:
                         continue
                     da_sel = _reduce_extra_map_dims(da_sel)
-                    total += sum(1 for _ in _map_realization_slices(da_sel, realization_mode=realization_mode))
+                    total += _map_realization_count(da_sel, realization_mode=realization_mode)
 
             for metric_type, section_dict in metrics.items():
                 ds_map = section_dict.get("map", xr.Dataset())
@@ -201,27 +229,23 @@ def save_field_and_metric_map_plots(
                             if da_sel.size == 0:
                                 continue
                             da_sel = _reduce_extra_map_dims(da_sel)
-                            per_model_maps[str(model_name)] = dict(
-                                _map_realization_slices(
-                                    da_sel,
-                                    realization_mode=realization_mode,
-                                )
-                            )
+                            per_model_maps[str(model_name)] = da_sel
 
                         if not per_model_maps:
                             continue
 
-                        total += sum(len(realization_maps) for realization_maps in per_model_maps.values())
+                        total += sum(
+                            _map_realization_count(da_model, realization_mode=realization_mode)
+                            for da_model in per_model_maps.values()
+                        )
 
                         reference_model = config.models.reference_model
                         corrected_model = config.models.corrected_model
                         if reference_model in per_model_maps and corrected_model in per_model_maps:
-                            reference_realizations = per_model_maps[reference_model]
-                            corrected_realizations = per_model_maps[corrected_model]
-                            total += sum(
-                                1
-                                for realization_value in corrected_realizations
-                                if realization_value in reference_realizations
+                            total += _common_map_realization_count(
+                                per_model_maps[reference_model],
+                                per_model_maps[corrected_model],
+                                realization_mode=realization_mode,
                             )
 
         return total
