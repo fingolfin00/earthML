@@ -210,7 +210,14 @@ class CalculateMetricsRuntime:
                 normalized_filters=self.filters,
                 row_index=("metric",),
                 column_index=("model", "variable", "stat"),
-                stat_order=("avg", "spread", "ens", "prob"),
+                stat_order=(
+                    "all_dims_avg",
+                    "all_dims_spread",
+                    "spatial_avg",
+                    "spatial_spread",
+                    "ens_avg",
+                    "prob",
+                ),
                 significant_digits=3,
                 image_dpi=300,
                 background_color="#ffffff",
@@ -447,7 +454,7 @@ class CalculateMetricsRuntime:
                 for profile_plot_path in profile_plot_paths:
                     self.logger.debug(f"Saved metric profile plot to: {profile_plot_path}")
 
-                if self.config.profiles.combined_variable_metrics is not None:
+                if self.config.profiles.combined_variable_metrics is not None and len(variables) > 1:
                     combined_profile_task = progress.add_task(
                         f"Generating combined variable profiles ({_format_axis_display_name(self.config.profiles.x_axis)})",
                         total=1,
@@ -465,13 +472,16 @@ class CalculateMetricsRuntime:
                     )
                     for combined_profile_path in combined_profile_paths:
                         self.logger.debug(f"Saved combined variable profile plot to: {combined_profile_path}")
+                elif self.config.profiles.combined_variable_metrics is not None:
+                    self.logger.info("Skipping combined variable profiles because only one variable is selected.")
 
             if self.config.scalar_tables is not None:
                 raw_metrics = {
                     metric
                     for metric_group in (
-                        metrics.get("deterministic", {}).get("scalar"),
-                        metrics.get("ensemble", {}).get("scalar"),
+                        metrics.get("all_dims", {}).get("scalar"),
+                        metrics.get("spatial_mean", {}).get("scalar"),
+                        metrics.get("ensemble_mean", {}).get("scalar"),
                         metrics.get("probabilistic", {}).get("scalar"),
                     )
                     if metric_group is not None and "metric" in metric_group.coords
