@@ -69,9 +69,16 @@ class CorrelationMetrics(BaseMetrics):
         std_x = x.earthml.geo_std(corr_reduce_dims)
         std_y = y.earthml.geo_std(corr_reduce_dims)
 
-        valid = (n >= min_periods) & (std_x > eps) & (std_y > eps)
-        r = xr.where(valid, cov / (std_x * std_y), np.nan)
-        return r
+        valid = (
+            (n >= min_periods)
+            & np.isfinite(cov)
+            & np.isfinite(std_x)
+            & np.isfinite(std_y)
+            & (std_x > eps)
+            & (std_y > eps)
+        )
+        denom = (std_x * std_y).where(valid)
+        return cov.where(valid) / denom
 
 
     def corr(
