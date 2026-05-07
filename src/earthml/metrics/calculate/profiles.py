@@ -28,6 +28,8 @@ from .utils import (
     _merge_filename_contexts,
     _filters_filename_context,
     _get_variable_colors,
+    _ensure_grouped_output_folders,
+    _get_variable_output_item_folder,
 )
 from .constants import (
     VARIABLE_SUBFOLDERS,
@@ -70,6 +72,46 @@ def _profile_output_folder(
     folder_variable = variable if variable is not None else "all_variables"
     return get_variable_subfolder(plot_root=plot_root, variable=folder_variable, subfolder="profiles")
 
+def _profile_output_group(metric_type: str) -> str:
+    if metric_type == "all_dims_with_ensemble_overlay":
+        return "all_dims"
+    return metric_type
+
+def _expand_profile_metric_modes(
+    metric_modes: dict[str, str | tuple[str, ...] | list[str]],
+) -> list[tuple[str, str]]:
+    expanded: list[tuple[str, str]] = []
+    for metric_name, metric_mode in metric_modes.items():
+        modes = [metric_mode] if isinstance(metric_mode, str) else list(metric_mode)
+        expanded.extend((metric_name, str(mode)) for mode in modes)
+    return expanded
+
+def _profile_item_name(metric_name: str, metric_type: str) -> str:
+    if metric_type == "all_dims_with_ensemble_overlay":
+        return f"{metric_name}_with_ensemble_overlay"
+    return metric_name
+
+def _profile_metric_output_folder(
+    *,
+    plot_root: Path,
+    variable: str | None,
+    metric_name: str,
+    metric_type: str,
+) -> Path:
+    folder_variable = variable if variable is not None else "all_variables"
+    _ensure_grouped_output_folders(
+        plot_root=plot_root,
+        variable=folder_variable,
+        subfolder="profiles",
+    )
+    return _get_variable_output_item_folder(
+        plot_root=plot_root,
+        variable=folder_variable,
+        subfolder="profiles",
+        output_group=_profile_output_group(metric_type),
+        item_name=_profile_item_name(metric_name, metric_type),
+    )
+
 
 def get_variable_plot_folder(
     *,
@@ -96,16 +138,36 @@ def _profile_template_df(
     metric_type: str,
     *,
     df_det: pd.DataFrame,
+    df_spatial: pd.DataFrame,
     df_ens: pd.DataFrame,
     df_prob: pd.DataFrame,
 ) -> pd.DataFrame:
     if metric_type == "probabilistic":
         return df_prob
-    if metric_type == "deterministic":
+    if metric_type == "all_dims":
         return df_det
-    if metric_type == "deterministic_with_ensemble_overlay":
+    if metric_type == "spatial_mean":
+        return df_spatial
+    if metric_type == "ensemble_mean":
+        return df_ens
+    if metric_type == "all_dims_with_ensemble_overlay":
         return df_ens
     raise ValueError(f"Unsupported metric profile plot mode {metric_type!r}")
+
+def _profile_deterministic_mode_df(
+    metric_type: str,
+    *,
+    df_det: pd.DataFrame,
+    df_spatial: pd.DataFrame,
+    df_ens: pd.DataFrame,
+) -> pd.DataFrame:
+    if metric_type == "all_dims":
+        return df_det
+    if metric_type == "spatial_mean":
+        return df_spatial
+    if metric_type == "ensemble_mean":
+        return df_ens
+    raise ValueError(f"Unsupported deterministic metric profile plot mode {metric_type!r}")
 
 def _profile_context_columns(
     df: pd.DataFrame,
@@ -221,7 +283,7 @@ def _profile_axis_source_df(
 
     for preferred_model in (
         config.models.corrected_model,
-        config.models.reference_mode,
+        config.models.reference_model,
         config.models.truth_model,
     ):
         df_model = df[df["model"] == preferred_model]
@@ -410,20 +472,20 @@ def _set_combined_variable_profile_legend(
         _section("Series")
         handles.extend(
             [
-                Line2D(
-                    [0],
-                    [0],
-                    color="0.25",
-                    linestyle=_model_linestyle(model_name, probabilistic=(metric_type == "probabilistic")),
-                    linewidth=2.0,
-                    marker="o",
-                    markersize=5,
+                    Line2D(
+                        [0],
+                        [0],
+                        color="0.25",
+                        linestyle=_model_linestyle(model_name, config, probabilistic=(metric_type == "probabilistic")),
+                        linewidth=2.0,
+                        marker="o",
+                        markersize=5,
                     label=config.models.display_names.get(model_name, model_name),
                 )
                 for model_name in visible_models
             ]
         )
-        if metric_type == "deterministic_with_ensemble_overlay":
+        if metric_type == "all_dims_with_ensemble_overlay":
             handles.append(
                 Line2D(
                     [0],
@@ -507,7 +569,7 @@ def _set_transformed_combined_variable_profile_legend(
             label=config.models.display_names.get(config.models.difference_model, config.models.difference_model),
         )
     )
-    if metric_type == "deterministic_with_ensemble_overlay":
+    if metric_type == "all_dims_with_ensemble_overlay":
         handles.append(
             Line2D(
                 [0],
@@ -572,13 +634,22 @@ def save_metrics_vs_parameter_plots(
         raise ValueError("Combined metric profile x_axis does not support 'variable' as one of the combined fields.")
     x_axis_column = _profile_axis_column_name(x_axis_fields)
 
-    metric_names = list(config.profiles.metrics)
+    expanded_metric_modes = _expand_profile_metric_modes(config.profiles.metrics)
+    metric_names = list(dict.fromkeys(metric_name for metric_name, _ in expanded_metric_modes))
     df_det = metrics_to_df(
         metrics=metrics,
         variables=variables,
         metric_names=None,
         kind="scalar",
-        metric_type="deterministic",
+        metric_type="all_dims",
+        diff="no",
+    )
+    df_spatial = metrics_to_df(
+        metrics=metrics,
+        variables=variables,
+        metric_names=None,
+        kind="scalar",
+        metric_type="spatial_mean",
         diff="no",
     )
     df_ens = metrics_to_df(
@@ -586,7 +657,7 @@ def save_metrics_vs_parameter_plots(
         variables=variables,
         metric_names=None,
         kind="scalar",
-        metric_type="ensemble",
+        metric_type="ensemble_mean",
         diff="no",
     )
     df_prob = metrics_to_df(
@@ -599,14 +670,17 @@ def save_metrics_vs_parameter_plots(
     )
 
     df_det = df_det[df_det["metric"].isin(metric_names)]
+    df_spatial = df_spatial[df_spatial["metric"].isin(metric_names)]
     df_ens = df_ens[df_ens["metric"].isin(metric_names)]
     df_prob = df_prob[df_prob["metric"].isin(metric_names)]
 
     df_det = _ensure_profile_axis_column(df_det, x_axis=x_axis_fields)
+    df_spatial = _ensure_profile_axis_column(df_spatial, x_axis=x_axis_fields)
     df_ens = _ensure_profile_axis_column(df_ens, x_axis=x_axis_fields)
     df_prob = _ensure_profile_axis_column(df_prob, x_axis=x_axis_fields)
 
     df_det = _apply_df_filters_except_axis(df_det, filters=filters, x_axis=x_axis)
+    df_spatial = _apply_df_filters_except_axis(df_spatial, filters=filters, x_axis=x_axis)
     df_ens = _apply_df_filters_except_axis(df_ens, filters=filters, x_axis=x_axis)
     df_prob = _apply_df_filters_except_axis(df_prob, filters=filters, x_axis=x_axis)
 
@@ -620,22 +694,30 @@ def save_metrics_vs_parameter_plots(
                 description=f"Generating {profile_variable} metric profiles ({_format_axis_display_name(x_axis)})",
             )
         logger.info(f"Metric profile variable: {variable if variable is not None else 'all_variables'}")
-        output_folder = _profile_output_folder(plot_root=plot_folder, variable=variable)
         variable_mask = slice(None) if variable is None else variable
 
-        for metric_name, metric_type in config.profiles.metrics.items():
+        for metric_name, metric_type in expanded_metric_modes:
+            output_folder = _profile_metric_output_folder(
+                plot_root=plot_folder,
+                variable=variable,
+                metric_name=metric_name,
+                metric_type=metric_type,
+            )
             df_plot_ens = df_ens[df_ens["metric"] == metric_name]
             df_plot_det = df_det[df_det["metric"] == metric_name]
+            df_plot_spatial = df_spatial[df_spatial["metric"] == metric_name]
             df_plot_prob = df_prob[df_prob["metric"] == metric_name]
 
             if variable is not None:
                 df_plot_ens = df_plot_ens[df_plot_ens["variable"] == variable_mask]
                 df_plot_det = df_plot_det[df_plot_det["variable"] == variable_mask]
+                df_plot_spatial = df_plot_spatial[df_plot_spatial["variable"] == variable_mask]
                 df_plot_prob = df_plot_prob[df_plot_prob["variable"] == variable_mask]
 
             df_template = _profile_template_df(
                 metric_type,
                 df_det=df_plot_det,
+                df_spatial=df_plot_spatial,
                 df_ens=df_plot_ens,
                 df_prob=df_plot_prob,
             )
@@ -669,20 +751,23 @@ def save_metrics_vs_parameter_plots(
 
                 df_context_ens = df_plot_ens.copy()
                 df_context_det = df_plot_det.copy()
+                df_context_spatial = df_plot_spatial.copy()
                 df_context_prob = df_plot_prob.copy()
                 for col, value in context_filters.items():
                     df_context_ens = df_context_ens[df_context_ens[col] == value]
                     df_context_det = df_context_det[df_context_det[col] == value]
+                    df_context_spatial = df_context_spatial[df_context_spatial[col] == value]
                     df_context_prob = df_context_prob[df_context_prob[col] == value]
 
                 df_context_template = _profile_template_df(
                     metric_type,
                     df_det=df_context_det,
+                    df_spatial=df_context_spatial,
                     df_ens=df_context_ens,
                     df_prob=df_context_prob,
                 )
                 x_values = _ordered_profile_axis_values(
-                    _profile_axis_source_df(df_context_template),
+                    _profile_axis_source_df(df_context_template, config),
                     x_axis=x_axis,
                     variables=variables,
                     filters=filters,
@@ -740,8 +825,14 @@ def save_metrics_vs_parameter_plots(
                                 color=base_color,
                                 label=f"{model_label}{shade_suffix}",
                             )
-                        elif metric_type == "deterministic":
-                            df_model_det = df_context_det[df_context_det["model"] == model_name]
+                        elif metric_type in {"all_dims", "spatial_mean", "ensemble_mean"}:
+                            df_model_det = _profile_deterministic_mode_df(
+                                metric_type,
+                                df_det=df_context_det,
+                                df_spatial=df_context_spatial,
+                                df_ens=df_context_ens,
+                            )
+                            df_model_det = df_model_det[df_model_det["model"] == model_name]
                             if shade_value is not None:
                                 df_model_det = df_model_det[df_model_det[config.profiles.shade_by] == shade_value]
 
@@ -786,7 +877,7 @@ def save_metrics_vs_parameter_plots(
                                 color=base_color,
                                 label=f"{model_label} {metric_name}{shade_suffix}",
                             )
-                        elif metric_type == "deterministic_with_ensemble_overlay":
+                        elif metric_type == "all_dims_with_ensemble_overlay":
                             df_model_ens = df_context_ens[df_context_ens["model"] == model_name]
                             df_model_det = df_context_det[df_context_det["model"] == model_name]
                             if shade_value is not None:
@@ -910,7 +1001,7 @@ def save_metrics_vs_parameter_plots(
                                         color=difference_color,
                                         label=f"{config.models.difference_model}{shade_suffix}",
                                     )
-                    elif metric_type == "deterministic":
+                    elif metric_type in {"all_dims", "spatial_mean", "ensemble_mean"}:
                         ref_series = deterministic_series.get((config.models.reference_model, shade_value))
                         corr_series = deterministic_series.get((config.models.corrected_model, shade_value))
                         if ref_series is not None and corr_series is not None:
@@ -939,7 +1030,7 @@ def save_metrics_vs_parameter_plots(
                                         color=difference_color,
                                         label=f"{config.models.difference_model}{shade_suffix}",
                                     )
-                    elif metric_type == "deterministic_with_ensemble_overlay":
+                    elif metric_type == "all_dims_with_ensemble_overlay":
                         ref_mean = deterministic_mean_series.get((config.models.reference_model, shade_value))
                         corr_mean = deterministic_mean_series.get((config.models.corrected_model, shade_value))
                         ref_members = deterministic_member_matrices.get((config.models.reference_model, shade_value))
@@ -1152,11 +1243,14 @@ def save_combined_variable_metric_profiles(
     x_axis_fields = _normalize_profile_axis_fields(x_axis)
     if "variable" in x_axis_fields:
         raise ValueError("Combined variable metric profiles do not support x_axis containing 'variable'.")
+    if len(variables) <= 1:
+        return []
 
     saved_paths: list[Path] = []
     variable_colors = _get_variable_colors(variables=variables)
     metric_modes = config.profiles.combined_variable_metrics
-    metric_names = list(metric_modes)
+    expanded_metric_modes = _expand_profile_metric_modes(metric_modes)
+    metric_names = list(dict.fromkeys(metric_name for metric_name, _ in expanded_metric_modes))
     x_axis_column = _profile_axis_column_name(x_axis_fields)
 
     df_det = metrics_to_df(
@@ -1164,7 +1258,15 @@ def save_combined_variable_metric_profiles(
         variables=variables,
         metric_names=None,
         kind="scalar",
-        metric_type="deterministic",
+        metric_type="all_dims",
+        diff="no",
+    )
+    df_spatial = metrics_to_df(
+        metrics=metrics,
+        variables=variables,
+        metric_names=None,
+        kind="scalar",
+        metric_type="spatial_mean",
         diff="no",
     )
     df_ens = metrics_to_df(
@@ -1172,7 +1274,7 @@ def save_combined_variable_metric_profiles(
         variables=variables,
         metric_names=None,
         kind="scalar",
-        metric_type="ensemble",
+        metric_type="ensemble_mean",
         diff="no",
     )
     df_prob = metrics_to_df(
@@ -1185,30 +1287,39 @@ def save_combined_variable_metric_profiles(
     )
 
     df_det = df_det[df_det["metric"].isin(metric_names)]
+    df_spatial = df_spatial[df_spatial["metric"].isin(metric_names)]
     df_ens = df_ens[df_ens["metric"].isin(metric_names)]
     df_prob = df_prob[df_prob["metric"].isin(metric_names)]
 
     df_det = _ensure_profile_axis_column(df_det, x_axis=x_axis_fields)
+    df_spatial = _ensure_profile_axis_column(df_spatial, x_axis=x_axis_fields)
     df_ens = _ensure_profile_axis_column(df_ens, x_axis=x_axis_fields)
     df_prob = _ensure_profile_axis_column(df_prob, x_axis=x_axis_fields)
 
     df_det = _apply_df_filters_except_axis(df_det, filters=filters, x_axis=x_axis)
+    df_spatial = _apply_df_filters_except_axis(df_spatial, filters=filters, x_axis=x_axis)
     df_ens = _apply_df_filters_except_axis(df_ens, filters=filters, x_axis=x_axis)
     df_prob = _apply_df_filters_except_axis(df_prob, filters=filters, x_axis=x_axis)
 
-    output_folder = _profile_output_folder(plot_root=plot_folder, variable=None)
-
-    for metric_name, metric_type in metric_modes.items():
+    for metric_name, metric_type in expanded_metric_modes:
         if progress is not None and task_id is not None:
             progress.update(task_id, description=f"Generating all_variables combined profile: {metric_name}")
+        output_folder = _profile_metric_output_folder(
+            plot_root=plot_folder,
+            variable=None,
+            metric_name=metric_name,
+            metric_type=metric_type,
+        )
 
         df_plot_ens = df_ens[df_ens["metric"] == metric_name]
         df_plot_det = df_det[df_det["metric"] == metric_name]
+        df_plot_spatial = df_spatial[df_spatial["metric"] == metric_name]
         df_plot_prob = df_prob[df_prob["metric"] == metric_name]
 
         df_template = _profile_template_df(
             metric_type,
             df_det=df_plot_det,
+            df_spatial=df_plot_spatial,
             df_ens=df_plot_ens,
             df_prob=df_plot_prob,
         )
@@ -1242,20 +1353,23 @@ def save_combined_variable_metric_profiles(
 
             df_context_ens = df_plot_ens.copy()
             df_context_det = df_plot_det.copy()
+            df_context_spatial = df_plot_spatial.copy()
             df_context_prob = df_plot_prob.copy()
             for col, value in context_filters.items():
                 df_context_ens = df_context_ens[df_context_ens[col] == value]
                 df_context_det = df_context_det[df_context_det[col] == value]
+                df_context_spatial = df_context_spatial[df_context_spatial[col] == value]
                 df_context_prob = df_context_prob[df_context_prob[col] == value]
 
             df_context_template = _profile_template_df(
                 metric_type,
                 df_det=df_context_det,
+                df_spatial=df_context_spatial,
                 df_ens=df_context_ens,
                 df_prob=df_context_prob,
             )
             x_values = _ordered_profile_axis_values(
-                _profile_axis_source_df(df_context_template),
+                _profile_axis_source_df(df_context_template, config),
                 x_axis=x_axis,
                 variables=variables,
                 filters=filters,
@@ -1291,9 +1405,10 @@ def save_combined_variable_metric_profiles(
                 variable_color = variable_colors.get(variable)
                 df_var_ens = df_context_ens[df_context_ens["variable"] == variable]
                 df_var_det = df_context_det[df_context_det["variable"] == variable]
+                df_var_spatial = df_context_spatial[df_context_spatial["variable"] == variable]
                 df_var_prob = df_context_prob[df_context_prob["variable"] == variable]
 
-                if df_var_ens.empty and df_var_det.empty and df_var_prob.empty:
+                if df_var_ens.empty and df_var_det.empty and df_var_spatial.empty and df_var_prob.empty:
                     continue
 
                 model_values = [
@@ -1301,6 +1416,7 @@ def save_combined_variable_metric_profiles(
                         _profile_template_df(
                             metric_type,
                             df_det=df_var_det,
+                            df_spatial=df_var_spatial,
                             df_ens=df_var_ens,
                             df_prob=df_var_prob,
                         )["model"]
@@ -1340,8 +1456,14 @@ def save_combined_variable_metric_profiles(
                                 linestyle=_model_linestyle(str(model_name), config, probabilistic=True),
                                 label="_nolegend_",
                             )
-                        elif metric_type == "deterministic":
-                            df_model_det = df_var_det[df_var_det["model"] == model_name]
+                        elif metric_type in {"all_dims", "spatial_mean", "ensemble_mean"}:
+                            df_model_det = _profile_deterministic_mode_df(
+                                metric_type,
+                                df_det=df_var_det,
+                                df_spatial=df_var_spatial,
+                                df_ens=df_var_ens,
+                            )
+                            df_model_det = df_model_det[df_model_det["model"] == model_name]
                             if shade_value is not None:
                                 df_model_det = df_model_det[df_model_det[config.profiles.shade_by] == shade_value]
 
@@ -1389,12 +1511,12 @@ def save_combined_variable_metric_profiles(
                                 color=variable_color,
                                 linewidth=2.0,
                                 alpha=alpha,
-                                linestyle=_model_linestyle(str(model_name)),
+                                linestyle=_model_linestyle(str(model_name), config),
                                 marker="o",
                                 markersize=5,
                                 label="_nolegend_",
                             )
-                        elif metric_type == "deterministic_with_ensemble_overlay":
+                        elif metric_type == "all_dims_with_ensemble_overlay":
                             df_model_ens = df_var_ens[df_var_ens["model"] == model_name]
                             df_model_det = df_var_det[df_var_det["model"] == model_name]
                             if shade_value is not None:
@@ -1457,7 +1579,7 @@ def save_combined_variable_metric_profiles(
                                         color=variable_color,
                                         linewidth=2.0,
                                         alpha=alpha,
-                                        linestyle=_model_linestyle(str(model_name)),
+                                        linestyle=_model_linestyle(str(model_name), config),
                                         marker="o",
                                         markersize=5,
                                         label="_nolegend_",
@@ -1535,7 +1657,7 @@ def save_combined_variable_metric_profiles(
                                         linestyle="-",
                                         label="_nolegend_",
                                     )
-                    elif metric_type == "deterministic":
+                    elif metric_type in {"all_dims", "spatial_mean", "ensemble_mean"}:
                         ref_series = deterministic_series.get((str(variable), config.models.reference_model, shade_value))
                         corr_series = deterministic_series.get((str(variable), config.models.corrected_model, shade_value))
                         if ref_series is not None and corr_series is not None:
@@ -1570,7 +1692,7 @@ def save_combined_variable_metric_profiles(
                                         linestyle="-",
                                         label="_nolegend_",
                                     )
-                    elif metric_type == "deterministic_with_ensemble_overlay":
+                    elif metric_type == "all_dims_with_ensemble_overlay":
                         ref_mean = deterministic_mean_series.get((str(variable), config.models.reference_model, shade_value))
                         corr_mean = deterministic_mean_series.get((str(variable), config.models.corrected_model, shade_value))
                         ref_members = deterministic_member_matrices.get((str(variable), config.models.reference_model, shade_value))

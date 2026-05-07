@@ -122,29 +122,31 @@ METRIC_CMAPS = {
 
 # Profiles
 PROFILE_METRICS = {
-    "r2": "deterministic_with_ensemble_overlay",
-    "rmse": "deterministic_with_ensemble_overlay",
-    # "nrmse": "deterministic_with_ensemble_overlay",
-    "rmse_skill_clim": "deterministic_with_ensemble_overlay",
-    "mae": "deterministic_with_ensemble_overlay",
-    # "nmae": "deterministic_with_ensemble_overlay",
-    "bias": "deterministic_with_ensemble_overlay",
-    "clim_acc": "deterministic_with_ensemble_overlay",
-    "variance_ratio": "deterministic_with_ensemble_overlay",
-    "error_std": "deterministic_with_ensemble_overlay",
-    # "nbias": "deterministic_with_ensemble_overlay",
+    # Grand mean
+    "r2": ("all_dims_with_ensemble_overlay", "spatial_mean"),
+    "rmse": ("all_dims_with_ensemble_overlay", "spatial_mean"),
+    # "nrmse": ("all_dims_with_ensemble_overlay", "spatial_mean"),
+    "rmse_skill_clim": ("all_dims_with_ensemble_overlay", "spatial_mean"),
+    "mae": ("all_dims_with_ensemble_overlay", "spatial_mean"),
+    # "nmae": ("all_dims_with_ensemble_overlay", "spatial_mean"),
+    "bias": ("all_dims_with_ensemble_overlay", "spatial_mean"),
+    "clim_acc": ("all_dims_with_ensemble_overlay", "spatial_mean"),
+    "variance_ratio": ("all_dims_with_ensemble_overlay", "spatial_mean"),
+    "error_std": ("all_dims_with_ensemble_overlay", "spatial_mean"),
+    # "nbias": ("all_dims_with_ensemble_overlay", "spatial_mean"),
+    # Probabilistic
     "crps": "probabilistic",
     "spread": "probabilistic",
     "spread_error_ratio": "probabilistic",
 }
 
 PROFILE_COMBINED_VARS_METRICS = {
-    "nbias": "deterministic_with_ensemble_overlay",
-    "nrmse": "deterministic_with_ensemble_overlay",
-    "nmae": "deterministic_with_ensemble_overlay",
-    "r2": "deterministic_with_ensemble_overlay",
-    "clim_acc": "deterministic_with_ensemble_overlay",
-    "variance_ratio": "deterministic_with_ensemble_overlay",
+    "nbias": "all_dims_with_ensemble_overlay",
+    "nrmse": "all_dims_with_ensemble_overlay",
+    "nmae": "all_dims_with_ensemble_overlay",
+    "r2": "all_dims_with_ensemble_overlay",
+    "clim_acc": "all_dims_with_ensemble_overlay",
+    "variance_ratio": "all_dims_with_ensemble_overlay",
 }
 
 # Metric vs delta metric
