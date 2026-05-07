@@ -367,11 +367,16 @@ def _format_metric_label(
 def _get_variable_colors(
     *,
     variables: list[str],
-    base_colors: Sequence[str] | None = None,
+    base_colors: Sequence[str] | dict[str, str] | None = None,
     overrides: dict[str, str] | None = None,
 ) -> dict[str, str]:
     ordered_variables = _ordered_unique_variables(variables)
-    palette = tuple(base_colors)
+    if base_colors is None:
+        palette = tuple(VARIABLE_COLORS.values())
+    elif isinstance(base_colors, dict):
+        palette = tuple(base_colors.values())
+    else:
+        palette = tuple(base_colors)
     if not palette:
         return {}
 
@@ -392,9 +397,10 @@ def _get_variable_table_color(
     variables: list[str]
 ) -> str:
     variable_colors = _get_variable_colors(variables=variables)
+    default_color = next(iter(VARIABLE_COLORS.values()), "#4c4c4c")
     if not variable_colors:
-        return VARIABLE_COLORS[0]
-    return variable_colors.get(str(variable), VARIABLE_COLORS[0])
+        return default_color
+    return variable_colors.get(str(variable), default_color)
 
 
 def _normalize_profile_axis_fields(
