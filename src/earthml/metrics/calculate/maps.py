@@ -299,7 +299,7 @@ def save_field_and_metric_map_plots(
                     if progress is not None and task_id is not None:
                         progress.update(
                             task_id,
-                            description=f"Maps | {variable} | field | {model_name}",
+                            description=f"Maps | {plot_region or 'unknown'} | {variable} | field | {model_name}",
                         )
                     plot_temporal_mean_map(
                         da_plot,
@@ -401,7 +401,7 @@ def save_field_and_metric_map_plots(
                             if progress is not None and task_id is not None:
                                 progress.update(
                                     task_id,
-                                    description=f"Maps | {variable} | {metric_type} | {metric_name}",
+                                    description=f"Maps | {map_region or 'unknown'} | {variable} | {metric_type} | {metric_name}",
                                 )
                             plot_temporal_mean_map(
                                 da_sel,
@@ -465,7 +465,7 @@ def save_field_and_metric_map_plots(
                                 if progress is not None and task_id is not None:
                                     progress.update(
                                         task_id,
-                                        description=f"Maps | {variable} | diff | {metric_name}",
+                                        description=f"Maps | {diff_region or 'unknown'} | {variable} | diff | {metric_name}",
                                     )
                                 plot_temporal_mean_map(
                                     diff_da,

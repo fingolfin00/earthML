@@ -529,7 +529,7 @@ def save_field_timeseries_plots(
                     if progress is not None and task_id is not None:
                         progress.update(
                             task_id,
-                            description=f"Timeseries | {variable} | field | {plot_kind}",
+                            description=f"Timeseries | {plot_region or 'unknown'} | {variable} | field | {plot_kind}",
                         )
                     fig.savefig(plot_path, bbox_inches="tight", dpi=150)
                     plt.close(fig)
@@ -774,7 +774,7 @@ def save_field_timeseries_plots(
                         if progress is not None and task_id is not None:
                             progress.update(
                                 task_id,
-                                description=f"Timeseries | {variable} | {metric_type} | {metric_name}",
+                                description=f"Timeseries | {plot_region or 'unknown'} | {variable} | {metric_type} | {metric_name}",
                             )
                         fig.savefig(plot_path, bbox_inches="tight", dpi=150)
                         plt.close(fig)

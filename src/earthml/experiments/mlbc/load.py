@@ -114,6 +114,18 @@ def _drop_auxiliary_merge_metadata_many(
     ]
 
 
+def _scalar_coord_value(ds: xr.Dataset, coord_name: str) -> object | None:
+    if coord_name not in ds.coords and coord_name not in ds.dims:
+        return None
+
+    values = np.asarray(ds[coord_name].values).reshape(-1)
+    if values.size != 1:
+        return None
+
+    value = values[0]
+    return value.item() if isinstance(value, np.generic) else value
+
+
 def _normalize_selection_values(values: object, *, keep_empty: bool = False) -> list[object]:
     if values is None:
         return []
@@ -569,6 +581,8 @@ def load_all_exp_from_folder(
         if show_progress else nullcontext()
     )
 
+    regions_by_model: dict[str, set[str]] = {}
+
     with progress_cm as prog:
         task = prog.add_task("Loading experiments", total=len(configs)) if show_progress else None
 
@@ -708,11 +722,20 @@ def load_all_exp_from_folder(
                         "train_period": [train_period],
                         "loss": [loss],
                         "variant": [variant],
-                        "region": [region],
                     }
                 )
+                ds = ds.assign_coords(region=region)
 
                 ds.coords["leadtime"].attrs["unit"] = leadtime_unit
+
+                model_regions = regions_by_model.setdefault(model_name, set())
+                model_regions.add(str(region))
+                if len(model_regions) > 1:
+                    raise ValueError(
+                        "load_all_exp_from_folder no longer combines multiple regions into a single dataset. "
+                        f"Model {model_name!r} matched multiple regions: {sorted(model_regions)}. "
+                        "Please call it with a single region filter and loop over regions outside this loader."
+                    )
 
                 grouped_runs[group_name].setdefault(model_name, []).append(ds)
 
@@ -785,6 +808,16 @@ def load_all_exp_from_folder(
                 model_datasets,
                 dataset_name=model_name,
             )
+            model_regions = {
+                str(region_value)
+                for region_value in (_scalar_coord_value(ds, "region") for ds in model_datasets)
+                if region_value is not None
+            }
+            if len(model_regions) > 1:
+                raise ValueError(
+                    "load_all_exp_from_folder cannot merge datasets from multiple regions into one model dataset. "
+                    f"Model {model_name!r} has regions {sorted(model_regions)}."
+                )
             runs_out[model_name] = xr.merge(
                 model_datasets,
                 join="outer",

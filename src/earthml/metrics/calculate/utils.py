@@ -596,7 +596,25 @@ def _apply_xarray_filters(
         if allowed is None or (dim not in out.dims and dim not in out.coords):
             continue
         values = allowed if isinstance(allowed, (list, tuple, set)) else [allowed]
-        out = out.sel({dim: list(values)})
+        if dim in out.dims:
+            out = out.sel({dim: list(values)})
+            continue
+
+        scalar_value = _scalar_coord_value(out, dim)
+        if scalar_value is None:
+            continue
+
+        if any(scalar_value == value or str(scalar_value) == str(value) for value in values):
+            continue
+
+        if out.dims:
+            first_dim = next(iter(out.dims))
+            out = out.isel({first_dim: slice(0, 0)})
+        elif isinstance(out, xr.Dataset):
+            out = out.drop_vars(list(out.data_vars))
+        else:
+            out = out.expand_dims(__empty_filter__=[]).isel(__empty_filter__=slice(0, 0))
+            out = out.drop_vars("__empty_filter__", errors="ignore")
     return out
 
 

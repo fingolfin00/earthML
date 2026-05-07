@@ -46,6 +46,14 @@ from ..experiments.mlbc.utils import (
 )
 
 
+RunsByModel = dict[str, xr.Dataset]
+RunsByRegion = dict[str, RunsByModel]
+MetricLeaf = dict[str, dict[str, xr.Dataset]]
+MetricsByRegion = dict[str, MetricLeaf]
+ClimTuple = tuple[xr.Dataset | None, ...]
+ClimsByRegion = dict[str, ClimTuple]
+
+
 # ==========================================
 # Standalone helper methods
 # ==========================================
@@ -80,8 +88,58 @@ def date_diff(ymd_range: str):
     }
 
 
-def metrics_to_df(
-    metrics: dict[str, dict[str, xr.Dataset]],
+def _normalize_region_values(values: object) -> list[str]:
+    if values is None:
+        return []
+    if isinstance(values, (list, tuple, set)):
+        out: list[str] = []
+        for value in values:
+            if value is None or str(value) == "":
+                continue
+            value_str = str(value)
+            if value_str not in out:
+                out.append(value_str)
+        return out
+
+    value_str = str(values)
+    return [] if value_str == "" else [value_str]
+
+
+def _discover_region_values(
+    *,
+    exp_root: str | Path,
+    exp_mode: MLBCExperimentMode,
+    load_models: Sequence[str],
+    variables: Sequence[str] | None,
+    run_filters: dict[str, object] | None,
+    show_progress: bool,
+) -> list[str]:
+    explicit_regions = _normalize_region_values((run_filters or {}).get("region"))
+    if explicit_regions:
+        return explicit_regions
+
+    _, grouped_sizes = load_all_exp_from_folder(
+        exp_root=exp_root,
+        exp_mode=exp_mode,
+        load_train_preds=(exp_mode == "train"),
+        load_models=load_models,
+        variables=variables,
+        run_filters=run_filters,
+        only_sizes=True,
+        show_progress=False,
+    )
+
+    regions: list[str] = []
+    for size_map in grouped_sizes.values():
+        for (_, _, region, _, _) in size_map:
+            region_str = str(region)
+            if region_str not in regions:
+                regions.append(region_str)
+    return regions
+
+
+def metrics_to_df_single_region(
+    metrics: MetricLeaf,
     variables: list[str] | str | None = None,
     metric_names: list[str] | str | None = None,
     kind: str = "scalar",
@@ -90,7 +148,7 @@ def metrics_to_df(
     models: Sequence[str] | None = None,
 ) -> pd.DataFrame:
     """
-    Convert one metrics leaf returned by get_runs_and_metrics(...)
+    Convert one single-region metrics leaf returned by get_runs_and_metrics(...)
     into a tidy pandas DataFrame.
     """
     ds = metrics.get(metric_type, {}).get(kind, xr.Dataset())
@@ -293,7 +351,7 @@ def _compute_metric_bundle(
     return filtered_result
 
 
-def get_runs_and_metrics(
+def _get_single_region_runs_and_metrics(
     exp_root: str | Path,
     exp_mode: MLBCExperimentMode = "test",
     load_models: Sequence[str] = ("an", "fc", "pr"),
@@ -309,9 +367,9 @@ def get_runs_and_metrics(
     metric_types: str | Sequence[str] | None = None,
     show_progress: bool = True,
 ) -> tuple[
-    dict[str, xr.Dataset],
-    dict[str, dict[str, xr.Dataset]],
-    tuple[xr.Dataset | None, ...],
+    RunsByModel,
+    MetricLeaf,
+    ClimTuple,
 ]:
     models = list(load_models)
     if len(models) < 2:
@@ -393,6 +451,7 @@ def get_runs_and_metrics(
     runs = loaded_runs
 
     truth_runs = loaded_runs[truth_model]
+    truth_region = str(truth_runs.coords["region"].item()) if "region" in truth_runs.coords else ""
 
     # These are the experiment axes created by load_all_exp_from_folder
     run_dims = [dim for dim in ("leadtime", "train_period", "region", "loss", "variant") if dim in truth_runs.dims]
@@ -570,6 +629,8 @@ def get_runs_and_metrics(
                         ds = ds.expand_dims({
                             dim: [value] for dim, value in indexers.items()
                         })
+                    if truth_region:
+                        ds = ds.assign_coords(region=truth_region)
 
                     metric_runs[metric_type][section].append(ds)
 
@@ -578,7 +639,7 @@ def get_runs_and_metrics(
             if show_progress:
                 prog.advance(run_task)
 
-    metrics: dict[str, dict[str, xr.Dataset]] = {}
+    metrics: MetricLeaf = {}
     combine_steps = sum(
         1
         for section_dict in metric_runs.values()
@@ -632,6 +693,81 @@ def get_runs_and_metrics(
     return runs_for_return, metrics, tuple(last_clim_by_model.get(model_name) for model_name in models)
 
 
+def get_runs_and_metrics(
+    exp_root: str | Path,
+    exp_mode: MLBCExperimentMode = "test",
+    load_models: Sequence[str] = ("an", "fc", "pr"),
+    variables: Sequence[str] | None = None,
+    run_filters: dict[str, object] | None = None,
+    calculate_clim_from_train_period: bool = False,
+    use_train_prediction_clim: bool = False,
+    use_saved_mask: bool = True,
+    external_mask_data: xr.Dataset | xr.DataArray | None = None,
+    apply_external_mask_to_runs: bool = False,
+    metric_names: str | Sequence[str] | None = None,
+    metric_sections: str | Sequence[str] = ("scalar", "map", "timeseries"),
+    metric_types: str | Sequence[str] | None = None,
+    show_progress: bool = True,
+) -> tuple[
+    RunsByRegion,
+    MetricsByRegion,
+    ClimsByRegion,
+]:
+    """
+    Load runs and metrics grouped by region.
+
+    Region is a top-level dictionary key in the returned structures rather than
+    an xarray dimension, so each leaf dataset stays on a single spatial domain.
+    Each metrics leaf preserves the historical single-region shape:
+    ``metrics_by_region[region][metric_type][section] -> xr.Dataset``.
+    """
+    region_values = _discover_region_values(
+        exp_root=exp_root,
+        exp_mode=exp_mode,
+        load_models=load_models,
+        variables=variables,
+        run_filters=run_filters,
+        show_progress=show_progress,
+    )
+
+    if not region_values:
+        return {}, {}, {}
+
+    runs_by_region: RunsByRegion = {}
+    metrics_by_region: MetricsByRegion = {}
+    clims_by_region: ClimsByRegion = {}
+
+    for region_name in region_values:
+        region_filters = dict(run_filters or {})
+        region_filters["region"] = [region_name]
+
+        runs_region, metrics_region, clims_region = _get_single_region_runs_and_metrics(
+            exp_root=exp_root,
+            exp_mode=exp_mode,
+            load_models=load_models,
+            variables=variables,
+            run_filters=region_filters,
+            calculate_clim_from_train_period=calculate_clim_from_train_period,
+            use_train_prediction_clim=use_train_prediction_clim,
+            use_saved_mask=use_saved_mask,
+            external_mask_data=external_mask_data,
+            apply_external_mask_to_runs=apply_external_mask_to_runs,
+            metric_names=metric_names,
+            metric_sections=metric_sections,
+            metric_types=metric_types,
+            show_progress=show_progress,
+        )
+
+        if not runs_region:
+            continue
+
+        runs_by_region[str(region_name)] = runs_region
+        metrics_by_region[str(region_name)] = metrics_region
+        clims_by_region[str(region_name)] = clims_region
+
+    return runs_by_region, metrics_by_region, clims_by_region
+
+
 def _build_run_indexers(
     truth_runs: xr.Dataset,
     run_dims: Sequence[str],
@@ -675,7 +811,7 @@ def _build_run_indexers(
 
 
 def save_metrics(
-    metrics: dict[str, dict[str, xr.Dataset]],
+    metrics: MetricLeaf,
     base_folder: str,
     vars_list: Sequence[str],
     metric_names: Sequence[str] | None = None,
@@ -689,7 +825,7 @@ def save_metrics(
     out = {}
 
     for diff in ("no", "delta", "ratio"):
-        df = metrics_to_df(
+        df = metrics_to_df_single_region(
             metrics=metrics,
             variables=vars_list,
             metric_names=metric_names,

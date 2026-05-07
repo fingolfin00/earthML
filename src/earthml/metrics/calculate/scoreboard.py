@@ -11,7 +11,7 @@ from .utils import (
     _format_variable_short_name,
 )
 
-from .. import metrics_to_df
+from .. import metrics_to_df_single_region
 from ...plots import plot_scoreboard
 
 
@@ -23,7 +23,7 @@ def _build_relative_abs_improvement_df(
     metric_type: str,
     models: tuple[str, str],
 ) -> pd.DataFrame:
-    raw_df = metrics_to_df(
+    raw_df = metrics_to_df_single_region(
         metrics=metrics,
         variables=variables,
         metric_names=metric_name,
@@ -86,7 +86,7 @@ def save_scoreboard_plot(
             )
         else:
             scoreboard_frames.append(
-                metrics_to_df(
+                metrics_to_df_single_region(
                     metrics=metrics,
                     variables=variables,
                     metric_names=metric_name,

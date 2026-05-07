@@ -11,7 +11,7 @@ from matplotlib.lines import Line2D
 from rich.progress import Progress
 
 from ...logging import get_logger
-from .. import metrics_to_df
+from .. import metrics_to_df_single_region
 
 from .dataclasses import CalculateMetricsConfig
 from .utils import (
@@ -636,7 +636,7 @@ def save_metrics_vs_parameter_plots(
 
     expanded_metric_modes = _expand_profile_metric_modes(config.profiles.metrics)
     metric_names = list(dict.fromkeys(metric_name for metric_name, _ in expanded_metric_modes))
-    df_det = metrics_to_df(
+    df_det = metrics_to_df_single_region(
         metrics=metrics,
         variables=variables,
         metric_names=None,
@@ -644,7 +644,7 @@ def save_metrics_vs_parameter_plots(
         metric_type="all_dims",
         diff="no",
     )
-    df_spatial = metrics_to_df(
+    df_spatial = metrics_to_df_single_region(
         metrics=metrics,
         variables=variables,
         metric_names=None,
@@ -652,7 +652,7 @@ def save_metrics_vs_parameter_plots(
         metric_type="spatial_mean",
         diff="no",
     )
-    df_ens = metrics_to_df(
+    df_ens = metrics_to_df_single_region(
         metrics=metrics,
         variables=variables,
         metric_names=None,
@@ -660,7 +660,7 @@ def save_metrics_vs_parameter_plots(
         metric_type="ensemble_mean",
         diff="no",
     )
-    df_prob = metrics_to_df(
+    df_prob = metrics_to_df_single_region(
         metrics=metrics,
         variables=variables,
         metric_names=None,
@@ -1253,7 +1253,7 @@ def save_combined_variable_metric_profiles(
     metric_names = list(dict.fromkeys(metric_name for metric_name, _ in expanded_metric_modes))
     x_axis_column = _profile_axis_column_name(x_axis_fields)
 
-    df_det = metrics_to_df(
+    df_det = metrics_to_df_single_region(
         metrics=metrics,
         variables=variables,
         metric_names=None,
@@ -1261,7 +1261,7 @@ def save_combined_variable_metric_profiles(
         metric_type="all_dims",
         diff="no",
     )
-    df_spatial = metrics_to_df(
+    df_spatial = metrics_to_df_single_region(
         metrics=metrics,
         variables=variables,
         metric_names=None,
@@ -1269,7 +1269,7 @@ def save_combined_variable_metric_profiles(
         metric_type="spatial_mean",
         diff="no",
     )
-    df_ens = metrics_to_df(
+    df_ens = metrics_to_df_single_region(
         metrics=metrics,
         variables=variables,
         metric_names=None,
@@ -1277,7 +1277,7 @@ def save_combined_variable_metric_profiles(
         metric_type="ensemble_mean",
         diff="no",
     )
-    df_prob = metrics_to_df(
+    df_prob = metrics_to_df_single_region(
         metrics=metrics,
         variables=variables,
         metric_names=None,

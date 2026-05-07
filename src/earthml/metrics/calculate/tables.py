@@ -9,7 +9,7 @@ from rich.table import Table as RichTable
 from rich.text import Text
 
 from ...logging import get_logger, log_renderable
-from .. import metrics_to_df
+from .. import metrics_to_df_single_region
 
 from .dataclasses import CalculateMetricsConfig
 from .utils import (
@@ -34,7 +34,7 @@ def _build_section_summary_frame(
     avg_stat: str,
     spread_stat: str,
 ) -> pd.DataFrame:
-    df_section = metrics_to_df(
+    df_section = metrics_to_df_single_region(
         metrics=metrics,
         variables=variables,
         metric_names=None,
@@ -91,7 +91,7 @@ def _build_metric_stat_frame(
     if not df_spatial.empty:
         frames.append(df_spatial)
 
-    df_ens = metrics_to_df(
+    df_ens = metrics_to_df_single_region(
         metrics=metrics,
         variables=variables,
         metric_names=None,
@@ -104,7 +104,7 @@ def _build_metric_stat_frame(
         df_ens["stat"] = "ens_avg"
         frames.append(df_ens)
 
-    df_prob = metrics_to_df(
+    df_prob = metrics_to_df_single_region(
         metrics=metrics,
         variables=variables,
         metric_names=None,
