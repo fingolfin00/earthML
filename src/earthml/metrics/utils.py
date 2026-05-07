@@ -53,6 +53,9 @@ MetricsByRegion = dict[str, MetricLeaf]
 ClimTuple = tuple[xr.Dataset | None, ...]
 ClimsByRegion = dict[str, ClimTuple]
 
+METRIC_GROUP_DIM = "metric_group"
+METRIC_GROUPBY_PERIOD_ATTR = "metric_groupby_period"
+
 
 # ==========================================
 # Standalone helper methods
@@ -153,7 +156,7 @@ def metrics_to_df_single_region(
     """
     ds = metrics.get(metric_type, {}).get(kind, xr.Dataset())
 
-    base_cols = ["train_period", "model", "metric", "variable", "leadtime", "value"]
+    base_cols = ["train_period", "model", "metric", "variable", "leadtime", METRIC_GROUP_DIM, "value"]
 
     if not isinstance(ds, xr.Dataset) or not ds.data_vars:
         return pd.DataFrame(columns=base_cols)
@@ -249,7 +252,7 @@ def metrics_to_df_single_region(
     if metric_dim in df.columns:
         df = df.rename(columns={metric_dim: "metric"})
 
-    for col in ["train_period", "model", "metric", "variable", "leadtime"]:
+    for col in ["train_period", "model", "metric", "variable", "leadtime", METRIC_GROUP_DIM]:
         if col not in df.columns:
             df[col] = np.nan
 
@@ -351,6 +354,90 @@ def _compute_metric_bundle(
     return filtered_result
 
 
+def _format_metric_group_label(
+    *,
+    period: str,
+    value: object,
+) -> str:
+    if period == "month":
+        return f"{int(value):02d}"
+    if period == "dayofyear":
+        return f"{int(value):03d}"
+    return str(value)
+
+
+def metric_group_specs_from_data(
+    data: xr.Dataset | xr.DataArray,
+    period: str,
+) -> list[tuple[str, object]]:
+    time_dim = data.earthml.guessed_dims.time
+    if time_dim is None or time_dim not in data.dims:
+        return []
+
+    time = data[time_dim]
+    if not hasattr(time, "dt"):
+        return []
+
+    raw_values = getattr(time.dt, period).values
+    unique_values = [value.item() if isinstance(value, np.generic) else value for value in pd.unique(raw_values)]
+    if period == "month":
+        ordered_values = sorted(int(value) for value in unique_values if pd.notna(value))
+    elif period == "dayofyear":
+        ordered_values = sorted(int(value) for value in unique_values if pd.notna(value))
+    elif period == "season":
+        season_order = ["DJF", "MAM", "JJA", "SON"]
+        ordered_values = [season for season in season_order if season in {str(value) for value in unique_values}]
+    else:
+        raise ValueError(f"Unsupported grouping period {period!r}")
+
+    return [
+        (_format_metric_group_label(period=period, value=value), value)
+        for value in ordered_values
+    ]
+
+
+def slice_time_group_data(
+    data: xr.Dataset | xr.DataArray | None,
+    *,
+    period: str,
+    group_value: object,
+) -> xr.Dataset | xr.DataArray | None:
+    if data is None:
+        return None
+
+    time_dim = data.earthml.guessed_dims.time
+    if time_dim is None or time_dim not in data.dims:
+        return data
+
+    time = data[time_dim]
+    if not hasattr(time, "dt"):
+        return data
+
+    selector = getattr(time.dt, period) == group_value
+    return data.where(selector, drop=True)
+
+
+def _climatology_for_period(
+    ds: xr.Dataset,
+    period: str,
+) -> xr.Dataset:
+    time_dim = ds.earthml.guessed_dims.time
+    if period == "none":
+        return ds.mean(dim=time_dim, skipna=True)
+    return ds.earthml.climatology(groupby=period)
+
+
+def _resolve_metric_groupby_period(metric_groupby_period: str | None) -> str:
+    valid_periods = {"month", "dayofyear", "season", "none"}
+    if metric_groupby_period is None:
+        return "month"
+    if metric_groupby_period not in valid_periods:
+        raise ValueError(
+            f"Unsupported metric_groupby_period={metric_groupby_period!r}. Expected one of {sorted(valid_periods)!r}."
+        )
+    return metric_groupby_period
+
+
 def _get_single_region_runs_and_metrics(
     exp_root: str | Path,
     exp_mode: MLBCExperimentMode = "test",
@@ -365,6 +452,7 @@ def _get_single_region_runs_and_metrics(
     metric_names: str | Sequence[str] | None = None,
     metric_sections: str | Sequence[str] = ("scalar", "map", "timeseries"),
     metric_types: str | Sequence[str] | None = None,
+    metric_groupby_period: str | None = None,
     show_progress: bool = True,
 ) -> tuple[
     RunsByModel,
@@ -372,6 +460,8 @@ def _get_single_region_runs_and_metrics(
     ClimTuple,
 ]:
     models = list(load_models)
+    clim_period = _resolve_metric_groupby_period(metric_groupby_period)
+    include_metric_group_dim = metric_groupby_period is not None
     if len(models) < 2:
         raise ValueError("load_models must contain at least two entries: truth first, then at least one model")
 
@@ -535,7 +625,7 @@ def _get_single_region_runs_and_metrics(
                     truth_train = train_loaded_runs[truth_model]
                     truth_train = truth_train.sel(indexers, drop=True) if indexers else truth_train
                     if truth_train.data_vars and bool(truth_train.to_array().notnull().any()):
-                        clim_by_model[truth_model] = truth_train.earthml.climatology(groupby="month")
+                        clim_by_model[truth_model] = _climatology_for_period(truth_train, clim_period)
 
                 for model_name in model_names_this_run:
                     if model_name == "pr" and not use_train_prediction_clim:
@@ -546,7 +636,7 @@ def _get_single_region_runs_and_metrics(
                         train_model = train_loaded_runs[model_name]
                         train_model = train_model.sel(indexers, drop=True) if indexers else train_model
                         if train_model.data_vars and bool(train_model.to_array().notnull().any()):
-                            clim_by_model[model_name] = train_model.earthml.climatology(groupby="month")
+                            clim_by_model[model_name] = _climatology_for_period(train_model, clim_period)
 
                 if "pr" in clim_by_model and clim_by_model["pr"] is None:
                     clim_by_model["pr"] = clim_by_model[truth_model]
@@ -582,57 +672,94 @@ def _get_single_region_runs_and_metrics(
                 except Exception:
                     pass
 
-            dm = DeterministicMetrics(
-                truth_data=truth_data,
-                model_data=model_data,
-                truth_name=truth_model,
-                model_names=model_names_this_run,
-                clim_data=clim_data,
-                mask_data=mask_data,
-            )
+            metric_group_specs: list[tuple[str, object | None]] = [("all", None)]
+            if include_metric_group_dim and clim_period != "none":
+                metric_group_specs.extend(metric_group_specs_from_data(truth_data, clim_period))
 
-            cm = CorrelationMetrics(
-                truth_data=truth_data,
-                model_data=model_data,
-                truth_name=truth_model,
-                model_names=model_names_this_run,
-                clim_data=clim_data,
-                mask_data=mask_data,
-            )
+            for metric_group_label, group_value in metric_group_specs:
+                if group_value is None:
+                    group_truth_data = truth_data
+                    group_model_data = model_data
+                    group_mask_data = mask_data
+                else:
+                    group_truth_data = slice_time_group_data(
+                        truth_data,
+                        period=clim_period,
+                        group_value=group_value,
+                    )
+                    group_model_data = [
+                        slice_time_group_data(
+                            ds,
+                            period=clim_period,
+                            group_value=group_value,
+                        )
+                        for ds in model_data
+                    ]
+                    group_mask_data = slice_time_group_data(
+                        mask_data,
+                        period=clim_period,
+                        group_value=group_value,
+                    )
 
-            pm = ProbabilisticMetrics(
-                truth_data=truth_data,
-                model_data=model_data,
-                truth_name=truth_model,
-                model_names=model_names_this_run,
-                clim_data=clim_data,
-                mask_data=mask_data,
-            )
-
-            metric_bundle = _compute_metric_bundle(
-                dm,
-                cm,
-                pm,
-                norm="std",
-                clim_period="month",
-                metric_names=metric_names,
-                metric_sections=metric_sections,
-                metric_types=metric_types,
-            )
-
-            for metric_type, section_dict in metric_bundle.items():
-                for section, ds in section_dict.items():
-                    if ds is None or not ds.data_vars:
+                group_time_dim = group_truth_data.earthml.guessed_dims.time
+                if group_time_dim is not None and group_time_dim in group_truth_data.dims:
+                    if int(group_truth_data.sizes.get(group_time_dim, 0)) == 0:
                         continue
 
-                    if indexers:
-                        ds = ds.expand_dims({
-                            dim: [value] for dim, value in indexers.items()
-                        })
-                    if truth_region:
-                        ds = ds.assign_coords(region=truth_region)
+                group_dm = DeterministicMetrics(
+                    truth_data=group_truth_data,
+                    model_data=group_model_data,
+                    truth_name=truth_model,
+                    model_names=model_names_this_run,
+                    clim_data=clim_data,
+                    mask_data=group_mask_data,
+                )
 
-                    metric_runs[metric_type][section].append(ds)
+                group_cm = CorrelationMetrics(
+                    truth_data=group_truth_data,
+                    model_data=group_model_data,
+                    truth_name=truth_model,
+                    model_names=model_names_this_run,
+                    clim_data=clim_data,
+                    mask_data=group_mask_data,
+                )
+
+                group_pm = ProbabilisticMetrics(
+                    truth_data=group_truth_data,
+                    model_data=group_model_data,
+                    truth_name=truth_model,
+                    model_names=model_names_this_run,
+                    clim_data=clim_data,
+                    mask_data=group_mask_data,
+                )
+
+                metric_bundle = _compute_metric_bundle(
+                    group_dm,
+                    group_cm,
+                    group_pm,
+                    norm="std",
+                    clim_period=clim_period,
+                    metric_names=metric_names,
+                    metric_sections=metric_sections,
+                    metric_types=metric_types,
+                )
+
+                for metric_type, section_dict in metric_bundle.items():
+                    for section, ds in section_dict.items():
+                        if ds is None or not ds.data_vars:
+                            continue
+
+                        if include_metric_group_dim:
+                            ds = ds.expand_dims({METRIC_GROUP_DIM: [metric_group_label]})
+                            ds.attrs[METRIC_GROUPBY_PERIOD_ATTR] = clim_period
+                        if indexers:
+                            ds = ds.expand_dims({
+                                dim: [value] for dim, value in indexers.items()
+                            })
+                        if truth_region:
+                            ds = ds.assign_coords(region=truth_region)
+
+                        metric_runs[metric_type][section].append(ds)
 
             last_clim_by_model.update(clim_by_model)
 
@@ -707,6 +834,7 @@ def get_runs_and_metrics(
     metric_names: str | Sequence[str] | None = None,
     metric_sections: str | Sequence[str] = ("scalar", "map", "timeseries"),
     metric_types: str | Sequence[str] | None = None,
+    metric_groupby_period: str | None = None,
     show_progress: bool = True,
 ) -> tuple[
     RunsByRegion,
@@ -755,6 +883,7 @@ def get_runs_and_metrics(
             metric_names=metric_names,
             metric_sections=metric_sections,
             metric_types=metric_types,
+            metric_groupby_period=metric_groupby_period,
             show_progress=show_progress,
         )
 

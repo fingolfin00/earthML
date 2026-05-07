@@ -2,6 +2,8 @@ from dataclasses import dataclass, field, replace
 from typing import Literal
 from pathlib import Path
 
+import xarray as xr
+
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -70,10 +72,77 @@ from .tables import (
 from .scoreboard import save_scoreboard_plot
 
 from .. import get_runs_and_metrics, metrics_to_df_single_region
+from ..utils import METRIC_GROUP_DIM, metric_group_specs_from_data, slice_time_group_data
 
 from ...misc import Dask
 from ...logging import configure_logging, LoggingConfig, get_console
 from ...experiments.mlbc import MLBCExperimentMode
+
+
+def _slice_metrics_for_group(
+    metrics: dict[str, dict[str, xr.Dataset]],
+    *,
+    metric_group_label: str,
+) -> dict[str, dict[str, xr.Dataset]]:
+    sliced: dict[str, dict[str, xr.Dataset]] = {}
+    for metric_type, section_dict in metrics.items():
+        sliced[metric_type] = {}
+        for section, ds in section_dict.items():
+            if not isinstance(ds, xr.Dataset):
+                sliced[metric_type][section] = ds
+                continue
+            if METRIC_GROUP_DIM not in ds.dims:
+                sliced[metric_type][section] = ds
+                continue
+            available_groups = [str(value) for value in ds[METRIC_GROUP_DIM].values.tolist()]
+            if metric_group_label not in available_groups:
+                sliced[metric_type][section] = xr.Dataset(attrs=ds.attrs)
+                continue
+            sliced[metric_type][section] = ds.sel({METRIC_GROUP_DIM: metric_group_label}, drop=True)
+    return sliced
+
+
+def _build_output_payloads(
+    *,
+    payload: dict,
+    groupby_period: str | None,
+    group_source: xr.Dataset,
+) -> list[dict]:
+    plot_root = payload["plot_root"]
+    output_payloads = [
+        {
+            **payload,
+            "metrics": _slice_metrics_for_group(payload["metrics"], metric_group_label="all"),
+            "plot_folder": plot_root / "all",
+            "scope_label": "all",
+            "metric_group_label": "all",
+        }
+    ]
+
+    if groupby_period in {None, "none"}:
+        return output_payloads
+
+    for metric_group_label, group_value in metric_group_specs_from_data(group_source, groupby_period):
+        grouped_runs = {
+            model_name: slice_time_group_data(
+                ds,
+                period=groupby_period,
+                group_value=group_value,
+            )
+            for model_name, ds in payload["runs"].items()
+        }
+        output_payloads.append(
+            {
+                **payload,
+                "runs": grouped_runs,
+                "metrics": _slice_metrics_for_group(payload["metrics"], metric_group_label=metric_group_label),
+                "plot_folder": plot_root / "grouped" / groupby_period / metric_group_label,
+                "scope_label": f"grouped/{groupby_period}/{metric_group_label}",
+                "metric_group_label": metric_group_label,
+            }
+        )
+
+    return output_payloads
 
 
 @dataclass
@@ -91,6 +160,7 @@ class CalculateMetricsRuntime:
     external_mask_path: str | Path | None = None
     external_mask_variable: str | Path | None = None
     disable_flox: bool = False
+    metric_groupby_period: Literal["month", "dayofyear", "season", "none"] | None = None
     variable_colors: dict[str, str] = field(default_factory=dict)
     # Labels
     truth: str = "an"
@@ -122,6 +192,12 @@ class CalculateMetricsRuntime:
         log_config = LoggingConfig(level=self.log_level)
         self.logger = configure_logging(log_config)
         self.console = get_console()
+
+        valid_metric_groupby_periods = {"month", "dayofyear", "season", "none", None}
+        if self.metric_groupby_period not in valid_metric_groupby_periods:
+            raise ValueError(
+                "metric_groupby_period must be one of {'month', 'dayofyear', 'season', 'none', None}"
+            )
 
         metric_vs_delta_byconfig_default = {
             "color": "variable",
@@ -294,6 +370,7 @@ class CalculateMetricsRuntime:
             external_mask_data=external_mask_data,
             apply_external_mask_to_runs=True,
             metric_names=self.metrics,
+            metric_groupby_period=self.metric_groupby_period,
             show_progress=True,
         )
 
@@ -360,7 +437,7 @@ class CalculateMetricsRuntime:
                     "variable_units": variable_units,
                     "filtered_variables": filtered_variables,
                     "filters": region_filters,
-                    "plot_folder": region_plot_folder,
+                    "plot_root": region_plot_folder,
                     "filename_context": region_filename_context,
                 }
             )
@@ -368,6 +445,17 @@ class CalculateMetricsRuntime:
         self.logger.info("Available scalar metrics:")
         for metric_type, metric_names in inventory.items():
             self.logger.info(f"  {metric_type}: {sorted(metric_names) or 'none'}")
+
+        output_payloads = []
+        for payload in region_payloads:
+            group_source = payload["runs"][self.reference]
+            output_payloads.extend(
+                _build_output_payloads(
+                    payload=payload,
+                    groupby_period=self.metric_groupby_period,
+                    group_source=group_source,
+                )
+            )
 
         with Progress(
             SpinnerColumn(),
@@ -382,9 +470,9 @@ class CalculateMetricsRuntime:
             transient=False,
         ) as progress:
             if self.config.timeseries is not None:
-                for payload in region_payloads:
+                for payload in output_payloads:
                     ts_task = progress.add_task(
-                        f"Generating field timeseries ({payload['region']})",
+                        f"Generating field timeseries ({payload['region']} | {payload['scope_label']})",
                         total=len(payload["filtered_variables"]),
                     )
                     field_timeseries_paths = save_field_timeseries_plots(
@@ -398,6 +486,7 @@ class CalculateMetricsRuntime:
                         config=self.config,
                         combine_leadtimes=self.config.timeseries.combine_leadtimes,
                         plot_realization_members=self.config.timeseries.plot_realization_members,
+                        metric_groupby_period=self.metric_groupby_period,
                         disable_flox=self.disable_flox,
                         progress=progress,
                         task_id=ts_task,
@@ -406,9 +495,9 @@ class CalculateMetricsRuntime:
                         self.logger.debug(f"Saved field timeseries plot to: {field_timeseries_path}")
 
             if self.config.maps is not None:
-                for payload in region_payloads:
+                for payload in output_payloads:
                     map_task = progress.add_task(
-                        f"Generating maps ({payload['region']})",
+                        f"Generating maps ({payload['region']} | {payload['scope_label']})",
                         total=len(payload["filtered_variables"]),
                     )
                     field_map_paths = save_field_and_metric_map_plots(
@@ -431,9 +520,9 @@ class CalculateMetricsRuntime:
 
             if self.config.metric_vs_delta is not None:
                 metric_vs_deltametric_specs = _metric_vs_deltametric_specs(self.config.metric_vs_delta)
-                for payload in region_payloads:
+                for payload in output_payloads:
                     diff_task = progress.add_task(
-                        f"Generating metric-vs-delta-metric plot ({payload['region']})",
+                        f"Generating metric-vs-delta-metric plot ({payload['region']} | {payload['scope_label']})",
                         total=len(metric_vs_deltametric_specs),
                     )
                     for metric_spec in metric_vs_deltametric_specs:
@@ -475,11 +564,11 @@ class CalculateMetricsRuntime:
                         self.logger.debug(f"Saved leadtime-vs-global-metrics plot to: {plot_path}")
 
             if self.config.profiles is not None:
-                for payload in region_payloads:
+                for payload in output_payloads:
                     profile_x_axis_fields = _normalize_profile_axis_fields(self.config.profiles.x_axis)
                     profile_total = 1 if profile_x_axis_fields == ("variable",) else len(payload["variables"])
                     profile_task = progress.add_task(
-                        f"Generating metric profiles ({payload['region']} | {_format_axis_display_name(self.config.profiles.x_axis)})",
+                        f"Generating metric profiles ({payload['region']} | {payload['scope_label']} | {_format_axis_display_name(self.config.profiles.x_axis)})",
                         total=profile_total,
                     )
                     profile_plot_paths = save_metrics_vs_parameter_plots(
@@ -499,7 +588,7 @@ class CalculateMetricsRuntime:
 
                     if self.config.profiles.combined_variable_metrics is not None and len(payload["variables"]) > 1:
                         combined_profile_task = progress.add_task(
-                            f"Generating combined variable profiles ({payload['region']} | {_format_axis_display_name(self.config.profiles.x_axis)})",
+                            f"Generating combined variable profiles ({payload['region']} | {payload['scope_label']} | {_format_axis_display_name(self.config.profiles.x_axis)})",
                             total=1,
                         )
                         combined_profile_paths = save_combined_variable_metric_profiles(
@@ -521,7 +610,7 @@ class CalculateMetricsRuntime:
                         )
 
             if self.config.scalar_tables is not None:
-                for payload in region_payloads:
+                for payload in output_payloads:
                     metrics = payload["metrics"]
                     variables = payload["variables"]
                     raw_metrics = {
@@ -537,7 +626,7 @@ class CalculateMetricsRuntime:
                     } - NORMALIZED_METRICS
 
                     table_task = progress.add_task(
-                        f"Generating scalar tables ({payload['region']})",
+                        f"Generating scalar tables ({payload['region']} | {payload['scope_label']})",
                         total=len(variables) + 1,
                     )
                     for variable in variables:
@@ -581,8 +670,11 @@ class CalculateMetricsRuntime:
                         self.logger.debug(f"Saved combined normalized metrics table to: {normalized_table_path}")
 
             if self.config.scoreboards is not None:
-                for payload in region_payloads:
-                    scoreboard_task = progress.add_task(f"Generating scoreboard ({payload['region']})", total=1)
+                for payload in output_payloads:
+                    scoreboard_task = progress.add_task(
+                        f"Generating scoreboard ({payload['region']} | {payload['scope_label']})",
+                        total=1,
+                    )
                     scoreboard_path = save_scoreboard_plot(
                         metrics=payload["metrics"],
                         variables=payload["variables"],

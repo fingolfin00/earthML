@@ -45,18 +45,42 @@ from .constants import (
 logger = get_logger(__name__)
 
 
-def _build_climatology_da(da: xr.DataArray) -> xr.DataArray:
+def _build_climatology_da(
+    da: xr.DataArray,
+    *,
+    groupby_period: str | None,
+) -> xr.DataArray:
     time_dim = da.earthml.guessed_dims.time
     if time_dim is None or time_dim not in da.dims:
         raise ValueError("Cannot compute climatology without a time dimension.")
-    return da.groupby(f"{time_dim}.month").mean(dim=time_dim, skipna=True)
+    if groupby_period in {None, "none"}:
+        raise ValueError("Cannot compute climatology timeseries when groupby_period is None or 'none'.")
+    return da.groupby(f"{time_dim}.{groupby_period}").mean(dim=time_dim, skipna=True)
 
-def _build_anomaly_da(da: xr.DataArray) -> xr.DataArray:
+def _build_anomaly_da(
+    da: xr.DataArray,
+    *,
+    groupby_period: str | None,
+) -> xr.DataArray:
     time_dim = da.earthml.guessed_dims.time
     if time_dim is None or time_dim not in da.dims:
         raise ValueError("Cannot compute anomaly without a time dimension.")
-    clim = _build_climatology_da(da)
-    return da.groupby(f"{time_dim}.month") - clim
+    if groupby_period in {None, "none"}:
+        raise ValueError("Cannot compute anomaly timeseries when groupby_period is None or 'none'.")
+    clim = _build_climatology_da(da, groupby_period=groupby_period)
+    return da.groupby(f"{time_dim}.{groupby_period}") - clim
+
+
+def _groupby_x_dim(groupby_period: str | None) -> str:
+    return "month" if groupby_period in {None, "none"} else groupby_period
+
+
+def _groupby_x_label(groupby_period: str | None) -> str:
+    if groupby_period in {None, "none"}:
+        return "Month"
+    if groupby_period == "dayofyear":
+        return "Day of year"
+    return groupby_period.replace("_", " ").title()
 
 def _build_residual_da(
     left: xr.DataArray,
@@ -195,6 +219,7 @@ def save_field_timeseries_plots(
     config: CalculateMetricsConfig,
     combine_leadtimes: bool = False,
     plot_realization_members: bool = False,
+    metric_groupby_period: str | None = None,
     disable_flox: bool = False,
     progress: Progress | None = None,
     task_id: int | None = None,
@@ -244,7 +269,7 @@ def save_field_timeseries_plots(
 
                     try:
                         climatology_data = {
-                            model_name: _build_climatology_da(da)
+                            model_name: _build_climatology_da(da, groupby_period=metric_groupby_period)
                             for model_name, da in selected_data.items()
                         }
                         if climatology_data:
@@ -254,7 +279,7 @@ def save_field_timeseries_plots(
 
                     try:
                         anomaly_data = {
-                            model_name: _build_anomaly_da(da)
+                            model_name: _build_anomaly_da(da, groupby_period=metric_groupby_period)
                             for model_name, da in selected_data.items()
                         }
                         if anomaly_data:
@@ -381,7 +406,7 @@ def save_field_timeseries_plots(
 
                 try:
                     climatology_data = {
-                        model_name: _build_climatology_da(da)
+                        model_name: _build_climatology_da(da, groupby_period=metric_groupby_period)
                         for model_name, da in selected_data.items()
                     }
                     plot_jobs.append(("climatology", f"{base_title} climatology", climatology_data))
@@ -390,7 +415,7 @@ def save_field_timeseries_plots(
 
                 try:
                     anomaly_data = {
-                        model_name: _build_anomaly_da(da)
+                        model_name: _build_anomaly_da(da, groupby_period=metric_groupby_period)
                         for model_name, da in selected_data.items()
                     }
                     plot_jobs.append(("anomaly", f"{base_title} anomaly", anomaly_data))
@@ -418,7 +443,8 @@ def save_field_timeseries_plots(
                         continue
                     sample_da = next(iter(plot_data.values()))
                     plot_region = _resolved_single_region_label(sample_da, filters=filters)
-                    x_dim = "month" if plot_kind == "climatology" else (sample_da.earthml.guessed_dims.time or "time")
+                    x_dim = _groupby_x_dim(metric_groupby_period) if plot_kind == "climatology" else (sample_da.earthml.guessed_dims.time or "time")
+                    x_label = _groupby_x_label(metric_groupby_period) if plot_kind == "climatology" else "Time"
                     fig, ax = plt.subplots(figsize=(12, 5.5))
                     plotted = False
 
@@ -462,7 +488,7 @@ def save_field_timeseries_plots(
                                     ax=ax,
                                     x_dim=x_dim,
                                     ens_dim=_realization_dim(da_lt) or "realization",
-                                    x_label="Month" if x_dim == "month" else "Time",
+                                    x_label=x_label,
                                     y_label=_format_label_with_unit(base_title, base_unit),
                                     label=label,
                                     mean_label=mean_label,
@@ -483,7 +509,7 @@ def save_field_timeseries_plots(
                                 ax=ax,
                                 x_dim=x_dim,
                                 ens_dim=_realization_dim(da) or "realization",
-                                x_label="Month" if x_dim == "month" else "Time",
+                                x_label=x_label,
                                 y_label=_format_label_with_unit(base_title, base_unit),
                                 label=config.models.display_names.get(model_name, str(model_name)),
                                 mean_label=config.models.display_names.get(model_name, str(model_name)),
