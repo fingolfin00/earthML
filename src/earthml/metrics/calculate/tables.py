@@ -26,40 +26,43 @@ from .constants import CONTEXT_AXES
 logger = get_logger(__name__)
 
 
-def _build_deterministic_summary_frame(
+def _build_section_summary_frame(
     *,
     metrics: dict,
     variables: list[str],
+    metric_type: str,
+    avg_stat: str,
+    spread_stat: str,
 ) -> pd.DataFrame:
-    df_det = metrics_to_df(
+    df_section = metrics_to_df(
         metrics=metrics,
         variables=variables,
         metric_names=None,
         kind="scalar",
-        metric_type="deterministic",
+        metric_type=metric_type,
         diff="no",
     )
-    if df_det.empty:
+    if df_section.empty:
         return pd.DataFrame()
 
-    group_cols = [col for col in df_det.columns if col not in {"value", "realization"}]
+    group_cols = [col for col in df_section.columns if col not in {"value", "realization"}]
 
-    if "realization" in df_det.columns:
-        df_mean = df_det.groupby(group_cols, dropna=False, as_index=False)["value"].mean()
-        df_mean["stat"] = "avg"
+    if "realization" in df_section.columns:
+        df_mean = df_section.groupby(group_cols, dropna=False, as_index=False)["value"].mean()
+        df_mean["stat"] = avg_stat
 
-        df_spread = df_det.groupby(group_cols, dropna=False, as_index=False)["value"].std(ddof=0)
+        df_spread = df_section.groupby(group_cols, dropna=False, as_index=False)["value"].std(ddof=0)
         df_spread["value"] = df_spread["value"].fillna(0.0)
-        df_spread["stat"] = "spread"
+        df_spread["stat"] = spread_stat
 
         return pd.concat([df_mean, df_spread], ignore_index=True)
 
-    df_det = df_det.copy()
-    df_det["stat"] = "avg"
-    df_spread = df_det.copy()
+    df_section = df_section.copy()
+    df_section["stat"] = avg_stat
+    df_spread = df_section.copy()
     df_spread["value"] = 0.0
-    df_spread["stat"] = "spread"
-    return pd.concat([df_det, df_spread], ignore_index=True)
+    df_spread["stat"] = spread_stat
+    return pd.concat([df_section, df_spread], ignore_index=True)
 
 def _build_metric_stat_frame(
     *,
@@ -68,21 +71,37 @@ def _build_metric_stat_frame(
 ) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
 
-    df_det = _build_deterministic_summary_frame(metrics=metrics, variables=variables)
-    if not df_det.empty:
-        frames.append(df_det)
+    df_all_dims = _build_section_summary_frame(
+        metrics=metrics,
+        variables=variables,
+        metric_type="all_dims",
+        avg_stat="all_dims_avg",
+        spread_stat="all_dims_spread",
+    )
+    if not df_all_dims.empty:
+        frames.append(df_all_dims)
+
+    df_spatial = _build_section_summary_frame(
+        metrics=metrics,
+        variables=variables,
+        metric_type="spatial_mean",
+        avg_stat="spatial_avg",
+        spread_stat="spatial_spread",
+    )
+    if not df_spatial.empty:
+        frames.append(df_spatial)
 
     df_ens = metrics_to_df(
         metrics=metrics,
         variables=variables,
         metric_names=None,
         kind="scalar",
-        metric_type="ensemble",
+        metric_type="ensemble_mean",
         diff="no",
     )
     if not df_ens.empty:
         df_ens = df_ens.copy()
-        df_ens["stat"] = "ens"
+        df_ens["stat"] = "ens_avg"
         frames.append(df_ens)
 
     df_prob = metrics_to_df(
@@ -217,7 +236,7 @@ def _add_model_gain_columns(
     prefix_stat_pairs = sorted({(tuple(col[i] for i in prefix_indices), col[stat_idx]) for col in df.columns})
 
     out = df.copy()
-    gain_stats = {"avg", "ens", "prob"}
+    gain_stats = {"all_dims_avg", "spatial_avg", "ens_avg", "prob"}
     for prefix, stat in prefix_stat_pairs:
         if stat not in gain_stats:
             continue
@@ -265,9 +284,9 @@ def _order_table_columns(
         prefix = tuple("" if col[i] is None else str(col[i]) for i in range(len(col)) if i not in {stat_idx, model_idx})
         model = str(col[model_idx]) if model_idx is not None else ""
         model_order = (
-            config.models.table_model_order().index(model)
-            if model in config.models.table_model_order()
-            else len(config.models.table_model_order())
+            config.models.table_model_order.index(model)
+            if model in config.models.table_model_order
+            else len(config.models.table_model_order)
         )
         stat = str(col[stat_idx])
         stat_order = (
@@ -339,6 +358,8 @@ def build_scalar_metric_tables(
     variables: list[str],
     filters: dict | None = None,
     config: CalculateMetricsConfig,
+    row_index: tuple[str, ...] | None = None,
+    column_index: tuple[str, ...] | None = None,
     leadtime_unit: str | None = None,
 ) -> list[tuple[str, str | None, pd.DataFrame, str]]:
     df_all = _build_metric_stat_frame(metrics=metrics, variables=variables)
@@ -346,9 +367,10 @@ def build_scalar_metric_tables(
     if df_all.empty:
         return []
 
+    effective_row_index = row_index or config.scalar_tables.row_index
     single_variable = len(variables) == 1
     effective_column_index = tuple(
-        col for col in config.scalar_tables.column_index
+        col for col in (column_index or config.scalar_tables.column_index)
         if not (single_variable and col == "variable")
     )
 
@@ -356,7 +378,7 @@ def build_scalar_metric_tables(
         col for col in CONTEXT_AXES
         if (
             col in df_all.columns
-            and col not in config.scalar_tables.row_index
+            and col not in effective_row_index
             and col not in effective_column_index
             and df_all[col].nunique(dropna=False) > 1
         )
@@ -374,7 +396,7 @@ def build_scalar_metric_tables(
 
         pivot = _build_strict_scalar_table_pivot(
             df_group,
-            row_index=config.scalar_tables.row_index,
+            row_index=effective_row_index,
             column_index=effective_column_index,
         )
         pivot = _add_model_gain_columns(pivot, config)
@@ -410,9 +432,11 @@ def build_scalar_metric_tables(
 
 def _prettify_stat_label(stat: str) -> str:
     pretty = {
-        "avg": "avg",
-        "spread": "spread",
-        "ens": "ens",
+        "all_dims_avg": "all_dims_avg",
+        "all_dims_spread": "all_dims_spread",
+        "spatial_avg": "spatial_avg",
+        "spatial_spread": "spatial_spread",
+        "ens_avg": "ens_avg",
         "gain": "gain",
         "prob": "prob",
     }
@@ -566,7 +590,7 @@ def save_scalar_metric_table_image(
                 }
                 stat_name = str(col_name_to_value.get("stat", ""))
                 model_name = str(col_name_to_value.get("model", ""))
-                if model_name == config.models.gain_label and stat_name in {"avg", "ens", "prob"}:
+                if model_name == config.models.gain_label and stat_name in {"all_dims_avg", "spatial_avg", "ens_avg", "prob"}:
                     raw_value = df.iloc[row - 1, col]
                     if pd.isna(raw_value):
                         cell.set_facecolor(gain_neutral)
@@ -647,7 +671,7 @@ def _rich_gain_cell(
     }
     stat_name = str(col_name_to_value.get("stat", ""))
     model_name = str(col_name_to_value.get("model", ""))
-    if model_name != config.mo["gain_model"] or stat_name not in {"avg", "ens", "prob"}:
+    if model_name != config.models.gain_label or stat_name not in {"all_dims_avg", "spatial_avg", "ens_avg", "prob"}:
         return text
 
     raw_value = raw_df.iloc[row_pos, col_pos]
@@ -721,6 +745,8 @@ def save_scalar_metric_tables(
     metrics_keep: set[str] | None = None,
     filename_prefix: str = "scalar_metrics",
     title_prefix: str | None = None,
+    row_index: tuple[str, ...] | None = None,
+    column_index: tuple[str, ...] | None = None,
     stat_label_overrides: dict[str, str] | None = None,
     leadtime_unit: str | None = None,
     base_color: str,
@@ -733,6 +759,8 @@ def save_scalar_metric_tables(
         variables=variables,
         filters=filters,
         config=config,
+        row_index=row_index,
+        column_index=column_index,
         leadtime_unit=leadtime_unit,
     ):
         if table_df.empty:
@@ -769,7 +797,7 @@ def save_scalar_metric_tables(
             title=title,
             subtitle=subtitle,
             image_path=image_path,
-            significant_digits=config.scalar_tables.significant_digits,
+            config=config,
             stat_label_overrides=stat_label_overrides,
             base_color=base_color,
         )
