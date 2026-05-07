@@ -6,8 +6,8 @@ from typing import Any, ItemsView, Literal
 from .constants import (
     CALCULATE_METRICS_ITEMS,
     CONTEXT_AXES,
+    METRIC_SECTIONS,
     PROFILE_METRIC_MODES,
-    SUMMARY_METRIC_TYPES,
     SCOREBOARD_MODES,
     VARIABLE_COLORS,
 )
@@ -117,11 +117,11 @@ class CalculateMetricsMapConfig:
 class CalculateMetricsProfileConfig:
     filters: CalculateMetricsFilters
     x_axis: str | list[str]
-    metrics: dict[str, str]
+    metrics: dict[str, str | tuple[str, ...] | list[str]]
     shade_by: str
     shade_label: str
     enable_combined_variable_profiles: bool
-    combined_variable_metrics: dict[str, str] | None = None
+    combined_variable_metrics: dict[str, str | tuple[str, ...] | list[str]] | None = None
 
     def __post_init__(self) -> None:
         x_axis_fields = [self.x_axis] if isinstance(self.x_axis, str) else self.x_axis
@@ -135,18 +135,28 @@ class CalculateMetricsProfileConfig:
             raise ValueError(f"shade_by must be one of {CONTEXT_AXES!r}")
 
         for metric_name, metric_mode in self.metrics.items():
-            if metric_mode not in PROFILE_METRIC_MODES:
+            metric_modes = [metric_mode] if isinstance(metric_mode, str) else list(metric_mode)
+            if not metric_modes:
+                raise ValueError(f"metrics[{metric_name!r}] must contain at least one profile mode.")
+            invalid_metric_modes = [mode for mode in metric_modes if mode not in PROFILE_METRIC_MODES]
+            if invalid_metric_modes:
                 raise ValueError(
-                    f"Unsupported metrics[{metric_name!r}]={metric_mode!r}. "
-                    f"Expected one of {PROFILE_METRIC_MODES!r}."
+                    f"Unsupported metrics[{metric_name!r}] entries {invalid_metric_modes!r}. "
+                    f"Expected modes from {PROFILE_METRIC_MODES!r}."
                 )
 
         if self.combined_variable_metrics is not None:
             for metric_name, metric_mode in self.combined_variable_metrics.items():
-                if metric_mode not in PROFILE_METRIC_MODES:
+                metric_modes = [metric_mode] if isinstance(metric_mode, str) else list(metric_mode)
+                if not metric_modes:
                     raise ValueError(
-                        f"Unsupported combined_variable_metrics[{metric_name!r}]={metric_mode!r}. "
-                        f"Expected one of {PROFILE_METRIC_MODES!r}."
+                        f"combined_variable_metrics[{metric_name!r}] must contain at least one profile mode."
+                    )
+                invalid_metric_modes = [mode for mode in metric_modes if mode not in PROFILE_METRIC_MODES]
+                if invalid_metric_modes:
+                    raise ValueError(
+                        f"Unsupported combined_variable_metrics[{metric_name!r}] entries {invalid_metric_modes!r}. "
+                        f"Expected modes from {PROFILE_METRIC_MODES!r}."
                     )
 
 
@@ -171,15 +181,15 @@ class CalculateMetricsTableConfig:
 @dataclass(slots=True, kw_only=True)
 class CalculateMetricsMetricVsDeltaPairConfig:
     forecast_metric: str
-    forecast_metric_type: Literal["deterministic", "ensemble", "probabilistic"]
+    forecast_metric_type: Literal["all_dims", "spatial_mean", "ensemble_mean", "probabilistic"]
     delta_metric: str
-    delta_metric_type: Literal["deterministic", "ensemble", "probabilistic"]
+    delta_metric_type: Literal["all_dims", "spatial_mean", "ensemble_mean", "probabilistic"]
 
     def __post_init__(self) -> None:
-        if self.forecast_metric_type not in SUMMARY_METRIC_TYPES:
-            raise ValueError(f"forecast_metric_type must be one of {SUMMARY_METRIC_TYPES!r}")
-        if self.delta_metric_type not in SUMMARY_METRIC_TYPES:
-            raise ValueError(f"delta_metric_type must be one of {SUMMARY_METRIC_TYPES!r}")
+        if self.forecast_metric_type not in METRIC_SECTIONS:
+            raise ValueError(f"forecast_metric_type must be one of {METRIC_SECTIONS!r}")
+        if self.delta_metric_type not in METRIC_SECTIONS:
+            raise ValueError(f"delta_metric_type must be one of {METRIC_SECTIONS!r}")
 
 
 @dataclass(slots=True, kw_only=True)
@@ -228,10 +238,10 @@ class CalculateMetricsScoreboardConfig:
             raise ValueError(f"mode must be one of {SCOREBOARD_MODES!r}")
 
         for metric_name, metric_type in self.metrics.items():
-            if metric_type not in SUMMARY_METRIC_TYPES:
+            if metric_type not in METRIC_SECTIONS:
                 raise ValueError(
                     f"Unsupported metrics[{metric_name!r}]={metric_type!r}. "
-                    f"Expected one of {SUMMARY_METRIC_TYPES!r}."
+                    f"Expected one of {METRIC_SECTIONS!r}."
                 )
 
         if self.row_axis not in CONTEXT_AXES:
