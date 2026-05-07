@@ -18,6 +18,7 @@ from .dataclasses import (
     CalculateMetricsConfig,
     CalculateMetricsGlobalConfig,
     CalculateMetricsFilters,
+    CalculateMetricsSaveConfig,
     CalculateMetricsTimeseriesConfig,
     CalculateMetricsMapConfig,
     CalculateMetricsProfileConfig,
@@ -29,6 +30,7 @@ from .dataclasses import (
 )
 from .constants import (
     CALCULATE_METRICS_ITEMS,
+    METRIC_SECTIONS,
     METRIC_MAPS_CMAPS,
     METRIC_MAPS_DEFAULT_LIMITS,
     METRIC_MAPS_VAR_OVERRIDE_LIMITS,
@@ -70,13 +72,21 @@ from .tables import (
     save_scalar_metric_tables,
 )
 from .scoreboard import save_scoreboard_plot
+from .save import load_metric_datasets, save_metric_datasets
 
 from .. import get_runs_and_metrics, metrics_to_df_single_region
-from ..utils import METRIC_GROUP_DIM, metric_group_specs_from_data, slice_time_group_data
+from ..utils import (
+    METRIC_GROUP_DIM,
+    _discover_region_values,
+    metric_group_specs_from_data,
+    slice_time_group_data,
+)
 
 from ...misc import Dask
 from ...logging import configure_logging, LoggingConfig, get_console
 from ...experiments.mlbc import MLBCExperimentMode
+from ...experiments.mlbc.load import add_ke_to_runs, load_all_exp_from_folder
+from ...experiments.mlbc.utils import apply_mask_to_dataset
 
 
 def _slice_metrics_for_group(
@@ -109,15 +119,15 @@ def _build_output_payloads(
     group_source: xr.Dataset,
 ) -> list[dict]:
     plot_root = payload["plot_root"]
-    output_payloads = [
-        {
-            **payload,
-            "metrics": _slice_metrics_for_group(payload["metrics"], metric_group_label="all"),
-            "plot_folder": plot_root / "all",
-            "scope_label": "all",
-            "metric_group_label": "all",
-        }
-    ]
+    base_all_payload = {
+        **payload,
+        "plot_folder": plot_root / "all",
+        "scope_label": "all",
+        "metric_group_label": "all",
+    }
+    if "metrics" in payload:
+        base_all_payload["metrics"] = _slice_metrics_for_group(payload["metrics"], metric_group_label="all")
+    output_payloads = [base_all_payload]
 
     if groupby_period in {None, "none"}:
         return output_payloads
@@ -135,14 +145,72 @@ def _build_output_payloads(
             {
                 **payload,
                 "runs": grouped_runs,
-                "metrics": _slice_metrics_for_group(payload["metrics"], metric_group_label=metric_group_label),
                 "plot_folder": plot_root / "grouped" / groupby_period / metric_group_label,
                 "scope_label": f"grouped/{groupby_period}/{metric_group_label}",
                 "metric_group_label": metric_group_label,
             }
         )
+        if "metrics" in payload:
+            output_payloads[-1]["metrics"] = _slice_metrics_for_group(
+                payload["metrics"],
+                metric_group_label=metric_group_label,
+            )
 
     return output_payloads
+
+
+def _load_runs_by_region(
+    *,
+    exp_root: Path,
+    exp_mode: MLBCExperimentMode,
+    load_models: list[str],
+    variables: list[str] | None,
+    run_filters: dict[str, object] | None,
+    external_mask_data: xr.Dataset | None,
+) -> dict[str, dict[str, xr.Dataset]]:
+    region_values = _discover_region_values(
+        exp_root=exp_root,
+        exp_mode=exp_mode,
+        load_models=load_models,
+        variables=variables,
+        run_filters=run_filters,
+        show_progress=True,
+    )
+    if not region_values:
+        return {}
+
+    runs_by_region: dict[str, dict[str, xr.Dataset]] = {}
+    for region_name in region_values:
+        region_filters = dict(run_filters or {})
+        region_filters["region"] = [region_name]
+        loaded_runs, _ = load_all_exp_from_folder(
+            exp_root=exp_root,
+            exp_mode=exp_mode,
+            load_train_preds=(exp_mode == "train"),
+            load_models=load_models,
+            variables=variables,
+            run_filters=region_filters,
+            show_progress=True,
+        )
+        if not loaded_runs:
+            continue
+
+        for model_name in load_models:
+            if model_name in loaded_runs:
+                loaded_runs[model_name] = add_ke_to_runs(
+                    loaded_runs[model_name],
+                    dataset_keys=None,
+                )
+
+        if external_mask_data is not None:
+            loaded_runs = {
+                model_name: ds if model_name == "mask" else apply_mask_to_dataset(ds, external_mask_data)
+                for model_name, ds in loaded_runs.items()
+            }
+
+        runs_by_region[str(region_name)] = loaded_runs
+
+    return runs_by_region
 
 
 @dataclass
@@ -162,6 +230,11 @@ class CalculateMetricsRuntime:
     disable_flox: bool = False
     metric_groupby_period: Literal["month", "dayofyear", "season", "none"] | None = None
     variable_colors: dict[str, str] = field(default_factory=dict)
+    save_calculated_metrics: bool = False
+    reuse_saved_metrics: bool = False
+    saved_metrics_subfolder: str = "metrics"
+    saved_metric_types: tuple[str, ...] = field(default_factory=lambda: tuple(METRIC_SECTIONS))
+    saved_metric_kinds: tuple[str, ...] = ("scalar", "timeseries", "map")
     # Labels
     truth: str = "an"
     reference: str = "fc"
@@ -260,6 +333,12 @@ class CalculateMetricsRuntime:
             variable_colors=CalculateMetricsVariableColorConfig(
                 overrides=self.variable_colors,
             ),
+            saved_metrics=CalculateMetricsSaveConfig(
+                output_subfolder=self.saved_metrics_subfolder,
+                metric_types=self.saved_metric_types,
+                kinds=self.saved_metric_kinds,
+                reuse_existing=self.reuse_saved_metrics,
+            ) if (self.save_calculated_metrics or self.reuse_saved_metrics) else None,
             timeseries=CalculateMetricsTimeseriesConfig(
                 filters=self.filters,
                 combine_leadtimes=False,
@@ -360,18 +439,13 @@ class CalculateMetricsRuntime:
         self.logger.info(f"Load selection: variables={load_variables or 'all'}, run_filters={load_run_filters or 'all'}")
         external_mask_data = _load_external_mask_dataset(self.config)
 
-        runs_by_region, metrics_by_region, _ = get_runs_and_metrics(
+        runs_by_region = _load_runs_by_region(
             exp_root=self.config.global_config.exp_root_folder,
             exp_mode=self.config.global_config.exp_mode,
             load_models=self.config.models.load_models,
             variables=load_variables,
             run_filters=load_run_filters,
-            use_saved_mask=self.config.global_config.use_saved_mask,
             external_mask_data=external_mask_data,
-            apply_external_mask_to_runs=True,
-            metric_names=self.metrics,
-            metric_groupby_period=self.metric_groupby_period,
-            show_progress=True,
         )
 
         if not runs_by_region:
@@ -406,7 +480,6 @@ class CalculateMetricsRuntime:
                     f"Available models: {list(runs)}"
                 )
 
-            metrics = metrics_by_region[region_name]
             variables = [v for v in runs[self.reference].data_vars if v != "_has_var"]
             variable_units = _get_variable_units_from_runs(runs, variables)
             filtered_variables = _filter_variables_by_filters(variables, self.filters)
@@ -419,20 +492,10 @@ class CalculateMetricsRuntime:
 
             self.logger.info(f"Processed vars ({region_name}): {dict(zip(variables, variable_units))}")
 
-            for metric_type, section_dict in metrics.items():
-                ds_scalar = section_dict.get("scalar")
-                if ds_scalar is None or "metric" not in ds_scalar.coords:
-                    inventory.setdefault(metric_type, set())
-                    continue
-                inventory.setdefault(metric_type, set()).update(
-                    str(metric) for metric in ds_scalar.coords["metric"].values.tolist()
-                )
-
             region_payloads.append(
                 {
                     "region": region_name,
                     "runs": runs,
-                    "metrics": metrics,
                     "variables": variables,
                     "variable_units": variable_units,
                     "filtered_variables": filtered_variables,
@@ -441,10 +504,6 @@ class CalculateMetricsRuntime:
                     "filename_context": region_filename_context,
                 }
             )
-
-        self.logger.info("Available scalar metrics:")
-        for metric_type, metric_names in inventory.items():
-            self.logger.info(f"  {metric_type}: {sorted(metric_names) or 'none'}")
 
         output_payloads = []
         for payload in region_payloads:
@@ -456,6 +515,72 @@ class CalculateMetricsRuntime:
                     group_source=group_source,
                 )
             )
+
+        metrics_loaded_from_saved = False
+        if self.config.saved_metrics is not None and self.config.saved_metrics.reuse_existing:
+            loaded_payload_metrics = []
+            effective_clim_period = self.metric_groupby_period or "month"
+            include_group_dim = self.metric_groupby_period is not None
+            for payload in output_payloads:
+                metrics = load_metric_datasets(
+                    output_root=payload["plot_folder"],
+                    config=self.config.saved_metrics,
+                    filename_context_suffix=payload["filename_context"],
+                    model_names=self.config.models.load_models,
+                    metric_names=self.metrics,
+                    clim_period=effective_clim_period,
+                    include_group_dim=include_group_dim,
+                )
+                if metrics is None:
+                    loaded_payload_metrics = []
+                    break
+                loaded_payload_metrics.append(metrics)
+
+            if loaded_payload_metrics:
+                metrics_loaded_from_saved = True
+                for payload, metrics in zip(output_payloads, loaded_payload_metrics):
+                    payload["metrics"] = metrics
+
+        if not metrics_loaded_from_saved:
+            _, metrics_by_region, _ = get_runs_and_metrics(
+                exp_root=self.config.global_config.exp_root_folder,
+                exp_mode=self.config.global_config.exp_mode,
+                load_models=self.config.models.load_models,
+                variables=load_variables,
+                run_filters=load_run_filters,
+                use_saved_mask=self.config.global_config.use_saved_mask,
+                external_mask_data=external_mask_data,
+                apply_external_mask_to_runs=True,
+                metric_names=self.metrics,
+                metric_groupby_period=self.metric_groupby_period,
+                show_progress=True,
+            )
+
+            for payload in output_payloads:
+                region_metrics = metrics_by_region[payload["region"]]
+                payload["metrics"] = _slice_metrics_for_group(
+                    region_metrics,
+                    metric_group_label=payload["metric_group_label"],
+                )
+
+        for payload in output_payloads:
+            metrics = payload["metrics"]
+            for metric_type, section_dict in metrics.items():
+                ds_scalar = section_dict.get("scalar")
+                if ds_scalar is None or "metric" not in ds_scalar.coords:
+                    inventory.setdefault(metric_type, set())
+                    continue
+                inventory.setdefault(metric_type, set()).update(
+                    str(metric) for metric in ds_scalar.coords["metric"].values.tolist()
+                )
+
+        self.logger.info(
+            "Metric source: %s",
+            "saved files" if metrics_loaded_from_saved else "fresh computation",
+        )
+        self.logger.info("Available scalar metrics:")
+        for metric_type, metric_names in inventory.items():
+            self.logger.info(f"  {metric_type}: {sorted(metric_names) or 'none'}")
 
         with Progress(
             SpinnerColumn(),
@@ -469,6 +594,32 @@ class CalculateMetricsRuntime:
             refresh_per_second=6,
             transient=False,
         ) as progress:
+            if self.config.saved_metrics is not None and not metrics_loaded_from_saved:
+                save_task = progress.add_task(
+                    "Saving calculated metrics",
+                    total=len(output_payloads),
+                )
+                for payload in output_payloads:
+                    saved_metric_paths = save_metric_datasets(
+                        metrics=payload["metrics"],
+                        output_root=payload["plot_folder"],
+                        config=self.config.saved_metrics,
+                        filename_context_suffix=payload["filename_context"],
+                        model_names=self.config.models.load_models,
+                        metric_names=self.metrics,
+                        clim_period=self.metric_groupby_period or "month",
+                        include_group_dim=self.metric_groupby_period is not None,
+                        dataset_attrs={
+                            "region": payload["region"],
+                            "scope_label": payload["scope_label"],
+                            "metric_group_label": payload["metric_group_label"],
+                            "metric_groupby_period": self.metric_groupby_period or "none",
+                        },
+                    )
+                    progress.advance(save_task)
+                    for saved_metric_path in saved_metric_paths:
+                        self.logger.debug(f"Saved metric dataset to: {saved_metric_path}")
+
             if self.config.timeseries is not None:
                 for payload in output_payloads:
                     ts_task = progress.add_task(

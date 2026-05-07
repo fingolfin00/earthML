@@ -7,6 +7,7 @@ __all__ = [
     "CalculateMetricsRuntime",
     "save_field_and_metric_map_plots",
     "save_metric_vs_deltametric_plot",
+    "save_metric_datasets",
     "save_combined_variable_metric_profiles",
     "save_metrics_vs_parameter_plots",
     "save_scoreboard_plot",
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
         save_metrics_vs_parameter_plots,
     )
     from .runtime import CalculateMetricsRuntime
+    from .save import save_metric_datasets
     from .scoreboard import save_scoreboard_plot
     from .tables import save_scalar_metric_tables
     from .timeseries import save_field_timeseries_plots
@@ -41,6 +43,10 @@ def __getattr__(name: str) -> Any:
         from .metric_vs_delta import save_metric_vs_deltametric_plot
 
         return save_metric_vs_deltametric_plot
+    if name == "save_metric_datasets":
+        from .save import save_metric_datasets
+
+        return save_metric_datasets
     if name == "save_combined_variable_metric_profiles":
         from .profiles import save_combined_variable_metric_profiles
 

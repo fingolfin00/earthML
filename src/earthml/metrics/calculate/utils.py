@@ -46,6 +46,7 @@ def _print_user_config_table(
         ("global", _table_value(config.global_config)),
         ("models", _table_value(config.models)),
         ("variable_colors", _table_value(config.variable_colors)),
+        ("saved_metrics", _table_value(config.saved_metrics)),
         ("timeseries", _table_value(config.timeseries)),
         ("maps", _table_value(config.maps)),
         ("profiles", _table_value(config.profiles)),

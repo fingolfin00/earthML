@@ -6,6 +6,7 @@ from typing import Any, ItemsView, Literal
 from .constants import (
     CALCULATE_METRICS_ITEMS,
     CONTEXT_AXES,
+    METRIC_KIND,
     METRIC_SECTIONS,
     PROFILE_METRIC_MODES,
     SCOREBOARD_MODES,
@@ -168,6 +169,36 @@ class CalculateMetricsVariableColorConfig:
 
 
 @dataclass(slots=True, kw_only=True)
+class CalculateMetricsSaveConfig:
+    output_subfolder: str
+    metric_types: tuple[str, ...] = field(default_factory=lambda: tuple(METRIC_SECTIONS))
+    kinds: tuple[str, ...] = field(default_factory=lambda: tuple(METRIC_KIND))
+    file_format: Literal["netcdf"] = "netcdf"
+    include_empty: bool = False
+    reuse_existing: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.output_subfolder:
+            raise ValueError("output_subfolder must be a non-empty string")
+        if not self.metric_types:
+            raise ValueError("metric_types must contain at least one entry")
+        invalid_metric_types = [metric_type for metric_type in self.metric_types if metric_type not in METRIC_SECTIONS]
+        if invalid_metric_types:
+            raise ValueError(
+                f"Unsupported metric_types {invalid_metric_types!r}. Expected any of {METRIC_SECTIONS!r}."
+            )
+        if not self.kinds:
+            raise ValueError("kinds must contain at least one entry")
+        invalid_kinds = [kind for kind in self.kinds if kind not in METRIC_KIND]
+        if invalid_kinds:
+            raise ValueError(
+                f"Unsupported kinds {invalid_kinds!r}. Expected any of {METRIC_KIND!r}."
+            )
+        if self.file_format != "netcdf":
+            raise ValueError("file_format must be 'netcdf'")
+
+
+@dataclass(slots=True, kw_only=True)
 class CalculateMetricsTableConfig:
     scalar_filters: CalculateMetricsFilters
     normalized_filters: CalculateMetricsFilters
@@ -300,6 +331,7 @@ class CalculateMetricsConfig:
     global_config: CalculateMetricsGlobalConfig
     models: CalculateMetricsModelConfig
     variable_colors: CalculateMetricsVariableColorConfig | None
+    saved_metrics: CalculateMetricsSaveConfig | None
     timeseries: CalculateMetricsTimeseriesConfig | None
     maps: CalculateMetricsMapConfig | None
     profiles: CalculateMetricsProfileConfig | None
