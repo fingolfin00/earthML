@@ -30,6 +30,7 @@ from .metrics.deterministic import DeterministicMetrics
 from .metrics.correlation import CorrelationMetrics
 from .metrics.probabilistic import ProbabilisticMetrics
 from .bundles import build_standard_metric_bundle
+from .calculate.constants import METRIC_SECTIONS
 
 from ..experiments.mlbc.load import (
     load_all_exp_from_folder,
@@ -84,7 +85,7 @@ def metrics_to_df(
     variables: list[str] | str | None = None,
     metric_names: list[str] | str | None = None,
     kind: str = "scalar",
-    metric_type: str = "deterministic",
+    metric_type: str = "all_dims",
     diff: str = "no",
     models: Sequence[str] | None = None,
 ) -> pd.DataFrame:
@@ -273,7 +274,7 @@ def _compute_metric_bundle(
 
     filtered_result: dict[str, dict[str, xr.Dataset]] = {}
 
-    for metric_type in ("deterministic", "ensemble", "probabilistic"):
+    for metric_type in METRIC_SECTIONS:
         if metric_types is not None and metric_type not in metric_types:
             continue
 
@@ -334,7 +335,7 @@ def get_runs_and_metrics(
     elif metric_types is not None:
         requested_metric_types = list(metric_types)
     else:
-        requested_metric_types = ["deterministic", "ensemble", "probabilistic"]
+        requested_metric_types = list(METRIC_SECTIONS)
 
     if isinstance(metric_sections, str):
         requested_metric_sections = [metric_sections]
@@ -681,7 +682,7 @@ def save_metrics(
     models_diff: Sequence[str] = ("fc", "pr"),
     partition_cols: Sequence[str] = ("train_period", "loss", "model", "metric", "variable"),
     kind: str = "scalar",
-    metric_type: str = "deterministic",
+    metric_type: str = "all_dims",
 ):
     """Save metrics in parquet format. Return dict of dataframes and paths."""
 
