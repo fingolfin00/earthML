@@ -417,6 +417,19 @@ def slice_time_group_data(
     return data.where(selector, drop=True)
 
 
+def _reindex_grouped_metric_output(
+    ds: xr.Dataset,
+    *,
+    reference_truth_data: xr.Dataset,
+) -> xr.Dataset:
+    time_dim = reference_truth_data.earthml.guessed_dims.time
+    if time_dim is None or time_dim not in reference_truth_data.dims:
+        return ds
+    if time_dim not in ds.dims:
+        return ds
+    return ds.reindex({time_dim: reference_truth_data[time_dim].values})
+
+
 def _climatology_for_period(
     ds: xr.Dataset,
     period: str,
@@ -749,6 +762,11 @@ def _get_single_region_runs_and_metrics(
                         if ds is None or not ds.data_vars:
                             continue
 
+                        if group_value is not None:
+                            ds = _reindex_grouped_metric_output(
+                                ds,
+                                reference_truth_data=truth_data,
+                            )
                         if include_metric_group_dim:
                             ds = ds.expand_dims({METRIC_GROUP_DIM: [metric_group_label]})
                             ds.attrs[METRIC_GROUPBY_PERIOD_ATTR] = clim_period
