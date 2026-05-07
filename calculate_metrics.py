@@ -42,6 +42,7 @@ def main() -> None:
         dask_workers=12,
         memory_limit="100GiB",
         root_path="/Users/jacopodallaglio/ML/experiments_earthML_seasonal_atmo/",
+        # exp_mode="train",
         exp_mode="test",
         metrics=None, # None means all available metrics
         log_level="info",
@@ -50,18 +51,24 @@ def main() -> None:
         external_mask_path=None,
         external_mask_variable=None,
         disable_flox=True,
+        metric_groupby_period="month", # used for climatology, anomalies and metric grouping
         # variable_colors={},
         # Filters
         leadtime=None,
-        variable=None,
+        variable=("msl",),
         region=None,
         train_period=None,
-        loss=None,
-        variant=None,
+        loss=("mseloss",),
+        variant=("",),
+        # variable=None,
+        # loss=None,
+        # variant=None,
+        # Models
+        # corrected=None,
         # Items
-        timeseries=False,
-        maps=False,
-        profiles=False,
+        timeseries=True,
+        maps=True,
+        profiles=True,
         tables=False,
         metric_vs_diff=False,
         scoreboard=False,
@@ -74,6 +81,11 @@ def main() -> None:
             "shade": "leadtime"
         },
         scoreboard_mode="absolute",
+        # Save metrics
+        save_calculated_metrics=True,
+        saved_metric_kinds=("scalar", "timeseries", "map"),
+        saved_metric_types=("all_dims", "spatial_mean", "ensemble_mean", "probabilistic"),
+        reuse_saved_metrics=True,
     )
 
     runtime.start()
