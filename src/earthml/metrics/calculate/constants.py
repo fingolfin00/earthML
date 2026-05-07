@@ -113,11 +113,28 @@ AXIS_DISPLAY_NAMES = {
 
 # Color maps
 METRIC_CMAPS = {
+    # Non-negative error magnitudes
+    "rmse": "Reds",
+    "crmse": "Reds",
+    "mae": "Reds",
+    "error_std": "Reds",
+    "nrmse": "Reds",
+    "ncrmse": "Reds",
+    "nmae": "Reds",
+    "crps": "Reds",
+    "spread": "Reds",
+    # Signed metrics and zero-centered skill/correlation scores
     "bias": "RdBu_r",
     "nbias": "RdBu_r",
     "r2": "RdBu",
+    "corr": "RdBu",
+    "clim_acc": "RdBu",
+    "spatial_acc": "RdBu",
     "rmse_skill_clim": "RdBu",
-    "spread_error_ratio": "RdBu",
+    # Positive ratios where 1 is ideal. Keep these sequential unless we also
+    # introduce explicit centering around 1 in the map normalization.
+    "variance_ratio": "cividis",
+    "spread_error_ratio": "cividis",
 }
 
 # Profiles
