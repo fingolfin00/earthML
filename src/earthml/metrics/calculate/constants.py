@@ -111,18 +111,18 @@ AXIS_DISPLAY_NAMES = {
     "metric": "Metric",
 }
 
-# Color maps
-METRIC_CMAPS = {
+# Maps
+METRIC_MAPS_CMAPS = {
     # Non-negative error magnitudes
-    "rmse": "Reds",
-    "crmse": "Reds",
-    "mae": "Reds",
-    "error_std": "Reds",
-    "nrmse": "Reds",
-    "ncrmse": "Reds",
-    "nmae": "Reds",
-    "crps": "Reds",
-    "spread": "Reds",
+    "rmse": "jet",
+    "crmse": "jet",
+    "mae": "jet",
+    "error_std": "jet",
+    "nrmse": "jet",
+    "ncrmse": "jet",
+    "nmae": "jet",
+    "crps": "jet",
+    "spread": "jet",
     # Signed metrics and zero-centered skill/correlation scores
     "bias": "RdBu_r",
     "nbias": "RdBu_r",
@@ -135,6 +135,246 @@ METRIC_CMAPS = {
     # introduce explicit centering around 1 in the map normalization.
     "variance_ratio": "cividis",
     "spread_error_ratio": "cividis",
+}
+
+METRIC_MAPS_DEFAULT_LIMITS = {
+    # Non-negative error magnitudes
+    "rmse": {
+        "*": {
+            "default": (0, None),
+        },
+        "msl": {
+            "ConUS": (0, None),
+            "Europe": (0, None),
+        },
+    },
+    "crmse": {
+        "*": {
+            "default": (0, None),
+        },
+        "msl": {
+            "ConUS": (0, None),
+            "Europe": (0, None),
+        },
+    },
+    "mae": {
+        "*": {
+            "default": (0, None),
+        },
+        "msl": {
+            "ConUS": (0, None),
+            "Europe": (0, None),
+        },
+    },
+    "error_std": {
+        "*": {
+            "default": (0, None),
+        },
+        "msl": {
+            "ConUS": (0, None),
+            "Europe": (0, None),
+        },
+    },
+    "nrmse": {
+        "*": {
+            "default": (0, 1),
+        },
+        "msl": {
+            "ConUS": (0, 1),
+            "Europe": (0, 1),
+        },
+    },
+    "ncrmse": {
+        "*": {
+            "default": (0, 1),
+        },
+        "msl": {
+            "ConUS": (0, 1),
+            "Europe": (0, 1),
+        },
+    },
+    "nmae": {
+        "*": {
+            "default": (0, 1),
+        },
+        "msl": {
+            "ConUS": (0, 1),
+            "Europe": (0, 1),
+        },
+    },
+    "crps": {
+        "*": {
+            "default": (0, None),
+        },
+        "msl": {
+            "ConUS": (0, None),
+            "Europe": (0, None),
+        },
+    },
+    "spread": {
+        "*": {
+            "default": (0, None),
+        },
+        "msl": {
+            "ConUS": (0, None),
+            "Europe": (0, None),
+        },
+    },
+    # Signed metrics and zero-centered skill/correlation scores
+    "bias": {
+        "*": {
+            "default": (None, None),
+        },
+        "msl": {
+            "ConUS": (None, None),
+            "Europe": (None, None),
+        },
+    },
+    "nbias": {
+        "*": {
+            "default": (-1, 1),
+        },
+        "msl": {
+            "ConUS": (-1, 1),
+            "Europe": (-1, 1),
+        },
+    },
+    "r2": {
+        "*": {
+            "default": (-1, 1),
+        },
+        "msl": {
+            "ConUS": (-1, 1),
+            "Europe": (-1, 1),
+        },
+    },
+    "corr": {
+        "*": {
+            "default": (-1, 1),
+        },
+        "msl": {
+            "ConUS": (-1, 1),
+            "Europe": (-1, 1),
+        },
+    },
+    "clim_acc": {
+        "*": {
+            "default": (-1, 1),
+        },
+        "msl": {
+            "ConUS": (-1, 1),
+            "Europe": (-1, 1),
+        },
+    },
+    "spatial_acc": {
+        "*": {
+            "default": (-1, 1),
+        },
+        "msl": {
+            "ConUS": (-1, 1),
+            "Europe": (-1, 1),
+        },
+    },
+    "rmse_skill_clim": {
+        "*": {
+            "default": (-1, 1),
+        },
+        "msl": {
+            "ConUS": (-1, 1),
+            "Europe": (-1, 1),
+        },
+    },
+    # Positive ratios where 1 is ideal. Keep these sequential unless we also
+    # introduce explicit centering around 1 in the map normalization.
+    "variance_ratio": {
+        "*": {
+            "default": (0, 1),
+        },
+        "msl": {
+            "ConUS": (0, 1),
+            "Europe": (0, 1),
+        },
+    },
+    "spread_error_ratio": {
+        "*": {
+            "default": (0, 1),
+        },
+        "msl": {
+            "ConUS": (0, 1),
+            "Europe": (0, 1),
+        },
+    },
+}
+
+METRIC_MAPS_VAR_OVERRIDE_LIMITS = {
+    # Non-negative error magnitudes
+    "rmse": {
+        "msl": {
+            "ConUS": (0, 1000),
+            "Europe": (0, 1600),
+        },
+    },
+    "crmse": {
+        "msl": {
+            "ConUS": (0, 1000),
+            "Europe": (0, 1600),
+        },
+    },
+    "mae": {
+        "msl": {
+            "ConUS": (0, 700),
+            "Europe": (0, 1200),
+        },
+    },
+    "error_std": {
+        "msl": {
+            "ConUS": (0, 1000),
+            "Europe": (0, 1600),
+        },
+    },
+    "nrmse": {
+        "msl": {
+            "ConUS": (0, 1.2),
+            "Europe": (0, 1),
+        },
+    },
+    "ncrmse": {
+        "msl": {
+            "ConUS": (0, 1),
+            "Europe": (0, 1.2),
+        },
+    },
+    "nmae": {
+        "msl": {
+            "ConUS": (0, 0.8),
+            "Europe": (0, 1),
+        },
+    },
+    "crps": {
+        "msl": {
+            "ConUS": (0, 600),
+            "Europe": (0, 1000),
+        },
+    },
+    "spread": {
+        "msl": {
+            "ConUS": (0, 250),
+            "Europe": (0, 600),
+        },
+    },
+    # Signed metrics and zero-centered skill/correlation scores
+    "bias": {
+        "msl": {
+            "ConUS": (-200, 200),
+            "Europe": (-300, 300),
+        },
+    },
+    "nbias": {
+        "msl": {
+            "ConUS": (-0.3, 0.3),
+            "Europe": (-0.5, 0.5),
+        },
+    },
 }
 
 # Profiles

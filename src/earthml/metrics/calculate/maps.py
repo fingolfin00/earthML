@@ -73,6 +73,38 @@ def _resolve_metric_map_cmap(
 ) -> str:
     return config.maps.metric_cmaps.get(metric_name, config.maps.metric_cmap_default)
 
+def _configured_metric_map_limits(
+    *,
+    config: CalculateMetricsConfig,
+    metric_name: str,
+    variable: str,
+    map_region: str | None,
+) -> tuple[float | None, float | None] | None:
+    metric_limits = config.maps.metric_limits.get(metric_name)
+    if not isinstance(metric_limits, dict):
+        return None
+
+    candidate_variable_keys: list[str | None] = [variable, "*", "default"]
+    candidate_region_keys: list[str | None] = []
+    if map_region is not None:
+        candidate_region_keys.append(map_region)
+    candidate_region_keys.extend(["*", "default"])
+
+    for variable_key in candidate_variable_keys:
+        if variable_key is None:
+            continue
+        variable_limits = metric_limits.get(variable_key)
+        if not isinstance(variable_limits, dict):
+            continue
+        for region_key in candidate_region_keys:
+            if region_key is None:
+                continue
+            vlimits = variable_limits.get(region_key)
+            if isinstance(vlimits, tuple) and len(vlimits) == 2:
+                return vlimits
+
+    return None
+
 def _reduce_extra_map_dims(da: xr.DataArray) -> xr.DataArray:
     lat_dim = da.earthml.guessed_dims.latitude
     lon_dim = da.earthml.guessed_dims.longitude
@@ -403,6 +435,18 @@ def save_field_and_metric_map_plots(
                                     task_id,
                                     description=f"Maps | {map_region or 'unknown'} | {variable} | {metric_type} | {metric_name}",
                                 )
+
+                            vlimits = _configured_metric_map_limits(
+                                config=config,
+                                metric_name=metric_name,
+                                variable=variable,
+                                map_region=map_region,
+                            )
+                            if vlimits is not None:
+                                vmin, vmax = vlimits[0], vlimits[1]
+                            else:
+                                vmin, vmax = shared_vmin, shared_vmax
+
                             plot_temporal_mean_map(
                                 da_sel,
                                 save_path=save_path,
@@ -414,8 +458,8 @@ def save_field_and_metric_map_plots(
                                 extent=extent,
                                 cbar_label=_map_cbar_label(variable=variable, unit=base_unit),
                                 cmap=_resolve_metric_map_cmap(metric_name, config=config),
-                                vmin=shared_vmin,
-                                vmax=shared_vmax,
+                                vmin=vmin,
+                                vmax=vmax,
                                 lon_tick_step=config.maps.lon_tick_step,
                                 lat_tick_step=config.maps.lat_tick_step,
                             )

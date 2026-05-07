@@ -2,6 +2,7 @@ from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Sequence
 from itertools import product
+from copy import deepcopy
 
 import joblib
 import numpy as np
@@ -780,3 +781,19 @@ def _leadtime_linestyle_map(values: list[object]) -> dict[object, str]:
         value: linestyles[idx % len(linestyles)]
         for idx, value in enumerate(values)
     }
+
+
+def deep_merge(base, override):
+    result = deepcopy(base)
+
+    for key, value in override.items():
+        if (
+            key in result
+            and isinstance(result[key], dict)
+            and isinstance(value, dict)
+        ):
+            result[key] = deep_merge(result[key], value)
+        else:
+            result[key] = deepcopy(value)
+
+    return result

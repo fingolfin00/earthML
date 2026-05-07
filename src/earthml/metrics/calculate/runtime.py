@@ -27,7 +27,9 @@ from .dataclasses import (
 )
 from .constants import (
     CALCULATE_METRICS_ITEMS,
-    METRIC_CMAPS,
+    METRIC_MAPS_CMAPS,
+    METRIC_MAPS_DEFAULT_LIMITS,
+    METRIC_MAPS_VAR_OVERRIDE_LIMITS,
     PROFILE_METRICS,
     PROFILE_COMBINED_VARS_METRICS,
     NORMALIZED_METRICS,
@@ -49,6 +51,7 @@ from .utils import (
     _format_axis_display_name,
     _table_output_folder,
     _get_variable_table_color,
+    deep_merge,
 )
 
 from .timeseries import save_field_timeseries_plots
@@ -189,8 +192,12 @@ class CalculateMetricsRuntime:
                 field_cmap="jet",
                 # "mean" averages realizations before plotting. "members" saves one map per realization.
                 realization_mode="mean",
-                metric_cmaps=METRIC_CMAPS,
+                metric_cmaps=METRIC_MAPS_CMAPS,
                 metric_cmap_default="viridis",
+                metric_limits=deep_merge(
+                    METRIC_MAPS_DEFAULT_LIMITS,
+                    METRIC_MAPS_VAR_OVERRIDE_LIMITS,
+                ),
                 lon_tick_step=10.0,
                 lat_tick_step=10.0,
             ) if self.maps else None,
