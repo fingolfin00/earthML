@@ -83,7 +83,7 @@ class CalculateMetricsGlobalConfig:
 
     @property
     def plot_root(self) -> Path:
-        return self.exp_root_folder / self.plot_folder_name
+        return self.exp_root_folder / self.plot_folder_name / self.exp_mode
 
 
 @dataclass(slots=True, kw_only=True)

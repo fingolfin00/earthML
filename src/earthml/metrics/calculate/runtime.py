@@ -246,7 +246,7 @@ class CalculateMetricsRuntime:
             ) if self.scoreboard else None,
         )
 
-        self.plot_folder = self.config.global_config.exp_root_folder / self.config.global_config.plot_folder_name
+        self.plot_folder = self.config.global_config.plot_root
 
         
     def start(self):
