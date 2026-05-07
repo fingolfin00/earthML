@@ -255,7 +255,7 @@ class CalculateMetricsScoreboardConfig:
 class CalculateMetricsModelConfig:
     truth_model: str
     reference_model: str
-    corrected_model: str
+    corrected_model: str | None
     gain_label: str
     display_names: dict[str, str]
     model_colors: dict[str, str]
@@ -266,6 +266,9 @@ class CalculateMetricsModelConfig:
             self.truth_model,
             self.reference_model,
             self.corrected_model,
+        ] if self.corrected_model is not None else [
+            self.truth_model,
+            self.reference_model,
         ]
 
     @property
@@ -273,11 +276,13 @@ class CalculateMetricsModelConfig:
         return [
             self.reference_model,
             self.corrected_model,
+        ] if self.corrected_model is not None else [
+            self.reference_model,
         ]
 
     @property
-    def difference_model(self) -> str:
-        return f"{self.corrected_model}-{self.reference_model}"
+    def difference_model(self) -> str | None:
+        return f"{self.corrected_model}-{self.reference_model}" if self.corrected_model is not None else None
 
     @property
     def table_model_order(self) -> list[str]:
@@ -285,6 +290,8 @@ class CalculateMetricsModelConfig:
             self.reference_model,
             self.corrected_model,
             self.gain_label,
+        ] if self.corrected_model is not None else [
+            self.reference_model,
         ]
 
 

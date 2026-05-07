@@ -95,9 +95,9 @@ class CalculateMetricsRuntime:
     # Labels
     truth: str = "an"
     reference: str = "fc"
-    corrected: str = "pr"
+    corrected: str | None = "pr"
     gain: str = "gain"
-    diff: str = "pr-fc"
+    diff: str | None = "pr-fc"
     # Filters
     leadtime: list[int] | None = None
     variable: list[str] | None = None
@@ -170,6 +170,9 @@ class CalculateMetricsRuntime:
                     self.reference: self.reference.upper(),
                     self.corrected: "MLFC" if self.reference=="fc" else self.corrected.upper(),
                     self.gain: self.gain.capitalize(),
+                } if self.reference is not None else {
+                    self.truth: self.truth.upper(),
+                    self.reference: self.reference.upper(),
                 },
                 model_colors={
                     self.truth: "tab:orange",
