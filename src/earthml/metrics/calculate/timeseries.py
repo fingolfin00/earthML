@@ -170,9 +170,6 @@ def _set_combined_leadtime_legend(
     if handles:
         ax.legend(handles=handles, fontsize=9) #, title=legend_title)
 
-def _metric_output_group(metric_type: str) -> str:
-    return "deterministic" if metric_type == "deterministic" else "ensemble"
-
 def _build_model_difference_da(
     corrected: xr.DataArray,
     reference: xr.DataArray,
@@ -556,7 +553,7 @@ def save_field_timeseries_plots(
                         plot_root=plot_folder,
                         variable=variable,
                         subfolder="timeseries",
-                        output_group=_metric_output_group(metric_type),
+                        output_group=metric_type,
                         item_name=metric_name,
                     )
                     da_metric = da_var.sel(metric=metric_name, drop=True)
