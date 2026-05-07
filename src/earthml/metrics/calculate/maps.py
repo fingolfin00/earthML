@@ -11,7 +11,9 @@ from ...plots import plot_temporal_mean_map
 from .dataclasses import CalculateMetricsConfig
 from .utils import (
     _apply_xarray_filters,
+    _context_filename_suffix,
     _context_selection_entries,
+    _context_title_suffix,
     _realization_dim,
     _get_da_unit,
     _format_variable_display_name,
@@ -24,6 +26,52 @@ from .utils import (
 
 logger = get_logger(__name__)
 
+
+def _realization_filename_fragment(realization_value: object | None) -> str:
+    if realization_value is None:
+        return ""
+    return f"_realization_{realization_value}"
+
+def _realization_label(realization_value: object | None) -> str:
+    if realization_value is None:
+        return ""
+    return f" | realization={realization_value}"
+
+def _map_cbar_label(*, variable: str, unit: str | None) -> str:
+    label = _format_variable_display_name(variable)
+    if unit:
+        return f"{label} [{unit}]"
+    return label
+
+def _metric_output_group(metric_type: str) -> str:
+    return metric_type
+
+def _shared_map_limits(*arrays: xr.DataArray) -> tuple[float | None, float | None]:
+    finite_values: list[np.ndarray] = []
+    for array in arrays:
+        values = np.asarray(array.values, dtype=float).ravel()
+        finite = values[np.isfinite(values)]
+        if finite.size:
+            finite_values.append(finite)
+    if not finite_values:
+        return None, None
+    combined = np.concatenate(finite_values)
+    return float(combined.min()), float(combined.max())
+
+def _symmetric_map_limits(array: xr.DataArray) -> tuple[float | None, float | None]:
+    values = np.asarray(array.values, dtype=float).ravel()
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return None, None
+    bound = float(np.max(np.abs(finite)))
+    return -bound, bound
+
+def _resolve_metric_map_cmap(
+    metric_name: str,
+    *,
+    config: CalculateMetricsConfig,
+) -> str:
+    return config.maps.metric_cmaps.get(metric_name, config.maps.metric_cmap_default)
 
 def _reduce_extra_map_dims(da: xr.DataArray) -> xr.DataArray:
     lat_dim = da.earthml.guessed_dims.latitude
@@ -341,11 +389,11 @@ def save_field_and_metric_map_plots(
                                 ),
                                 extent=extent,
                                 cbar_label=_map_cbar_label(variable=variable, unit=base_unit),
-                                cmap=_resolve_metric_map_cmap(metric_name),
+                                cmap=_resolve_metric_map_cmap(metric_name, config=config),
                                 vmin=shared_vmin,
                                 vmax=shared_vmax,
-                                lon_tick_step=MAP_PLOT_KNOBS["lon_tick_step"],
-                                lat_tick_step=MAP_PLOT_KNOBS["lat_tick_step"],
+                                lon_tick_step=config.maps.lon_tick_step,
+                                lat_tick_step=config.maps.lat_tick_step,
                             )
                             saved_paths.append(save_path)
                             if progress is not None and task_id is not None:
@@ -355,9 +403,9 @@ def save_field_and_metric_map_plots(
                                 f"model={model_name} region={map_region or 'unknown'} to: {save_path}"
                             )
 
-                    reference_model = MODEL_KNOBS["reference_model"]
-                    corrected_model = MODEL_KNOBS["corrected_model"]
-                    difference_model = DIFFERENCE_MODEL
+                    reference_model = config.models.reference_model
+                    corrected_model = config.models.corrected_model
+                    difference_model = config.models.difference_model
                     if reference_model in per_model_maps and corrected_model in per_model_maps:
                         metric_folder = _get_variable_output_item_folder(
                             plot_root=plot_folder,
@@ -400,7 +448,7 @@ def save_field_and_metric_map_plots(
                                     save_path=diff_save_path,
                                     title=_map_title(
                                         metric_label,
-                                        MODEL_DISPLAY_NAMES[difference_model],
+                                        config.models.display_names.get(difference_model, difference_model),
                                         f"{context_suffix}{_realization_label(realization_value)}" if context_suffix else _realization_label(realization_value).lstrip(" |"),
                                     ),
                                     extent=extent,
@@ -408,8 +456,8 @@ def save_field_and_metric_map_plots(
                                     cmap="RdBu_r",
                                     vmin=diff_vmin,
                                     vmax=diff_vmax,
-                                    lon_tick_step=MAP_PLOT_KNOBS["lon_tick_step"],
-                                    lat_tick_step=MAP_PLOT_KNOBS["lat_tick_step"],
+                                    lon_tick_step=config.maps.lon_tick_step,
+                                    lat_tick_step=config.maps.lat_tick_step,
                                 )
                                 saved_paths.append(diff_save_path)
                                 if progress is not None and task_id is not None:
