@@ -622,6 +622,8 @@ class CalculateMetricsRuntime:
 
             if self.config.timeseries is not None:
                 for payload in output_payloads:
+                    if payload["metric_group_label"] != "all":
+                        continue
                     ts_task = progress.add_task(
                         f"Generating field timeseries ({payload['region']} | {payload['scope_label']})",
                         total=len(payload["filtered_variables"]),
