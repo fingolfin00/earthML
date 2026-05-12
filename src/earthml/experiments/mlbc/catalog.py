@@ -117,6 +117,7 @@ def make_region ():
         atlanticbox=Region(name="AtlanticBox", lon=(-18, 1), lat=(46, 30)),
         satlantic=Region(name="SouthAtlantic", lon=(-70, 30), lat=(0, -80)),
         indian=Region(name="Indian", lon=(20, 140), lat=(30, -60)),
+        world=Region(name="World", lon=(-179, 180), lat=(90, -90)),
     )
 
 def make_catalog (
