@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 from rich.progress import Progress
@@ -237,6 +238,154 @@ def _common_map_realization_count(
 def _map_title(*parts: str | None) -> str:
     return " | ".join(part for part in parts if part)
 
+
+def _grouped_map_title_context(
+    context_values: dict[str, object],
+    *,
+    metric_group_label: str,
+    metric_groupby_period: str | None,
+) -> dict[str, object]:
+    if metric_group_label == "all" or metric_groupby_period in {None, "none"}:
+        return context_values
+    return {
+        key: value
+        for key, value in context_values.items()
+        if key != "leadtime"
+    }
+
+
+def _valid_time_mask_for_reference_dates(da: xr.DataArray) -> np.ndarray | None:
+    time_dim = da.earthml.guessed_dims.time
+    if time_dim is None or time_dim not in da.dims:
+        return None
+
+    valid = da.notnull()
+    reduce_dims = [dim for dim in valid.dims if dim != time_dim]
+    if reduce_dims:
+        valid = valid.any(dim=reduce_dims)
+
+    values = np.asarray(valid.values).reshape(-1)
+    if values.size != da.sizes.get(time_dim, 0):
+        return None
+    return values.astype(bool, copy=False)
+
+
+def _shift_reference_times(
+    valid_times: pd.DatetimeIndex,
+    *,
+    leadtime_value: int,
+    leadtime_unit: str,
+) -> pd.DatetimeIndex:
+    if leadtime_unit == "months":
+        return valid_times - pd.DateOffset(months=leadtime_value)
+    if leadtime_unit == "days":
+        return valid_times - pd.to_timedelta(leadtime_value, unit="D")
+    if leadtime_unit == "hours":
+        return valid_times - pd.to_timedelta(leadtime_value, unit="h")
+    return valid_times
+
+
+def _reference_forecast_start_times(
+    da: xr.DataArray,
+    *,
+    leadtime_value: object | None,
+    leadtime_unit: str,
+) -> pd.DatetimeIndex:
+    time_dim = da.earthml.guessed_dims.time
+    if time_dim is None or time_dim not in da.dims:
+        return pd.DatetimeIndex([])
+
+    if leadtime_value is None:
+        return pd.DatetimeIndex([])
+
+    try:
+        leadtime_int = int(leadtime_value)
+    except (TypeError, ValueError):
+        return pd.DatetimeIndex([])
+
+    time_mask = _valid_time_mask_for_reference_dates(da)
+
+    if "reftime" in da.coords and time_dim in da["reftime"].dims:
+        reference_values = pd.to_datetime(np.asarray(da["reftime"].values).reshape(-1), errors="coerce")
+    else:
+        valid_times = pd.to_datetime(np.asarray(da[time_dim].values).reshape(-1), errors="coerce")
+        reference_values = _shift_reference_times(
+            pd.DatetimeIndex(valid_times),
+            leadtime_value=leadtime_int,
+            leadtime_unit=leadtime_unit,
+        )
+
+    reference_index = pd.DatetimeIndex(reference_values)
+    if time_mask is not None and len(time_mask) == len(reference_index):
+        reference_index = reference_index[time_mask]
+    return reference_index.dropna()
+
+
+def _format_reference_forecast_start_label(
+    da: xr.DataArray,
+    *,
+    leadtime_value: object | None,
+    leadtime_unit: str,
+    metric_group_label: str,
+    metric_groupby_period: str | None,
+) -> str | None:
+    if metric_group_label == "all" or metric_groupby_period in {None, "none"}:
+        return None
+
+    reference_times = _reference_forecast_start_times(
+        da,
+        leadtime_value=leadtime_value,
+        leadtime_unit=leadtime_unit,
+    )
+    if reference_times.empty:
+        return None
+
+    if metric_groupby_period in {"month", "season", "dayofyear"}:
+        labels = pd.Index(reference_times.strftime("%b %d")).unique().tolist()
+        if len(labels) == 1:
+            return labels[0]
+        if len(labels) <= 4:
+            return ", ".join(labels)
+        return f"{labels[0]} to {labels[-1]}"
+
+    unique_times = pd.DatetimeIndex(reference_times.unique()).sort_values()
+    if len(unique_times) == 1:
+        return unique_times[0].strftime("%Y-%m-%d")
+    return f"{unique_times[0]:%Y-%m-%d} to {unique_times[-1]:%Y-%m-%d}"
+
+
+def _grouped_map_subtitle(
+    da: xr.DataArray,
+    *,
+    context_values: dict[str, object],
+    leadtime_unit: str,
+    metric_group_label: str,
+    metric_groupby_period: str | None,
+) -> str | None:
+    if metric_group_label == "all" or metric_groupby_period in {None, "none"}:
+        return None
+
+    leadtime_value = context_values.get("leadtime")
+    if leadtime_value is None or str(leadtime_value) == "":
+        return None
+
+    parts: list[str] = []
+    reference_label = _format_reference_forecast_start_label(
+        da,
+        leadtime_value=leadtime_value,
+        leadtime_unit=leadtime_unit,
+        metric_group_label=metric_group_label,
+        metric_groupby_period=metric_groupby_period,
+    )
+    if reference_label:
+        parts.append(f"Reference forecast start date={reference_label}")
+
+    leadtime_label = _context_title_suffix({"leadtime": leadtime_value}, leadtime_unit=leadtime_unit)
+    if leadtime_label:
+        parts.append(leadtime_label)
+
+    return " | ".join(parts) if parts else None
+
 def _region_extent_for_plot(
     *,
     data: xr.DataArray,
@@ -270,6 +419,8 @@ def save_field_and_metric_map_plots(
     filters: dict | None,
     config: CalculateMetricsConfig,
     realization_mode: bool = True,
+    metric_group_label: str = "all",
+    metric_groupby_period: str | None = None,
     region_extents: dict[str, tuple[float, float, float, float]] | None = None,
     progress: Progress | None = None,
     task_id: int | None = None,
@@ -381,6 +532,11 @@ def save_field_and_metric_map_plots(
                     continue
                 da_sel = _reduce_extra_map_dims(da_sel)
                 base_unit = _get_da_unit(da_sel)
+                context_title_values = _grouped_map_title_context(
+                    context_values,
+                    metric_group_label=metric_group_label,
+                    metric_groupby_period=metric_groupby_period,
+                )
                 for realization_value, da_plot in _map_realization_slices(
                     da_sel,
                     realization_mode=realization_mode,
@@ -408,7 +564,14 @@ def save_field_and_metric_map_plots(
                             _format_variable_display_name(variable),
                             config.models.display_names.get(model_name, str(model_name)),
                             f"Temporal mean{_realization_label(realization_value)}",
-                            _context_title_suffix(context_values, leadtime_unit=leadtime_unit),
+                            _context_title_suffix(context_title_values, leadtime_unit=leadtime_unit),
+                        ),
+                        subtitle=_grouped_map_subtitle(
+                            da_plot,
+                            context_values=context_values,
+                            leadtime_unit=leadtime_unit,
+                            metric_group_label=metric_group_label,
+                            metric_groupby_period=metric_groupby_period,
                         ),
                         extent=extent,
                         cbar_label=_map_cbar_label(variable=variable, unit=base_unit),
@@ -470,7 +633,12 @@ def save_field_and_metric_map_plots(
                     if not per_model_maps:
                         continue
 
-                    context_suffix = _context_title_suffix(context_values, leadtime_unit=leadtime_unit)
+                    context_title_values = _grouped_map_title_context(
+                        context_values,
+                        metric_group_label=metric_group_label,
+                        metric_groupby_period=metric_groupby_period,
+                    )
+                    context_suffix = _context_title_suffix(context_title_values, leadtime_unit=leadtime_unit)
                     sample_da = next(iter(next(iter(per_model_maps.values())).values()))
                     extent = _region_extent_for_plot(
                         data=sample_da,
@@ -509,6 +677,8 @@ def save_field_and_metric_map_plots(
                                 metric_name=metric_name,
                                 variable=variable,
                                 map_region=map_region,
+                                metric_group_label=metric_group_label,
+                                metric_groupby_period=metric_groupby_period,
                             )
                             if vlimits is not None:
                                 vmin, vmax = vlimits[0], vlimits[1]
@@ -522,6 +692,13 @@ def save_field_and_metric_map_plots(
                                     metric_label,
                                     config.models.display_names.get(model_name, model_name),
                                     f"{context_suffix}{_realization_label(realization_value)}" if context_suffix else _realization_label(realization_value).lstrip(" |"),
+                                ),
+                                subtitle=_grouped_map_subtitle(
+                                    da_sel,
+                                    context_values=context_values,
+                                    leadtime_unit=leadtime_unit,
+                                    metric_group_label=metric_group_label,
+                                    metric_groupby_period=metric_groupby_period,
                                 ),
                                 extent=extent,
                                 cbar_label=_map_cbar_label(variable=variable, unit=base_unit),
@@ -599,6 +776,13 @@ def save_field_and_metric_map_plots(
                                         metric_label,
                                         config.models.display_names.get(difference_model, difference_model),
                                         f"{context_suffix}{_realization_label(realization_value)}" if context_suffix else _realization_label(realization_value).lstrip(" |"),
+                                    ),
+                                    subtitle=_grouped_map_subtitle(
+                                        diff_da,
+                                        context_values=context_values,
+                                        leadtime_unit=leadtime_unit,
+                                        metric_group_label=metric_group_label,
+                                        metric_groupby_period=metric_groupby_period,
                                     ),
                                     extent=extent,
                                     cbar_label=_map_cbar_label(variable=variable, unit=base_unit),

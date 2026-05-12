@@ -220,7 +220,7 @@ class CalculateMetricsRuntime:
     memory_limit: str
     root_path: str | Path
     exp_mode: MLBCExperimentMode = "test"
-    metrics: str | None = None # None means all available metrics
+    metrics: list[str] | str | None = None # None means all available metrics
     items: list = field(default_factory=lambda: list(CALCULATE_METRICS_ITEMS))
     log_level: Literal["info", "debug"] = "info"
     print_user_config: bool = False
@@ -663,6 +663,8 @@ class CalculateMetricsRuntime:
                         filters=payload["filters"],
                         config=self.config,
                         realization_mode=self.config.maps.realization_mode,
+                        metric_group_label=payload["metric_group_label"],
+                        metric_groupby_period=self.metric_groupby_period,
                         region_extents=region_extents,
                         progress=progress,
                         task_id=map_task,

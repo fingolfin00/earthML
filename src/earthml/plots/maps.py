@@ -115,6 +115,7 @@ def plot_temporal_mean_map(
     *,
     save_path: str | Path,
     title: str | None = None,
+    subtitle: str | None = None,
     extent: tuple[float, float, float, float] | None = None,
     cbar_label: str = "",
     cmap: str = "jet",
@@ -136,7 +137,7 @@ def plot_temporal_mean_map(
         figsize=figsize,
         subplot_kw={"projection": ccrs.PlateCarree(central_longitude=center_lon)},
     )
-    fig.subplots_adjust(right=0.88)
+    fig.subplots_adjust(right=0.88, top=0.88 if subtitle else 0.94)
     norm = None
     if vmin is not None and vmax is not None:
         norm = TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax) if vmin < 0.0 < vmax else Normalize(vmin=vmin, vmax=vmax)
@@ -170,8 +171,13 @@ def plot_temporal_mean_map(
         gl.xlocator = mticker.MultipleLocator(lon_tick_step)
     if lat_tick_step > 0:
         gl.ylocator = mticker.MultipleLocator(lat_tick_step)
-    if title:
+    if title and subtitle:
+        fig.suptitle(title, fontsize=10)
+        ax.set_title(subtitle, fontsize=9, color="0.35", pad=8)
+    elif title:
         ax.set_title(title, fontsize=10)
+    elif subtitle:
+        ax.set_title(subtitle, fontsize=9, color="0.35", pad=8)
 
     ax_pos = ax.get_position()
     cax = fig.add_axes([ax_pos.x1 + 0.02, ax_pos.y0, 0.02, ax_pos.height])
