@@ -106,7 +106,7 @@ class CalculateMetricsMapConfig:
     realization_mode: Literal["mean", "members"]
     metric_cmaps: dict[str, str]
     metric_cmap_default: str
-    metric_limits: dict[str, dict[str, dict[str, tuple]]]
+    metric_limits: dict[str, dict[str, dict[str, Any]]]
     lon_tick_step: float
     lat_tick_step: float
 

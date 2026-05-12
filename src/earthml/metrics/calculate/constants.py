@@ -310,8 +310,20 @@ METRIC_MAPS_VAR_OVERRIDE_LIMITS = {
     # Non-negative error magnitudes
     "rmse": {
         "msl": {
-            "ConUS": (0, 1000),
-            "Europe": (0, 1600),
+            "ConUS": {
+                "all": (0, 1000),
+                "months": {
+                    "01": (0, None),
+                },
+                "diff": (-500, 500),
+            },
+            "Europe": {
+                "all": (0, 1600),
+                "months": {
+                    "01": (0, None),
+                },
+                "diff": (0, None),
+            },
         },
     },
     "crmse": {

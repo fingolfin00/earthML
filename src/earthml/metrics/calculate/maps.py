@@ -27,6 +27,9 @@ from .utils import (
 logger = get_logger(__name__)
 
 
+MapLimitTuple = tuple[float | None, float | None]
+
+
 def _realization_filename_fragment(realization_value: object | None) -> str:
     if realization_value is None:
         return ""
@@ -73,13 +76,64 @@ def _resolve_metric_map_cmap(
 ) -> str:
     return config.maps.metric_cmaps.get(metric_name, config.maps.metric_cmap_default)
 
+
+def _is_map_limit_tuple(value: object) -> bool:
+    return isinstance(value, tuple) and len(value) == 2
+
+
+def _metric_group_container_keys(metric_groupby_period: str | None) -> list[str]:
+    if metric_groupby_period in {None, "none"}:
+        return []
+
+    period_key = str(metric_groupby_period)
+    plural_map = {
+        "month": "months",
+        "season": "seasons",
+    }
+    plural_key = plural_map.get(period_key, f"{period_key}s")
+    keys = [plural_key, period_key]
+    return list(dict.fromkeys(keys))
+
+
+def _resolve_map_limit_scope(
+    scope_entry: object,
+    *,
+    metric_group_label: str | None,
+    metric_groupby_period: str | None,
+) -> MapLimitTuple | None:
+    if _is_map_limit_tuple(scope_entry):
+        return scope_entry
+
+    if not isinstance(scope_entry, dict):
+        return None
+
+    if metric_group_label not in {None, "", "all"} and metric_groupby_period not in {None, "none"}:
+        for container_key in _metric_group_container_keys(metric_groupby_period):
+            grouped_entry = scope_entry.get(container_key)
+            if not isinstance(grouped_entry, dict):
+                continue
+            for group_key in (metric_group_label, "*", "default", "all"):
+                vlimits = grouped_entry.get(group_key)
+                if _is_map_limit_tuple(vlimits):
+                    return vlimits
+
+    for default_key in ("all", "default", "*"):
+        vlimits = scope_entry.get(default_key)
+        if _is_map_limit_tuple(vlimits):
+            return vlimits
+
+    return None
+
 def _configured_metric_map_limits(
     *,
     config: CalculateMetricsConfig,
     metric_name: str,
     variable: str,
     map_region: str | None,
-) -> tuple[float | None, float | None] | None:
+    metric_group_label: str | None = None,
+    metric_groupby_period: str | None = None,
+    is_difference: bool = False,
+) -> MapLimitTuple | None:
     metric_limits = config.maps.metric_limits.get(metric_name)
     if not isinstance(metric_limits, dict):
         return None
@@ -99,8 +153,22 @@ def _configured_metric_map_limits(
         for region_key in candidate_region_keys:
             if region_key is None:
                 continue
-            vlimits = variable_limits.get(region_key)
-            if isinstance(vlimits, tuple) and len(vlimits) == 2:
+            region_limits = variable_limits.get(region_key)
+            if is_difference:
+                if not isinstance(region_limits, dict):
+                    continue
+                vlimits = _resolve_map_limit_scope(
+                    region_limits.get("diff"),
+                    metric_group_label=metric_group_label,
+                    metric_groupby_period=metric_groupby_period,
+                )
+            else:
+                vlimits = _resolve_map_limit_scope(
+                    region_limits,
+                    metric_group_label=metric_group_label,
+                    metric_groupby_period=metric_groupby_period,
+                )
+            if vlimits is not None:
                 return vlimits
 
     return None
@@ -497,11 +565,24 @@ def save_field_and_metric_map_plots(
                             for realization_value in common_realizations
                         ]
                         if diff_maps:
-                            diff_vmin, diff_vmax = _symmetric_map_limits(
+                            fallback_diff_vlimits = _symmetric_map_limits(
                                 xr.concat([diff_da for _, diff_da in diff_maps], dim="_diff_map")
                             )
                             for realization_value, diff_da in diff_maps:
                                 diff_region = _resolved_single_region_label(diff_da, filters=filters)
+                                diff_vlimits = _configured_metric_map_limits(
+                                    config=config,
+                                    metric_name=metric_name,
+                                    variable=variable,
+                                    map_region=diff_region,
+                                    metric_group_label=metric_group_label,
+                                    metric_groupby_period=metric_groupby_period,
+                                    is_difference=True,
+                                )
+                                if diff_vlimits is not None:
+                                    diff_vmin, diff_vmax = diff_vlimits
+                                else:
+                                    diff_vmin, diff_vmax = fallback_diff_vlimits
                                 diff_save_path = metric_folder / (
                                     f"{metric_type}_{metric_name}_{difference_model}_{_context_filename_suffix(context_values)}"
                                     f"{_realization_filename_fragment(realization_value)}_map.png"
