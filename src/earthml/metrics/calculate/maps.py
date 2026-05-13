@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Sequence
+from typing import Literal, Sequence
 
 import numpy as np
 import pandas as pd
@@ -725,7 +725,7 @@ def save_field_and_metric_map_plots(
     leadtime_unit: str,
     filters: dict | None,
     config: CalculateMetricsConfig,
-    realization_mode: bool = True,
+    realization_mode: Literal["mean", "members"] = "mean",
     clim_period: str = "month",
     metric_group_label: str = "all",
     metric_groupby_period: str | None = None,
@@ -737,6 +737,7 @@ def save_field_and_metric_map_plots(
     model_order = [model_name for model_name in load_models if model_name in runs]
     group_leadtimes = bool(getattr(config.maps, "group_leadtimes", False))
     average_metric_leadtimes = bool(getattr(config.maps, "average_leadtimes", False))
+    metric_realization_mode = realization_mode
     metric_window_leadtimes = group_leadtimes or average_metric_leadtimes
     window_size = int(getattr(config.maps, "leadtime_window_size", 3))
     window_stride = int(getattr(config.maps, "leadtime_window_stride", 1))
@@ -855,7 +856,7 @@ def save_field_and_metric_map_plots(
                                 if not per_model_maps:
                                     continue
                                 total += sum(
-                                    _map_realization_count(da_model, realization_mode=realization_mode)
+                                    _map_realization_count(da_model, realization_mode=metric_realization_mode)
                                     for da_model in per_model_maps.values()
                                 )
                                 reference_model = config.models.reference_model
@@ -864,7 +865,7 @@ def save_field_and_metric_map_plots(
                                     total += _common_map_realization_count(
                                         per_model_maps[reference_model],
                                         per_model_maps[corrected_model],
-                                        realization_mode=realization_mode,
+                                        realization_mode=metric_realization_mode,
                                     )
                 continue
 
@@ -917,7 +918,7 @@ def save_field_and_metric_map_plots(
                                 if not per_model_maps:
                                     continue
                                 total += sum(
-                                    _map_realization_count(da_model, realization_mode=realization_mode)
+                                    _map_realization_count(da_model, realization_mode=metric_realization_mode)
                                     for da_model in per_model_maps.values()
                                 )
                                 reference_model = config.models.reference_model
@@ -926,7 +927,7 @@ def save_field_and_metric_map_plots(
                                     total += _common_map_realization_count(
                                         per_model_maps[reference_model],
                                         per_model_maps[corrected_model],
-                                        realization_mode=realization_mode,
+                                        realization_mode=metric_realization_mode,
                                     )
                 continue
 
@@ -968,7 +969,7 @@ def save_field_and_metric_map_plots(
                             continue
 
                         total += sum(
-                            _map_realization_count(da_model, realization_mode=realization_mode)
+                            _map_realization_count(da_model, realization_mode=metric_realization_mode)
                             for da_model in per_model_maps.values()
                         )
 
@@ -978,7 +979,7 @@ def save_field_and_metric_map_plots(
                             total += _common_map_realization_count(
                                 per_model_maps[reference_model],
                                 per_model_maps[corrected_model],
-                                realization_mode=realization_mode,
+                                realization_mode=metric_realization_mode,
                             )
 
         return total
@@ -1166,7 +1167,7 @@ def save_field_and_metric_map_plots(
                                 per_model_maps[str(model_name)] = dict(
                                     _map_realization_slices(
                                         da_model,
-                                        realization_mode=realization_mode,
+                                        realization_mode=metric_realization_mode,
                                     )
                                 )
                                 if base_unit is None:
@@ -1217,7 +1218,8 @@ def save_field_and_metric_map_plots(
                                         _context_filename_suffix(window_context_values),
                                     ]
                                     save_path = metric_folder / (
-                                        f"{'_'.join(filename_parts)}{_realization_filename_fragment(realization_value)}_map.png"
+                                        f"{'_'.join(filename_parts)}"
+                                        f"{_realization_filename_fragment(realization_value)}_map.png"
                                     )
 
                                     if progress is not None and task_id is not None:
@@ -1406,7 +1408,7 @@ def save_field_and_metric_map_plots(
                                 per_model_maps[str(model_name)] = dict(
                                     _map_realization_slices(
                                         da_model,
-                                        realization_mode=realization_mode,
+                                        realization_mode=metric_realization_mode,
                                     )
                                 )
                                 if base_unit is None:
@@ -1457,7 +1459,8 @@ def save_field_and_metric_map_plots(
                                         _context_filename_suffix(window_context_values),
                                     ]
                                     save_path = metric_folder / (
-                                        f"{'_'.join(filename_parts)}{_realization_filename_fragment(realization_value)}_map.png"
+                                        f"{'_'.join(filename_parts)}"
+                                        f"{_realization_filename_fragment(realization_value)}_map.png"
                                     )
 
                                     if progress is not None and task_id is not None:
@@ -1627,7 +1630,7 @@ def save_field_and_metric_map_plots(
                         per_model_maps[str(model_name)] = dict(
                             _map_realization_slices(
                                 da_sel,
-                                realization_mode=realization_mode,
+                                realization_mode=metric_realization_mode,
                             )
                         )
                         if base_unit is None:
@@ -1669,7 +1672,8 @@ def save_field_and_metric_map_plots(
                             map_region = _resolved_single_region_label(da_sel, filters=filters)
                             filename_parts = [metric_type, metric_name, model_name, _context_filename_suffix(context_values)]
                             save_path = metric_folder / (
-                                f"{'_'.join(filename_parts)}{_realization_filename_fragment(realization_value)}_map.png"
+                                f"{'_'.join(filename_parts)}"
+                                f"{_realization_filename_fragment(realization_value)}_map.png"
                             )
 
                             if progress is not None and task_id is not None:

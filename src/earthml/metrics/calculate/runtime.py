@@ -269,6 +269,7 @@ class CalculateMetricsRuntime:
     # Items config
     maps_group_leadtimes: bool = False
     maps_average_leadtimes: bool = False
+    maps_realization_mode: Literal["mean", "members"] = "mean"
     profiles_x_axis: str = "leadtime"
     profiles_enable_combined_variable: bool = False
     metric_vs_delta_byconfig: dict[Literal["color", "marker", "shade"], str] = field(default_factory=dict)
@@ -293,6 +294,8 @@ class CalculateMetricsRuntime:
             raise ValueError(
                 "clim_period must be one of {'month', 'dayofyear', 'season', 'none', None}"
             )
+        if self.maps_realization_mode not in {"mean", "members"}:
+            raise ValueError("maps_realization_mode must be one of {'mean', 'members'}")
 
         metric_vs_delta_byconfig_default = {
             "color": "variable",
@@ -371,7 +374,7 @@ class CalculateMetricsRuntime:
                 filters=self.filters,
                 field_cmap="jet",
                 # "mean" averages realizations before plotting. "members" saves one map per realization.
-                realization_mode="mean",
+                realization_mode=self.maps_realization_mode,
                 metric_cmaps=METRIC_MAPS_CMAPS,
                 metric_cmap_default="viridis",
                 metric_limits=deep_merge(
