@@ -118,19 +118,19 @@ METRIC_MAPS_CMAPS = {
     "crmse": "jet",
     "mae": "jet",
     "error_std": "jet",
-    "nrmse": "jet",
-    "ncrmse": "jet",
-    "nmae": "jet",
-    "crps": "jet",
+    "nrmse": "WRdY",
+    "ncrmse": "WRdY",
+    "nmae": "WRdY",
+    "crps": "PiBRdY",
     "spread": "jet",
     # Signed metrics and zero-centered skill/correlation scores
-    "bias": "RdBu_r",
-    "nbias": "RdBu_r",
-    "r2": "RdBu",
+    "bias": "PiBRdY",
+    "nbias": "PiBRdY",
+    "r2": "PiBRdY",
     "corr": "PiBRdY",
     "clim_acc": "PiBRdY",
     "spatial_acc": "PiBRdY",
-    "rmse_skill_clim": "RdBu",
+    "rmse_skill_clim": "PiBRdY",
     # Positive ratios where 1 is ideal. Keep these sequential unless we also
     # introduce explicit centering around 1 in the map normalization.
     "variance_ratio": "cividis",
@@ -177,29 +177,29 @@ METRIC_MAPS_DEFAULT_LIMITS = {
     },
     "nrmse": {
         "*": {
-            "default": (0, 1),
+            "default": (0, None),
         },
         "msl": {
-            "ConUS": (0, 1),
-            "Europe": (0, 1),
+            "ConUS": (0, None),
+            "Europe": (0, None),
         },
     },
     "ncrmse": {
         "*": {
-            "default": (0, 1),
+            "default": (0, None),
         },
         "msl": {
-            "ConUS": (0, 1),
-            "Europe": (0, 1),
+            "ConUS": (0, None),
+            "Europe": (0, None),
         },
     },
     "nmae": {
         "*": {
-            "default": (0, 1),
+            "default": (0, None),
         },
         "msl": {
-            "ConUS": (0, 1),
-            "Europe": (0, 1),
+            "ConUS": (0, None),
+            "Europe": (0, None),
         },
     },
     "crps": {
