@@ -5,12 +5,14 @@ from matplotlib.colors import LinearSegmentedColormap
 PiBRdY = LinearSegmentedColormap.from_list(
     "PiBRdY",
     (
-        # Edit this gradient at https://eltos.github.io/gradient/#F84CFF-0025B3-FFFFFF-C7030D-F6C401
+    # Edit this gradient at https://eltos.github.io/gradient/#0:F84CFF-16.7:5A00B3-33.3:0032F1-50:FFFFFF-66.7:C7030D-83.3:ECAE04-100:F6EC01
         (0.000, (0.973, 0.298, 1.000)),
-        (0.250, (0.000, 0.145, 0.702)),
+        (0.167, (0.353, 0.000, 0.702)),
+        (0.333, (0.000, 0.196, 0.945)),
         (0.500, (1.000, 1.000, 1.000)),
-        (0.750, (0.780, 0.012, 0.051)),
-        (1.000, (0.965, 0.769, 0.004)),
+        (0.667, (0.780, 0.012, 0.051)),
+        (0.833, (0.925, 0.682, 0.016)),
+        (1.000, (0.965, 0.925, 0.004)),
     ),
 )
 
