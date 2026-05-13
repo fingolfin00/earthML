@@ -41,6 +41,7 @@ logger = get_logger(__name__)
 
 MapLimitTuple = tuple[float | None, float | None]
 LEADTIME_WINDOW_CONTEXT_KEY = "leadtime_window"
+LEADTIME_AVG_WINDOW_CONTEXT_KEY = "leadtime_avg_window"
 
 
 def _realization_filename_fragment(realization_value: object | None) -> str:
@@ -262,7 +263,7 @@ def _grouped_map_title_context(
     return {
         key: value
         for key, value in context_values.items()
-        if key != "leadtime"
+        if key not in {"leadtime", LEADTIME_WINDOW_CONTEXT_KEY, LEADTIME_AVG_WINDOW_CONTEXT_KEY}
     }
 
 
@@ -443,6 +444,7 @@ def _window_context_values(
     context_values: dict[str, object],
     *,
     leadtime_window_label: str | None,
+    window_context_key: str = LEADTIME_WINDOW_CONTEXT_KEY,
 ) -> dict[str, object]:
     out = {
         key: value
@@ -450,7 +452,7 @@ def _window_context_values(
         if key != "leadtime"
     }
     if leadtime_window_label is not None:
-        out[LEADTIME_WINDOW_CONTEXT_KEY] = leadtime_window_label
+        out[window_context_key] = leadtime_window_label
     return out
 
 
@@ -462,18 +464,23 @@ def _window_context_title(
     base_context = {
         key: value
         for key, value in context_values.items()
-        if key != LEADTIME_WINDOW_CONTEXT_KEY
+        if key not in {LEADTIME_WINDOW_CONTEXT_KEY, LEADTIME_AVG_WINDOW_CONTEXT_KEY}
     }
     parts: list[str] = []
     base_title = _context_title_suffix(base_context, leadtime_unit=leadtime_unit)
     if base_title:
         parts.append(base_title)
-    leadtime_window_label = context_values.get(LEADTIME_WINDOW_CONTEXT_KEY)
-    if leadtime_window_label is not None:
+    for key, label_prefix in (
+        (LEADTIME_WINDOW_CONTEXT_KEY, "Lead time window"),
+        (LEADTIME_AVG_WINDOW_CONTEXT_KEY, "Lead time average window"),
+    ):
+        leadtime_window_label = context_values.get(key)
+        if leadtime_window_label is None:
+            continue
         if leadtime_unit:
-            parts.append(f"Lead time window [{leadtime_unit}]={leadtime_window_label}")
+            parts.append(f"{label_prefix} [{leadtime_unit}]={leadtime_window_label}")
         else:
-            parts.append(f"Lead time window={leadtime_window_label}")
+            parts.append(f"{label_prefix}={leadtime_window_label}")
     return " | ".join(parts) if parts else None
 
 
@@ -496,12 +503,17 @@ def _window_context_subtitle(
     if base_subtitle:
         parts.append(base_subtitle)
 
-    leadtime_window_label = context_values.get(LEADTIME_WINDOW_CONTEXT_KEY)
-    if leadtime_window_label is not None:
+    for key, label_prefix in (
+        (LEADTIME_WINDOW_CONTEXT_KEY, "Lead time window"),
+        (LEADTIME_AVG_WINDOW_CONTEXT_KEY, "Lead time average window"),
+    ):
+        leadtime_window_label = context_values.get(key)
+        if leadtime_window_label is None:
+            continue
         if leadtime_unit:
-            parts.append(f"Lead time window [{leadtime_unit}]={leadtime_window_label}")
+            parts.append(f"{label_prefix} [{leadtime_unit}]={leadtime_window_label}")
         else:
-            parts.append(f"Lead time window={leadtime_window_label}")
+            parts.append(f"{label_prefix}={leadtime_window_label}")
 
     return " | ".join(parts) if parts else None
 
@@ -527,6 +539,19 @@ def _reduce_field_leadtime_window(
     out = da
     leadtime_dim = out.earthml.guessed_dims.leadtime
     if leadtime_window_values is not None and leadtime_dim is not None and leadtime_dim in out.dims:
+        out = out.mean(dim=leadtime_dim, skipna=True)
+    return out
+
+
+def _average_metric_leadtime_window(
+    da: xr.DataArray,
+    *,
+    leadtime_window_values: tuple[object, ...] | None,
+) -> xr.DataArray:
+    out = da
+    leadtime_dim = out.earthml.guessed_dims.leadtime
+    if leadtime_window_values is not None and leadtime_dim is not None and leadtime_dim in out.dims:
+        out = out.sel({leadtime_dim: list(leadtime_window_values)}, drop=True)
         out = out.mean(dim=leadtime_dim, skipna=True)
     return out
 
@@ -711,9 +736,17 @@ def save_field_and_metric_map_plots(
     saved_paths: list[Path] = []
     model_order = [model_name for model_name in load_models if model_name in runs]
     group_leadtimes = bool(getattr(config.maps, "group_leadtimes", False))
+    average_metric_leadtimes = bool(getattr(config.maps, "average_leadtimes", False))
+    metric_window_leadtimes = group_leadtimes or average_metric_leadtimes
     window_size = int(getattr(config.maps, "leadtime_window_size", 3))
     window_stride = int(getattr(config.maps, "leadtime_window_stride", 1))
-    context_dims = _map_context_dims(group_leadtimes=group_leadtimes)
+    field_context_dims = _map_context_dims(group_leadtimes=group_leadtimes)
+    metric_context_dims = _map_context_dims(group_leadtimes=metric_window_leadtimes)
+    metric_window_context_key = (
+        LEADTIME_AVG_WINDOW_CONTEXT_KEY
+        if average_metric_leadtimes
+        else LEADTIME_WINDOW_CONTEXT_KEY
+    )
     metric_inventory = _available_metric_map_inventory(metrics)
     grouped_metric_cache: dict[
         tuple[tuple[tuple[str, object], ...], tuple[object, ...] | None],
@@ -733,7 +766,7 @@ def save_field_and_metric_map_plots(
                     continue
 
                 da = _apply_xarray_filters(ds[variable], filters)
-                for selection, context_values in _context_selection_entries(da, context_dims=context_dims):
+                for selection, context_values in _context_selection_entries(da, context_dims=field_context_dims):
                     da_context = da.sel({dim: value for dim, value in selection.items() if dim in da.dims}, drop=True)
                     if da_context.size == 0:
                         continue
@@ -769,7 +802,7 @@ def save_field_and_metric_map_plots(
                 da_context_source = _apply_xarray_filters(context_ds[variable], filters)
                 for selection, context_values in _context_selection_entries(
                     da_context_source,
-                    context_dims=context_dims,
+                    context_dims=metric_context_dims,
                 ):
                     da_context = da_context_source.sel(
                         {dim: value for dim, value in selection.items() if dim in da_context_source.dims},
@@ -817,6 +850,68 @@ def save_field_and_metric_map_plots(
                                     da_model = da_metric.sel(model=model_name, drop=True) if model_name is not None else da_metric
                                     if da_model.size == 0:
                                         continue
+                                    da_model = _reduce_extra_map_dims(da_model)
+                                    per_model_maps[str(model_name)] = da_model
+                                if not per_model_maps:
+                                    continue
+                                total += sum(
+                                    _map_realization_count(da_model, realization_mode=realization_mode)
+                                    for da_model in per_model_maps.values()
+                                )
+                                reference_model = config.models.reference_model
+                                corrected_model = config.models.corrected_model
+                                if corrected_model is not None and reference_model in per_model_maps and corrected_model in per_model_maps:
+                                    total += _common_map_realization_count(
+                                        per_model_maps[reference_model],
+                                        per_model_maps[corrected_model],
+                                        realization_mode=realization_mode,
+                                    )
+                continue
+
+            if average_metric_leadtimes:
+                for metric_type, section_dict in metrics.items():
+                    ds_map = section_dict.get("map", xr.Dataset())
+                    if not isinstance(ds_map, xr.Dataset) or variable not in ds_map.data_vars:
+                        continue
+
+                    da_var = _apply_xarray_filters(ds_map[variable], filters)
+                    if "metric" not in da_var.dims:
+                        continue
+
+                    metric_values = [str(value) for value in da_var["metric"].values.tolist()]
+                    model_values = (
+                        [str(value) for value in da_var["model"].values.tolist()]
+                        if "model" in da_var.dims
+                        else [None]
+                    )
+
+                    for metric_name in metric_values:
+                        da_metric = da_var.sel(metric=metric_name, drop=True)
+                        for selection, context_values in _context_selection_entries(
+                            da_metric,
+                            context_dims=metric_context_dims,
+                        ):
+                            da_context = da_metric.sel(
+                                {dim: value for dim, value in selection.items() if dim in da_metric.dims},
+                                drop=True,
+                            )
+                            if da_context.size == 0:
+                                continue
+                            for _, leadtime_window_values in _leadtime_window_entries(
+                                da_context,
+                                enabled=True,
+                                window_size=window_size,
+                                window_stride=window_stride,
+                            ):
+                                per_model_maps: dict[str, xr.DataArray] = {}
+                                for model_name in model_values:
+                                    da_model = da_context.sel(model=model_name, drop=True) if model_name is not None else da_context
+                                    if da_model.size == 0:
+                                        continue
+                                    da_model = _average_metric_leadtime_window(
+                                        da_model,
+                                        leadtime_window_values=leadtime_window_values,
+                                    )
                                     da_model = _reduce_extra_map_dims(da_model)
                                     per_model_maps[str(model_name)] = da_model
                                 if not per_model_maps:
@@ -913,7 +1008,7 @@ def save_field_and_metric_map_plots(
                 continue
 
             da = _apply_xarray_filters(ds[variable], filters)
-            for selection, context_values in _context_selection_entries(da, context_dims=context_dims):
+            for selection, context_values in _context_selection_entries(da, context_dims=field_context_dims):
                 da_context = da.sel({dim: value for dim, value in selection.items() if dim in da.dims}, drop=True)
                 if da_context.size == 0:
                     continue
@@ -1007,7 +1102,7 @@ def save_field_and_metric_map_plots(
             da_context_source = _apply_xarray_filters(context_ds[variable], filters)
             for selection, context_values in _context_selection_entries(
                 da_context_source,
-                context_dims=context_dims,
+                context_dims=metric_context_dims,
             ):
                 da_context = da_context_source.sel(
                     {dim: value for dim, value in selection.items() if dim in da_context_source.dims},
@@ -1025,6 +1120,7 @@ def save_field_and_metric_map_plots(
                     window_context_values = _window_context_values(
                         context_values,
                         leadtime_window_label=leadtime_window_label,
+                        window_context_key=metric_window_context_key,
                     )
                     cache_key = _grouped_metric_cache_key(
                         selection=selection,
@@ -1250,6 +1346,246 @@ def save_field_and_metric_map_plots(
                                             progress.advance(task_id)
                                         logger.debug(
                                             f"Saved grouped diff map for metric={metric_name} "
+                                            f"model={difference_model} region={diff_region or 'unknown'} to: {diff_save_path}"
+                                        )
+            continue
+
+        if average_metric_leadtimes:
+            for metric_type, section_dict in metrics.items():
+                ds_map = section_dict.get("map", xr.Dataset())
+                if not isinstance(ds_map, xr.Dataset) or variable not in ds_map.data_vars:
+                    continue
+
+                da_var = _apply_xarray_filters(ds_map[variable], filters)
+                if "metric" not in da_var.dims:
+                    continue
+
+                metric_values = [str(value) for value in da_var["metric"].values.tolist()]
+                model_values = (
+                    [str(value) for value in da_var["model"].values.tolist()]
+                    if "model" in da_var.dims
+                    else [None]
+                )
+
+                for metric_name in metric_values:
+                    da_metric = da_var.sel(metric=metric_name, drop=True)
+                    for selection, context_values in _context_selection_entries(
+                        da_metric,
+                        context_dims=metric_context_dims,
+                    ):
+                        da_context = da_metric.sel(
+                            {dim: value for dim, value in selection.items() if dim in da_metric.dims},
+                            drop=True,
+                        )
+                        if da_context.size == 0:
+                            continue
+
+                        for leadtime_window_label, leadtime_window_values in _leadtime_window_entries(
+                            da_context,
+                            enabled=True,
+                            window_size=window_size,
+                            window_stride=window_stride,
+                        ):
+                            window_context_values = _window_context_values(
+                                context_values,
+                                leadtime_window_label=leadtime_window_label,
+                                window_context_key=metric_window_context_key,
+                            )
+                            per_model_maps: dict[str, dict[object | None, xr.DataArray]] = {}
+                            base_unit: str | None = None
+
+                            for model_name in model_values:
+                                da_model = da_context.sel(model=model_name, drop=True) if model_name is not None else da_context
+                                if da_model.size == 0:
+                                    continue
+                                da_model = _average_metric_leadtime_window(
+                                    da_model,
+                                    leadtime_window_values=leadtime_window_values,
+                                )
+                                da_model = _reduce_extra_map_dims(da_model)
+                                per_model_maps[str(model_name)] = dict(
+                                    _map_realization_slices(
+                                        da_model,
+                                        realization_mode=realization_mode,
+                                    )
+                                )
+                                if base_unit is None:
+                                    base_unit = _get_da_unit(da_model) or _get_da_unit(
+                                        runs.get(config.models.truth_model, xr.Dataset()),
+                                        variable,
+                                    )
+
+                            if not per_model_maps:
+                                continue
+
+                            context_title_values = _grouped_map_title_context(
+                                window_context_values,
+                                metric_group_label=metric_group_label,
+                                metric_groupby_period=metric_groupby_period,
+                            )
+                            context_title = _window_context_title(
+                                context_title_values,
+                                leadtime_unit=leadtime_unit,
+                            )
+                            sample_da = next(iter(next(iter(per_model_maps.values())).values()))
+                            extent = _region_extent_for_plot(
+                                data=sample_da,
+                                context_values=window_context_values,
+                                filters=filters,
+                                region_extents=region_extents,
+                            )
+                            metric_label = _format_metric_label(metric_name, base_unit=base_unit)
+                            shared_vmin, shared_vmax = _shared_map_limits(
+                                *(da for per_model in per_model_maps.values() for da in per_model.values())
+                            )
+
+                            metric_folder = _get_variable_output_item_folder(
+                                plot_root=plot_folder,
+                                variable=variable,
+                                subfolder="maps",
+                                output_group=_metric_output_group(metric_type),
+                                item_name=metric_name,
+                            )
+
+                            for model_name, realization_maps in per_model_maps.items():
+                                for realization_value, da_sel in realization_maps.items():
+                                    map_region = _resolved_single_region_label(da_sel, filters=filters)
+                                    filename_parts = [
+                                        metric_type,
+                                        metric_name,
+                                        model_name,
+                                        _context_filename_suffix(window_context_values),
+                                    ]
+                                    save_path = metric_folder / (
+                                        f"{'_'.join(filename_parts)}{_realization_filename_fragment(realization_value)}_map.png"
+                                    )
+
+                                    if progress is not None and task_id is not None:
+                                        progress.update(
+                                            task_id,
+                                            description=f"Maps | {map_region or 'unknown'} | {variable} | {metric_type} | {metric_name}",
+                                        )
+
+                                    vlimits = _configured_metric_map_limits(
+                                        config=config,
+                                        metric_name=metric_name,
+                                        variable=variable,
+                                        map_region=map_region,
+                                        metric_group_label=metric_group_label,
+                                        metric_groupby_period=metric_groupby_period,
+                                    )
+                                    if vlimits is not None:
+                                        vmin, vmax = vlimits[0], vlimits[1]
+                                    else:
+                                        vmin, vmax = shared_vmin, shared_vmax
+
+                                    plot_temporal_mean_map(
+                                        da_sel,
+                                        save_path=save_path,
+                                        title=_map_title(
+                                            metric_label,
+                                            config.models.display_names.get(model_name, model_name),
+                                            f"{context_title}{_realization_label(realization_value)}"
+                                            if context_title else _realization_label(realization_value).lstrip(" |"),
+                                        ),
+                                        subtitle=_window_context_subtitle(
+                                            da_sel,
+                                            context_values=window_context_values,
+                                            leadtime_unit=leadtime_unit,
+                                            metric_group_label=metric_group_label,
+                                            metric_groupby_period=metric_groupby_period,
+                                        ),
+                                        extent=extent,
+                                        cbar_label=_map_cbar_label(variable=variable, unit=base_unit),
+                                        cmap=_resolve_metric_map_cmap(metric_name, config=config),
+                                        vmin=vmin,
+                                        vmax=vmax,
+                                        lon_tick_step=config.maps.lon_tick_step,
+                                        lat_tick_step=config.maps.lat_tick_step,
+                                    )
+                                    saved_paths.append(save_path)
+                                    if progress is not None and task_id is not None:
+                                        progress.advance(task_id)
+                                    logger.debug(
+                                        f"Saved averaged metric map for metric={metric_name} "
+                                        f"model={model_name} region={map_region or 'unknown'} to: {save_path}"
+                                    )
+
+                            reference_model = config.models.reference_model
+                            corrected_model = config.models.corrected_model
+                            difference_model = config.models.difference_model
+                            if corrected_model is not None and reference_model in per_model_maps and corrected_model in per_model_maps:
+                                reference_realizations = per_model_maps[reference_model]
+                                corrected_realizations = per_model_maps[corrected_model]
+                                common_realizations = [
+                                    realization_value
+                                    for realization_value in corrected_realizations
+                                    if realization_value in reference_realizations
+                                ]
+                                diff_maps = [
+                                    (
+                                        realization_value,
+                                        corrected_realizations[realization_value] - reference_realizations[realization_value],
+                                    )
+                                    for realization_value in common_realizations
+                                ]
+                                if diff_maps:
+                                    fallback_diff_vlimits = _symmetric_map_limits(
+                                        xr.concat([diff_da for _, diff_da in diff_maps], dim="_diff_map")
+                                    )
+                                    for realization_value, diff_da in diff_maps:
+                                        diff_region = _resolved_single_region_label(diff_da, filters=filters)
+                                        diff_vlimits = _configured_metric_map_limits(
+                                            config=config,
+                                            metric_name=metric_name,
+                                            variable=variable,
+                                            map_region=diff_region,
+                                            metric_group_label=metric_group_label,
+                                            metric_groupby_period=metric_groupby_period,
+                                            is_difference=True,
+                                        )
+                                        if diff_vlimits is not None:
+                                            diff_vmin, diff_vmax = diff_vlimits
+                                        else:
+                                            diff_vmin, diff_vmax = fallback_diff_vlimits
+                                        diff_save_path = metric_folder / (
+                                            f"{metric_type}_{metric_name}_{difference_model}_{_context_filename_suffix(window_context_values)}"
+                                            f"{_realization_filename_fragment(realization_value)}_map.png"
+                                        )
+                                        if progress is not None and task_id is not None:
+                                            progress.update(
+                                                task_id,
+                                                description=f"Maps | {diff_region or 'unknown'} | {variable} | diff | {metric_name}",
+                                            )
+                                        plot_temporal_mean_map(
+                                            diff_da,
+                                            save_path=diff_save_path,
+                                            title=_map_title(
+                                                metric_label,
+                                                config.models.display_names.get(difference_model, difference_model),
+                                                f"{context_title}{_realization_label(realization_value)}"
+                                                if context_title else _realization_label(realization_value).lstrip(" |"),
+                                            ),
+                                            subtitle=_window_context_subtitle(
+                                                diff_da,
+                                                context_values=window_context_values,
+                                                leadtime_unit=leadtime_unit,
+                                                metric_group_label=metric_group_label,
+                                                metric_groupby_period=metric_groupby_period,
+                                            ),
+                                            extent=extent,
+                                            cbar_label=_map_cbar_label(variable=variable, unit=base_unit),
+                                            cmap="RdBu_r",
+                                            vmin=diff_vmin,
+                                            vmax=diff_vmax,
+                                            lon_tick_step=config.maps.lon_tick_step,
+                                            lat_tick_step=config.maps.lat_tick_step,
+                                        )
+                                        saved_paths.append(diff_save_path)
+                                        if progress is not None and task_id is not None:
+                                            progress.advance(task_id)
+                                        logger.debug(
+                                            f"Saved averaged diff map for metric={metric_name} "
                                             f"model={difference_model} region={diff_region or 'unknown'} to: {diff_save_path}"
                                         )
             continue
