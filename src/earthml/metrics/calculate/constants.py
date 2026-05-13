@@ -127,9 +127,9 @@ METRIC_MAPS_CMAPS = {
     "bias": "RdBu_r",
     "nbias": "RdBu_r",
     "r2": "RdBu",
-    "corr": "RdBu",
-    "clim_acc": "RdBu",
-    "spatial_acc": "RdBu",
+    "corr": "PiBRdY",
+    "clim_acc": "PiBRdY",
+    "spatial_acc": "PiBRdY",
     "rmse_skill_clim": "RdBu",
     # Positive ratios where 1 is ideal. Keep these sequential unless we also
     # introduce explicit centering around 1 in the map normalization.

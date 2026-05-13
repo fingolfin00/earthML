@@ -14,6 +14,7 @@ __all__ = [
     # misc
     "Dask",
     "Table",
+    "PiBRdY",
     # loss
     "build_loss",
     # experiment
@@ -35,6 +36,7 @@ _EXPORTS = {
     "DataSource": (".sources", "DataSource"),
     "Dask": (".misc", "Dask"),
     "Table": (".misc", "Table"),
+    "PiBRdY": (".misc", "PiBRdY"),
     "build_loss": (".neural.losses", "build_loss"),
     "MLBCNeuralNet": (".experiments.mlbc", "MLBCNeuralNet"),
     "MLBCExperimentLauncherConfig": (".experiments.mlbc", "MLBCExperimentLauncherConfig"),
