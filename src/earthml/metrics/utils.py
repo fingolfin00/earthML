@@ -311,6 +311,7 @@ def _compute_metric_bundle(
     metric_names: str | Sequence[str] | None = None,
     metric_sections: str | Sequence[str] = ("scalar", "map", "timeseries"),
     metric_types: str | Sequence[str] | None = None,
+    map_metric_mean_dims: str | Sequence[str] | None = None,
 ) -> dict[str, dict[str, xr.Dataset]]:
     if isinstance(metric_names, str):
         metric_names = {metric_names}
@@ -332,6 +333,7 @@ def _compute_metric_bundle(
         probabilistic=probabilistic,
         norm=norm,
         clim_period=clim_period,
+        map_metric_mean_dims=map_metric_mean_dims,
     )
 
     filtered_result: dict[str, dict[str, xr.Dataset]] = {}

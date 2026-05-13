@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Sequence
 
 import xarray as xr
 
@@ -47,6 +47,7 @@ def build_standard_metric_bundle(
     probabilistic: ProbabilisticMetrics | None = None,
     norm: str = "std",
     clim_period: str = "month",
+    map_metric_mean_dims: str | Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """
     Build a standard bundle of metrics grouped by output type.
@@ -105,7 +106,7 @@ def build_standard_metric_bundle(
         deterministic.dims.latitude,
         deterministic.dims.longitude,
     )
-    map_dims = deterministic.dims.time
+    map_dims = map_metric_mean_dims if map_metric_mean_dims is not None else deterministic.dims.time
     ts_dims = (deterministic.dims.latitude, deterministic.dims.longitude)
 
     reduce_dims = dict(

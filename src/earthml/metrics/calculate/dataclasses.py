@@ -179,10 +179,17 @@ class CalculateMetricsMapConfig:
     metric_limits: dict[str, dict[str, dict[str, Any]]]
     lon_tick_step: float
     lat_tick_step: float
+    group_leadtimes: bool = False
+    leadtime_window_size: int = 3
+    leadtime_window_stride: int = 1
 
     def __post_init__(self) -> None:
         if self.realization_mode not in ("mean", "members"):
             raise ValueError("realization_mode must be 'mean' or 'members'")
+        if self.leadtime_window_size < 1:
+            raise ValueError("leadtime_window_size must be >= 1")
+        if self.leadtime_window_stride < 1:
+            raise ValueError("leadtime_window_stride must be >= 1")
 
 
 @dataclass(slots=True, kw_only=True)

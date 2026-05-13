@@ -267,6 +267,7 @@ class CalculateMetricsRuntime:
     metric_vs_diff: bool = False
     scoreboard: bool = False
     # Items config
+    maps_group_leadtimes: bool = False
     profiles_x_axis: str = "leadtime"
     profiles_enable_combined_variable: bool = False
     metric_vs_delta_byconfig: dict[Literal["color", "marker", "shade"], str] = field(default_factory=dict)
@@ -378,6 +379,7 @@ class CalculateMetricsRuntime:
                 ),
                 lon_tick_step=10.0,
                 lat_tick_step=10.0,
+                group_leadtimes=self.maps_group_leadtimes,
             ) if self.maps else None,
             profiles=CalculateMetricsProfileConfig(
                 filters=self.filters,
@@ -700,6 +702,7 @@ class CalculateMetricsRuntime:
                             filters=payload["filters"],
                             config=self.config,
                             realization_mode=self.config.maps.realization_mode,
+                            clim_period=resolved_clim_period,
                             metric_group_label=payload["metric_group_label"],
                             metric_groupby_period=self.metric_groupby_period,
                             region_extents=region_extents,
