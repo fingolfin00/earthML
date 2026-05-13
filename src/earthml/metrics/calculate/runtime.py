@@ -116,6 +116,7 @@ def _build_output_payloads(
     *,
     payload: dict,
     groupby_period: str | None,
+    groupby_basis: str,
     group_source: xr.Dataset,
 ) -> list[dict]:
     plot_root = payload["plot_root"]
@@ -132,12 +133,20 @@ def _build_output_payloads(
     if groupby_period in {None, "none"}:
         return output_payloads
 
-    for metric_group_label, group_value in metric_group_specs_from_data(group_source, groupby_period):
+    leadtime_unit = str(group_source.coords["leadtime"].attrs.get("unit", "")).strip() if "leadtime" in group_source.coords else None
+    for metric_group_label, group_value in metric_group_specs_from_data(
+        group_source,
+        groupby_period,
+        basis=groupby_basis,
+        leadtime_unit=leadtime_unit,
+    ):
         grouped_runs = {
             model_name: slice_time_group_data(
                 ds,
                 period=groupby_period,
                 group_value=group_value,
+                basis=groupby_basis,
+                leadtime_unit=leadtime_unit,
             )
             for model_name, ds in payload["runs"].items()
         }
@@ -145,8 +154,8 @@ def _build_output_payloads(
             {
                 **payload,
                 "runs": grouped_runs,
-                "plot_folder": plot_root / "grouped" / groupby_period / metric_group_label,
-                "scope_label": f"grouped/{groupby_period}/{metric_group_label}",
+                "plot_folder": plot_root / "grouped" / groupby_basis / groupby_period / metric_group_label,
+                "scope_label": f"grouped/{groupby_basis}/{groupby_period}/{metric_group_label}",
                 "metric_group_label": metric_group_label,
             }
         )
@@ -229,6 +238,8 @@ class CalculateMetricsRuntime:
     external_mask_variable: str | Path | None = None
     disable_flox: bool = False
     metric_groupby_period: Literal["month", "dayofyear", "season", "none"] | None = None
+    metric_groupby_basis: Literal["target_time", "reference_time"] = "target_time"
+    clim_period: Literal["month", "dayofyear", "season", "none"] | None = None
     variable_colors: dict[str, str] = field(default_factory=dict)
     save_calculated_metrics: bool = False
     reuse_saved_metrics: bool = False
@@ -270,6 +281,15 @@ class CalculateMetricsRuntime:
         if self.metric_groupby_period not in valid_metric_groupby_periods:
             raise ValueError(
                 "metric_groupby_period must be one of {'month', 'dayofyear', 'season', 'none', None}"
+            )
+        valid_metric_groupby_bases = {"target_time", "reference_time"}
+        if self.metric_groupby_basis not in valid_metric_groupby_bases:
+            raise ValueError(
+                "metric_groupby_basis must be one of {'target_time', 'reference_time'}"
+            )
+        if self.clim_period not in valid_metric_groupby_periods:
+            raise ValueError(
+                "clim_period must be one of {'month', 'dayofyear', 'season', 'none', None}"
             )
 
         metric_vs_delta_byconfig_default = {
@@ -470,6 +490,13 @@ class CalculateMetricsRuntime:
         self.logger.info(f"Inferred leadtime unit: {leadtime_unit or 'unknown'}")
         self.logger.info(f"Inferred map regions: {sorted(region_extents) if region_extents else 'unknown'}")
         self.logger.info(f"Inferred region extents: {region_extents or 'unknown'}")
+        resolved_clim_period = self.clim_period if self.clim_period is not None else (self.metric_groupby_period or "month")
+        self.logger.info(
+            "Metric grouping: period=%s, basis=%s | climatology period=%s",
+            self.metric_groupby_period or "none",
+            self.metric_groupby_basis,
+            resolved_clim_period,
+        )
 
         region_payloads = []
         inventory: dict[str, set[str]] = {}
@@ -512,6 +539,7 @@ class CalculateMetricsRuntime:
                 _build_output_payloads(
                     payload=payload,
                     groupby_period=self.metric_groupby_period,
+                    groupby_basis=self.metric_groupby_basis,
                     group_source=group_source,
                 )
             )
@@ -519,7 +547,7 @@ class CalculateMetricsRuntime:
         metrics_loaded_from_saved = False
         if self.config.saved_metrics is not None and self.config.saved_metrics.reuse_existing:
             loaded_payload_metrics = []
-            effective_clim_period = self.metric_groupby_period or "month"
+            effective_clim_period = resolved_clim_period
             include_group_dim = self.metric_groupby_period is not None
             for payload in output_payloads:
                 metrics = load_metric_datasets(
@@ -529,6 +557,8 @@ class CalculateMetricsRuntime:
                     model_names=self.config.models.load_models,
                     metric_names=self.metrics,
                     clim_period=effective_clim_period,
+                    metric_groupby_period=self.metric_groupby_period,
+                    metric_groupby_basis=self.metric_groupby_basis,
                     include_group_dim=include_group_dim,
                 )
                 if metrics is None:
@@ -553,6 +583,8 @@ class CalculateMetricsRuntime:
                 apply_external_mask_to_runs=True,
                 metric_names=self.metrics,
                 metric_groupby_period=self.metric_groupby_period,
+                metric_groupby_basis=self.metric_groupby_basis,
+                clim_period=resolved_clim_period,
                 show_progress=True,
             )
 
@@ -607,13 +639,17 @@ class CalculateMetricsRuntime:
                         filename_context_suffix=payload["filename_context"],
                         model_names=self.config.models.load_models,
                         metric_names=self.metrics,
-                        clim_period=self.metric_groupby_period or "month",
+                        clim_period=resolved_clim_period,
+                        metric_groupby_period=self.metric_groupby_period,
+                        metric_groupby_basis=self.metric_groupby_basis,
                         include_group_dim=self.metric_groupby_period is not None,
                         dataset_attrs={
                             "region": payload["region"],
                             "scope_label": payload["scope_label"],
                             "metric_group_label": payload["metric_group_label"],
                             "metric_groupby_period": self.metric_groupby_period or "none",
+                            "metric_groupby_basis": self.metric_groupby_basis,
+                            "clim_period": resolved_clim_period,
                         },
                     )
                     progress.advance(save_task)
@@ -639,7 +675,7 @@ class CalculateMetricsRuntime:
                         config=self.config,
                         combine_leadtimes=self.config.timeseries.combine_leadtimes,
                         plot_realization_members=self.config.timeseries.plot_realization_members,
-                        metric_groupby_period=self.metric_groupby_period,
+                        clim_period=resolved_clim_period,
                         disable_flox=self.disable_flox,
                         progress=progress,
                         task_id=ts_task,

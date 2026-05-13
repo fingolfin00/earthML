@@ -48,6 +48,8 @@ def _build_metric_file_stem(
     model_names: Sequence[str],
     metric_names: str | Sequence[str] | None,
     clim_period: str,
+    metric_groupby_period: str | None,
+    metric_groupby_basis: str,
     include_group_dim: bool,
 ) -> str:
     fragments = [
@@ -56,6 +58,8 @@ def _build_metric_file_stem(
         _model_fragment(model_names),
         _metric_name_fragment(metric_names),
         f"clim_{_sanitize_fragment(clim_period)}",
+        f"groupperiod_{_sanitize_fragment(metric_groupby_period or 'none')}",
+        f"groupbasis_{_sanitize_fragment(metric_groupby_basis)}",
         f"groupdim_{'yes' if include_group_dim else 'no'}",
     ]
     readable = "__".join(fragment for fragment in fragments if fragment)
@@ -82,6 +86,8 @@ def load_metric_datasets(
     model_names: Sequence[str],
     metric_names: str | Sequence[str] | None,
     clim_period: str,
+    metric_groupby_period: str | None,
+    metric_groupby_basis: str,
     include_group_dim: bool,
 ) -> dict[str, dict[str, xr.Dataset]] | None:
     """Load a complete saved metric bundle, or return None if any file is missing."""
@@ -97,6 +103,8 @@ def load_metric_datasets(
                 model_names=model_names,
                 metric_names=metric_names,
                 clim_period=clim_period,
+                metric_groupby_period=metric_groupby_period,
+                metric_groupby_basis=metric_groupby_basis,
                 include_group_dim=include_group_dim,
             )
             path = _saved_metric_path(
@@ -122,6 +130,8 @@ def save_metric_datasets(
     model_names: Sequence[str],
     metric_names: str | Sequence[str] | None,
     clim_period: str,
+    metric_groupby_period: str | None,
+    metric_groupby_basis: str,
     include_group_dim: bool,
     dataset_attrs: dict[str, object] | None = None,
 ) -> list[Path]:
@@ -145,6 +155,8 @@ def save_metric_datasets(
                 model_names=model_names,
                 metric_names=metric_names,
                 clim_period=clim_period,
+                metric_groupby_period=metric_groupby_period,
+                metric_groupby_basis=metric_groupby_basis,
                 include_group_dim=include_group_dim,
             )
             output_path = _saved_metric_path(

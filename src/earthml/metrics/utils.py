@@ -55,6 +55,7 @@ ClimsByRegion = dict[str, ClimTuple]
 
 METRIC_GROUP_DIM = "metric_group"
 METRIC_GROUPBY_PERIOD_ATTR = "metric_groupby_period"
+METRIC_GROUPBY_BASIS_ATTR = "metric_groupby_basis"
 
 
 # ==========================================
@@ -366,19 +367,161 @@ def _format_metric_group_label(
     return str(value)
 
 
+def _resolve_period(period: str | None, *, param_name: str) -> str:
+    valid_periods = {"month", "dayofyear", "season", "none"}
+    if period is None:
+        return "month"
+    if period not in valid_periods:
+        raise ValueError(
+            f"Unsupported {param_name}={period!r}. Expected one of {sorted(valid_periods)!r}."
+        )
+    return period
+
+
+def _resolve_metric_groupby_basis(metric_groupby_basis: str | None) -> str:
+    valid_bases = {"target_time", "reference_time"}
+    if metric_groupby_basis is None:
+        return "target_time"
+    if metric_groupby_basis not in valid_bases:
+        raise ValueError(
+            f"Unsupported metric_groupby_basis={metric_groupby_basis!r}. Expected one of {sorted(valid_bases)!r}."
+        )
+    return metric_groupby_basis
+
+
+def _leadtime_unit_from_data(data: xr.Dataset | xr.DataArray) -> str | None:
+    for coord_name in ("leadtime",):
+        if coord_name not in data.coords:
+            continue
+        unit = str(data[coord_name].attrs.get("unit", "")).strip()
+        if unit:
+            return unit
+    return None
+
+
+def _shift_datetime_index(
+    valid_times: pd.DatetimeIndex,
+    *,
+    leadtime_value: object,
+    leadtime_unit: str,
+) -> pd.DatetimeIndex:
+    try:
+        leadtime_int = int(leadtime_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Cannot derive reference_time from non-integer leadtime={leadtime_value!r}.") from exc
+
+    if leadtime_unit == "months":
+        return valid_times - pd.DateOffset(months=leadtime_int)
+    if leadtime_unit == "days":
+        return valid_times - pd.to_timedelta(leadtime_int, unit="D")
+    if leadtime_unit == "hours":
+        return valid_times - pd.to_timedelta(leadtime_int, unit="h")
+    raise ValueError(
+        f"Unsupported leadtime unit {leadtime_unit!r} for reference_time grouping. "
+        "Expected one of {'months', 'days', 'hours'}."
+    )
+
+
+def _reference_time_dataarray(
+    data: xr.Dataset | xr.DataArray,
+    *,
+    leadtime_unit: str | None = None,
+    leadtime_value: object | None = None,
+) -> xr.DataArray | None:
+    time_dim = data.earthml.guessed_dims.time
+    if time_dim is None or time_dim not in data.dims:
+        return None
+
+    if "reftime" in data.coords and data["reftime"].dims == (time_dim,):
+        return data["reftime"]
+
+    valid_times = pd.to_datetime(np.asarray(data[time_dim].values).reshape(-1), errors="coerce")
+    leadtime_unit = leadtime_unit or _leadtime_unit_from_data(data)
+    if not leadtime_unit:
+        raise ValueError("Cannot derive reference_time grouping without a leadtime unit.")
+
+    leadtime_dim = data.earthml.guessed_dims.leadtime
+    if leadtime_dim is not None and leadtime_dim in data.dims:
+        leadtime_values = data[leadtime_dim].values.tolist()
+        slices: list[xr.DataArray] = []
+        for leadtime_value in leadtime_values:
+            shifted = _shift_datetime_index(
+                pd.DatetimeIndex(valid_times),
+                leadtime_value=leadtime_value,
+                leadtime_unit=leadtime_unit,
+            )
+            slices.append(
+                xr.DataArray(
+                    shifted.values,
+                    dims=(time_dim,),
+                    coords={time_dim: data[time_dim].values},
+                ).expand_dims({leadtime_dim: [leadtime_value]})
+            )
+        return xr.concat(slices, dim=leadtime_dim)
+
+    resolved_leadtime_value = leadtime_value
+    if resolved_leadtime_value is None and "leadtime" in data.coords:
+        leadtime_values = np.asarray(data["leadtime"].values).reshape(-1)
+        if leadtime_values.size == 1:
+            resolved_leadtime_value = leadtime_values[0]
+    if resolved_leadtime_value is None:
+        raise ValueError("Cannot derive reference_time grouping without a scalar or dimensioned leadtime coordinate.")
+
+    shifted = _shift_datetime_index(
+        pd.DatetimeIndex(valid_times),
+        leadtime_value=resolved_leadtime_value,
+        leadtime_unit=leadtime_unit,
+    )
+    return xr.DataArray(
+        shifted.values,
+        dims=(time_dim,),
+        coords={time_dim: data[time_dim].values},
+    )
+
+
+def _grouping_time_dataarray(
+    data: xr.Dataset | xr.DataArray,
+    *,
+    basis: str,
+    leadtime_unit: str | None = None,
+    leadtime_value: object | None = None,
+) -> xr.DataArray | None:
+    time_dim = data.earthml.guessed_dims.time
+    if time_dim is None or time_dim not in data.dims:
+        return None
+
+    if basis == "target_time":
+        return data[time_dim]
+    if basis == "reference_time":
+        return _reference_time_dataarray(
+            data,
+            leadtime_unit=leadtime_unit,
+            leadtime_value=leadtime_value,
+        )
+    raise ValueError(f"Unsupported grouping basis {basis!r}")
+
+
 def metric_group_specs_from_data(
     data: xr.Dataset | xr.DataArray,
     period: str,
+    *,
+    basis: str = "target_time",
+    leadtime_unit: str | None = None,
+    leadtime_value: object | None = None,
 ) -> list[tuple[str, object]]:
-    time_dim = data.earthml.guessed_dims.time
-    if time_dim is None or time_dim not in data.dims:
+    if period == "none":
         return []
 
-    time = data[time_dim]
-    if not hasattr(time, "dt"):
+    grouping_time = _grouping_time_dataarray(
+        data,
+        basis=basis,
+        leadtime_unit=leadtime_unit,
+        leadtime_value=leadtime_value,
+    )
+    if grouping_time is None or not hasattr(grouping_time, "dt"):
         return []
 
-    raw_values = getattr(time.dt, period).values
+    raw_values = getattr(grouping_time.dt, period).values.reshape(-1)
     unique_values = [value.item() if isinstance(value, np.generic) else value for value in pd.unique(raw_values)]
     if period == "month":
         ordered_values = sorted(int(value) for value in unique_values if pd.notna(value))
@@ -401,19 +544,26 @@ def slice_time_group_data(
     *,
     period: str,
     group_value: object,
+    basis: str = "target_time",
+    leadtime_unit: str | None = None,
+    leadtime_value: object | None = None,
 ) -> xr.Dataset | xr.DataArray | None:
     if data is None:
         return None
 
-    time_dim = data.earthml.guessed_dims.time
-    if time_dim is None or time_dim not in data.dims:
+    if period == "none":
         return data
 
-    time = data[time_dim]
-    if not hasattr(time, "dt"):
+    grouping_time = _grouping_time_dataarray(
+        data,
+        basis=basis,
+        leadtime_unit=leadtime_unit,
+        leadtime_value=leadtime_value,
+    )
+    if grouping_time is None or not hasattr(grouping_time, "dt"):
         return data
 
-    selector = getattr(time.dt, period) == group_value
+    selector = getattr(grouping_time.dt, period) == group_value
     return data.where(selector, drop=True)
 
 
@@ -440,17 +590,6 @@ def _climatology_for_period(
     return ds.earthml.climatology(groupby=period)
 
 
-def _resolve_metric_groupby_period(metric_groupby_period: str | None) -> str:
-    valid_periods = {"month", "dayofyear", "season", "none"}
-    if metric_groupby_period is None:
-        return "month"
-    if metric_groupby_period not in valid_periods:
-        raise ValueError(
-            f"Unsupported metric_groupby_period={metric_groupby_period!r}. Expected one of {sorted(valid_periods)!r}."
-        )
-    return metric_groupby_period
-
-
 def _get_single_region_runs_and_metrics(
     exp_root: str | Path,
     exp_mode: MLBCExperimentMode = "test",
@@ -466,6 +605,8 @@ def _get_single_region_runs_and_metrics(
     metric_sections: str | Sequence[str] = ("scalar", "map", "timeseries"),
     metric_types: str | Sequence[str] | None = None,
     metric_groupby_period: str | None = None,
+    metric_groupby_basis: str | None = None,
+    clim_period: str | None = None,
     show_progress: bool = True,
 ) -> tuple[
     RunsByModel,
@@ -473,7 +614,12 @@ def _get_single_region_runs_and_metrics(
     ClimTuple,
 ]:
     models = list(load_models)
-    clim_period = _resolve_metric_groupby_period(metric_groupby_period)
+    grouping_period = _resolve_period(metric_groupby_period, param_name="metric_groupby_period")
+    grouping_basis = _resolve_metric_groupby_basis(metric_groupby_basis)
+    effective_clim_period = _resolve_period(
+        clim_period if clim_period is not None else metric_groupby_period,
+        param_name="clim_period",
+    )
     include_metric_group_dim = metric_groupby_period is not None
     if len(models) < 2:
         raise ValueError("load_models must contain at least two entries: truth first, then at least one model")
@@ -555,6 +701,7 @@ def _get_single_region_runs_and_metrics(
 
     truth_runs = loaded_runs[truth_model]
     truth_region = str(truth_runs.coords["region"].item()) if "region" in truth_runs.coords else ""
+    leadtime_unit = _leadtime_unit_from_data(truth_runs)
 
     # These are the experiment axes created by load_all_exp_from_folder
     run_dims = [dim for dim in ("leadtime", "train_period", "region", "loss", "variant") if dim in truth_runs.dims]
@@ -589,6 +736,7 @@ def _get_single_region_runs_and_metrics(
             if show_progress:
                 indexer_str = ", ".join(f"{dim}={value}" for dim, value in indexers.items()) or "all runs"
                 prog.update(run_task, description=f"Computing metrics | {indexer_str}")
+            selected_leadtime_value = indexers.get("leadtime")
 
             truth_data = truth_runs.sel(indexers, drop=True) if indexers else truth_runs
             if not truth_data.data_vars:
@@ -638,7 +786,7 @@ def _get_single_region_runs_and_metrics(
                     truth_train = train_loaded_runs[truth_model]
                     truth_train = truth_train.sel(indexers, drop=True) if indexers else truth_train
                     if truth_train.data_vars and bool(truth_train.to_array().notnull().any()):
-                        clim_by_model[truth_model] = _climatology_for_period(truth_train, clim_period)
+                        clim_by_model[truth_model] = _climatology_for_period(truth_train, effective_clim_period)
 
                 for model_name in model_names_this_run:
                     if model_name == "pr" and not use_train_prediction_clim:
@@ -649,7 +797,7 @@ def _get_single_region_runs_and_metrics(
                         train_model = train_loaded_runs[model_name]
                         train_model = train_model.sel(indexers, drop=True) if indexers else train_model
                         if train_model.data_vars and bool(train_model.to_array().notnull().any()):
-                            clim_by_model[model_name] = _climatology_for_period(train_model, clim_period)
+                            clim_by_model[model_name] = _climatology_for_period(train_model, effective_clim_period)
 
                 if "pr" in clim_by_model and clim_by_model["pr"] is None:
                     clim_by_model["pr"] = clim_by_model[truth_model]
@@ -686,8 +834,16 @@ def _get_single_region_runs_and_metrics(
                     pass
 
             metric_group_specs: list[tuple[str, object | None]] = [("all", None)]
-            if include_metric_group_dim and clim_period != "none":
-                metric_group_specs.extend(metric_group_specs_from_data(truth_data, clim_period))
+            if include_metric_group_dim and grouping_period != "none":
+                metric_group_specs.extend(
+                    metric_group_specs_from_data(
+                        truth_data,
+                        grouping_period,
+                        basis=grouping_basis,
+                        leadtime_unit=leadtime_unit,
+                        leadtime_value=selected_leadtime_value,
+                    )
+                )
 
             for metric_group_label, group_value in metric_group_specs:
                 if group_value is None:
@@ -697,21 +853,30 @@ def _get_single_region_runs_and_metrics(
                 else:
                     group_truth_data = slice_time_group_data(
                         truth_data,
-                        period=clim_period,
+                        period=grouping_period,
                         group_value=group_value,
+                        basis=grouping_basis,
+                        leadtime_unit=leadtime_unit,
+                        leadtime_value=selected_leadtime_value,
                     )
                     group_model_data = [
                         slice_time_group_data(
                             ds,
-                            period=clim_period,
+                            period=grouping_period,
                             group_value=group_value,
+                            basis=grouping_basis,
+                            leadtime_unit=leadtime_unit,
+                            leadtime_value=selected_leadtime_value,
                         )
                         for ds in model_data
                     ]
                     group_mask_data = slice_time_group_data(
                         mask_data,
-                        period=clim_period,
+                        period=grouping_period,
                         group_value=group_value,
+                        basis=grouping_basis,
+                        leadtime_unit=leadtime_unit,
+                        leadtime_value=selected_leadtime_value,
                     )
 
                 group_time_dim = group_truth_data.earthml.guessed_dims.time
@@ -751,7 +916,7 @@ def _get_single_region_runs_and_metrics(
                     group_cm,
                     group_pm,
                     norm="std",
-                    clim_period=clim_period,
+                    clim_period=effective_clim_period,
                     metric_names=metric_names,
                     metric_sections=metric_sections,
                     metric_types=metric_types,
@@ -769,7 +934,8 @@ def _get_single_region_runs_and_metrics(
                             )
                         if include_metric_group_dim:
                             ds = ds.expand_dims({METRIC_GROUP_DIM: [metric_group_label]})
-                            ds.attrs[METRIC_GROUPBY_PERIOD_ATTR] = clim_period
+                            ds.attrs[METRIC_GROUPBY_PERIOD_ATTR] = grouping_period
+                            ds.attrs[METRIC_GROUPBY_BASIS_ATTR] = grouping_basis
                         if indexers:
                             ds = ds.expand_dims({
                                 dim: [value] for dim, value in indexers.items()
@@ -853,6 +1019,8 @@ def get_runs_and_metrics(
     metric_sections: str | Sequence[str] = ("scalar", "map", "timeseries"),
     metric_types: str | Sequence[str] | None = None,
     metric_groupby_period: str | None = None,
+    metric_groupby_basis: str | None = None,
+    clim_period: str | None = None,
     show_progress: bool = True,
 ) -> tuple[
     RunsByRegion,
@@ -902,6 +1070,8 @@ def get_runs_and_metrics(
             metric_sections=metric_sections,
             metric_types=metric_types,
             metric_groupby_period=metric_groupby_period,
+            metric_groupby_basis=metric_groupby_basis,
+            clim_period=clim_period,
             show_progress=show_progress,
         )
 
