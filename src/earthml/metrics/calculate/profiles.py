@@ -1,8 +1,10 @@
-from typing import Sequence
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Sequence
 
 import numpy as np
 import pandas as pd
+import xarray as xr
 
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
@@ -12,6 +14,7 @@ from rich.progress import Progress
 
 from ...logging import get_logger
 from .. import metrics_to_df_single_region
+from ..utils import METRIC_GROUP_DIM
 
 from .dataclasses import CalculateMetricsConfig
 from .utils import (
@@ -35,9 +38,107 @@ from .constants import (
     VARIABLE_SUBFOLDERS,
     CONTEXT_AXES,
     AXIS_DISPLAY_NAMES,
+    METRIC_KIND,
+    PROFILE_METRIC_MODES,
 )
 
 logger = get_logger(__name__)
+
+PROFILE_METADATA_DIMS = frozenset({"model", "metric", "realization", METRIC_GROUP_DIM, *CONTEXT_AXES})
+
+
+@dataclass(frozen=True, slots=True)
+class _ProfileMetricSpec:
+    metric_name: str
+    metric_type: str
+    kind: str = "scalar"
+    reduce_dims: tuple[str, ...] | None = None
+
+
+def _normalize_profile_reduce_dims(reduce_spec: object) -> tuple[str, ...] | None:
+    if reduce_spec is None:
+        return None
+    if isinstance(reduce_spec, str):
+        reduce_spec = (reduce_spec,)
+    if not isinstance(reduce_spec, (list, tuple)):
+        raise ValueError("Profile reduce dims must be None, a string, or a sequence of strings.")
+
+    normalized = tuple(str(dim).strip() for dim in reduce_spec if dim is not None and str(dim).strip())
+    if not normalized:
+        raise ValueError("Profile reduce dims must contain at least one dimension or be None.")
+    return normalized
+
+
+def _looks_like_profile_source_spec(metric_mode: object) -> bool:
+    if not isinstance(metric_mode, (list, tuple)) or not metric_mode:
+        return False
+    if all(isinstance(item, str) and item in PROFILE_METRIC_MODES for item in metric_mode):
+        return False
+    if len(metric_mode) == 3:
+        metric_type, kind, _ = metric_mode
+        return metric_type in PROFILE_METRIC_MODES and kind in METRIC_KIND
+    return False
+
+
+def _expand_profile_metric_modes(
+    metric_modes: dict[str, Any],
+) -> list[_ProfileMetricSpec]:
+    def _expand_one(metric_name: str, metric_mode: object) -> list[_ProfileMetricSpec]:
+        if isinstance(metric_mode, str):
+            if metric_mode not in PROFILE_METRIC_MODES:
+                raise ValueError(
+                    f"metrics[{metric_name!r}]={metric_mode!r} is not a supported legacy profile mode. "
+                    f"Expected one of {PROFILE_METRIC_MODES!r}, or an explicit "
+                    "(metric_type, kind, reduce) source spec."
+                )
+            return [_ProfileMetricSpec(metric_name=metric_name, metric_type=metric_mode, kind="scalar")]
+
+        if isinstance(metric_mode, (list, tuple)):
+            if not metric_mode:
+                raise ValueError(f"metrics[{metric_name!r}] must contain at least one profile mode.")
+
+            if _looks_like_profile_source_spec(metric_mode):
+                metric_type = str(metric_mode[0])
+                kind = str(metric_mode[1])
+                reduce_dims = _normalize_profile_reduce_dims(metric_mode[2])
+                return [
+                    _ProfileMetricSpec(
+                        metric_name=metric_name,
+                        metric_type=metric_type,
+                        kind=kind,
+                        reduce_dims=reduce_dims,
+                    )
+                ]
+
+            expanded: list[_ProfileMetricSpec] = []
+            for item in metric_mode:
+                expanded.extend(_expand_one(metric_name, item))
+            return expanded
+
+        raise ValueError(
+            f"metrics[{metric_name!r}] entries must be strings, sequences of strings, "
+            "or explicit profile source specs."
+        )
+
+    expanded: list[_ProfileMetricSpec] = []
+    for metric_name, metric_mode in metric_modes.items():
+        expanded.extend(_expand_one(metric_name, metric_mode))
+    return expanded
+
+
+def _profile_source_fragment(
+    *,
+    kind: str,
+    reduce_dims: tuple[str, ...] | None,
+) -> str:
+    if kind == "scalar" and reduce_dims is None:
+        return ""
+
+    parts = [_sanitize_filename_fragment(kind)]
+    if reduce_dims is not None:
+        parts.append("reduced")
+        parts.extend(_sanitize_filename_fragment(dim) for dim in reduce_dims)
+    return "_".join(parts)
 
 
 def _profile_axis_column_name(
@@ -72,31 +173,27 @@ def _profile_output_folder(
     folder_variable = variable if variable is not None else "all_variables"
     return get_variable_subfolder(plot_root=plot_root, variable=folder_variable, subfolder="profiles")
 
-def _profile_output_group(metric_type: str) -> str:
-    if metric_type == "all_dims_with_ensemble_overlay":
+def _profile_output_group(metric_spec: _ProfileMetricSpec) -> str:
+    if metric_spec.metric_type == "all_dims_with_ensemble_overlay":
         return "all_dims"
-    return metric_type
+    return metric_spec.metric_type
 
-def _expand_profile_metric_modes(
-    metric_modes: dict[str, str | tuple[str, ...] | list[str]],
-) -> list[tuple[str, str]]:
-    expanded: list[tuple[str, str]] = []
-    for metric_name, metric_mode in metric_modes.items():
-        modes = [metric_mode] if isinstance(metric_mode, str) else list(metric_mode)
-        expanded.extend((metric_name, str(mode)) for mode in modes)
-    return expanded
+def _profile_item_name(metric_spec: _ProfileMetricSpec) -> str:
+    if metric_spec.metric_type == "all_dims_with_ensemble_overlay":
+        item_name = f"{metric_spec.metric_name}_with_ensemble_overlay"
+    else:
+        item_name = metric_spec.metric_name
 
-def _profile_item_name(metric_name: str, metric_type: str) -> str:
-    if metric_type == "all_dims_with_ensemble_overlay":
-        return f"{metric_name}_with_ensemble_overlay"
-    return metric_name
+    source_fragment = _profile_source_fragment(kind=metric_spec.kind, reduce_dims=metric_spec.reduce_dims)
+    if source_fragment:
+        return f"{item_name}_{source_fragment}"
+    return item_name
 
 def _profile_metric_output_folder(
     *,
     plot_root: Path,
     variable: str | None,
-    metric_name: str,
-    metric_type: str,
+    metric_spec: _ProfileMetricSpec,
 ) -> Path:
     folder_variable = variable if variable is not None else "all_variables"
     _ensure_grouped_output_folders(
@@ -108,8 +205,8 @@ def _profile_metric_output_folder(
         plot_root=plot_root,
         variable=folder_variable,
         subfolder="profiles",
-        output_group=_profile_output_group(metric_type),
-        item_name=_profile_item_name(metric_name, metric_type),
+        output_group=_profile_output_group(metric_spec),
+        item_name=_profile_item_name(metric_spec),
     )
 
 
@@ -133,6 +230,102 @@ def get_variable_subfolder(
     output_folder = get_variable_plot_folder(plot_root=plot_root, variable=variable) / subfolder
     output_folder.mkdir(parents=True, exist_ok=True)
     return output_folder
+
+
+def _profile_source_dataset(
+    *,
+    metrics: dict,
+    variables: list[str],
+    metric_names: list[str],
+    metric_type: str,
+    kind: str,
+) -> xr.Dataset:
+    ds = metrics.get(metric_type, {}).get(kind, xr.Dataset())
+    if not isinstance(ds, xr.Dataset) or not ds.data_vars:
+        return xr.Dataset()
+
+    if "metric" not in ds.coords and "metric" not in ds.dims:
+        return xr.Dataset()
+
+    keep_metric_names = [name for name in metric_names if name in ds["metric"].values.tolist()]
+    if not keep_metric_names:
+        return xr.Dataset(attrs=ds.attrs)
+
+    keep_variables = [variable for variable in variables if variable in ds.data_vars]
+    if not keep_variables:
+        return xr.Dataset(attrs=ds.attrs)
+
+    return ds[keep_variables].sel(metric=keep_metric_names)
+
+
+def _prepare_profile_source_dataset(
+    ds: xr.Dataset,
+    *,
+    metric_type: str,
+    kind: str,
+    reduce_dims: tuple[str, ...] | None,
+) -> xr.Dataset:
+    if not isinstance(ds, xr.Dataset) or not ds.data_vars:
+        return xr.Dataset(attrs=getattr(ds, "attrs", {}))
+
+    out = ds
+    if reduce_dims is not None:
+        missing_dims = [dim for dim in reduce_dims if dim not in out.dims]
+        if missing_dims:
+            raise ValueError(
+                f"Profile source {metric_type!r}/{kind!r} cannot reduce missing dims {missing_dims!r}. "
+                f"Available dims: {tuple(out.dims)!r}."
+            )
+        out = out.earthml.geo_mean(reduce_dims)
+
+    remaining_data_dims = [dim for dim in out.dims if dim not in PROFILE_METADATA_DIMS]
+    if remaining_data_dims:
+        raise ValueError(
+            f"Profile source {metric_type!r}/{kind!r} still carries unreduced data dims {remaining_data_dims!r}. "
+            "Use the profile spec 'reduce' field to collapse retained metric dimensions before plotting."
+        )
+
+    return out
+
+
+def _profile_source_df(
+    *,
+    metrics: dict,
+    variables: list[str],
+    metric_names: list[str],
+    metric_type: str,
+    kind: str,
+    reduce_dims: tuple[str, ...] | None,
+    cache: dict[tuple[str, str, tuple[str, ...] | None], pd.DataFrame],
+) -> pd.DataFrame:
+    cache_key = (metric_type, kind, reduce_dims)
+    if cache_key in cache:
+        return cache[cache_key]
+
+    ds = _profile_source_dataset(
+        metrics=metrics,
+        variables=variables,
+        metric_names=metric_names,
+        metric_type=metric_type,
+        kind=kind,
+    )
+    ds = _prepare_profile_source_dataset(
+        ds,
+        metric_type=metric_type,
+        kind=kind,
+        reduce_dims=reduce_dims,
+    )
+
+    df = metrics_to_df_single_region(
+        metrics={metric_type: {kind: ds}},
+        variables=variables,
+        metric_names=metric_names,
+        kind=kind,
+        metric_type=metric_type,
+        diff="no",
+    )
+    cache[cache_key] = df
+    return df
 
 def _profile_template_df(
     metric_type: str,
@@ -634,55 +827,9 @@ def save_metrics_vs_parameter_plots(
         raise ValueError("Combined metric profile x_axis does not support 'variable' as one of the combined fields.")
     x_axis_column = _profile_axis_column_name(x_axis_fields)
 
-    expanded_metric_modes = _expand_profile_metric_modes(config.profiles.metrics)
-    metric_names = list(dict.fromkeys(metric_name for metric_name, _ in expanded_metric_modes))
-    df_det = metrics_to_df_single_region(
-        metrics=metrics,
-        variables=variables,
-        metric_names=None,
-        kind="scalar",
-        metric_type="all_dims",
-        diff="no",
-    )
-    df_spatial = metrics_to_df_single_region(
-        metrics=metrics,
-        variables=variables,
-        metric_names=None,
-        kind="scalar",
-        metric_type="spatial_mean",
-        diff="no",
-    )
-    df_ens = metrics_to_df_single_region(
-        metrics=metrics,
-        variables=variables,
-        metric_names=None,
-        kind="scalar",
-        metric_type="ensemble_mean",
-        diff="no",
-    )
-    df_prob = metrics_to_df_single_region(
-        metrics=metrics,
-        variables=variables,
-        metric_names=None,
-        kind="scalar",
-        metric_type="probabilistic",
-        diff="no",
-    )
-
-    df_det = df_det[df_det["metric"].isin(metric_names)]
-    df_spatial = df_spatial[df_spatial["metric"].isin(metric_names)]
-    df_ens = df_ens[df_ens["metric"].isin(metric_names)]
-    df_prob = df_prob[df_prob["metric"].isin(metric_names)]
-
-    df_det = _ensure_profile_axis_column(df_det, x_axis=x_axis_fields)
-    df_spatial = _ensure_profile_axis_column(df_spatial, x_axis=x_axis_fields)
-    df_ens = _ensure_profile_axis_column(df_ens, x_axis=x_axis_fields)
-    df_prob = _ensure_profile_axis_column(df_prob, x_axis=x_axis_fields)
-
-    df_det = _apply_df_filters_except_axis(df_det, filters=filters, x_axis=x_axis)
-    df_spatial = _apply_df_filters_except_axis(df_spatial, filters=filters, x_axis=x_axis)
-    df_ens = _apply_df_filters_except_axis(df_ens, filters=filters, x_axis=x_axis)
-    df_prob = _apply_df_filters_except_axis(df_prob, filters=filters, x_axis=x_axis)
+    expanded_metric_specs = _expand_profile_metric_modes(config.profiles.metrics)
+    metric_names = list(dict.fromkeys(metric_spec.metric_name for metric_spec in expanded_metric_specs))
+    source_df_cache: dict[tuple[str, str, tuple[str, ...] | None], pd.DataFrame] = {}
 
     panel_variables = [None] if x_axis_fields == ("variable",) else variables
 
@@ -696,17 +843,83 @@ def save_metrics_vs_parameter_plots(
         logger.info(f"Metric profile variable: {variable if variable is not None else 'all_variables'}")
         variable_mask = slice(None) if variable is None else variable
 
-        for metric_name, metric_type in expanded_metric_modes:
+        for metric_spec in expanded_metric_specs:
+            metric_name = metric_spec.metric_name
+            metric_type = metric_spec.metric_type
             output_folder = _profile_metric_output_folder(
                 plot_root=plot_folder,
                 variable=variable,
-                metric_name=metric_name,
-                metric_type=metric_type,
+                metric_spec=metric_spec,
             )
-            df_plot_ens = df_ens[df_ens["metric"] == metric_name]
-            df_plot_det = df_det[df_det["metric"] == metric_name]
-            df_plot_spatial = df_spatial[df_spatial["metric"] == metric_name]
-            df_plot_prob = df_prob[df_prob["metric"] == metric_name]
+            df_plot_det = _profile_source_df(
+                metrics=metrics,
+                variables=variables,
+                metric_names=metric_names,
+                metric_type="all_dims",
+                kind=metric_spec.kind,
+                reduce_dims=metric_spec.reduce_dims,
+                cache=source_df_cache,
+            )
+            df_plot_spatial = _profile_source_df(
+                metrics=metrics,
+                variables=variables,
+                metric_names=metric_names,
+                metric_type="spatial_mean",
+                kind=metric_spec.kind,
+                reduce_dims=metric_spec.reduce_dims,
+                cache=source_df_cache,
+            )
+            df_plot_ens = _profile_source_df(
+                metrics=metrics,
+                variables=variables,
+                metric_names=metric_names,
+                metric_type="ensemble_mean",
+                kind=metric_spec.kind,
+                reduce_dims=metric_spec.reduce_dims,
+                cache=source_df_cache,
+            )
+            df_plot_prob = _profile_source_df(
+                metrics=metrics,
+                variables=variables,
+                metric_names=metric_names,
+                metric_type="probabilistic",
+                kind=metric_spec.kind,
+                reduce_dims=metric_spec.reduce_dims,
+                cache=source_df_cache,
+            )
+
+            df_plot_det = _ensure_profile_axis_column(
+                _apply_df_filters_except_axis(
+                    df_plot_det[df_plot_det["metric"].isin([metric_name])],
+                    filters=filters,
+                    x_axis=x_axis,
+                ),
+                x_axis=x_axis_fields,
+            )
+            df_plot_spatial = _ensure_profile_axis_column(
+                _apply_df_filters_except_axis(
+                    df_plot_spatial[df_plot_spatial["metric"].isin([metric_name])],
+                    filters=filters,
+                    x_axis=x_axis,
+                ),
+                x_axis=x_axis_fields,
+            )
+            df_plot_ens = _ensure_profile_axis_column(
+                _apply_df_filters_except_axis(
+                    df_plot_ens[df_plot_ens["metric"].isin([metric_name])],
+                    filters=filters,
+                    x_axis=x_axis,
+                ),
+                x_axis=x_axis_fields,
+            )
+            df_plot_prob = _ensure_profile_axis_column(
+                _apply_df_filters_except_axis(
+                    df_plot_prob[df_plot_prob["metric"].isin([metric_name])],
+                    filters=filters,
+                    x_axis=x_axis,
+                ),
+                x_axis=x_axis_fields,
+            )
 
             if variable is not None:
                 df_plot_ens = df_plot_ens[df_plot_ens["variable"] == variable_mask]
@@ -1249,72 +1462,86 @@ def save_combined_variable_metric_profiles(
     saved_paths: list[Path] = []
     variable_colors = _get_variable_colors(variables=variables)
     metric_modes = config.profiles.combined_variable_metrics
-    expanded_metric_modes = _expand_profile_metric_modes(metric_modes)
-    metric_names = list(dict.fromkeys(metric_name for metric_name, _ in expanded_metric_modes))
+    expanded_metric_specs = _expand_profile_metric_modes(metric_modes)
+    metric_names = list(dict.fromkeys(metric_spec.metric_name for metric_spec in expanded_metric_specs))
     x_axis_column = _profile_axis_column_name(x_axis_fields)
+    source_df_cache: dict[tuple[str, str, tuple[str, ...] | None], pd.DataFrame] = {}
 
-    df_det = metrics_to_df_single_region(
-        metrics=metrics,
-        variables=variables,
-        metric_names=None,
-        kind="scalar",
-        metric_type="all_dims",
-        diff="no",
-    )
-    df_spatial = metrics_to_df_single_region(
-        metrics=metrics,
-        variables=variables,
-        metric_names=None,
-        kind="scalar",
-        metric_type="spatial_mean",
-        diff="no",
-    )
-    df_ens = metrics_to_df_single_region(
-        metrics=metrics,
-        variables=variables,
-        metric_names=None,
-        kind="scalar",
-        metric_type="ensemble_mean",
-        diff="no",
-    )
-    df_prob = metrics_to_df_single_region(
-        metrics=metrics,
-        variables=variables,
-        metric_names=None,
-        kind="scalar",
-        metric_type="probabilistic",
-        diff="no",
-    )
-
-    df_det = df_det[df_det["metric"].isin(metric_names)]
-    df_spatial = df_spatial[df_spatial["metric"].isin(metric_names)]
-    df_ens = df_ens[df_ens["metric"].isin(metric_names)]
-    df_prob = df_prob[df_prob["metric"].isin(metric_names)]
-
-    df_det = _ensure_profile_axis_column(df_det, x_axis=x_axis_fields)
-    df_spatial = _ensure_profile_axis_column(df_spatial, x_axis=x_axis_fields)
-    df_ens = _ensure_profile_axis_column(df_ens, x_axis=x_axis_fields)
-    df_prob = _ensure_profile_axis_column(df_prob, x_axis=x_axis_fields)
-
-    df_det = _apply_df_filters_except_axis(df_det, filters=filters, x_axis=x_axis)
-    df_spatial = _apply_df_filters_except_axis(df_spatial, filters=filters, x_axis=x_axis)
-    df_ens = _apply_df_filters_except_axis(df_ens, filters=filters, x_axis=x_axis)
-    df_prob = _apply_df_filters_except_axis(df_prob, filters=filters, x_axis=x_axis)
-
-    for metric_name, metric_type in expanded_metric_modes:
+    for metric_spec in expanded_metric_specs:
+        metric_name = metric_spec.metric_name
+        metric_type = metric_spec.metric_type
         if progress is not None and task_id is not None:
             progress.update(task_id, description=f"Generating all_variables combined profile: {metric_name}")
         output_folder = _profile_metric_output_folder(
             plot_root=plot_folder,
             variable=None,
-            metric_name=metric_name,
-            metric_type=metric_type,
+            metric_spec=metric_spec,
         )
 
-        df_plot_ens = df_ens[df_ens["metric"] == metric_name]
-        df_plot_det = df_det[df_det["metric"] == metric_name]
-        df_plot_spatial = df_spatial[df_spatial["metric"] == metric_name]
-        df_plot_prob = df_prob[df_prob["metric"] == metric_name]
+        df_plot_det = _ensure_profile_axis_column(
+            _apply_df_filters_except_axis(
+                _profile_source_df(
+                    metrics=metrics,
+                    variables=variables,
+                    metric_names=metric_names,
+                    metric_type="all_dims",
+                    kind=metric_spec.kind,
+                    reduce_dims=metric_spec.reduce_dims,
+                    cache=source_df_cache,
+                ).loc[lambda df: df["metric"].isin([metric_name])],
+                filters=filters,
+                x_axis=x_axis,
+            ),
+            x_axis=x_axis_fields,
+        )
+        df_plot_spatial = _ensure_profile_axis_column(
+            _apply_df_filters_except_axis(
+                _profile_source_df(
+                    metrics=metrics,
+                    variables=variables,
+                    metric_names=metric_names,
+                    metric_type="spatial_mean",
+                    kind=metric_spec.kind,
+                    reduce_dims=metric_spec.reduce_dims,
+                    cache=source_df_cache,
+                ).loc[lambda df: df["metric"].isin([metric_name])],
+                filters=filters,
+                x_axis=x_axis,
+            ),
+            x_axis=x_axis_fields,
+        )
+        df_plot_ens = _ensure_profile_axis_column(
+            _apply_df_filters_except_axis(
+                _profile_source_df(
+                    metrics=metrics,
+                    variables=variables,
+                    metric_names=metric_names,
+                    metric_type="ensemble_mean",
+                    kind=metric_spec.kind,
+                    reduce_dims=metric_spec.reduce_dims,
+                    cache=source_df_cache,
+                ).loc[lambda df: df["metric"].isin([metric_name])],
+                filters=filters,
+                x_axis=x_axis,
+            ),
+            x_axis=x_axis_fields,
+        )
+        df_plot_prob = _ensure_profile_axis_column(
+            _apply_df_filters_except_axis(
+                _profile_source_df(
+                    metrics=metrics,
+                    variables=variables,
+                    metric_names=metric_names,
+                    metric_type="probabilistic",
+                    kind=metric_spec.kind,
+                    reduce_dims=metric_spec.reduce_dims,
+                    cache=source_df_cache,
+                ).loc[lambda df: df["metric"].isin([metric_name])],
+                filters=filters,
+                x_axis=x_axis,
+            ),
+            x_axis=x_axis_fields,
+        )
 
         df_template = _profile_template_df(
             metric_type,

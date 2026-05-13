@@ -15,6 +15,76 @@ from .constants import (
 from ...experiments.mlbc.registry import MLBCExperimentMode
 
 
+def _is_profile_mode_name(value: object) -> bool:
+    return isinstance(value, str) and value in PROFILE_METRIC_MODES
+
+
+def _validate_profile_reduce_spec(reduce_spec: object) -> None:
+    if reduce_spec is None:
+        return
+    if isinstance(reduce_spec, str):
+        if not reduce_spec.strip():
+            raise ValueError("Profile reduce dims cannot contain empty strings.")
+        return
+    if isinstance(reduce_spec, (list, tuple)):
+        if not reduce_spec:
+            raise ValueError("Profile reduce dims must contain at least one dimension or be None.")
+        invalid_dims = [dim for dim in reduce_spec if not isinstance(dim, str) or not dim.strip()]
+        if invalid_dims:
+            raise ValueError(
+                "Profile reduce dims must be strings naming existing xarray dimensions."
+            )
+        return
+    raise ValueError("Profile reduce dims must be None, a string, or a sequence of strings.")
+
+
+def _looks_like_profile_source_spec(metric_mode: object) -> bool:
+    if not isinstance(metric_mode, (list, tuple)):
+        return False
+    if not metric_mode:
+        return False
+    if all(_is_profile_mode_name(item) for item in metric_mode):
+        return False
+    if len(metric_mode) == 3:
+        metric_type, kind, _ = metric_mode
+        return metric_type in PROFILE_METRIC_MODES and kind in METRIC_KIND
+    return False
+
+
+def _validate_profile_metric_mode(metric_name: str, metric_mode: object, *, field_name: str) -> None:
+    if isinstance(metric_mode, str):
+        if metric_mode not in PROFILE_METRIC_MODES:
+            raise ValueError(
+                f"Unsupported {field_name}[{metric_name!r}]={metric_mode!r}. "
+                f"Expected a legacy profile mode from {PROFILE_METRIC_MODES!r}, "
+                "or an explicit (metric_type, kind, reduce) source spec."
+            )
+        return
+
+    if isinstance(metric_mode, (list, tuple)):
+        if not metric_mode:
+            raise ValueError(f"{field_name}[{metric_name!r}] must contain at least one profile mode.")
+
+        if _looks_like_profile_source_spec(metric_mode):
+            metric_type, kind, reduce_spec = metric_mode
+            if metric_type not in PROFILE_METRIC_MODES or kind not in METRIC_KIND:
+                raise ValueError(
+                    f"Unsupported {field_name}[{metric_name!r}] source spec {(metric_type, kind)!r}. "
+                    f"Expected metric_type from {PROFILE_METRIC_MODES!r} and kind from {METRIC_KIND!r}."
+                )
+            _validate_profile_reduce_spec(reduce_spec)
+            return
+
+        for item in metric_mode:
+            _validate_profile_metric_mode(metric_name, item, field_name=field_name)
+        return
+
+    raise ValueError(
+        f"{field_name}[{metric_name!r}] entries must be strings, sequences of strings, "
+        "or explicit profile source specs."
+    )
+
+
 @dataclass(slots=True, kw_only=True)
 class CalculateMetricsFilters:
     leadtime: list[int] | None
@@ -119,11 +189,11 @@ class CalculateMetricsMapConfig:
 class CalculateMetricsProfileConfig:
     filters: CalculateMetricsFilters
     x_axis: str | list[str]
-    metrics: dict[str, str | tuple[str, ...] | list[str]]
+    metrics: dict[str, Any]
     shade_by: str
     shade_label: str
     enable_combined_variable_profiles: bool
-    combined_variable_metrics: dict[str, str | tuple[str, ...] | list[str]] | None = None
+    combined_variable_metrics: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         x_axis_fields = [self.x_axis] if isinstance(self.x_axis, str) else self.x_axis
@@ -137,29 +207,15 @@ class CalculateMetricsProfileConfig:
             raise ValueError(f"shade_by must be one of {CONTEXT_AXES!r}")
 
         for metric_name, metric_mode in self.metrics.items():
-            metric_modes = [metric_mode] if isinstance(metric_mode, str) else list(metric_mode)
-            if not metric_modes:
-                raise ValueError(f"metrics[{metric_name!r}] must contain at least one profile mode.")
-            invalid_metric_modes = [mode for mode in metric_modes if mode not in PROFILE_METRIC_MODES]
-            if invalid_metric_modes:
-                raise ValueError(
-                    f"Unsupported metrics[{metric_name!r}] entries {invalid_metric_modes!r}. "
-                    f"Expected modes from {PROFILE_METRIC_MODES!r}."
-                )
+            _validate_profile_metric_mode(metric_name, metric_mode, field_name="metrics")
 
         if self.combined_variable_metrics is not None:
             for metric_name, metric_mode in self.combined_variable_metrics.items():
-                metric_modes = [metric_mode] if isinstance(metric_mode, str) else list(metric_mode)
-                if not metric_modes:
-                    raise ValueError(
-                        f"combined_variable_metrics[{metric_name!r}] must contain at least one profile mode."
-                    )
-                invalid_metric_modes = [mode for mode in metric_modes if mode not in PROFILE_METRIC_MODES]
-                if invalid_metric_modes:
-                    raise ValueError(
-                        f"Unsupported combined_variable_metrics[{metric_name!r}] entries {invalid_metric_modes!r}. "
-                        f"Expected modes from {PROFILE_METRIC_MODES!r}."
-                    )
+                _validate_profile_metric_mode(
+                    metric_name,
+                    metric_mode,
+                    field_name="combined_variable_metrics",
+                )
 
 
 @dataclass(slots=True, kw_only=True)

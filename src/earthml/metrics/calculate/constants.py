@@ -390,23 +390,80 @@ METRIC_MAPS_VAR_OVERRIDE_LIMITS = {
 }
 
 # Profiles
+# Profile metric config accepts both scalar-only form:
+#   "rmse": ("all_dims_with_ensemble_overlay", "spatial_mean")
+# and richer per-source entries such as:
+#   "rmse": [("all_dims", "map", ("latitude", "longitude"))]
 PROFILE_METRICS = {
     # Grand mean
-    "r2": ("all_dims_with_ensemble_overlay", "spatial_mean"),
-    "rmse": ("all_dims_with_ensemble_overlay", "spatial_mean"),
-    # "nrmse": ("all_dims_with_ensemble_overlay", "spatial_mean"),
-    "rmse_skill_clim": ("all_dims_with_ensemble_overlay", "spatial_mean"),
-    "mae": ("all_dims_with_ensemble_overlay", "spatial_mean"),
-    # "nmae": ("all_dims_with_ensemble_overlay", "spatial_mean"),
-    "bias": ("all_dims_with_ensemble_overlay", "spatial_mean"),
-    "clim_acc": ("all_dims_with_ensemble_overlay", "spatial_mean"),
-    "variance_ratio": ("all_dims_with_ensemble_overlay", "spatial_mean"),
-    "error_std": ("all_dims_with_ensemble_overlay", "spatial_mean"),
-    # "nbias": ("all_dims_with_ensemble_overlay", "spatial_mean"),
+    "r2": [
+        "all_dims_with_ensemble_overlay",
+        "spatial_mean",
+        ("ensemble_mean", "map", ("latitude", "longitude")),
+    ],
+    "rmse": [
+        "all_dims_with_ensemble_overlay",
+        "spatial_mean",
+        ("ensemble_mean", "map", ("latitude", "longitude")),
+    ],
+    # "nrmse": [
+    #     "all_dims_with_ensemble_overlay",
+    #     "spatial_mean",
+    #     ("ensemble_mean", "map", ("latitude", "longitude")),
+    # ],
+    "rmse_skill_clim": [
+        "all_dims_with_ensemble_overlay",
+        "spatial_mean",
+        ("ensemble_mean", "map", ("latitude", "longitude")),
+    ],
+    "mae": [
+        "all_dims_with_ensemble_overlay",
+        "spatial_mean",
+        ("ensemble_mean", "map", ("latitude", "longitude")),
+    ],
+    # "nmae": [
+    #     "all_dims_with_ensemble_overlay",
+    #     "spatial_mean",
+    #     ("ensemble_mean", "map", ("latitude", "longitude")),
+    # ],
+    "bias": [
+        "all_dims_with_ensemble_overlay",
+        "spatial_mean",
+        ("ensemble_mean", "map", ("latitude", "longitude")),
+    ],
+    "clim_acc": [
+        "all_dims_with_ensemble_overlay",
+        "spatial_mean",
+        ("ensemble_mean", "map", ("latitude", "longitude")),
+    ],
+    "variance_ratio": [
+        "all_dims_with_ensemble_overlay",
+        "spatial_mean",
+        ("ensemble_mean", "map", ("latitude", "longitude")),
+    ],
+    "error_std": [
+        "all_dims_with_ensemble_overlay",
+        "spatial_mean",
+        ("ensemble_mean", "map", ("latitude", "longitude")),
+    ],
+    # "nbias": [
+    #     "all_dims_with_ensemble_overlay",
+    #     "spatial_mean",
+    #     ("ensemble_mean", "map", ("latitude", "longitude")),
+    # ],
     # Probabilistic
-    "crps": "probabilistic",
-    "spread": "probabilistic",
-    "spread_error_ratio": "probabilistic",
+    "crps": [
+        "probabilistic",
+        ("probabilistic", "map", ("latitude", "longitude")),
+    ],
+    "spread": [
+        "probabilistic",
+        ("probabilistic", "map", ("latitude", "longitude")),
+    ],
+    "spread_error_ratio": [
+        "probabilistic",
+        ("probabilistic", "map", ("latitude", "longitude")),
+    ],
 }
 
 PROFILE_COMBINED_VARS_METRICS = {
