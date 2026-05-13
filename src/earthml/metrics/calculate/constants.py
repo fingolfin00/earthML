@@ -400,56 +400,67 @@ PROFILE_METRICS = {
         "all_dims_with_ensemble_overlay",
         "spatial_mean",
         ("ensemble_mean", "map", ("latitude", "longitude")),
+        ("all_dims", "map", ("latitude", "longitude", "realization")),
     ],
     "rmse": [
         "all_dims_with_ensemble_overlay",
         "spatial_mean",
         ("ensemble_mean", "map", ("latitude", "longitude")),
+        ("all_dims", "map", ("latitude", "longitude", "realization")),
     ],
     # "nrmse": [
     #     "all_dims_with_ensemble_overlay",
     #     "spatial_mean",
     #     ("ensemble_mean", "map", ("latitude", "longitude")),
+    #     ("all_dims", "map", ("latitude", "longitude", "realization")),
     # ],
     "rmse_skill_clim": [
         "all_dims_with_ensemble_overlay",
         "spatial_mean",
         ("ensemble_mean", "map", ("latitude", "longitude")),
+        ("all_dims", "map", ("latitude", "longitude", "realization")),
     ],
     "mae": [
         "all_dims_with_ensemble_overlay",
         "spatial_mean",
         ("ensemble_mean", "map", ("latitude", "longitude")),
+        ("all_dims", "map", ("latitude", "longitude", "realization")),
     ],
     # "nmae": [
     #     "all_dims_with_ensemble_overlay",
     #     "spatial_mean",
     #     ("ensemble_mean", "map", ("latitude", "longitude")),
+    #     ("all_dims", "map", ("latitude", "longitude", "realization")),
     # ],
     "bias": [
         "all_dims_with_ensemble_overlay",
         "spatial_mean",
         ("ensemble_mean", "map", ("latitude", "longitude")),
+        ("all_dims", "map", ("latitude", "longitude", "realization")),
     ],
     "clim_acc": [
         "all_dims_with_ensemble_overlay",
         "spatial_mean",
         ("ensemble_mean", "map", ("latitude", "longitude")),
+        ("all_dims", "map", ("latitude", "longitude", "realization")),
     ],
     "variance_ratio": [
         "all_dims_with_ensemble_overlay",
         "spatial_mean",
         ("ensemble_mean", "map", ("latitude", "longitude")),
+        ("all_dims", "map", ("latitude", "longitude", "realization")),
     ],
     "error_std": [
         "all_dims_with_ensemble_overlay",
         "spatial_mean",
         ("ensemble_mean", "map", ("latitude", "longitude")),
+        ("all_dims", "map", ("latitude", "longitude", "realization")),
     ],
     # "nbias": [
     #     "all_dims_with_ensemble_overlay",
     #     "spatial_mean",
     #     ("ensemble_mean", "map", ("latitude", "longitude")),
+    #     ("all_dims", "map", ("latitude", "longitude", "realization")),
     # ],
     # Probabilistic
     "crps": [
