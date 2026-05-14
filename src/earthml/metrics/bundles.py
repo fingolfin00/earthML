@@ -47,7 +47,7 @@ def build_standard_metric_bundle(
     probabilistic: ProbabilisticMetrics | None = None,
     norm: str = "std",
     clim_period: str = "month",
-    map_metric_mean_dims: str | Sequence[str] | None = None,
+    metric_mean_extra_dims: dict[str, str | Sequence[str] | None] | None = None,
 ) -> dict[str, Any]:
     """
     Build a standard bundle of metrics grouped by output type.
@@ -101,18 +101,39 @@ def build_standard_metric_bundle(
         and any(ds.sizes.get(realization_dim, 0) > 1 for ds in deterministic.model_data)
     )
 
+    def _normalize_dims(value: str | Sequence[str] | None) -> tuple[str, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, str):
+            return (value,)
+        return tuple(value)
+
+    def _append_extra_dims(
+        base_dims: tuple[str, ...],
+        extra_dims: str | Sequence[str] | None,
+    ) -> tuple[str, ...]:
+        out = list(base_dims)
+        for dim in _normalize_dims(extra_dims):
+            if dim not in out:
+                out.append(dim)
+        return tuple(out)
+
     full_dims = (
         deterministic.dims.time,
         deterministic.dims.latitude,
         deterministic.dims.longitude,
     )
-    map_dims = map_metric_mean_dims if map_metric_mean_dims is not None else deterministic.dims.time
     ts_dims = (deterministic.dims.latitude, deterministic.dims.longitude)
+
+    extra_dims = metric_mean_extra_dims or {}
+    scalar_dims = _append_extra_dims(full_dims, extra_dims.get("scalar"))
+    timeseries_dims = _append_extra_dims(ts_dims, extra_dims.get("timeseries"))
+    map_dims = _append_extra_dims((deterministic.dims.time,), extra_dims.get("map"))
 
     reduce_dims = dict(
         zip(
             METRIC_KIND,
-            (full_dims, ts_dims, map_dims),
+            (scalar_dims, timeseries_dims, map_dims),
             strict=True,
         )
     )
@@ -143,7 +164,8 @@ def build_standard_metric_bundle(
     # ------------------
     # Spatial mean
     # ------------------
-    sdims, tdim = ts_dims, map_dims
+    sdims = ts_dims
+    tdim = tuple(dim for dim in scalar_dims if dim not in sdims)
     sm = section_metrics["spatial_mean"]["scalar"]
 
     sm["rmse"] = deterministic.rmse_of_mean(sdims, tdim)
