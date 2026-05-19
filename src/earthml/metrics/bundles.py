@@ -47,6 +47,7 @@ def build_standard_metric_bundle(
     probabilistic: ProbabilisticMetrics | None = None,
     norm: str = "std",
     clim_period: str = "month",
+    metric_names: Sequence[str] | set[str] | None = None,
     metric_mean_extra_dims: dict[str, str | Sequence[str] | None] | None = None,
 ) -> dict[str, Any]:
     """
@@ -77,6 +78,8 @@ def build_standard_metric_bundle(
         Normalization mode for normalized deterministic metrics.
     clim_period : str, optional
         Climatology grouping period for anomaly correlation metrics.
+    metric_names : Sequence[str] or set[str] or None, optional
+        Metric names to compute. ``None`` computes all supported metrics.
 
     Returns
     -------
@@ -100,6 +103,7 @@ def build_standard_metric_bundle(
         realization_dim is not None
         and any(ds.sizes.get(realization_dim, 0) > 1 for ds in deterministic.model_data)
     )
+    requested_metrics = None if metric_names is None else {str(name) for name in metric_names}
 
     def _normalize_dims(value: str | Sequence[str] | None) -> tuple[str, ...]:
         if value is None:
@@ -107,6 +111,9 @@ def build_standard_metric_bundle(
         if isinstance(value, str):
             return (value,)
         return tuple(value)
+
+    def _wants(metric_name: str) -> bool:
+        return requested_metrics is None or metric_name in requested_metrics
 
     def _append_extra_dims(
         base_dims: tuple[str, ...],
@@ -148,18 +155,30 @@ def build_standard_metric_bundle(
     for kind, dims in reduce_dims.items():
         sm = section_metrics["all_dims"][kind]
 
-        sm["rmse"] = deterministic.rmse(metric_mean_dims=dims)
-        sm["rmse_skill_clim"] = deterministic.rmse_skill_clim(metric_mean_dims=dims, period=clim_period)
-        sm["crmse"] = deterministic.crmse(metric_mean_dims=dims)
-        sm["mae"] = deterministic.mae(metric_mean_dims=dims)
-        sm["bias"] = deterministic.bias(metric_mean_dims=dims)
-        sm["error_std"] = deterministic.error_std(metric_mean_dims=dims)
-        sm["variance_ratio"] = deterministic.variance_ratio(metric_mean_dims=dims)
-        sm["r2"] = deterministic.r2(metric_mean_dims=dims)
-        sm["nrmse"] = deterministic.nrmse(metric_mean_dims=dims, norm=norm)
-        sm["ncrmse"] = deterministic.ncrmse(metric_mean_dims=dims, norm=norm)
-        sm["nmae"] = deterministic.nmae(metric_mean_dims=dims, norm=norm)
-        sm["nbias"] = deterministic.nbias(metric_mean_dims=dims, norm=norm)
+        if _wants("rmse"):
+            sm["rmse"] = deterministic.rmse(metric_mean_dims=dims)
+        if _wants("rmse_skill_clim"):
+            sm["rmse_skill_clim"] = deterministic.rmse_skill_clim(metric_mean_dims=dims, period=clim_period)
+        if _wants("crmse"):
+            sm["crmse"] = deterministic.crmse(metric_mean_dims=dims)
+        if _wants("mae"):
+            sm["mae"] = deterministic.mae(metric_mean_dims=dims)
+        if _wants("bias"):
+            sm["bias"] = deterministic.bias(metric_mean_dims=dims)
+        if _wants("error_std"):
+            sm["error_std"] = deterministic.error_std(metric_mean_dims=dims)
+        if _wants("variance_ratio"):
+            sm["variance_ratio"] = deterministic.variance_ratio(metric_mean_dims=dims)
+        if _wants("r2"):
+            sm["r2"] = deterministic.r2(metric_mean_dims=dims)
+        if _wants("nrmse"):
+            sm["nrmse"] = deterministic.nrmse(metric_mean_dims=dims, norm=norm)
+        if _wants("ncrmse"):
+            sm["ncrmse"] = deterministic.ncrmse(metric_mean_dims=dims, norm=norm)
+        if _wants("nmae"):
+            sm["nmae"] = deterministic.nmae(metric_mean_dims=dims, norm=norm)
+        if _wants("nbias"):
+            sm["nbias"] = deterministic.nbias(metric_mean_dims=dims, norm=norm)
 
     # ------------------
     # Spatial mean
@@ -168,18 +187,30 @@ def build_standard_metric_bundle(
     tdim = tuple(dim for dim in scalar_dims if dim not in sdims)
     sm = section_metrics["spatial_mean"]["scalar"]
 
-    sm["rmse"] = deterministic.rmse_of_mean(sdims, tdim)
-    sm["rmse_skill_clim"] = deterministic.rmse_skill_clim_of_mean(sdims, tdim, period=clim_period)
-    sm["crmse"] = deterministic.crmse_of_mean(sdims, tdim)
-    sm["mae"] = deterministic.mae_of_mean(sdims, tdim)
-    sm["bias"] = deterministic.bias_of_mean(sdims, tdim)
-    sm["error_std"] = deterministic.error_std_of_mean(sdims, tdim)
-    sm["variance_ratio"] = deterministic.variance_ratio_of_mean(sdims, tdim)
-    sm["r2"] = deterministic.r2_of_mean(sdims, tdim)
-    sm["nrmse"] = deterministic.nrmse_of_mean(sdims, tdim, norm=norm)
-    sm["ncrmse"] = deterministic.ncrmse_of_mean(sdims, tdim, norm=norm)
-    sm["nmae"] = deterministic.nmae_of_mean(sdims, tdim, norm=norm)
-    sm["nbias"] = deterministic.nbias_of_mean(sdims, tdim, norm=norm)
+    if _wants("rmse"):
+        sm["rmse"] = deterministic.rmse_of_mean(sdims, tdim)
+    if _wants("rmse_skill_clim"):
+        sm["rmse_skill_clim"] = deterministic.rmse_skill_clim_of_mean(sdims, tdim, period=clim_period)
+    if _wants("crmse"):
+        sm["crmse"] = deterministic.crmse_of_mean(sdims, tdim)
+    if _wants("mae"):
+        sm["mae"] = deterministic.mae_of_mean(sdims, tdim)
+    if _wants("bias"):
+        sm["bias"] = deterministic.bias_of_mean(sdims, tdim)
+    if _wants("error_std"):
+        sm["error_std"] = deterministic.error_std_of_mean(sdims, tdim)
+    if _wants("variance_ratio"):
+        sm["variance_ratio"] = deterministic.variance_ratio_of_mean(sdims, tdim)
+    if _wants("r2"):
+        sm["r2"] = deterministic.r2_of_mean(sdims, tdim)
+    if _wants("nrmse"):
+        sm["nrmse"] = deterministic.nrmse_of_mean(sdims, tdim, norm=norm)
+    if _wants("ncrmse"):
+        sm["ncrmse"] = deterministic.ncrmse_of_mean(sdims, tdim, norm=norm)
+    if _wants("nmae"):
+        sm["nmae"] = deterministic.nmae_of_mean(sdims, tdim, norm=norm)
+    if _wants("nbias"):
+        sm["nbias"] = deterministic.nbias_of_mean(sdims, tdim, norm=norm)
 
     # ------------------
     # Ensemble mean
@@ -190,18 +221,30 @@ def build_standard_metric_bundle(
         for kind, dims in reduce_dims.items():
             sm = section_metrics["ensemble_mean"][kind]
 
-            sm["rmse"] = deterministic.rmse_of_mean(rdim, dims)
-            sm["rmse_skill_clim"] = deterministic.rmse_skill_clim_of_mean(rdim, dims, period=clim_period)
-            sm["crmse"] = deterministic.crmse_of_mean(rdim, dims)
-            sm["mae"] = deterministic.mae_of_mean(rdim, dims)
-            sm["bias"] = deterministic.bias_of_mean(rdim, dims)
-            sm["error_std"] = deterministic.error_std_of_mean(rdim, dims)
-            sm["variance_ratio"] = deterministic.variance_ratio_of_mean(rdim, dims)
-            sm["r2"] = deterministic.r2_of_mean(rdim, dims)
-            sm["nrmse"] = deterministic.nrmse_of_mean(rdim, dims, norm=norm)
-            sm["ncrmse"] = deterministic.ncrmse_of_mean(rdim, dims, norm=norm)
-            sm["nmae"] = deterministic.nmae_of_mean(rdim, dims, norm=norm)
-            sm["nbias"] = deterministic.nbias_of_mean(rdim, dims, norm=norm)
+            if _wants("rmse"):
+                sm["rmse"] = deterministic.rmse_of_mean(rdim, dims)
+            if _wants("rmse_skill_clim"):
+                sm["rmse_skill_clim"] = deterministic.rmse_skill_clim_of_mean(rdim, dims, period=clim_period)
+            if _wants("crmse"):
+                sm["crmse"] = deterministic.crmse_of_mean(rdim, dims)
+            if _wants("mae"):
+                sm["mae"] = deterministic.mae_of_mean(rdim, dims)
+            if _wants("bias"):
+                sm["bias"] = deterministic.bias_of_mean(rdim, dims)
+            if _wants("error_std"):
+                sm["error_std"] = deterministic.error_std_of_mean(rdim, dims)
+            if _wants("variance_ratio"):
+                sm["variance_ratio"] = deterministic.variance_ratio_of_mean(rdim, dims)
+            if _wants("r2"):
+                sm["r2"] = deterministic.r2_of_mean(rdim, dims)
+            if _wants("nrmse"):
+                sm["nrmse"] = deterministic.nrmse_of_mean(rdim, dims, norm=norm)
+            if _wants("ncrmse"):
+                sm["ncrmse"] = deterministic.ncrmse_of_mean(rdim, dims, norm=norm)
+            if _wants("nmae"):
+                sm["nmae"] = deterministic.nmae_of_mean(rdim, dims, norm=norm)
+            if _wants("nbias"):
+                sm["nbias"] = deterministic.nbias_of_mean(rdim, dims, norm=norm)
 
     # ------------------
     # Probabilistic
@@ -210,9 +253,12 @@ def build_standard_metric_bundle(
         for kind, dims in reduce_dims.items():
             sm = section_metrics["probabilistic"][kind]
 
-            sm["crps"] = probabilistic.crps(dims)
-            sm["spread"] = probabilistic.spread(dims)
-            sm["spread_error_ratio"] = probabilistic.spread_error_ratio(dims)
+            if _wants("crps"):
+                sm["crps"] = probabilistic.crps(dims)
+            if _wants("spread"):
+                sm["spread"] = probabilistic.spread(dims)
+            if _wants("spread_error_ratio"):
+                sm["spread_error_ratio"] = probabilistic.spread_error_ratio(dims)
             # sm["crps_skill_clim"] = probabilistic.crps_skill_clim(full_dims)
 
     # ------------------
@@ -221,13 +267,18 @@ def build_standard_metric_bundle(
     if correlation is not None:
         for kind, dims in reduce_dims.items():
             sm = section_metrics["all_dims"][kind]
-            sm["corr"] = correlation.corr(dims)
-            sm["clim_acc"] = correlation.clim_anom_corr(dims, period=clim_period)
-            sm["spatial_acc"] = correlation.spatial_anom_corr(dims)
+            if _wants("corr"):
+                sm["corr"] = correlation.corr(dims)
+            if _wants("clim_acc"):
+                sm["clim_acc"] = correlation.clim_anom_corr(dims, period=clim_period)
+            if _wants("spatial_acc"):
+                sm["spatial_acc"] = correlation.spatial_anom_corr(dims)
 
         sm = section_metrics["spatial_mean"]["scalar"]
-        sm["corr"] = correlation.corr_of_mean(sdims, tdim)
-        sm["clim_acc"] = correlation.clim_anom_corr_of_mean(sdims, tdim, period=clim_period)
+        if _wants("corr"):
+            sm["corr"] = correlation.corr_of_mean(sdims, tdim)
+        if _wants("clim_acc"):
+            sm["clim_acc"] = correlation.clim_anom_corr_of_mean(sdims, tdim, period=clim_period)
 
         if has_realization:
             rdim = realization_dim
@@ -235,9 +286,12 @@ def build_standard_metric_bundle(
             for kind, dims in reduce_dims.items():
                 sm = section_metrics["ensemble_mean"][kind]
 
-                sm["corr"] = correlation.corr_of_mean(rdim, dims)
-                sm["clim_acc"] = correlation.clim_anom_corr_of_mean(rdim, dims, period=clim_period)
-                sm["spatial_acc"] = correlation.spatial_anom_corr_of_mean(rdim, dims)
+                if _wants("corr"):
+                    sm["corr"] = correlation.corr_of_mean(rdim, dims)
+                if _wants("clim_acc"):
+                    sm["clim_acc"] = correlation.clim_anom_corr_of_mean(rdim, dims, period=clim_period)
+                if _wants("spatial_acc"):
+                    sm["spatial_acc"] = correlation.spatial_anom_corr_of_mean(rdim, dims)
 
     # ------------------
     # Stack
