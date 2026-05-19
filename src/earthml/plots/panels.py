@@ -834,7 +834,7 @@ def plot_metric_map_panel(
 ):
     """
     Plot a panel of metric maps from the nested metrics output returned by
-    get_runs_and_metrics(...).
+    get_metrics(...).
 
     Parameters
     ----------
