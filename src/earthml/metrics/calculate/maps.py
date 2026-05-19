@@ -473,13 +473,15 @@ def _window_context_values(
     leadtime_window_label: str | None,
     window_context_key: str = LEADTIME_WINDOW_CONTEXT_KEY,
 ) -> dict[str, object]:
+    if leadtime_window_label is None:
+        return dict(context_values)
+
     out = {
         key: value
         for key, value in context_values.items()
         if key != "leadtime"
     }
-    if leadtime_window_label is not None:
-        out[window_context_key] = leadtime_window_label
+    out[window_context_key] = leadtime_window_label
     return out
 
 

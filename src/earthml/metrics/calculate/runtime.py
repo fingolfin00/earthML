@@ -122,17 +122,21 @@ def _build_output_payloads(
     groupby_period: str | None,
     groupby_basis: str,
     group_source: xr.Dataset,
+    include_all: bool = True,
 ) -> list[dict]:
     plot_root = payload["plot_root"]
-    base_all_payload = {
-        **payload,
-        "plot_folder": plot_root / "all",
-        "scope_label": "all",
-        "metric_group_label": "all",
-    }
-    if "metrics" in payload:
-        base_all_payload["metrics"] = _slice_metrics_for_group(payload["metrics"], metric_group_label="all")
-    output_payloads = [base_all_payload]
+    output_payloads = []
+
+    if include_all:
+        base_all_payload = {
+            **payload,
+            "plot_folder": plot_root / "all",
+            "scope_label": "all",
+            "metric_group_label": "all",
+        }
+        if "metrics" in payload:
+            base_all_payload["metrics"] = _slice_metrics_for_group(payload["metrics"], metric_group_label="all")
+        output_payloads.append(base_all_payload)
 
     if groupby_period is None:
         return output_payloads
@@ -570,6 +574,10 @@ class CalculateMetricsRuntime:
                         groupby_period=resolved_time_groupby_period,
                         groupby_basis=resolved_time_groupby_basis,
                         group_source=group_source,
+                        include_all=(
+                            True if self.time_metric_grouping is None
+                            else self.time_metric_grouping.include_all
+                        ),
                     )
                 )
 

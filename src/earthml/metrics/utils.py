@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import hashlib
 import json
 from collections.abc import Callable
 from typing import Any, Sequence, Literal
@@ -71,12 +72,14 @@ class _ResolvedDimensionGrouping:
     values: tuple[object, ...] | None = None
     groups: tuple[tuple[str, tuple[object, ...]], ...] | None = None
     kinds: tuple[str, ...] | None = None
+    include_all: bool = True
 
 
 @dataclass(frozen=True)
 class _ResolvedTimeGrouping:
     period: str
     basis: str
+    include_all: bool = True
 
 
 @dataclass(frozen=True)
@@ -485,6 +488,7 @@ def _normalize_dimension_grouping(
                 else None
             )
         )
+        include_all = bool(spec.get("include_all", True))
 
         groups: list[tuple[str, tuple[object, ...]]] = []
         for raw_label, raw_values in raw_groups.items():
@@ -507,6 +511,7 @@ def _normalize_dimension_grouping(
             mode=mode,
             groups=tuple(groups),
             kinds=kinds,
+            include_all=include_all,
         )
 
     raise ValueError(
@@ -525,7 +530,8 @@ def _normalize_time_grouping(spec: object) -> _ResolvedTimeGrouping:
         param_name="metric_groupings['time']['period']",
     )
     basis = _resolve_metric_groupby_basis(spec.get("basis"))
-    return _ResolvedTimeGrouping(period=period, basis=basis)
+    include_all = bool(spec.get("include_all", True))
+    return _ResolvedTimeGrouping(period=period, basis=basis, include_all=include_all)
 
 
 def normalize_metric_groupings(
@@ -584,6 +590,7 @@ def metric_groupings_to_serializable(
             serialized[key] = {
                 "period": spec.period,
                 "basis": spec.basis,
+                "include_all": spec.include_all,
             }
             continue
 
@@ -594,6 +601,7 @@ def metric_groupings_to_serializable(
         else:
             serialized[key] = {
                 "mode": spec.mode,
+                "include_all": spec.include_all,
                 **({"kinds": list(spec.kinds)} if spec.kinds is not None else {}),
                 "groups": {
                     label: list(values)
@@ -889,6 +897,20 @@ def _build_metric_group_operations(
             if not isinstance(spec, _ResolvedTimeGrouping) or spec.period is None:
                 continue
             time_ops = [
+                *(
+                    [
+                        _ResolvedMetricGroupOperation(
+                            key="time",
+                            kind="time",
+                            label="all",
+                            period=spec.period,
+                            basis=spec.basis,
+                            values=None,
+                        ),
+                    ]
+                    if spec.include_all else []
+                ),
+                *[
                 _ResolvedMetricGroupOperation(
                     key="time",
                     kind="time",
@@ -904,6 +926,7 @@ def _build_metric_group_operations(
                     leadtime_unit=leadtime_unit,
                     leadtime_value=leadtime_value,
                 )
+                ],
             ]
             if time_ops:
                 operations_by_key.append(time_ops)
@@ -917,6 +940,19 @@ def _build_metric_group_operations(
             continue
 
         dim_ops: list[_ResolvedMetricGroupOperation] = []
+        all_values = _coord_values_for_dim(truth_data, key)
+        if spec.include_all and all_values:
+            dim_ops.append(
+                _ResolvedMetricGroupOperation(
+                    key=key,
+                    kind="dimension",
+                    label="all",
+                    dim=key,
+                    values=tuple(all_values),
+                    mode=spec.mode,
+                    kinds=spec.kinds,
+                )
+            )
         for label, requested_values in spec.groups or ():
             resolved_values = _resolve_existing_group_values(
                 truth_data,
@@ -942,7 +978,7 @@ def _build_metric_group_operations(
     if not operations_by_key:
         return [tuple()]
 
-    return [tuple()] + [tuple(combo) for combo in product(*operations_by_key)]
+    return [tuple(combo) for combo in product(*operations_by_key)]
 
 
 def _apply_metric_group_operation(
@@ -957,6 +993,8 @@ def _apply_metric_group_operation(
 
     if op.kind == "time":
         group_value = None if not op.values else op.values[0]
+        if group_value is None:
+            return data
         return slice_time_group_data(
             data,
             period=str(op.period),
@@ -1027,7 +1065,11 @@ def _expand_all_metric_group_labels(
 
     for key, spec in metric_groupings.items():
         if key == "time":
-            if isinstance(spec, _ResolvedTimeGrouping) and spec.period is not None:
+            if (
+                isinstance(spec, _ResolvedTimeGrouping)
+                and spec.period is not None
+                and spec.include_all
+            ):
                 out = out.expand_dims({METRIC_GROUP_DIM: ["all"]})
                 out.attrs[METRIC_GROUPBY_PERIOD_ATTR] = spec.period
                 out.attrs[METRIC_GROUPBY_BASIS_ATTR] = spec.basis
@@ -1037,6 +1079,7 @@ def _expand_all_metric_group_labels(
             isinstance(spec, _ResolvedDimensionGrouping)
             and spec.mode in {"average", "reduce"}
             and spec.groups
+            and spec.include_all
         ):
             out = out.expand_dims({f"{key}_group": ["all"]})
 
@@ -1050,6 +1093,63 @@ def _ensure_dimension_indexes(ds: xr.Dataset) -> xr.Dataset:
             out = out.set_xindex(dim)
     return out
 
+
+def _hashable_coord_value(value: object) -> object:
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def _coord_signature(coord: xr.DataArray) -> tuple[object, ...]:
+    values = np.asarray(coord.values)
+
+    if values.ndim == 0:
+        return (
+            tuple(coord.dims),
+            str(values.dtype),
+            (),
+            _hashable_coord_value(values.reshape(()).item()),
+        )
+
+    if values.dtype == object:
+        flat_values = tuple(
+            _hashable_coord_value(value)
+            for value in values.reshape(-1).tolist()
+        )
+        return (
+            tuple(coord.dims),
+            str(values.dtype),
+            tuple(values.shape),
+            flat_values,
+        )
+
+    contiguous = np.ascontiguousarray(values)
+    digest = hashlib.blake2b(
+        contiguous.view(np.uint8),
+        digest_size=16,
+    ).hexdigest()
+    return (
+        tuple(coord.dims),
+        str(contiguous.dtype),
+        tuple(contiguous.shape),
+        digest,
+    )
+
+
+def _concat_dims_for_runs(runs_list: Sequence[xr.Dataset]) -> tuple[str, ...]:
+    preferred_dims = ("leadtime", "train_period", "loss", "variant", METRIC_GROUP_DIM)
+    dynamic_group_dims = tuple(
+        dim
+        for dim in sorted({
+            dim
+            for ds in runs_list
+            for dim in ds.dims
+            if dim.endswith("_group") and dim != METRIC_GROUP_DIM
+        })
+        if dim not in preferred_dims
+    )
+    return preferred_dims + dynamic_group_dims
+
 def _concat_if_possible(
     runs_list: Sequence[xr.Dataset],
     dim: str,
@@ -1060,7 +1160,11 @@ def _concat_if_possible(
         key = (
             tuple(v for v in ds.data_vars),
             tuple(d for d in ds.dims if d != dim),
-            tuple((c, tuple(ds.coords[c].values.tolist())) for c in ds.coords if c != dim),
+            tuple(
+                (name, _coord_signature(ds.coords[name]))
+                for name in ds.coords
+                if name != dim
+            ),
         )
         grouped.setdefault(key, []).append(ds)
 
@@ -1069,7 +1173,15 @@ def _concat_if_possible(
         if len(datasets) == 1:
             out.append(datasets[0])
         else:
-            out.append(xr.concat(datasets, dim=dim))
+            out.append(
+                xr.concat(
+                    datasets,
+                    dim=dim,
+                    coords="minimal",
+                    compat="override",
+                    combine_attrs="drop_conflicts",
+                )
+            )
     return out
 
 def _combine_metric_run_datasets(
@@ -1080,7 +1192,7 @@ def _combine_metric_run_datasets(
 
     prepared = [_ensure_dimension_indexes(ds) for ds in runs_list]
 
-    for dim in ("leadtime", "train_period", "loss", "variant", "metric_group"):
+    for dim in _concat_dims_for_runs(prepared):
         dim_datasets = [ds for ds in prepared if dim in ds.dims]
         other_datasets = [ds for ds in prepared if dim not in ds.dims]
         prepared = _concat_if_possible(dim_datasets, dim=dim) + other_datasets
@@ -1630,6 +1742,7 @@ def _get_single_region_metrics(
             if prog is not None and run_task is not None:
                 prog.advance(run_task)
 
+    # print(metric_runs)
     metrics: MetricLeaf = {}
     combine_steps = sum(
         1
