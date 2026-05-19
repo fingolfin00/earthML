@@ -1,7 +1,7 @@
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ItemsView, Literal
+from typing import Any, ItemsView, Literal, Sequence
 
 from .constants import (
     CALCULATE_METRICS_ITEMS,
@@ -11,6 +11,7 @@ from .constants import (
     PROFILE_METRIC_MODES,
     SCOREBOARD_MODES,
     VARIABLE_COLORS,
+    CalculateMetricsMetricVsDeltaPairConfig,
 )
 from ...experiments.mlbc.registry import MLBCExperimentMode
 
@@ -133,6 +134,8 @@ class CalculateMetricsGlobalConfig:
     external_mask_path: Path | None
     external_mask_variable: str | None
     use_saved_mask: bool
+    calculate_clim_from_train_period: bool
+    use_train_prediction_clim: bool # only used if calculate_clim_from_train_period is True
     items: list[str]
     print_user_config: bool
     print_console_tables: bool
@@ -268,26 +271,12 @@ class CalculateMetricsSaveConfig:
 class CalculateMetricsTableConfig:
     scalar_filters: CalculateMetricsFilters
     normalized_filters: CalculateMetricsFilters
-    row_index: list[str]
-    column_index: list[str]
-    stat_order: list[str]
+    row_index: Sequence[str]
+    column_index: Sequence[str]
+    stat_order: Sequence[str]
     significant_digits: int
     image_dpi: int
     background_color: str
-
-
-@dataclass(slots=True, kw_only=True)
-class CalculateMetricsMetricVsDeltaPairConfig:
-    forecast_metric: str
-    forecast_metric_type: Literal["all_dims", "spatial_mean", "ensemble_mean", "probabilistic"]
-    delta_metric: str
-    delta_metric_type: Literal["all_dims", "spatial_mean", "ensemble_mean", "probabilistic"]
-
-    def __post_init__(self) -> None:
-        if self.forecast_metric_type not in METRIC_SECTIONS:
-            raise ValueError(f"forecast_metric_type must be one of {METRIC_SECTIONS!r}")
-        if self.delta_metric_type not in METRIC_SECTIONS:
-            raise ValueError(f"delta_metric_type must be one of {METRIC_SECTIONS!r}")
 
 
 @dataclass(slots=True, kw_only=True)

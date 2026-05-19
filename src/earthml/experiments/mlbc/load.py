@@ -25,6 +25,11 @@ from ...sources import build_source, BaseSource
 from ...base import Leadtime
 
 from .dataclasses import MLBCExperimentConfig, MLBCExperimentDatasetRole, MLBCExperimentDataset, MLBCExperimentMode
+from .utils import apply_mask_to_dataset
+
+
+RunsByModel = dict[str, xr.Dataset]
+RunsByRegion = dict[str, RunsByModel]
 
 
 logger = get_logger(__name__)
@@ -166,13 +171,17 @@ def _is_int_leadtime(ds, coord="leadtime"):
     return np.issubdtype(ds[coord].dtype, np.integer)
 
 
-def get_leadtime_value_and_unit(leadtime: Leadtime) -> tuple[int, str]:
+def get_leadtime_value_and_unit(leadtime: Leadtime | None) -> tuple[int, str]:
     if not isinstance(leadtime, Leadtime):
         raise TypeError(f"Expected Leadtime, got {type(leadtime).__name__}")
     return leadtime.value, leadtime.unit
 
 
-def harmonize_leadtime_int(*datasets, coord="leadtime", method="int_source"):
+def harmonize_leadtime_int(
+    *datasets: xr.Dataset,
+    coord: str = "leadtime",
+    method: str = "int_source"
+) -> list[xr.Dataset]:
     """
     Make all datasets share the same integer leadtime coordinate, shifting each
     leadtime value up to the nearest 30-day boundary.
@@ -365,6 +374,19 @@ def _prefer_valid_time_for_alignment(
     return input_ds.assign_coords({input_time_dim: snapped_valid_time})
 
 
+def _decide_models_to_load(
+    exp_mode: MLBCExperimentMode,
+    load_models: Sequence[str] | None = None,
+    load_train_preds: bool = False,
+):
+    models: set[str] = (
+        {"fc", "an", "pr"} if load_models is None else set(load_models)
+    )
+    need_fc = "fc" in models
+    need_an = "an" in models
+    need_pr = "pr" in models and (exp_mode == MLBCExperimentMode.TEST or load_train_preds)
+    return need_fc, need_an, need_pr
+
 def _load_single_exp(
     exp_cfg: MLBCExperimentConfig | str | Path,
     exp_mode: MLBCExperimentMode,
@@ -376,15 +398,12 @@ def _load_single_exp(
 ) -> tuple[dict[str, xr.Dataset], dict]:
     exp_path, experiment = _load_saved_experiment(exp_cfg)
 
-    load_models = {"fc", "an", "pr"} if load_models is None else set(load_models)
-    need_fc = "fc" in load_models
-    need_an = "an" in load_models
-    need_pr = "pr" in load_models
+    need_fc, need_an, need_pr = _decide_models_to_load(exp_mode, load_models, load_train_preds)
 
     source: dict[MLBCExperimentDatasetRole, BaseSource] = experiment[f"{exp_mode}_data"]
     mask_exp: MLBCExperimentDataset = experiment[f"{exp_mode}_mask_data"]
     mask_source = build_source(
-        name=mask_exp.datasource.source,
+        name=mask_exp.datasource[0].source if isinstance(mask_exp.datasource, list) else mask_exp.datasource.source,
         params={
             "datasource": mask_exp.datasource,
             "config": mask_exp.source_configs,
@@ -392,40 +411,42 @@ def _load_single_exp(
     )
 
     n_valid_samples = {
-        "input": len(source["input"].elements.samples),
-        "target": len(source["target"].elements.samples),
+        "input": len(source[MLBCExperimentDatasetRole.INPUT].elements.samples),
+        "target": len(source[MLBCExperimentDatasetRole.TARGET].elements.samples),
     }
     if need_pr and (exp_mode == "test" or load_train_preds) and "prediction" in source:
-        n_valid_samples["prediction"] = len(source["prediction"].elements.samples)
+        n_valid_samples["prediction"] = len(source[MLBCExperimentDatasetRole.PREDICTION].elements.samples)
 
     if only_sizes:
         return {}, n_valid_samples
 
-    fc = an = pr = None
+    fc: xr.Dataset | None = None
+    an: xr.Dataset | None = None
+    pr: xr.Dataset | None = None
     if need_fc:
-        source["input"] = _source_with_root_path(
-            source["input"],
+        source[MLBCExperimentDatasetRole.INPUT] = _source_with_root_path(
+            source[MLBCExperimentDatasetRole.INPUT],
             exp_path / f"{exp_mode}_input.zarr",
         )
-        fc: xr.Dataset = source["input"].reload(
+        fc = source[MLBCExperimentDatasetRole.INPUT].reload(
             show_dask_progress=show_dask_progress,
         ).earthml.normalize_dims_and_coords()
 
     if need_an:
-        source["target"] = _source_with_root_path(
-            source["target"],
+        source[MLBCExperimentDatasetRole.TARGET] = _source_with_root_path(
+            source[MLBCExperimentDatasetRole.TARGET],
             exp_path / f"{exp_mode}_target.zarr",
         )
-        an: xr.Dataset = source["target"].reload(
+        an = source[MLBCExperimentDatasetRole.TARGET].reload(
             show_dask_progress=show_dask_progress,
         ).earthml.normalize_dims_and_coords()
 
     if need_pr and (exp_mode == "test" or load_train_preds) and "prediction" in source:
-        source["prediction"] = _source_with_root_path(
-            source["prediction"],
+        source[MLBCExperimentDatasetRole.PREDICTION] = _source_with_root_path(
+            source[MLBCExperimentDatasetRole.PREDICTION],
             exp_path / f"{exp_mode}_preds.zarr",
         )
-        pr: xr.Dataset = source["prediction"].reload(
+        pr = source[MLBCExperimentDatasetRole.PREDICTION].reload(
             show_dask_progress=show_dask_progress,
         ).earthml.normalize_dims_and_coords()
 
@@ -519,10 +540,7 @@ def load_all_exp_from_folder(
     """
     exp_root = Path(exp_root)
 
-    load_models = {"fc", "an", "pr"} if load_models is None else set(load_models)
-    need_fc = "fc" in load_models
-    need_an = "an" in load_models
-    need_pr = "pr" in load_models and (exp_mode == "test" or load_train_preds)
+    need_fc, need_an, need_pr = _decide_models_to_load(exp_mode, load_models, load_train_preds)
 
     def _has_required_artifacts(exp_dir: Path) -> bool:
         required = [exp_dir / cfg_name]
@@ -584,7 +602,7 @@ def load_all_exp_from_folder(
     regions_by_model: dict[str, set[str]] = {}
 
     with progress_cm as prog:
-        task = prog.add_task("Loading experiments", total=len(configs)) if show_progress else None
+        task = prog.add_task("Loading experiments", total=len(configs)) if prog is not None else None
 
         for config in configs:
             train_datasets = config.train_dataset
@@ -596,7 +614,7 @@ def load_all_exp_from_folder(
                     idx_input = i
                     break
             if idx_input is None:
-                if show_progress:
+                if prog is not None and task is not None:
                     prog.advance(task)
                 continue
 
@@ -606,14 +624,15 @@ def load_all_exp_from_folder(
 
             source_configs = train_ds_input.source_configs
             source_config = source_configs[0] if isinstance(source_configs, Sequence) else source_configs
-            leadtime_rd = source_config.leadtime
+            leadtime_rd = source_config.leadtime if source_config is not None else None
 
             try:
                 leadtime, leadtime_unit = get_leadtime_value_and_unit(leadtime_rd)
             except ValueError as exc:
                 raise ValueError(f"Unsupported leadtime for experiment {config.name}: {leadtime_rd}") from exc
 
-            var_input = datasource_input.data_selection.variable.name
+            # Only support one variable for now, pick first if multiple available
+            var_input = datasource_input.data_selection.variable[0].name if isinstance(datasource_input.data_selection.variable, Sequence) else datasource_input.data_selection.variable.name
 
             train_periods = datasource_input.data_selection.period
             train_periods = train_periods if isinstance(train_periods, Sequence) else [train_periods]
@@ -624,7 +643,7 @@ def load_all_exp_from_folder(
             variant = _resolve_experiment_variant(config, Path(config.work_path))
 
             group_name = _CANONICAL_VARIABLE_NAMES.get(var_input, var_input)
-            if show_progress:
+            if prog is not None and task is not None:
                 prog.update(
                     task,
                     description=(
@@ -634,23 +653,23 @@ def load_all_exp_from_folder(
                 )
 
             if not _matches_selection(group_name, (run_filters or {}).get("variable", variables)):
-                if show_progress:
+                if prog is not None and task is not None:
                     prog.advance(task)
                 continue
             if not _matches_selection(leadtime, (run_filters or {}).get("leadtime")):
-                if show_progress:
+                if prog is not None and task is not None:
                     prog.advance(task)
                 continue
             if not _matches_selection(train_period, (run_filters or {}).get("train_period")):
-                if show_progress:
+                if prog is not None and task is not None:
                     prog.advance(task)
                 continue
             if not _matches_selection(region, (run_filters or {}).get("region")):
-                if show_progress:
+                if prog is not None and task is not None:
                     prog.advance(task)
                 continue
             if not _matches_selection(loss, (run_filters or {}).get("loss")):
-                if show_progress:
+                if prog is not None and task is not None:
                     prog.advance(task)
                 continue
             variant_filters = (run_filters or {}).get("variant")
@@ -660,7 +679,7 @@ def load_all_exp_from_folder(
                     for value in _normalize_selection_values(variant_filters, keep_empty=True)
                 ]
             if not _matches_selection(variant, variant_filters, keep_empty=True):
-                if show_progress:
+                if prog is not None and task is not None:
                     prog.advance(task)
                 continue
 
@@ -678,7 +697,7 @@ def load_all_exp_from_folder(
             grouped_sizes.setdefault(group_name, {})[size_key] = size
 
             if only_sizes:
-                if show_progress:
+                if prog is not None and task is not None:
                     prog.advance(task)
                 continue
 
@@ -743,7 +762,7 @@ def load_all_exp_from_folder(
                 # for v in ds.data_vars:
                 #     print("   ", v, ds[v].dims)
 
-            if show_progress:
+            if prog is not None and task is not None:
                 prog.advance(task)
 
     if only_sizes:
@@ -776,8 +795,8 @@ def load_all_exp_from_folder(
     )
 
     with progress_cm as prog:
-        combine_task = prog.add_task("Combining grouped runs", total=combine_steps) if show_progress else None
-        merge_task = prog.add_task("Merging models", total=merge_steps) if show_progress else None
+        combine_task = prog.add_task("Combining grouped runs", total=combine_steps) if prog is not None else None
+        merge_task = prog.add_task("Merging models", total=merge_steps) if prog is not None else None
 
         for group_name, model_map in grouped_runs.items():
             combined_by_group_and_model[group_name] = {}
@@ -790,7 +809,7 @@ def load_all_exp_from_folder(
                     runs,
                     combine_attrs="drop_conflicts",
                 )
-                if show_progress:
+                if prog is not None and combine_task is not None:
                     prog.advance(combine_task)
 
         for model_name in all_model_names:
@@ -800,7 +819,7 @@ def load_all_exp_from_folder(
                 if model_name in model_map
             ]
             if not model_datasets:
-                if show_progress:
+                if prog is not None and merge_task is not None:
                     prog.advance(merge_task)
                 continue
 
@@ -824,7 +843,7 @@ def load_all_exp_from_folder(
                 compat="no_conflicts",
                 combine_attrs="drop_conflicts",
             )
-            if show_progress:
+            if prog is not None and merge_task is not None:
                 prog.advance(merge_task)
 
     return runs_out, grouped_sizes
@@ -832,7 +851,7 @@ def load_all_exp_from_folder(
 
 def add_ke_to_runs(
     runs: xr.Dataset,
-    dataset_keys: Sequence[str] = ("fc", "an", "pr"),
+    dataset_keys: Sequence[str] | None = ("fc", "an", "pr"),
     u_name: str = "u10",
     v_name: str = "v10",
     ke_name: str = "ke",
@@ -860,3 +879,111 @@ def add_ke_to_runs(
     runs[ke_name] = ke.rename(ke_name)
 
     return runs
+
+
+def _normalize_region_values(values: object) -> list[str]:
+    if values is None:
+        return []
+    if isinstance(values, (list, tuple, set)):
+        out: list[str] = []
+        for value in values:
+            if value is None or str(value) == "":
+                continue
+            value_str = str(value)
+            if value_str not in out:
+                out.append(value_str)
+        return out
+
+    value_str = str(values)
+    return [] if value_str == "" else [value_str]
+
+def _discover_region_values(
+    *,
+    exp_root: str | Path,
+    exp_mode: MLBCExperimentMode,
+    load_models: Sequence[str],
+    variables: Sequence[str] | None,
+    run_filters: dict[str, object] | None,
+    show_progress: bool = False,
+) -> list[str]:
+    explicit_regions = _normalize_region_values((run_filters or {}).get("region"))
+    if explicit_regions:
+        return explicit_regions
+
+    _, grouped_sizes = load_all_exp_from_folder(
+        exp_root=exp_root,
+        exp_mode=exp_mode,
+        load_train_preds=(exp_mode == "train"),
+        load_models=load_models,
+        variables=variables,
+        run_filters=run_filters,
+        only_sizes=True,
+        show_progress=show_progress,
+    )
+
+    regions: list[str] = []
+    for size_map in grouped_sizes.values():
+        for (_, _, region, _, _) in size_map:
+            region_str = str(region)
+            if region_str not in regions:
+                regions.append(region_str)
+    return regions
+
+def load_runs_by_region(
+    *,
+    exp_root: Path,
+    exp_mode: MLBCExperimentMode,
+    load_models: list[str],
+    variables: list[str] | None,
+    run_filters: dict[str, object] | None,
+    external_mask_data: xr.Dataset | None,
+    apply_external_mask_to_runs: bool = False,
+    show_progress: bool = True,
+) -> RunsByRegion:
+    region_values = _discover_region_values(
+        exp_root=exp_root,
+        exp_mode=exp_mode,
+        load_models=load_models,
+        variables=variables,
+        run_filters=run_filters,
+        show_progress=False,
+    )
+    if not region_values:
+        return {}
+
+    runs_by_region: RunsByRegion = {}
+    for region_name in region_values:
+        region_filters = dict(run_filters or {})
+        region_filters["region"] = [region_name]
+        loaded_runs, _ = load_all_exp_from_folder(
+            exp_root=exp_root,
+            exp_mode=exp_mode,
+            load_train_preds=(exp_mode == MLBCExperimentMode.TRAIN),
+            load_models=load_models,
+            variables=variables,
+            run_filters=region_filters,
+            show_progress=show_progress,
+        )
+        if not loaded_runs:
+            continue
+
+        for model_name in load_models:
+            if model_name in loaded_runs:
+                loaded_runs[model_name] = add_ke_to_runs(
+                    loaded_runs[model_name],
+                    dataset_keys=None,
+                )
+
+        if apply_external_mask_to_runs and external_mask_data is not None:
+            # Keep metric computation on the original loaded runs and only mask the
+            # returned field datasets for downstream consumers such as plotting.
+            runs_for_return = {
+                model_name: ds if model_name == "mask" else apply_mask_to_dataset(ds, external_mask_data)
+                for model_name, ds in loaded_runs.items()
+            }
+        else:
+            runs_for_return = loaded_runs
+
+        runs_by_region[str(region_name)] = runs_for_return
+
+    return runs_by_region

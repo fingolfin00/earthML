@@ -1,4 +1,6 @@
-from typing import Any, Sequence
+from dataclasses import dataclass
+import json
+from typing import Any, Sequence, Literal
 from contextlib import nullcontext
 from itertools import product
 
@@ -30,7 +32,7 @@ from .metrics.deterministic import DeterministicMetrics
 from .metrics.correlation import CorrelationMetrics
 from .metrics.probabilistic import ProbabilisticMetrics
 from .bundles import build_standard_metric_bundle
-from .calculate.constants import METRIC_SECTIONS
+from .calculate.constants import METRIC_KIND, METRIC_SECTIONS
 
 from ..experiments.mlbc.load import (
     load_all_exp_from_folder,
@@ -39,23 +41,54 @@ from ..experiments.mlbc.load import (
 )
 from ..experiments.mlbc.registry import MLBCExperimentMode
 from ..experiments.mlbc.utils import (
-    apply_mask_to_dataset,
     combine_masks,
     project_mask_to_reference_grid,
     select_mask_for_indexers,
 )
+from ..experiments.mlbc.load import (
+    _discover_region_values,
+    RunsByModel,
+    RunsByRegion,
+)
 
 
-RunsByModel = dict[str, xr.Dataset]
-RunsByRegion = dict[str, RunsByModel]
 MetricLeaf = dict[str, dict[str, xr.Dataset]]
 MetricsByRegion = dict[str, MetricLeaf]
-ClimTuple = tuple[xr.Dataset | None, ...]
-ClimsByRegion = dict[str, ClimTuple]
+ClimsByModel = dict[str, xr.Dataset | None]
+ClimsByRegion = dict[str, ClimsByModel]
 
 METRIC_GROUP_DIM = "metric_group"
 METRIC_GROUPBY_PERIOD_ATTR = "metric_groupby_period"
 METRIC_GROUPBY_BASIS_ATTR = "metric_groupby_basis"
+METRIC_GROUPINGS_ATTR = "metric_groupings"
+
+
+@dataclass(frozen=True)
+class _ResolvedDimensionGrouping:
+    dim: str
+    mode: str
+    values: tuple[object, ...] | None = None
+    groups: tuple[tuple[str, tuple[object, ...]], ...] | None = None
+    kinds: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True)
+class _ResolvedTimeGrouping:
+    period: str
+    basis: str
+
+
+@dataclass(frozen=True)
+class _ResolvedMetricGroupOperation:
+    key: str
+    kind: str
+    label: object
+    dim: str | None = None
+    values: tuple[object, ...] | None = None
+    mode: str | None = None
+    kinds: tuple[str, ...] | None = None
+    period: str | None = None
+    basis: str | None = None
 
 
 # ==========================================
@@ -92,67 +125,17 @@ def date_diff(ymd_range: str):
     }
 
 
-def _normalize_region_values(values: object) -> list[str]:
-    if values is None:
-        return []
-    if isinstance(values, (list, tuple, set)):
-        out: list[str] = []
-        for value in values:
-            if value is None or str(value) == "":
-                continue
-            value_str = str(value)
-            if value_str not in out:
-                out.append(value_str)
-        return out
-
-    value_str = str(values)
-    return [] if value_str == "" else [value_str]
-
-
-def _discover_region_values(
-    *,
-    exp_root: str | Path,
-    exp_mode: MLBCExperimentMode,
-    load_models: Sequence[str],
-    variables: Sequence[str] | None,
-    run_filters: dict[str, object] | None,
-    show_progress: bool,
-) -> list[str]:
-    explicit_regions = _normalize_region_values((run_filters or {}).get("region"))
-    if explicit_regions:
-        return explicit_regions
-
-    _, grouped_sizes = load_all_exp_from_folder(
-        exp_root=exp_root,
-        exp_mode=exp_mode,
-        load_train_preds=(exp_mode == "train"),
-        load_models=load_models,
-        variables=variables,
-        run_filters=run_filters,
-        only_sizes=True,
-        show_progress=False,
-    )
-
-    regions: list[str] = []
-    for size_map in grouped_sizes.values():
-        for (_, _, region, _, _) in size_map:
-            region_str = str(region)
-            if region_str not in regions:
-                regions.append(region_str)
-    return regions
-
-
 def metrics_to_df_single_region(
     metrics: MetricLeaf,
-    variables: list[str] | str | None = None,
-    metric_names: list[str] | str | None = None,
+    variables: Sequence[str] | str | None = None,
+    metric_names: Sequence[str] | str | None = None,
     kind: str = "scalar",
     metric_type: str = "all_dims",
     diff: str = "no",
     models: Sequence[str] | None = None,
 ) -> pd.DataFrame:
     """
-    Convert one single-region metrics leaf returned by get_runs_and_metrics(...)
+    Convert one single-region metrics leaf returned by get_metrics(...)
     into a tidy pandas DataFrame.
     """
     ds = metrics.get(metric_type, {}).get(kind, xr.Dataset())
@@ -311,7 +294,7 @@ def _compute_metric_bundle(
     metric_names: str | Sequence[str] | None = None,
     metric_sections: str | Sequence[str] = ("scalar", "map", "timeseries"),
     metric_types: str | Sequence[str] | None = None,
-    map_metric_mean_dims: str | Sequence[str] | None = None,
+    metric_mean_extra_dims: dict[str, str | Sequence[str] | None] | None = None,
 ) -> dict[str, dict[str, xr.Dataset]]:
     if isinstance(metric_names, str):
         metric_names = {metric_names}
@@ -333,7 +316,8 @@ def _compute_metric_bundle(
         probabilistic=probabilistic,
         norm=norm,
         clim_period=clim_period,
-        map_metric_mean_dims=map_metric_mean_dims,
+        metric_names=metric_names,
+        metric_mean_extra_dims=metric_mean_extra_dims,
     )
 
     filtered_result: dict[str, dict[str, xr.Dataset]] = {}
@@ -346,13 +330,7 @@ def _compute_metric_bundle(
 
         for section in metric_sections:
             key = f"{section}_{metric_type}"
-            ds = result[key]
-
-            if metric_names is not None and "metric" in ds.coords:
-                keep_metrics = [name for name in ds.metric.values if name in metric_names]
-                ds = ds.sel(metric=keep_metrics) if keep_metrics else xr.Dataset(attrs=ds.attrs)
-
-            filtered_result[metric_type][section] = ds
+            filtered_result[metric_type][section] = result[key]
 
     return filtered_result
 
@@ -370,7 +348,7 @@ def _format_metric_group_label(
 
 
 def _resolve_period(period: str | None, *, param_name: str) -> str:
-    valid_periods = {"month", "dayofyear", "season", "none"}
+    valid_periods = {"month", "dayofyear", "season"}
     if period is None:
         return "month"
     if period not in valid_periods:
@@ -389,6 +367,246 @@ def _resolve_metric_groupby_basis(metric_groupby_basis: str | None) -> str:
             f"Unsupported metric_groupby_basis={metric_groupby_basis!r}. Expected one of {sorted(valid_bases)!r}."
         )
     return metric_groupby_basis
+
+
+def _normalize_group_value_sequence(values: object, *, param_name: str) -> tuple[object, ...]:
+    if isinstance(values, (list, tuple, set)):
+        raw_values = list(values)
+    else:
+        raw_values = [values]
+
+    out: list[object] = []
+    for value in raw_values:
+        if value not in out:
+            out.append(value)
+    if not out:
+        raise ValueError(f"{param_name} must contain at least one value.")
+    return tuple(out)
+
+
+def _normalize_metric_kind_sequence(
+    kinds: object,
+    *,
+    param_name: str,
+) -> tuple[str, ...]:
+    if isinstance(kinds, str):
+        raw_kinds = [kinds]
+    elif isinstance(kinds, (list, tuple, set)):
+        raw_kinds = list(kinds)
+    else:
+        raise ValueError(
+            f"{param_name} must be a metric kind string or sequence of metric kinds from {METRIC_KIND!r}."
+        )
+
+    normalized: list[str] = []
+    for kind in raw_kinds:
+        kind_str = str(kind).strip()
+        if kind_str not in METRIC_KIND:
+            raise ValueError(
+                f"Unsupported {param_name} entry {kind!r}. Expected one of {METRIC_KIND!r}."
+            )
+        if kind_str not in normalized:
+            normalized.append(kind_str)
+    if not normalized:
+        raise ValueError(f"{param_name} must contain at least one metric kind.")
+    return tuple(normalized)
+
+
+def _normalize_dimension_grouping(
+    dim: str,
+    spec: object,
+) -> _ResolvedDimensionGrouping:
+    if spec == "by_value":
+        return _ResolvedDimensionGrouping(dim=dim, mode="by_value")
+
+    if isinstance(spec, (list, tuple, set)):
+        return _ResolvedDimensionGrouping(
+            dim=dim,
+            mode="values",
+            values=_normalize_group_value_sequence(spec, param_name=f"metric_groupings[{dim!r}]"),
+        )
+
+    if not isinstance(spec, dict):
+        raise ValueError(
+            f"Unsupported metric_groupings[{dim!r}]={spec!r}. "
+            "Expected 'by_value', a sequence of values, or a mapping with 'values' or 'groups'."
+        )
+
+    has_values = "values" in spec
+    has_groups = "groups" in spec
+    if has_values and has_groups:
+        raise ValueError(
+            f"metric_groupings[{dim!r}] cannot define both 'values' and 'groups'."
+        )
+
+    if has_values:
+        if "mode" in spec:
+            raise ValueError(
+                f"metric_groupings[{dim!r}] cannot use 'mode' together with 'values'."
+            )
+        return _ResolvedDimensionGrouping(
+            dim=dim,
+            mode="values",
+            values=_normalize_group_value_sequence(
+                spec["values"],
+                param_name=f"metric_groupings[{dim!r}]['values']",
+            ),
+        )
+
+    if has_groups:
+        raw_groups = spec["groups"]
+        if not isinstance(raw_groups, dict) or not raw_groups:
+            raise ValueError(
+                f"metric_groupings[{dim!r}]['groups'] must be a non-empty mapping of labels to values."
+            )
+        mode = str(spec.get("mode", "reduce"))
+        if mode not in {"average", "reduce"}:
+            raise ValueError(
+                f"Unsupported metric_groupings[{dim!r}]['mode']={mode!r}. Expected 'average' or 'reduce'."
+            )
+        raw_kinds = spec.get("kinds")
+        if raw_kinds is not None and mode != "reduce":
+            raise ValueError(
+                f"metric_groupings[{dim!r}] can only use 'kinds' when mode='reduce'."
+            )
+        kinds = (
+            tuple(METRIC_KIND)
+            if mode == "reduce" and raw_kinds is None
+            else (
+                _normalize_metric_kind_sequence(
+                    raw_kinds,
+                    param_name=f"metric_groupings[{dim!r}]['kinds']",
+                )
+                if raw_kinds is not None
+                else None
+            )
+        )
+
+        groups: list[tuple[str, tuple[object, ...]]] = []
+        for raw_label, raw_values in raw_groups.items():
+            label = str(raw_label).strip()
+            if not label:
+                raise ValueError(
+                    f"metric_groupings[{dim!r}]['groups'] cannot contain empty labels."
+                )
+            groups.append(
+                (
+                    label,
+                    _normalize_group_value_sequence(
+                        raw_values,
+                        param_name=f"metric_groupings[{dim!r}]['groups'][{label!r}]",
+                    ),
+                )
+            )
+        return _ResolvedDimensionGrouping(
+            dim=dim,
+            mode=mode,
+            groups=tuple(groups),
+            kinds=kinds,
+        )
+
+    raise ValueError(
+        f"Unsupported metric_groupings[{dim!r}]={spec!r}. "
+        "Expected 'by_value', a sequence of values, or a mapping with 'values' or 'groups'."
+    )
+
+
+def _normalize_time_grouping(spec: object) -> _ResolvedTimeGrouping:
+    if not isinstance(spec, dict):
+        raise ValueError(
+            "metric_groupings['time'] must be a mapping with keys 'period' and optional 'basis'."
+        )
+    period = _resolve_period(
+        spec.get("period"),
+        param_name="metric_groupings['time']['period']",
+    )
+    basis = _resolve_metric_groupby_basis(spec.get("basis"))
+    return _ResolvedTimeGrouping(period=period, basis=basis)
+
+
+def normalize_metric_groupings(
+    metric_groupings: dict[str, object] | None,
+    *,
+    metric_groupby_period: str | None = None,
+    metric_groupby_basis: str | None = None,
+) -> dict[str, _ResolvedDimensionGrouping | _ResolvedTimeGrouping]:
+    normalized: dict[str, _ResolvedDimensionGrouping | _ResolvedTimeGrouping] = {}
+
+    if metric_groupings is not None:
+        if not isinstance(metric_groupings, dict):
+            raise ValueError("metric_groupings must be a mapping from dimension names to grouping specs.")
+
+        for raw_key, spec in metric_groupings.items():
+            key = str(raw_key).strip()
+            if not key:
+                raise ValueError("metric_groupings cannot contain empty dimension names.")
+            if isinstance(spec, (_ResolvedDimensionGrouping, _ResolvedTimeGrouping)):
+                normalized[key] = spec
+                continue
+            if key == "time":
+                normalized[key] = _normalize_time_grouping(spec)
+            else:
+                normalized[key] = _normalize_dimension_grouping(key, spec)
+
+    if metric_groupby_period is not None:
+        legacy_time = _ResolvedTimeGrouping(
+            period=_resolve_period(metric_groupby_period, param_name="metric_groupby_period"),
+            basis=_resolve_metric_groupby_basis(metric_groupby_basis),
+        )
+        if "time" in normalized:
+            current = normalized["time"]
+            if not isinstance(current, _ResolvedTimeGrouping):
+                raise ValueError("metric_groupings['time'] must use the special time grouping mapping.")
+            if current != legacy_time:
+                raise ValueError(
+                    "metric_groupings['time'] conflicts with metric_groupby_period/metric_groupby_basis. "
+                    "Use only one configuration source, or make them match."
+                )
+        else:
+            normalized["time"] = legacy_time
+
+    return normalized
+
+
+def metric_groupings_to_serializable(
+    metric_groupings: dict[str, _ResolvedDimensionGrouping | _ResolvedTimeGrouping] | None,
+) -> dict[str, object]:
+    if not metric_groupings:
+        return {}
+
+    serialized: dict[str, object] = {}
+    for key, spec in metric_groupings.items():
+        if isinstance(spec, _ResolvedTimeGrouping):
+            serialized[key] = {
+                "period": spec.period,
+                "basis": spec.basis,
+            }
+            continue
+
+        if spec.mode == "by_value":
+            serialized[key] = "by_value"
+        elif spec.mode == "values":
+            serialized[key] = {"values": list(spec.values or ())}
+        else:
+            serialized[key] = {
+                "mode": spec.mode,
+                **({"kinds": list(spec.kinds)} if spec.kinds is not None else {}),
+                "groups": {
+                    label: list(values)
+                    for label, values in (spec.groups or ())
+                },
+            }
+    return serialized
+
+
+def metric_groupings_signature(
+    metric_groupings: dict[str, _ResolvedDimensionGrouping | _ResolvedTimeGrouping] | None,
+) -> str:
+    return json.dumps(
+        metric_groupings_to_serializable(metric_groupings),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _leadtime_unit_from_data(data: xr.Dataset | xr.DataArray) -> str | None:
@@ -503,15 +721,15 @@ def _grouping_time_dataarray(
     raise ValueError(f"Unsupported grouping basis {basis!r}")
 
 
-def metric_group_specs_from_data(
+def _metric_group_specs_from_data(
     data: xr.Dataset | xr.DataArray,
-    period: str,
+    period: str | None,
     *,
     basis: str = "target_time",
     leadtime_unit: str | None = None,
     leadtime_value: object | None = None,
 ) -> list[tuple[str, object]]:
-    if period == "none":
+    if period is None:
         return []
 
     grouping_time = _grouping_time_dataarray(
@@ -544,7 +762,7 @@ def metric_group_specs_from_data(
 def slice_time_group_data(
     data: xr.Dataset | xr.DataArray | None,
     *,
-    period: str,
+    period: str | None,
     group_value: object,
     basis: str = "target_time",
     leadtime_unit: str | None = None,
@@ -553,7 +771,7 @@ def slice_time_group_data(
     if data is None:
         return None
 
-    if period == "none":
+    if period is None:
         return data
 
     grouping_time = _grouping_time_dataarray(
@@ -567,6 +785,338 @@ def slice_time_group_data(
 
     selector = getattr(grouping_time.dt, period) == group_value
     return data.where(selector, drop=True)
+
+
+def _coord_values_for_dim(
+    data: xr.Dataset | xr.DataArray,
+    dim: str,
+) -> list[object]:
+    if dim not in data.dims:
+        return []
+    if dim in data.coords:
+        return data.coords[dim].values.tolist()
+    return data[dim].values.tolist()
+
+
+def _resolve_existing_group_values(
+    data: xr.Dataset | xr.DataArray,
+    *,
+    dim: str,
+    requested_values: Sequence[object],
+) -> tuple[object, ...]:
+    available_values = _coord_values_for_dim(data, dim)
+    resolved: list[object] = []
+    for available_value in available_values:
+        if any(str(available_value) == str(requested_value) for requested_value in requested_values):
+            if available_value not in resolved:
+                resolved.append(available_value)
+    return tuple(resolved)
+
+
+def _merge_run_filters_with_metric_groupings(
+    run_filters: dict[str, object] | None,
+    *,
+    metric_groupings: dict[str, _ResolvedDimensionGrouping | _ResolvedTimeGrouping],
+) -> dict[str, object] | None:
+    if not metric_groupings:
+        return run_filters
+
+    merged = dict(run_filters or {})
+    for key, spec in metric_groupings.items():
+        if key == "time" or not isinstance(spec, _ResolvedDimensionGrouping):
+            continue
+        if spec.mode not in {"values"}:
+            continue
+
+        requested_values = list(spec.values or ())
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = requested_values
+            continue
+
+        existing_values = existing if isinstance(existing, (list, tuple, set)) else [existing]
+        existing_map = {str(value): value for value in existing_values}
+        merged[key] = [
+            existing_map[str(value)]
+            for value in requested_values
+            if str(value) in existing_map
+        ]
+
+    return merged
+
+
+def _resolve_run_dims(
+    truth_runs: xr.Dataset,
+    *,
+    metric_groupings: dict[str, _ResolvedDimensionGrouping | _ResolvedTimeGrouping],
+) -> list[str]:
+    default_run_dims = ("leadtime", "train_period", "region", "loss", "variant")
+    run_dims = [dim for dim in default_run_dims if dim in truth_runs.dims]
+
+    grouped_dims = {
+        key
+        for key, spec in metric_groupings.items()
+        if key != "time"
+        and isinstance(spec, _ResolvedDimensionGrouping)
+        and spec.mode in {"average", "reduce"}
+    }
+    run_dims = [dim for dim in run_dims if dim not in grouped_dims]
+
+    for key, spec in metric_groupings.items():
+        if key == "time" or not isinstance(spec, _ResolvedDimensionGrouping):
+            continue
+        if spec.mode in {"by_value", "values"} and key in truth_runs.dims and key not in run_dims:
+            run_dims.append(key)
+
+    return run_dims
+
+
+def _build_metric_group_operations(
+    truth_data: xr.Dataset,
+    *,
+    metric_groupings: dict[str, _ResolvedDimensionGrouping | _ResolvedTimeGrouping],
+    leadtime_unit: str | None,
+    leadtime_value: object | None,
+) -> list[tuple[_ResolvedMetricGroupOperation, ...]]:
+    operations_by_key: list[list[_ResolvedMetricGroupOperation]] = []
+
+    for key, spec in metric_groupings.items():
+        if key == "time":
+            if not isinstance(spec, _ResolvedTimeGrouping) or spec.period is None:
+                continue
+            time_ops = [
+                _ResolvedMetricGroupOperation(
+                    key="time",
+                    kind="time",
+                    label=label,
+                    period=spec.period,
+                    basis=spec.basis,
+                    values=(group_value,),
+                )
+                for label, group_value in _metric_group_specs_from_data(
+                    truth_data,
+                    spec.period,
+                    basis=spec.basis,
+                    leadtime_unit=leadtime_unit,
+                    leadtime_value=leadtime_value,
+                )
+            ]
+            if time_ops:
+                operations_by_key.append(time_ops)
+            continue
+
+        if not isinstance(spec, _ResolvedDimensionGrouping):
+            continue
+        if spec.mode not in {"average", "reduce"}:
+            continue
+        if key not in truth_data.dims:
+            continue
+
+        dim_ops: list[_ResolvedMetricGroupOperation] = []
+        for label, requested_values in spec.groups or ():
+            resolved_values = _resolve_existing_group_values(
+                truth_data,
+                dim=key,
+                requested_values=requested_values,
+            )
+            if not resolved_values:
+                continue
+            dim_ops.append(
+                _ResolvedMetricGroupOperation(
+                    key=key,
+                    kind="dimension",
+                    label=label,
+                    dim=key,
+                    values=resolved_values,
+                    mode=spec.mode,
+                    kinds=spec.kinds,
+                )
+            )
+        if dim_ops:
+            operations_by_key.append(dim_ops)
+
+    if not operations_by_key:
+        return [tuple()]
+
+    return [tuple()] + [tuple(combo) for combo in product(*operations_by_key)]
+
+
+def _apply_metric_group_operation(
+    data: xr.Dataset | xr.DataArray | None,
+    *,
+    op: _ResolvedMetricGroupOperation,
+    leadtime_unit: str | None,
+    leadtime_value: object | None,
+) -> xr.Dataset | xr.DataArray | None:
+    if data is None:
+        return None
+
+    if op.kind == "time":
+        group_value = None if not op.values else op.values[0]
+        return slice_time_group_data(
+            data,
+            period=str(op.period),
+            group_value=group_value,
+            basis=str(op.basis),
+            leadtime_unit=leadtime_unit,
+            leadtime_value=leadtime_value,
+        )
+
+    if op.kind == "dimension":
+        if op.dim is None or not op.values:
+            return data
+        out = data.sel({op.dim: list(op.values)}, drop=True)
+        if op.mode == "average" and op.dim in out.dims:
+            out = out.mean(dim=op.dim, skipna=True)
+        return out
+
+    return data
+
+
+def _expand_metric_group_labels(
+    ds: xr.Dataset,
+    *,
+    operations: Sequence[_ResolvedMetricGroupOperation],
+) -> xr.Dataset:
+    out = ds
+    time_attrs_applied = False
+
+    for op in operations:
+        if op.kind == "time":
+            out = out.expand_dims({METRIC_GROUP_DIM: [op.label]})
+            out.attrs[METRIC_GROUPBY_PERIOD_ATTR] = op.period
+            out.attrs[METRIC_GROUPBY_BASIS_ATTR] = op.basis
+            time_attrs_applied = True
+            continue
+
+        if op.kind == "dimension" and op.dim is not None:
+            out = out.expand_dims({f"{op.dim}_group": [op.label]})
+
+    if operations:
+        out.attrs[METRIC_GROUPINGS_ATTR] = metric_groupings_signature(
+            {
+                op.key: (
+                    _ResolvedTimeGrouping(period=str(op.period), basis=str(op.basis))
+                    if op.kind == "time"
+                    else _ResolvedDimensionGrouping(
+                        dim=str(op.dim),
+                        mode=str(op.mode),
+                        groups=((str(op.label), tuple(op.values or ())),),
+                        kinds=op.kinds,
+                    )
+                )
+                for op in operations
+            }
+        )
+    elif not time_attrs_applied and METRIC_GROUPINGS_ATTR not in out.attrs:
+        out.attrs[METRIC_GROUPINGS_ATTR] = metric_groupings_signature({})
+
+    return out
+
+
+def _expand_all_metric_group_labels(
+    ds: xr.Dataset,
+    *,
+    metric_groupings: dict[str, _ResolvedDimensionGrouping | _ResolvedTimeGrouping],
+) -> xr.Dataset:
+    out = ds
+
+    for key, spec in metric_groupings.items():
+        if key == "time":
+            if isinstance(spec, _ResolvedTimeGrouping) and spec.period is not None:
+                out = out.expand_dims({METRIC_GROUP_DIM: ["all"]})
+                out.attrs[METRIC_GROUPBY_PERIOD_ATTR] = spec.period
+                out.attrs[METRIC_GROUPBY_BASIS_ATTR] = spec.basis
+            continue
+
+        if (
+            isinstance(spec, _ResolvedDimensionGrouping)
+            and spec.mode in {"average", "reduce"}
+            and spec.groups
+        ):
+            out = out.expand_dims({f"{key}_group": ["all"]})
+
+    return out
+
+
+def _ensure_dimension_indexes(ds: xr.Dataset) -> xr.Dataset:
+    out = ds
+    for dim in out.dims:
+        if dim in out.coords and dim not in out.xindexes:
+            out = out.set_xindex(dim)
+    return out
+
+def _concat_if_possible(
+    runs_list: Sequence[xr.Dataset],
+    dim: str,
+) -> list[xr.Dataset]:
+    grouped: dict[tuple, list[xr.Dataset]] = {}
+
+    for ds in runs_list:
+        key = (
+            tuple(v for v in ds.data_vars),
+            tuple(d for d in ds.dims if d != dim),
+            tuple((c, tuple(ds.coords[c].values.tolist())) for c in ds.coords if c != dim),
+        )
+        grouped.setdefault(key, []).append(ds)
+
+    out: list[xr.Dataset] = []
+    for datasets in grouped.values():
+        if len(datasets) == 1:
+            out.append(datasets[0])
+        else:
+            out.append(xr.concat(datasets, dim=dim))
+    return out
+
+def _combine_metric_run_datasets(
+    runs_list: Sequence[xr.Dataset],
+) -> xr.Dataset:
+    if not runs_list:
+        return xr.Dataset()
+
+    prepared = [_ensure_dimension_indexes(ds) for ds in runs_list]
+
+    for dim in ("leadtime", "train_period", "loss", "variant", "metric_group"):
+        dim_datasets = [ds for ds in prepared if dim in ds.dims]
+        other_datasets = [ds for ds in prepared if dim not in ds.dims]
+        prepared = _concat_if_possible(dim_datasets, dim=dim) + other_datasets
+
+    if len(prepared) == 1:
+        return prepared[0]
+
+    return xr.merge(
+        prepared,
+        join="outer",
+        compat="no_conflicts",
+        combine_attrs="drop_conflicts",
+    )
+
+
+def _metric_mean_extra_dims_from_operations(
+    truth_data: xr.Dataset | xr.DataArray,
+    *,
+    operations: Sequence[_ResolvedMetricGroupOperation],
+) -> dict[str, tuple[str, ...]] | None:
+    extras: dict[str, list[str]] = {}
+
+    for op in operations:
+        if op.kind != "dimension" or op.mode != "reduce" or op.dim is None or op.kinds is None:
+            continue
+        if op.dim not in truth_data.dims:
+            continue
+        for kind in op.kinds:
+            extras.setdefault(kind, [])
+            if op.dim not in extras[kind]:
+                extras[kind].append(op.dim)
+
+    if not extras:
+        return None
+
+    return {
+        kind: tuple(dims)
+        for kind, dims in extras.items()
+        if dims
+    }
 
 
 def _reindex_grouped_metric_output(
@@ -584,60 +1134,132 @@ def _reindex_grouped_metric_output(
 
 def _climatology_for_period(
     ds: xr.Dataset,
-    period: str,
+    period: Literal["month", "dayofyear", "season"] | None = None,
+    basis: Literal["target_time", "reference_time"] = "target_time",
+    leadtime_unit: str | None = None,
+    leadtime_value: object | None = None,
 ) -> xr.Dataset:
     time_dim = ds.earthml.guessed_dims.time
-    if period == "none":
+    if time_dim is None or time_dim not in ds.dims:
+        raise ValueError("Cannot compute climatology without a time dimension.")
+
+    if period is None:
         return ds.mean(dim=time_dim, skipna=True)
-    return ds.earthml.climatology(groupby=period)
+
+    if basis == "target_time":
+        return ds.earthml.climatology(groupby=period)
+
+    grouping_time = _grouping_time_dataarray(
+        ds,
+        basis=basis,
+        leadtime_unit=leadtime_unit,
+        leadtime_value=leadtime_value,
+    )
+    if grouping_time is None or not hasattr(grouping_time, "dt"):
+        raise ValueError(f"Cannot compute climatology for basis={basis!r}.")
+
+    group_labels = getattr(grouping_time.dt, period).rename(period)
+
+    group_values = [
+        group_value
+        for _, group_value in _metric_group_specs_from_data(
+            ds,
+            period,
+            basis=basis,
+            leadtime_unit=leadtime_unit,
+            leadtime_value=leadtime_value,
+        )
+    ]
+
+    climatology_slices: list[xr.Dataset] = []
+    for group_value in group_values:
+        selector = group_labels == group_value
+        clim_group = ds.where(selector).mean(dim=time_dim, skipna=True)
+        climatology_slices.append(clim_group.expand_dims({period: [group_value]}))
+
+    if not climatology_slices:
+        empty = ds.mean(dim=time_dim, skipna=True)
+        return empty.expand_dims({period: []})
+
+    return xr.concat(climatology_slices, dim=period)
+
+def _apply_climatology_group_operation(
+    data: xr.Dataset | xr.DataArray | None,
+    *,
+    op: _ResolvedMetricGroupOperation,
+) -> xr.Dataset | xr.DataArray | None:
+    if data is None:
+        return None
+
+    if op.kind == "time":
+        if op.period is None or not op.values:
+            return data
+
+        period_dim = str(op.period)
+        group_value = op.values[0]
+
+        if period_dim not in data.dims:
+            return data
+
+        return data.sel({period_dim: [group_value]})
+
+    if op.kind == "dimension":
+        if op.dim is None or not op.values:
+            return data
+
+        out = data.sel({op.dim: list(op.values)}, drop=True)
+        if op.mode == "average" and op.dim in out.dims:
+            out = out.mean(dim=op.dim, skipna=True)
+        return out
+
+    return data
 
 
-def _get_single_region_runs_and_metrics(
-    exp_root: str | Path,
-    exp_mode: MLBCExperimentMode = "test",
+def _get_single_region_metrics(
+    runs: RunsByModel,
+    region_name: str,
     load_models: Sequence[str] = ("an", "fc", "pr"),
-    variables: Sequence[str] | None = None,
     run_filters: dict[str, object] | None = None,
-    calculate_clim_from_train_period: bool = False,
-    use_train_prediction_clim: bool = False,  # only used if calculate_clim_from_train_period is True
+    train_runs: RunsByModel | None = None,
+    use_train_prediction_clim: bool = False, # only used if calculate_clim_from_train_period is True
     use_saved_mask: bool = True,
     external_mask_data: xr.Dataset | xr.DataArray | None = None,
-    apply_external_mask_to_runs: bool = False,
     metric_names: str | Sequence[str] | None = None,
     metric_sections: str | Sequence[str] = ("scalar", "map", "timeseries"),
     metric_types: str | Sequence[str] | None = None,
+    metric_groupings: dict[str, object] | None = None,
     metric_groupby_period: str | None = None,
     metric_groupby_basis: str | None = None,
     clim_period: str | None = None,
     show_progress: bool = True,
+    output_clim: bool = True,
 ) -> tuple[
-    RunsByModel,
     MetricLeaf,
-    ClimTuple,
+    ClimsByModel,
 ]:
-    models = list(load_models)
-    grouping_period = _resolve_period(metric_groupby_period, param_name="metric_groupby_period")
-    grouping_basis = _resolve_metric_groupby_basis(metric_groupby_basis)
+    resolved_metric_groupings = normalize_metric_groupings(
+        metric_groupings,
+        metric_groupby_period=metric_groupby_period,
+        metric_groupby_basis=metric_groupby_basis,
+    )
+
+    time_grouping = resolved_metric_groupings.get("time")
+    grouping_period = time_grouping.period if isinstance(time_grouping, _ResolvedTimeGrouping) else None
+    grouping_basis = time_grouping.basis if isinstance(time_grouping, _ResolvedTimeGrouping) else "target_time"
     effective_clim_period = _resolve_period(
-        clim_period if clim_period is not None else metric_groupby_period,
+        clim_period if clim_period is not None else grouping_period,
         param_name="clim_period",
     )
-    include_metric_group_dim = metric_groupby_period is not None
-    if len(models) < 2:
+    if grouping_period is not None and effective_clim_period != grouping_period:
+        raise ValueError(
+            "When time grouping is enabled, clim_period must match the grouping period."
+        )
+
+    if len(load_models) < 2:
         raise ValueError("load_models must contain at least two entries: truth first, then at least one model")
 
-    truth_model = models[0]
-    requested_model_names = models[1:]
-
-    loaded_runs, _ = load_all_exp_from_folder(
-        exp_root=exp_root,
-        exp_mode=exp_mode,
-        load_train_preds=(exp_mode == "train"),
-        load_models=models,
-        variables=variables,
-        run_filters=run_filters,
-        show_progress=show_progress,
-    )
+    truth_model = load_models[0]
+    requested_model_names = load_models[1:]
 
     if isinstance(metric_types, str):
         requested_metric_types = [metric_types]
@@ -655,67 +1277,49 @@ def _get_single_region_runs_and_metrics(
         mt: {ms: xr.Dataset() for ms in requested_metric_sections}
         for mt in requested_metric_types
     }
+    empty_clims = {model_name: None for model_name in load_models}
 
-    if not loaded_runs:
-        return {}, empty_metrics, tuple(None for _ in models)
+    if not runs:
+        return empty_metrics, empty_clims
 
-    # Add KE to each loaded model dataset independently
-    for model_name in models:
-        if model_name in loaded_runs:
-            loaded_runs[model_name] = add_ke_to_runs(
-                loaded_runs[model_name],
-                dataset_keys=None,   # no "model" dim here
-            )
+    if truth_model not in runs:
+        raise ValueError(f"Truth model {truth_model!r} not found in region {region_name} runs")
 
-    if truth_model not in loaded_runs:
-        raise ValueError(f"Truth model {truth_model!r} not found in loaded runs")
-
-    available_model_names = [m for m in requested_model_names if m in loaded_runs]
+    available_model_names = [m for m in requested_model_names if m in runs]
     if not available_model_names:
-        raise ValueError("No requested comparison models found in loaded runs")
+        raise ValueError(f"No requested comparison models found in region {region_name} runs")
 
     if isinstance(external_mask_data, xr.DataArray):
         mask_name = external_mask_data.name or "__mask__"
         external_mask_data = external_mask_data.to_dataset(name=mask_name)
 
-    saved_mask_runs = loaded_runs.get("mask") if use_saved_mask else None
+    saved_mask_runs = runs.get("mask") if use_saved_mask else None
 
-    train_loaded_runs = None
-    if calculate_clim_from_train_period:
-        train_loaded_runs, _ = load_all_exp_from_folder(
-            exp_root=exp_root,
-            exp_mode="train",
-            load_train_preds=use_train_prediction_clim,
-            load_models=models,
-            variables=variables,
-            run_filters=run_filters,
-            show_progress=show_progress,
-        )
-
-        for model_name in models:
-            if model_name in train_loaded_runs:
-                train_loaded_runs[model_name] = add_ke_to_runs(
-                    train_loaded_runs[model_name],
-                    dataset_keys=None,
-                )
-
-    runs = loaded_runs
-
-    truth_runs = loaded_runs[truth_model]
+    truth_runs = runs[truth_model]
     truth_region = str(truth_runs.coords["region"].item()) if "region" in truth_runs.coords else ""
     leadtime_unit = _leadtime_unit_from_data(truth_runs)
 
     # These are the experiment axes created by load_all_exp_from_folder
-    run_dims = [dim for dim in ("leadtime", "train_period", "region", "loss", "variant") if dim in truth_runs.dims]
+    effective_run_filters = _merge_run_filters_with_metric_groupings(
+        run_filters,
+        metric_groupings=resolved_metric_groupings,
+    )
+    run_dims = _resolve_run_dims(
+        truth_runs,
+        metric_groupings=resolved_metric_groupings,
+    )
 
-    run_indexers = _build_run_indexers(truth_runs, run_dims, run_filters=run_filters)
+    run_indexers = _build_run_indexers(truth_runs, run_dims, run_filters=effective_run_filters)
 
     metric_runs: dict[str, dict[str, list[xr.Dataset]]] = {
         mt: {ms: [] for ms in requested_metric_sections}
         for mt in requested_metric_types
     }
+    clim_runs: dict[str, list[xr.Dataset]] = {
+        model_name: []
+        for model_name in load_models
+    }
 
-    last_clim_by_model = {model_name: None for model_name in models}
     progress_cm = (
         Progress(
             SpinnerColumn(),
@@ -732,31 +1336,31 @@ def _get_single_region_runs_and_metrics(
     )
 
     with progress_cm as prog:
-        run_task = prog.add_task("Computing metric bundles", total=len(run_indexers)) if show_progress else None
+        run_task = prog.add_task("Computing metric bundles", total=len(run_indexers)) if prog is not None else None
 
         for indexers in run_indexers:
-            if show_progress:
+            if prog is not None and run_task is not None:
                 indexer_str = ", ".join(f"{dim}={value}" for dim, value in indexers.items()) or "all runs"
                 prog.update(run_task, description=f"Computing metrics | {indexer_str}")
             selected_leadtime_value = indexers.get("leadtime")
 
             truth_data = truth_runs.sel(indexers, drop=True) if indexers else truth_runs
             if not truth_data.data_vars:
-                if show_progress:
+                if prog is not None and run_task is not None:
                     prog.advance(run_task)
                 continue
 
             # Skip empty truth slices
             truth_arr = truth_data.to_array()
             if not bool(truth_arr.notnull().any()):
-                if show_progress:
+                if prog is not None and run_task is not None:
                     prog.advance(run_task)
                 continue
 
             model_names_this_run = []
             model_data = []
             for model_name in available_model_names:
-                ds = loaded_runs[model_name]
+                ds = runs[model_name]
                 ds = ds.sel(indexers, drop=True) if indexers else ds
                 if not ds.data_vars:
                     continue
@@ -766,7 +1370,7 @@ def _get_single_region_runs_and_metrics(
                 model_data.append(ds)
 
             if not model_data:
-                if show_progress:
+                if prog is not None and run_task is not None:
                     prog.advance(run_task)
                 continue
 
@@ -781,117 +1385,143 @@ def _get_single_region_runs_and_metrics(
                 ),
             )
 
-            clim_by_model = {truth_model: None, **{m: None for m in model_names_this_run}}
+            clim_by_model: dict[str, xr.Dataset | None] = {truth_model: None, **{m: None for m in model_names_this_run}}
 
-            if calculate_clim_from_train_period and train_loaded_runs is not None:
-                if truth_model in train_loaded_runs:
-                    truth_train = train_loaded_runs[truth_model]
+            if train_runs is not None:
+                if truth_model in train_runs:
+                    truth_train = train_runs[truth_model]
                     truth_train = truth_train.sel(indexers, drop=True) if indexers else truth_train
                     if truth_train.data_vars and bool(truth_train.to_array().notnull().any()):
-                        clim_by_model[truth_model] = _climatology_for_period(truth_train, effective_clim_period)
+                        clim_by_model[truth_model] = _climatology_for_period(
+                            ds=truth_train,
+                            period=effective_clim_period,
+                            basis=grouping_basis,
+                            leadtime_value=selected_leadtime_value,
+                            leadtime_unit=leadtime_unit,
+                        )
 
                 for model_name in model_names_this_run:
                     if model_name == "pr" and not use_train_prediction_clim:
                         clim_by_model[model_name] = clim_by_model[truth_model]
                         continue
 
-                    if model_name in train_loaded_runs:
-                        train_model = train_loaded_runs[model_name]
+                    if model_name in train_runs:
+                        train_model = train_runs[model_name]
                         train_model = train_model.sel(indexers, drop=True) if indexers else train_model
                         if train_model.data_vars and bool(train_model.to_array().notnull().any()):
-                            clim_by_model[model_name] = _climatology_for_period(train_model, effective_clim_period)
+                            clim_by_model[model_name] = _climatology_for_period(
+                                ds=train_model,
+                                period=effective_clim_period,
+                                basis=grouping_basis,
+                                leadtime_value=selected_leadtime_value,
+                                leadtime_unit=leadtime_unit,
+                            )
 
                 if "pr" in clim_by_model and clim_by_model["pr"] is None:
                     clim_by_model["pr"] = clim_by_model[truth_model]
 
             clim_data = [clim_by_model[truth_model], *[clim_by_model[m] for m in model_names_this_run]]
 
-            # Harmonize leadtime coordinates across truth / models / mask
-            to_harmonize = [truth_data, *model_data]
-            has_mask = mask_data is not None and "leadtime" in mask_data.coords
-            if has_mask:
-                to_harmonize.append(mask_data)
+            metric_group_operations = _build_metric_group_operations(
+                truth_data,
+                metric_groupings=resolved_metric_groupings,
+                leadtime_unit=leadtime_unit,
+                leadtime_value=selected_leadtime_value,
+            )
 
-            try:
-                harmonized = harmonize_leadtime_int(*to_harmonize, coord="leadtime", method="int_source")
-                truth_data = harmonized[0]
-                model_data = harmonized[1:1 + len(model_data)]
-                if has_mask:
-                    mask_data = harmonized[-1]
-            except Exception:
-                # If leadtime is already aligned or cannot be normalized this way, continue as-is.
-                pass
+            for operations in metric_group_operations:
+                group_truth_data: xr.Dataset | xr.DataArray | None = truth_data
+                group_model_data: Sequence[xr.Dataset | xr.DataArray | None] = model_data
+                group_mask_data: xr.Dataset | xr.DataArray | None = mask_data
+                group_clim_data: Sequence[xr.Dataset | xr.DataArray | None] = clim_data
+                has_time_group = False
 
-            # Same idea for climatologies if they exist and carry leadtime
-            valid_clim = [ds for ds in clim_data if ds is not None and "leadtime" in ds.coords]
-            if len(valid_clim) >= 2:
-                try:
-                    harmonized_clim = harmonize_leadtime_int(*valid_clim, coord="leadtime", method="int_source")
-                    it = iter(harmonized_clim)
-                    clim_data = [
-                        next(it) if ds is not None and "leadtime" in ds.coords else ds
-                        for ds in clim_data
-                    ]
-                except Exception:
-                    pass
-
-            metric_group_specs: list[tuple[str, object | None]] = [("all", None)]
-            if include_metric_group_dim and grouping_period != "none":
-                metric_group_specs.extend(
-                    metric_group_specs_from_data(
-                        truth_data,
-                        grouping_period,
-                        basis=grouping_basis,
-                        leadtime_unit=leadtime_unit,
-                        leadtime_value=selected_leadtime_value,
-                    )
-                )
-
-            for metric_group_label, group_value in metric_group_specs:
-                if group_value is None:
-                    group_truth_data = truth_data
-                    group_model_data = model_data
-                    group_mask_data = mask_data
-                else:
-                    group_truth_data = slice_time_group_data(
-                        truth_data,
-                        period=grouping_period,
-                        group_value=group_value,
-                        basis=grouping_basis,
+                for op in operations:
+                    if op.kind == "time":
+                        has_time_group = True
+                    group_truth_data = _apply_metric_group_operation(
+                        group_truth_data,
+                        op=op,
                         leadtime_unit=leadtime_unit,
                         leadtime_value=selected_leadtime_value,
                     )
                     group_model_data = [
-                        slice_time_group_data(
+                        _apply_metric_group_operation(
                             ds,
-                            period=grouping_period,
-                            group_value=group_value,
-                            basis=grouping_basis,
+                            op=op,
                             leadtime_unit=leadtime_unit,
                             leadtime_value=selected_leadtime_value,
                         )
-                        for ds in model_data
+                        for ds in group_model_data
                     ]
-                    group_mask_data = slice_time_group_data(
-                        mask_data,
-                        period=grouping_period,
-                        group_value=group_value,
-                        basis=grouping_basis,
+                    group_mask_data = _apply_metric_group_operation(
+                        group_mask_data,
+                        op=op,
                         leadtime_unit=leadtime_unit,
                         leadtime_value=selected_leadtime_value,
                     )
+                    group_clim_data = [
+                        _apply_climatology_group_operation(
+                            ds,
+                            op=op,
+                        )
+                        for ds in group_clim_data
+                    ]
 
                 group_time_dim = group_truth_data.earthml.guessed_dims.time
                 if group_time_dim is not None and group_time_dim in group_truth_data.dims:
                     if int(group_truth_data.sizes.get(group_time_dim, 0)) == 0:
                         continue
 
+                if output_clim:
+                    # Accumulate climatologies by model
+                    group_clim_by_model = dict(
+                        zip([truth_model, *model_names_this_run], group_clim_data)
+                    )
+
+                    for model_name, clim_ds in group_clim_by_model.items():
+                        if clim_ds is None or not clim_ds.data_vars:
+                            continue
+
+                        ds = clim_ds
+
+                        if operations:
+                            ds = _expand_metric_group_labels(
+                                ds,
+                                operations=operations,
+                            )
+                        elif resolved_metric_groupings:
+                            ds = _expand_all_metric_group_labels(
+                                ds,
+                                metric_groupings=resolved_metric_groupings,
+                            )
+
+                        ds.attrs[METRIC_GROUPINGS_ATTR] = metric_groupings_signature(
+                            resolved_metric_groupings
+                        )
+
+                        if indexers:
+                            ds = ds.expand_dims({
+                                dim: [value] for dim, value in indexers.items()
+                            })
+
+                        if truth_region:
+                            ds = ds.assign_coords(region=truth_region)
+
+                        ds = _ensure_dimension_indexes(ds)
+                        clim_runs[model_name].append(ds)
+
+                metric_mean_extra_dims = _metric_mean_extra_dims_from_operations(
+                    group_truth_data,
+                    operations=operations,
+                )
+
                 group_dm = DeterministicMetrics(
                     truth_data=group_truth_data,
                     model_data=group_model_data,
                     truth_name=truth_model,
                     model_names=model_names_this_run,
-                    clim_data=clim_data,
+                    clim_data=group_clim_data,
                     mask_data=group_mask_data,
                 )
 
@@ -900,7 +1530,7 @@ def _get_single_region_runs_and_metrics(
                     model_data=group_model_data,
                     truth_name=truth_model,
                     model_names=model_names_this_run,
-                    clim_data=clim_data,
+                    clim_data=group_clim_data,
                     mask_data=group_mask_data,
                 )
 
@@ -909,7 +1539,7 @@ def _get_single_region_runs_and_metrics(
                     model_data=group_model_data,
                     truth_name=truth_model,
                     model_names=model_names_this_run,
-                    clim_data=clim_data,
+                    clim_data=group_clim_data,
                     mask_data=group_mask_data,
                 )
 
@@ -922,6 +1552,7 @@ def _get_single_region_runs_and_metrics(
                     metric_names=metric_names,
                     metric_sections=metric_sections,
                     metric_types=metric_types,
+                    metric_mean_extra_dims=metric_mean_extra_dims,
                 )
 
                 for metric_type, section_dict in metric_bundle.items():
@@ -929,27 +1560,35 @@ def _get_single_region_runs_and_metrics(
                         if ds is None or not ds.data_vars:
                             continue
 
-                        if group_value is not None:
+                        if has_time_group:
                             ds = _reindex_grouped_metric_output(
                                 ds,
                                 reference_truth_data=truth_data,
                             )
-                        if include_metric_group_dim:
-                            ds = ds.expand_dims({METRIC_GROUP_DIM: [metric_group_label]})
-                            ds.attrs[METRIC_GROUPBY_PERIOD_ATTR] = grouping_period
-                            ds.attrs[METRIC_GROUPBY_BASIS_ATTR] = grouping_basis
+                        if operations:
+                            ds = _expand_metric_group_labels(
+                                ds,
+                                operations=operations,
+                            )
+                        elif resolved_metric_groupings:
+                            ds = _expand_all_metric_group_labels(
+                                ds,
+                                metric_groupings=resolved_metric_groupings,
+                            )
+                        ds.attrs[METRIC_GROUPINGS_ATTR] = metric_groupings_signature(
+                            resolved_metric_groupings
+                        )
                         if indexers:
                             ds = ds.expand_dims({
                                 dim: [value] for dim, value in indexers.items()
                             })
                         if truth_region:
                             ds = ds.assign_coords(region=truth_region)
+                        ds = _ensure_dimension_indexes(ds)
 
                         metric_runs[metric_type][section].append(ds)
 
-            last_clim_by_model.update(clim_by_model)
-
-            if show_progress:
+            if prog is not None and run_task is not None:
                 prog.advance(run_task)
 
     metrics: MetricLeaf = {}
@@ -976,56 +1615,62 @@ def _get_single_region_runs_and_metrics(
     )
 
     with progress_cm as prog:
-        combine_task = prog.add_task("Combining metric sections", total=combine_steps) if show_progress else None
-
+        combine_task = prog.add_task("Combining metric sections", total=combine_steps) if prog is not None else None
         for metric_type, section_dict in metric_runs.items():
             metrics[metric_type] = {}
 
             for section, runs_list in section_dict.items():
-                if show_progress and runs_list:
+                if prog is not None and combine_task is not None and runs_list:
                     prog.update(combine_task, description=f"Combining {metric_type}/{section}")
 
                 metrics[metric_type][section] = (
-                    xr.combine_by_coords(runs_list, combine_attrs="drop_conflicts")
+                    _combine_metric_run_datasets(runs_list)
                     if runs_list
                     else xr.Dataset()
                 )
 
-                if show_progress and runs_list:
+                if prog is not None and combine_task is not None and runs_list:
                     prog.advance(combine_task)
 
-    runs_for_return = runs
-    if apply_external_mask_to_runs and external_mask_data is not None:
-        # Keep metric computation on the original loaded runs and only mask the
-        # returned field datasets for downstream consumers such as plotting.
-        runs_for_return = {
-            model_name: ds if model_name == "mask" else apply_mask_to_dataset(ds, external_mask_data)
-            for model_name, ds in runs.items()
-        }
+    clims: ClimsByModel = {}
+    clim_combine_steps = sum(1 for runs_list in clim_runs.values() if runs_list)
 
-    return runs_for_return, metrics, tuple(last_clim_by_model.get(model_name) for model_name in models)
+    if output_clim:
+        with progress_cm as prog:
+            combine_task = prog.add_task("Combining climatologies", total=clim_combine_steps) if prog is not None else None
+            for model_name, runs_list in clim_runs.items():
+                if prog is not None and combine_task is not None and runs_list:
+                    prog.update(combine_task, description=f"Combining climatologies | {model_name}")
+
+                clims[model_name] = (
+                    _combine_metric_run_datasets(runs_list)
+                    if runs_list else None
+                )
+
+                if prog is not None and combine_task is not None and runs_list:
+                    prog.advance(combine_task)
+
+    return metrics, clims
 
 
-def get_runs_and_metrics(
-    exp_root: str | Path,
-    exp_mode: MLBCExperimentMode = "test",
+def get_metrics(
+    runs_by_region: RunsByRegion,
     load_models: Sequence[str] = ("an", "fc", "pr"),
-    variables: Sequence[str] | None = None,
     run_filters: dict[str, object] | None = None,
-    calculate_clim_from_train_period: bool = False,
+    train_runs: RunsByRegion | None = None,
     use_train_prediction_clim: bool = False,
     use_saved_mask: bool = True,
     external_mask_data: xr.Dataset | xr.DataArray | None = None,
-    apply_external_mask_to_runs: bool = False,
     metric_names: str | Sequence[str] | None = None,
     metric_sections: str | Sequence[str] = ("scalar", "map", "timeseries"),
     metric_types: str | Sequence[str] | None = None,
+    metric_groupings: dict[str, object] | None = None,
     metric_groupby_period: str | None = None,
     metric_groupby_basis: str | None = None,
     clim_period: str | None = None,
     show_progress: bool = True,
+    output_clim: bool = False,
 ) -> tuple[
-    RunsByRegion,
     MetricsByRegion,
     ClimsByRegion,
 ]:
@@ -1037,54 +1682,38 @@ def get_runs_and_metrics(
     Each metrics leaf preserves the historical single-region shape:
     ``metrics_by_region[region][metric_type][section] -> xr.Dataset``.
     """
-    region_values = _discover_region_values(
-        exp_root=exp_root,
-        exp_mode=exp_mode,
-        load_models=load_models,
-        variables=variables,
-        run_filters=run_filters,
-        show_progress=show_progress,
-    )
 
-    if not region_values:
-        return {}, {}, {}
-
-    runs_by_region: RunsByRegion = {}
     metrics_by_region: MetricsByRegion = {}
     clims_by_region: ClimsByRegion = {}
 
-    for region_name in region_values:
+    for region_name, region_runs in runs_by_region.items():
         region_filters = dict(run_filters or {})
         region_filters["region"] = [region_name]
 
-        runs_region, metrics_region, clims_region = _get_single_region_runs_and_metrics(
-            exp_root=exp_root,
-            exp_mode=exp_mode,
+        metrics_region, clims_region = _get_single_region_metrics(
+            runs=region_runs,
+            region_name=region_name,
             load_models=load_models,
-            variables=variables,
             run_filters=region_filters,
-            calculate_clim_from_train_period=calculate_clim_from_train_period,
+            train_runs=train_runs[region_name] if train_runs is not None else None,
             use_train_prediction_clim=use_train_prediction_clim,
             use_saved_mask=use_saved_mask,
             external_mask_data=external_mask_data,
-            apply_external_mask_to_runs=apply_external_mask_to_runs,
             metric_names=metric_names,
             metric_sections=metric_sections,
             metric_types=metric_types,
+            metric_groupings=metric_groupings,
             metric_groupby_period=metric_groupby_period,
             metric_groupby_basis=metric_groupby_basis,
             clim_period=clim_period,
             show_progress=show_progress,
+            output_clim=output_clim,
         )
 
-        if not runs_region:
-            continue
-
-        runs_by_region[str(region_name)] = runs_region
         metrics_by_region[str(region_name)] = metrics_region
         clims_by_region[str(region_name)] = clims_region
 
-    return runs_by_region, metrics_by_region, clims_by_region
+    return metrics_by_region, clims_by_region
 
 
 def _build_run_indexers(

@@ -5,7 +5,7 @@ import xarray as xr
 from .base import BaseMetrics
 
 
-ClimType = Literal["month", "dayofyear", "season", "none"]
+ClimType = Literal["month", "dayofyear", "season"]
 
 
 class CorrelationMetrics(BaseMetrics):
@@ -190,7 +190,7 @@ class CorrelationMetrics(BaseMetrics):
             Input data.
         clim_ds : xr.Dataset or xr.DataArray or None
             External climatology. If None, computed from `ds`.
-        period : {"month", "dayofyear", "season", "none"}, optional
+        period : {"month", "dayofyear", "season"}, optional
             Temporal grouping used to compute climatology.
         min_periods : int, optional
             Minimum number of samples required per group.
@@ -200,13 +200,6 @@ class CorrelationMetrics(BaseMetrics):
         xr.Dataset or xr.DataArray
             Anomaly field with same structure as input.
         """
-        if period == "none":
-            if clim_ds is None:
-                clim_ref = ds.mean(dim=self.dims.time, skipna=True)
-            else:
-                clim_ref = clim_ds
-            return ds - clim_ref
-
         if period == "month":
             group = f"{self.dims.time}.month"
         elif period == "dayofyear":
@@ -244,7 +237,7 @@ class CorrelationMetrics(BaseMetrics):
         ----------
         corr_reduce_dims : str or sequence of str
             Dimension(s) over which to compute correlation.
-        period : {"month", "dayofyear", "season", "none"}, optional
+        period : {"month", "dayofyear", "season"}, optional
             Temporal grouping used for climatology.
         min_periods : int, optional
             Minimum number of samples required per group and correlation.
@@ -330,7 +323,7 @@ class CorrelationMetrics(BaseMetrics):
             Dimension(s) over which to compute the mean fields.
         corr_reduce_dims : str or sequence of str
             Dimension(s) over which to compute correlation.
-        period : {"month", "dayofyear", "season", "none"}, optional
+        period : {"month", "dayofyear", "season"}, optional
             Temporal grouping used for climatology.
         min_periods : int, optional
             Minimum number of samples required per group and correlation.

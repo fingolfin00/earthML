@@ -556,7 +556,7 @@ def save_scalar_metric_table_image(
     def _resolve_variable_color(variable: str | None) -> str:
         if variable is None or not table_variables:
             return base_color
-        return _get_variable_table_color(variable=variable, variables=table_variables)
+        return _get_variable_table_color(variable_name=variable, variables=table_variables)
 
     for (row, col), cell in table.get_celld().items():
         cell_edge_color = edge_color

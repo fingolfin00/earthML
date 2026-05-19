@@ -1,3 +1,21 @@
+from typing import Literal
+from dataclasses import dataclass
+
+
+@dataclass(slots=True, kw_only=True)
+class CalculateMetricsMetricVsDeltaPairConfig:
+    forecast_metric: str
+    forecast_metric_type: Literal["all_dims", "spatial_mean", "ensemble_mean", "probabilistic"]
+    delta_metric: str
+    delta_metric_type: Literal["all_dims", "spatial_mean", "ensemble_mean", "probabilistic"]
+
+    def __post_init__(self) -> None:
+        if self.forecast_metric_type not in METRIC_SECTIONS:
+            raise ValueError(f"forecast_metric_type must be one of {METRIC_SECTIONS!r}")
+        if self.delta_metric_type not in METRIC_SECTIONS:
+            raise ValueError(f"delta_metric_type must be one of {METRIC_SECTIONS!r}")
+
+
 CALCULATE_METRICS_ITEMS = (
     "timeseries",
     "maps",
@@ -487,37 +505,37 @@ PROFILE_COMBINED_VARS_METRICS = {
 }
 
 # Metric vs delta metric
-METRIC_VS_DELTA_PAIRS = [
-    {
-        "forecast_metric": "r2",
-        "forecast_metric_type": "ensemble_mean",
-        "delta_metric": "nrmse",
-        "delta_metric_type": "ensemble_mean",
-    },
-    {
-        "forecast_metric": "r2",
-        "forecast_metric_type": "ensemble_mean",
-        "delta_metric": "nmae",
-        "delta_metric_type": "ensemble_mean",
-    },
-    {
-        "forecast_metric": "nrmse",
-        "forecast_metric_type": "ensemble_mean",
-        "delta_metric": "nrmse",
-        "delta_metric_type": "ensemble_mean",
-    },
-    {
-        "forecast_metric": "clim_acc",
-        "forecast_metric_type": "ensemble_mean",
-        "delta_metric": "nmae",
-        "delta_metric_type": "ensemble_mean",
-    },
-    {
-        "forecast_metric": "spread_error_ratio",
-        "forecast_metric_type": "probabilistic",
-        "delta_metric": "crps",
-        "delta_metric_type": "probabilistic",
-    },
+METRIC_VS_DELTA_PAIRS: list[CalculateMetricsMetricVsDeltaPairConfig] = [
+    CalculateMetricsMetricVsDeltaPairConfig(
+        forecast_metric="r2",
+        forecast_metric_type="ensemble_mean",
+        delta_metric="nrmse",
+        delta_metric_type="ensemble_mean",
+    ),
+    CalculateMetricsMetricVsDeltaPairConfig(
+        forecast_metric="r2",
+        forecast_metric_type="ensemble_mean",
+        delta_metric="nmae",
+        delta_metric_type="ensemble_mean",
+    ),
+    CalculateMetricsMetricVsDeltaPairConfig(
+        forecast_metric="nrmse",
+        forecast_metric_type="ensemble_mean",
+        delta_metric="nrmse",
+        delta_metric_type="ensemble_mean",
+    ),
+    CalculateMetricsMetricVsDeltaPairConfig(
+        forecast_metric="clim_acc",
+        forecast_metric_type="ensemble_mean",
+        delta_metric="nmae",
+        delta_metric_type="ensemble_mean",
+    ),
+    CalculateMetricsMetricVsDeltaPairConfig(
+        forecast_metric="spread_error_ratio",
+        forecast_metric_type="probabilistic",
+        delta_metric="crps",
+        delta_metric_type="probabilistic",
+    ),
 ]
 
 # Scoreboard

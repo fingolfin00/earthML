@@ -6,7 +6,7 @@ from .base import BaseMetrics
 
 
 NormType = Literal["mean", "std", "range"]
-ClimType = Literal["month", "dayofyear", "season", "none"]
+ClimType = Literal["month", "dayofyear", "season"]
 
 
 class DeterministicMetrics(BaseMetrics):
@@ -35,10 +35,6 @@ class DeterministicMetrics(BaseMetrics):
         clim: xr.DataArray | None,
         period: ClimType,
     ) -> xr.DataArray:
-        if period == "none":
-            clim_ref = truth.mean(dim=self.dims.time, skipna=True) if clim is None else clim
-            return truth - clim_ref
-
         if period == "month":
             group = f"{self.dims.time}.month"
         elif period == "dayofyear":
@@ -928,7 +924,7 @@ class DeterministicMetrics(BaseMetrics):
         ----------
         metric_mean_dims : str or Sequence[str]
             Dimensions over which to average the squared error.
-        period : {"month", "dayofyear", "season", "none"}, default "month"
+        period : {"month", "dayofyear", "season"}, default "month"
             Temporal grouping used for climatology.
 
         Returns
@@ -978,7 +974,7 @@ class DeterministicMetrics(BaseMetrics):
             Dimensions over which to compute the mean fields.
         metric_mean_dims : str or Sequence[str]
             Dimensions over which to average the squared error.
-        period : {"month", "dayofyear", "season", "none"}, default "month"
+        period : {"month", "dayofyear", "season"}, default "month"
             Temporal grouping used for climatology.
 
         Returns

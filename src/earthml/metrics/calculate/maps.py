@@ -33,7 +33,7 @@ from .constants import CONTEXT_AXES
 from ..metrics.deterministic import DeterministicMetrics
 from ..metrics.correlation import CorrelationMetrics
 from ..metrics.probabilistic import ProbabilisticMetrics
-from ..utils import _compute_metric_bundle
+from ..utils import METRIC_GROUP_DIM, _compute_metric_bundle
 
 
 logger = get_logger(__name__)
@@ -406,6 +406,33 @@ def _map_context_dims(*, group_leadtimes: bool) -> tuple[str, ...]:
     return tuple(dim for dim in CONTEXT_AXES if dim != "leadtime")
 
 
+def _metric_context_dims_for_data(
+    data: xr.Dataset | xr.DataArray,
+    *,
+    base_context_dims: tuple[str, ...],
+) -> tuple[str, ...]:
+    dims = list(base_context_dims)
+    for dim in data.dims:
+        if dim == METRIC_GROUP_DIM or dim.endswith("_group"):
+            if dim not in dims:
+                dims.append(dim)
+    return tuple(dims)
+
+
+def _metric_context_selection_entries(
+    data: xr.Dataset | xr.DataArray,
+    *,
+    base_context_dims: tuple[str, ...],
+) -> list[tuple[dict[str, object], dict[str, object]]]:
+    return _context_selection_entries(
+        data,
+        context_dims=_metric_context_dims_for_data(
+            data,
+            base_context_dims=base_context_dims,
+        ),
+    )
+
+
 def _leadtime_window_label(window_values: Sequence[object]) -> str:
     if not window_values:
         return "all"
@@ -527,7 +554,12 @@ def _select_leadtime_window(
     out = data.sel({dim: value for dim, value in selection.items() if dim in data.dims}, drop=True)
     leadtime_dim = out.earthml.guessed_dims.leadtime
     if leadtime_window_values is not None and leadtime_dim is not None and leadtime_dim in out.dims:
-        out = out.sel({leadtime_dim: list(leadtime_window_values)}, drop=True)
+        selector = xr.DataArray(
+            np.isin(out[leadtime_dim].values, list(leadtime_window_values)),
+            dims=out[leadtime_dim].dims,
+            coords=out[leadtime_dim].coords,
+        )
+        out = out.where(selector, drop=True)
     return out
 
 
@@ -551,7 +583,12 @@ def _average_metric_leadtime_window(
     out = da
     leadtime_dim = out.earthml.guessed_dims.leadtime
     if leadtime_window_values is not None and leadtime_dim is not None and leadtime_dim in out.dims:
-        out = out.sel({leadtime_dim: list(leadtime_window_values)}, drop=True)
+        selector = xr.DataArray(
+            np.isin(out[leadtime_dim].values, list(leadtime_window_values)),
+            dims=out[leadtime_dim].dims,
+            coords=out[leadtime_dim].coords,
+        )
+        out = out.where(selector, drop=True)
         out = out.mean(dim=leadtime_dim, skipna=True)
     return out
 
@@ -566,6 +603,20 @@ def _available_metric_map_inventory(
             continue
         inventory[metric_type] = [str(value) for value in ds_map["metric"].values.tolist()]
     return inventory
+
+
+def _select_all_leadtime_group(
+    data: xr.Dataset | xr.DataArray,
+) -> tuple[xr.Dataset | xr.DataArray, bool]:
+    leadtime_group_dim = "leadtime_group"
+    if leadtime_group_dim not in data.dims:
+        return data, False
+
+    available = [str(value) for value in data[leadtime_group_dim].values.tolist()]
+    if "all" not in available:
+        return data, False
+
+    return data.sel({leadtime_group_dim: ["all"]}), True
 
 
 def _grouped_metric_cache_key(
@@ -673,13 +724,10 @@ def _compute_grouped_window_metric_bundle(
         probabilistic = None
 
     metric_names = sorted({metric_name for names in metric_inventory.values() for metric_name in names})
-    time_dim = truth_data.earthml.guessed_dims.time
     leadtime_reduce_dim = truth_data.earthml.guessed_dims.leadtime
-    map_metric_mean_dims = tuple(
-        dim
-        for dim in (time_dim, leadtime_reduce_dim)
-        if dim is not None and dim in truth_data.dims
-    )
+    metric_mean_extra_dims = None
+    if leadtime_reduce_dim is not None and leadtime_reduce_dim in truth_data.dims:
+        metric_mean_extra_dims = {"map": (leadtime_reduce_dim,)}
 
     return _compute_metric_bundle(
         deterministic=deterministic,
@@ -690,7 +738,7 @@ def _compute_grouped_window_metric_bundle(
         metric_names=metric_names,
         metric_sections=("map",),
         metric_types=tuple(metric_inventory),
-        map_metric_mean_dims=map_metric_mean_dims,
+        metric_mean_extra_dims=metric_mean_extra_dims,
     )
 
 def _region_extent_for_plot(
@@ -888,9 +936,10 @@ def save_field_and_metric_map_plots(
 
                     for metric_name in metric_values:
                         da_metric = da_var.sel(metric=metric_name, drop=True)
-                        for selection, context_values in _context_selection_entries(
+                        da_metric, using_all_leadtime_group = _select_all_leadtime_group(da_metric)
+                        for selection, context_values in _metric_context_selection_entries(
                             da_metric,
-                            context_dims=metric_context_dims,
+                            base_context_dims=metric_context_dims,
                         ):
                             da_context = da_metric.sel(
                                 {dim: value for dim, value in selection.items() if dim in da_metric.dims},
@@ -900,7 +949,7 @@ def save_field_and_metric_map_plots(
                                 continue
                             for _, leadtime_window_values in _leadtime_window_entries(
                                 da_context,
-                                enabled=True,
+                                enabled=not using_all_leadtime_group,
                                 window_size=window_size,
                                 window_stride=window_stride,
                             ):
@@ -949,7 +998,10 @@ def save_field_and_metric_map_plots(
 
                 for metric_name in metric_values:
                     da_metric = da_var.sel(metric=metric_name, drop=True)
-                    for selection, context_values in _context_selection_entries(da_metric):
+                    for selection, context_values in _metric_context_selection_entries(
+                        da_metric,
+                        base_context_dims=CONTEXT_AXES,
+                    ):
                         per_model_maps: dict[str, dict[object | None, xr.DataArray]] = {}
 
                         for model_name in model_values:
@@ -1371,9 +1423,10 @@ def save_field_and_metric_map_plots(
 
                 for metric_name in metric_values:
                     da_metric = da_var.sel(metric=metric_name, drop=True)
-                    for selection, context_values in _context_selection_entries(
+                    da_metric, using_all_leadtime_group = _select_all_leadtime_group(da_metric)
+                    for selection, context_values in _metric_context_selection_entries(
                         da_metric,
-                        context_dims=metric_context_dims,
+                        base_context_dims=metric_context_dims,
                     ):
                         da_context = da_metric.sel(
                             {dim: value for dim, value in selection.items() if dim in da_metric.dims},
@@ -1384,7 +1437,7 @@ def save_field_and_metric_map_plots(
 
                         for leadtime_window_label, leadtime_window_values in _leadtime_window_entries(
                             da_context,
-                            enabled=True,
+                            enabled=not using_all_leadtime_group,
                             window_size=window_size,
                             window_stride=window_stride,
                         ):
@@ -1612,7 +1665,10 @@ def save_field_and_metric_map_plots(
             for metric_name in metric_values:
                 da_metric = da_var.sel(metric=metric_name, drop=True)
                 context_source = da_metric
-                for selection, context_values in _context_selection_entries(context_source):
+                for selection, context_values in _metric_context_selection_entries(
+                    context_source,
+                    base_context_dims=CONTEXT_AXES,
+                ):
                     per_model_maps: dict[str, dict[object | None, xr.DataArray]] = {}
                     base_unit: str | None = None
 

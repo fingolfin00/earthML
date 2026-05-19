@@ -5,6 +5,7 @@ from typing import Sequence
 import xarray as xr
 
 from .dataclasses import CalculateMetricsSaveConfig
+from ..utils import metric_groupings_signature
 
 
 def _normalized_dataset_attrs(attrs: dict[str, object] | None) -> dict[str, str]:
@@ -48,16 +49,19 @@ def _build_metric_file_stem(
     model_names: Sequence[str],
     metric_names: str | Sequence[str] | None,
     clim_period: str,
+    metric_groupings: dict[str, object] | None,
     metric_groupby_period: str | None,
     metric_groupby_basis: str,
     include_group_dim: bool,
 ) -> str:
+    groupings_signature = metric_groupings_signature(metric_groupings)
     fragments = [
         _sanitize_fragment(kind),
         _sanitize_fragment(filename_context_suffix or "all"),
         _model_fragment(model_names),
         _metric_name_fragment(metric_names),
         f"clim_{_sanitize_fragment(clim_period)}",
+        f"groupings_{_sanitize_fragment(groupings_signature)}",
         f"groupperiod_{_sanitize_fragment(metric_groupby_period or 'none')}",
         f"groupbasis_{_sanitize_fragment(metric_groupby_basis)}",
         f"groupdim_{'yes' if include_group_dim else 'no'}",
@@ -86,6 +90,7 @@ def load_metric_datasets(
     model_names: Sequence[str],
     metric_names: str | Sequence[str] | None,
     clim_period: str,
+    metric_groupings: dict[str, object] | None,
     metric_groupby_period: str | None,
     metric_groupby_basis: str,
     include_group_dim: bool,
@@ -103,6 +108,7 @@ def load_metric_datasets(
                 model_names=model_names,
                 metric_names=metric_names,
                 clim_period=clim_period,
+                metric_groupings=metric_groupings,
                 metric_groupby_period=metric_groupby_period,
                 metric_groupby_basis=metric_groupby_basis,
                 include_group_dim=include_group_dim,
@@ -130,6 +136,7 @@ def save_metric_datasets(
     model_names: Sequence[str],
     metric_names: str | Sequence[str] | None,
     clim_period: str,
+    metric_groupings: dict[str, object] | None,
     metric_groupby_period: str | None,
     metric_groupby_basis: str,
     include_group_dim: bool,
@@ -155,6 +162,7 @@ def save_metric_datasets(
                 model_names=model_names,
                 metric_names=metric_names,
                 clim_period=clim_period,
+                metric_groupings=metric_groupings,
                 metric_groupby_period=metric_groupby_period,
                 metric_groupby_basis=metric_groupby_basis,
                 include_group_dim=include_group_dim,

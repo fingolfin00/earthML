@@ -53,8 +53,8 @@ def _build_climatology_da(
     time_dim = da.earthml.guessed_dims.time
     if time_dim is None or time_dim not in da.dims:
         raise ValueError("Cannot compute climatology without a time dimension.")
-    if clim_period in {None, "none"}:
-        raise ValueError("Cannot compute climatology timeseries when clim_period is None or 'none'.")
+    if clim_period is None:
+        raise ValueError("Cannot compute climatology timeseries when clim_period is None.")
     return da.groupby(f"{time_dim}.{clim_period}").mean(dim=time_dim, skipna=True)
 
 def _build_anomaly_da(
@@ -65,18 +65,18 @@ def _build_anomaly_da(
     time_dim = da.earthml.guessed_dims.time
     if time_dim is None or time_dim not in da.dims:
         raise ValueError("Cannot compute anomaly without a time dimension.")
-    if clim_period in {None, "none"}:
-        raise ValueError("Cannot compute anomaly timeseries when clim_period is None or 'none'.")
+    if clim_period is None:
+        raise ValueError("Cannot compute anomaly timeseries when clim_period is None.")
     clim = _build_climatology_da(da, clim_period=clim_period)
     return da.groupby(f"{time_dim}.{clim_period}") - clim
 
 
 def _groupby_x_dim(clim_period: str | None) -> str:
-    return "month" if clim_period in {None, "none"} else clim_period
+    return "month" if clim_period is None else clim_period
 
 
 def _groupby_x_label(clim_period: str | None) -> str:
-    if clim_period in {None, "none"}:
+    if clim_period is None:
         return "Month"
     if clim_period == "dayofyear":
         return "Day of year"

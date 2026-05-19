@@ -24,7 +24,7 @@ __all__ = [
     "load_exp",
     "load_all_exp_from_folder",
     # metrics
-    "get_runs_and_metrics",
+    "get_metrics",
     "metrics_to_df_single_region",
 ]
 
@@ -43,7 +43,7 @@ _EXPORTS = {
     "MLBCExperimentLauncher": (".experiments.mlbc", "MLBCExperimentLauncher"),
     "load_exp": (".experiments.mlbc", "load_exp"),
     "load_all_exp_from_folder": (".experiments.mlbc", "load_all_exp_from_folder"),
-    "get_runs_and_metrics": (".metrics", "get_runs_and_metrics"),
+    "get_metrics": (".metrics", "get_metrics"),
     "metrics_to_df_single_region": (".metrics", "metrics_to_df_single_region"),
 }
 

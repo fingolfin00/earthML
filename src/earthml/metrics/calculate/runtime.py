@@ -61,10 +61,10 @@ from .utils import (
 from .timeseries import save_field_timeseries_plots
 from .maps import save_field_and_metric_map_plots
 from .metric_vs_delta import (
-    _metric_vs_deltametric_specs,
     save_metric_vs_deltametric_plot,
 )
 from .profiles import (
+    _expand_profile_metric_modes,
     save_metrics_vs_parameter_plots,
     save_combined_variable_metric_profiles
 )
@@ -74,19 +74,23 @@ from .tables import (
 from .scoreboard import save_scoreboard_plot
 from .save import load_metric_datasets, save_metric_datasets
 
-from .. import get_runs_and_metrics, metrics_to_df_single_region
 from ..utils import (
     METRIC_GROUP_DIM,
-    _discover_region_values,
-    metric_group_specs_from_data,
+    _metric_group_specs_from_data,
+    metric_groupings_signature,
+    normalize_metric_groupings,
     slice_time_group_data,
+    get_metrics,
+    metrics_to_df_single_region,
 )
 
 from ...misc import Dask
 from ...logging import configure_logging, LoggingConfig, get_console
 from ...experiments.mlbc import MLBCExperimentMode
-from ...experiments.mlbc.load import add_ke_to_runs, load_all_exp_from_folder
-from ...experiments.mlbc.utils import apply_mask_to_dataset
+from ...experiments.mlbc.load import load_runs_by_region
+
+
+MetricVsDeltaByConfig = dict[Literal["color", "marker", "shade"], str]
 
 
 def _slice_metrics_for_group(
@@ -130,11 +134,11 @@ def _build_output_payloads(
         base_all_payload["metrics"] = _slice_metrics_for_group(payload["metrics"], metric_group_label="all")
     output_payloads = [base_all_payload]
 
-    if groupby_period in {None, "none"}:
+    if groupby_period is None:
         return output_payloads
 
     leadtime_unit = str(group_source.coords["leadtime"].attrs.get("unit", "")).strip() if "leadtime" in group_source.coords else None
-    for metric_group_label, group_value in metric_group_specs_from_data(
+    for metric_group_label, group_value in _metric_group_specs_from_data(
         group_source,
         groupby_period,
         basis=groupby_basis,
@@ -168,58 +172,35 @@ def _build_output_payloads(
     return output_payloads
 
 
-def _load_runs_by_region(
-    *,
-    exp_root: Path,
-    exp_mode: MLBCExperimentMode,
-    load_models: list[str],
-    variables: list[str] | None,
-    run_filters: dict[str, object] | None,
-    external_mask_data: xr.Dataset | None,
-) -> dict[str, dict[str, xr.Dataset]]:
-    region_values = _discover_region_values(
-        exp_root=exp_root,
-        exp_mode=exp_mode,
-        load_models=load_models,
-        variables=variables,
-        run_filters=run_filters,
-        show_progress=True,
-    )
-    if not region_values:
-        return {}
+def _required_metric_sections_for_runtime(
+    config: CalculateMetricsConfig,
+) -> tuple[str, ...]:
+    sections: list[str] = []
 
-    runs_by_region: dict[str, dict[str, xr.Dataset]] = {}
-    for region_name in region_values:
-        region_filters = dict(run_filters or {})
-        region_filters["region"] = [region_name]
-        loaded_runs, _ = load_all_exp_from_folder(
-            exp_root=exp_root,
-            exp_mode=exp_mode,
-            load_train_preds=(exp_mode == "train"),
-            load_models=load_models,
-            variables=variables,
-            run_filters=region_filters,
-            show_progress=True,
-        )
-        if not loaded_runs:
-            continue
+    def _add(section: str) -> None:
+        if section not in sections:
+            sections.append(section)
 
-        for model_name in load_models:
-            if model_name in loaded_runs:
-                loaded_runs[model_name] = add_ke_to_runs(
-                    loaded_runs[model_name],
-                    dataset_keys=None,
-                )
+    if config.maps is not None:
+        _add("map")
+    if config.timeseries is not None:
+        _add("timeseries")
+    if (
+        config.scalar_tables is not None
+        or config.metric_vs_delta is not None
+        or config.scoreboards is not None
+    ):
+        _add("scalar")
+    if config.profiles is not None:
+        profile_specs = _expand_profile_metric_modes(config.profiles.metrics)
+        for spec in profile_specs:
+            _add(spec.kind)
+        if config.profiles.combined_variable_metrics is not None:
+            combined_specs = _expand_profile_metric_modes(config.profiles.combined_variable_metrics)
+            for spec in combined_specs:
+                _add(spec.kind)
 
-        if external_mask_data is not None:
-            loaded_runs = {
-                model_name: ds if model_name == "mask" else apply_mask_to_dataset(ds, external_mask_data)
-                for model_name, ds in loaded_runs.items()
-            }
-
-        runs_by_region[str(region_name)] = loaded_runs
-
-    return runs_by_region
+    return tuple(sections) if sections else ("scalar", "map", "timeseries")
 
 
 @dataclass
@@ -228,18 +209,19 @@ class CalculateMetricsRuntime:
     dask_workers: int | None
     memory_limit: str
     root_path: str | Path
-    exp_mode: MLBCExperimentMode = "test"
+    exp_mode: MLBCExperimentMode = MLBCExperimentMode.TEST
     metrics: list[str] | str | None = None # None means all available metrics
     items: list = field(default_factory=lambda: list(CALCULATE_METRICS_ITEMS))
     log_level: Literal["info", "debug"] = "info"
     print_user_config: bool = False
     print_console_tables: bool = False
     external_mask_path: str | Path | None = None
-    external_mask_variable: str | Path | None = None
+    external_mask_variable: str | None = None
     disable_flox: bool = False
-    metric_groupby_period: Literal["month", "dayofyear", "season", "none"] | None = None
+    metric_groupings: dict[str, object] | None = None
+    metric_groupby_period: Literal["month", "dayofyear", "season"] | None = None
     metric_groupby_basis: Literal["target_time", "reference_time"] = "target_time"
-    clim_period: Literal["month", "dayofyear", "season", "none"] | None = None
+    clim_period: Literal["month", "dayofyear", "season"] | None = None
     variable_colors: dict[str, str] = field(default_factory=dict)
     save_calculated_metrics: bool = False
     reuse_saved_metrics: bool = False
@@ -272,7 +254,7 @@ class CalculateMetricsRuntime:
     maps_realization_mode: Literal["mean", "members"] = "mean"
     profiles_x_axis: str = "leadtime"
     profiles_enable_combined_variable: bool = False
-    metric_vs_delta_byconfig: dict[Literal["color", "marker", "shade"], str] = field(default_factory=dict)
+    metric_vs_delta_byconfig: MetricVsDeltaByConfig = field(default_factory=dict)
     scoreboard_mode: Literal["absolute", "relative"] = "absolute"
 
     def __post_init__(self):
@@ -280,10 +262,10 @@ class CalculateMetricsRuntime:
         self.logger = configure_logging(log_config)
         self.console = get_console()
 
-        valid_metric_groupby_periods = {"month", "dayofyear", "season", "none", None}
+        valid_metric_groupby_periods = {"month", "dayofyear", "season", None}
         if self.metric_groupby_period not in valid_metric_groupby_periods:
             raise ValueError(
-                "metric_groupby_period must be one of {'month', 'dayofyear', 'season', 'none', None}"
+                "metric_groupby_period must be one of {'month', 'dayofyear', 'season', None}"
             )
         valid_metric_groupby_bases = {"target_time", "reference_time"}
         if self.metric_groupby_basis not in valid_metric_groupby_bases:
@@ -292,12 +274,19 @@ class CalculateMetricsRuntime:
             )
         if self.clim_period not in valid_metric_groupby_periods:
             raise ValueError(
-                "clim_period must be one of {'month', 'dayofyear', 'season', 'none', None}"
+                "clim_period must be one of {'month', 'dayofyear', 'season', None}"
             )
         if self.maps_realization_mode not in {"mean", "members"}:
             raise ValueError("maps_realization_mode must be one of {'mean', 'members'}")
 
-        metric_vs_delta_byconfig_default = {
+        self.metric_groupings_normalized = normalize_metric_groupings(
+            self.metric_groupings,
+            metric_groupby_period=self.metric_groupby_period,
+            metric_groupby_basis=self.metric_groupby_basis,
+        )
+        self.time_metric_grouping = self.metric_groupings_normalized.get("time")
+
+        metric_vs_delta_byconfig_default: MetricVsDeltaByConfig = {
             "color": "variable",
             "marker": "region", # e.g. "region" or combined context dimensions ("loss", "variant")
             "shade": "leadtime", # e.g. "loss", "total_months"
@@ -321,14 +310,33 @@ class CalculateMetricsRuntime:
             variant=self.variant,
         )
 
+        display_names = {
+            self.truth: self.truth.upper(),
+            self.reference: self.reference.upper(),
+            self.gain: self.gain.capitalize(),
+        }
+        model_colors = {
+            self.truth: "tab:orange",
+            self.reference: "tab:green",
+        }
+        if self.corrected is not None:
+            model_colors[self.corrected] = "tab:blue"
+            display_names[self.corrected] = (
+                "MLFC" if self.reference == "fc" else self.corrected.upper()
+            )
+            if self.diff is not None:
+                model_colors[self.diff] = "tab:red"
+
         self.config = CalculateMetricsConfig(
             global_config=CalculateMetricsGlobalConfig(
                 exp_root_folder=Path(self.root_path),
                 plot_folder_name="plots",
                 exp_mode=self.exp_mode,
-                metric_names=self.metrics,
-                external_mask_path=self.external_mask_path,
+                metric_names=self.metrics if isinstance(self.metrics, list | None) else [self.metrics],
+                external_mask_path=Path(self.external_mask_path) if self.external_mask_path is not None else None,
                 external_mask_variable=self.external_mask_variable,
+                calculate_clim_from_train_period=True,
+                use_train_prediction_clim=False,
                 use_saved_mask=True,
                 items=self.items,
                 print_user_config=self.print_user_config,
@@ -339,21 +347,8 @@ class CalculateMetricsRuntime:
                 reference_model=self.reference,
                 corrected_model=self.corrected,
                 gain_label=self.gain,
-                display_names={
-                    self.truth: self.truth.upper(),
-                    self.reference: self.reference.upper(),
-                    self.corrected: "MLFC" if self.reference=="fc" else self.corrected.upper(),
-                    self.gain: self.gain.capitalize(),
-                } if self.reference is not None else {
-                    self.truth: self.truth.upper(),
-                    self.reference: self.reference.upper(),
-                },
-                model_colors={
-                    self.truth: "tab:orange",
-                    self.reference: "tab:green",
-                    self.corrected: "tab:blue",
-                    self.diff: "tab:red",
-                },
+                display_names=display_names,
+                model_colors=model_colors,
             ),
             variable_colors=CalculateMetricsVariableColorConfig(
                 overrides=self.variable_colors,
@@ -451,10 +446,10 @@ class CalculateMetricsRuntime:
             dask_earthml.start()
             client = dask_earthml.client
             base_url = "http://localhost:"
-            dashboard_url = client.dashboard_link.replace("http://127.0.0.1:", base_url)
+            dashboard_url = client.dashboard_link.replace("http://127.0.0.1:", base_url) if client is not None and client.dashboard_link is not None else ""
             self.logger.info(f"Dask dashboard: {dashboard_url}")
 
-            self.logger.info(f"Loading experiments from: {self.config.global_config.exp_root_folder}")
+            self.logger.info(f"Loading '{self.config.global_config.exp_mode}' experiments from: {self.config.global_config.exp_root_folder}")
             if self.config.global_config.print_user_config:
                 _print_user_config_table(self.config)
 
@@ -467,17 +462,34 @@ class CalculateMetricsRuntime:
             self.logger.info(f"Load selection: variables={load_variables or 'all'}, run_filters={load_run_filters or 'all'}")
             external_mask_data = _load_external_mask_dataset(self.config)
 
-            runs_by_region = _load_runs_by_region(
+            runs_by_region = load_runs_by_region(
                 exp_root=self.config.global_config.exp_root_folder,
                 exp_mode=self.config.global_config.exp_mode,
                 load_models=self.config.models.load_models,
                 variables=load_variables,
                 run_filters=load_run_filters,
                 external_mask_data=external_mask_data,
+                apply_external_mask_to_runs=(self.external_mask_path != None and Path(self.external_mask_path).exists()),
             )
 
             if not runs_by_region:
                 raise ValueError("No runs were loaded for the requested filters.")
+            
+            # Load train runs if requested
+            train_runs = None
+            if self.config.global_config.calculate_clim_from_train_period:
+                if self.config.global_config.exp_mode == MLBCExperimentMode.TRAIN:
+                    train_runs = runs_by_region
+                else:
+                    train_runs = load_runs_by_region(
+                        exp_root=self.config.global_config.exp_root_folder,
+                        exp_mode=MLBCExperimentMode.TRAIN,
+                        load_models=self.config.models.load_models,
+                        variables=load_variables,
+                        run_filters=load_run_filters,
+                        external_mask_data=external_mask_data,
+                        show_progress=True,
+                    )
 
             self.plot_folder.mkdir(parents=True, exist_ok=True)
 
@@ -498,13 +510,22 @@ class CalculateMetricsRuntime:
             self.logger.info(f"Inferred leadtime unit: {leadtime_unit or 'unknown'}")
             self.logger.info(f"Inferred map regions: {sorted(region_extents) if region_extents else 'unknown'}")
             self.logger.info(f"Inferred region extents: {region_extents or 'unknown'}")
-            resolved_clim_period = self.clim_period if self.clim_period is not None else (self.metric_groupby_period or "month")
+            required_metric_sections = _required_metric_sections_for_runtime(self.config)
+            resolved_time_groupby_period = (
+                None if self.time_metric_grouping is None else self.time_metric_grouping.period
+            )
+            resolved_time_groupby_basis = (
+                "target_time" if self.time_metric_grouping is None else self.time_metric_grouping.basis
+            )
+            resolved_clim_period = self.clim_period if self.clim_period is not None else (resolved_time_groupby_period or "month")
             self.logger.info(
-                "Metric grouping: period=%s, basis=%s | climatology period=%s",
-                self.metric_groupby_period or "none",
-                self.metric_groupby_basis,
+                "Metric grouping: time_period=%s, time_basis=%s, config=%s | climatology period=%s",
+                resolved_time_groupby_period or None,
+                resolved_time_groupby_basis,
+                metric_groupings_signature(self.metric_groupings_normalized),
                 resolved_clim_period,
             )
+            self.logger.info("Requested metric sections: %s", required_metric_sections)
 
             region_payloads = []
             inventory: dict[str, set[str]] = {}
@@ -546,8 +567,8 @@ class CalculateMetricsRuntime:
                 output_payloads.extend(
                     _build_output_payloads(
                         payload=payload,
-                        groupby_period=self.metric_groupby_period,
-                        groupby_basis=self.metric_groupby_basis,
+                        groupby_period=resolved_time_groupby_period,
+                        groupby_basis=resolved_time_groupby_basis,
                         group_source=group_source,
                     )
                 )
@@ -556,7 +577,7 @@ class CalculateMetricsRuntime:
             if self.config.saved_metrics is not None and self.config.saved_metrics.reuse_existing:
                 loaded_payload_metrics = []
                 effective_clim_period = resolved_clim_period
-                include_group_dim = self.metric_groupby_period is not None
+                include_group_dim = resolved_time_groupby_period is not None
                 for payload in output_payloads:
                     metrics = load_metric_datasets(
                         output_root=payload["plot_folder"],
@@ -565,8 +586,9 @@ class CalculateMetricsRuntime:
                         model_names=self.config.models.load_models,
                         metric_names=self.metrics,
                         clim_period=effective_clim_period,
-                        metric_groupby_period=self.metric_groupby_period,
-                        metric_groupby_basis=self.metric_groupby_basis,
+                        metric_groupings=self.metric_groupings_normalized,
+                        metric_groupby_period=resolved_time_groupby_period,
+                        metric_groupby_basis=resolved_time_groupby_basis,
                         include_group_dim=include_group_dim,
                     )
                     if metrics is None:
@@ -580,18 +602,19 @@ class CalculateMetricsRuntime:
                         payload["metrics"] = metrics
 
             if not metrics_loaded_from_saved:
-                _, metrics_by_region, _ = get_runs_and_metrics(
-                    exp_root=self.config.global_config.exp_root_folder,
-                    exp_mode=self.config.global_config.exp_mode,
+                metrics_by_region, _ = get_metrics(
+                    runs_by_region=runs_by_region,
                     load_models=self.config.models.load_models,
-                    variables=load_variables,
                     run_filters=load_run_filters,
+                    use_train_prediction_clim=self.config.global_config.use_train_prediction_clim,
                     use_saved_mask=self.config.global_config.use_saved_mask,
+                    train_runs=train_runs,
                     external_mask_data=external_mask_data,
-                    apply_external_mask_to_runs=True,
                     metric_names=self.metrics,
-                    metric_groupby_period=self.metric_groupby_period,
-                    metric_groupby_basis=self.metric_groupby_basis,
+                    metric_sections=required_metric_sections,
+                    metric_groupings=self.metric_groupings_normalized,
+                    metric_groupby_period=resolved_time_groupby_period,
+                    metric_groupby_basis=resolved_time_groupby_basis,
                     clim_period=resolved_clim_period,
                     show_progress=True,
                 )
@@ -648,15 +671,17 @@ class CalculateMetricsRuntime:
                             model_names=self.config.models.load_models,
                             metric_names=self.metrics,
                             clim_period=resolved_clim_period,
-                            metric_groupby_period=self.metric_groupby_period,
-                            metric_groupby_basis=self.metric_groupby_basis,
-                            include_group_dim=self.metric_groupby_period is not None,
+                            metric_groupings=self.metric_groupings_normalized,
+                            metric_groupby_period=resolved_time_groupby_period,
+                            metric_groupby_basis=resolved_time_groupby_basis,
+                            include_group_dim=resolved_time_groupby_period is not None,
                             dataset_attrs={
                                 "region": payload["region"],
                                 "scope_label": payload["scope_label"],
                                 "metric_group_label": payload["metric_group_label"],
-                                "metric_groupby_period": self.metric_groupby_period or "none",
-                                "metric_groupby_basis": self.metric_groupby_basis,
+                                "metric_groupby_period": resolved_time_groupby_period or None,
+                                "metric_groupby_basis": resolved_time_groupby_basis,
+                                "metric_groupings": metric_groupings_signature(self.metric_groupings_normalized),
                                 "clim_period": resolved_clim_period,
                             },
                         )
@@ -709,7 +734,7 @@ class CalculateMetricsRuntime:
                             realization_mode=self.config.maps.realization_mode,
                             clim_period=resolved_clim_period,
                             metric_group_label=payload["metric_group_label"],
-                            metric_groupby_period=self.metric_groupby_period,
+                            metric_groupby_period=resolved_time_groupby_period,
                             region_extents=region_extents,
                             progress=progress,
                             task_id=map_task,
@@ -719,7 +744,7 @@ class CalculateMetricsRuntime:
 
 
                 if self.config.metric_vs_delta is not None:
-                    metric_vs_deltametric_specs = _metric_vs_deltametric_specs(self.config.metric_vs_delta)
+                    metric_vs_deltametric_specs = self.config.metric_vs_delta.metric_pairs
                     for payload in output_payloads:
                         diff_task = progress.add_task(
                             f"Generating metric-vs-delta-metric plot ({payload['region']} | {payload['scope_label']})",
@@ -729,18 +754,18 @@ class CalculateMetricsRuntime:
                             df_nodiff = metrics_to_df_single_region(
                                 metrics=payload["metrics"],
                                 variables=payload["variables"],
-                                metric_names=metric_spec["forecast_metric"],
+                                metric_names=metric_spec.forecast_metric,
                                 kind="scalar",
-                                metric_type=metric_spec["forecast_metric_type"],
+                                metric_type=metric_spec.forecast_metric_type,
                                 diff="no",
                                 models=(self.config.models.reference_model,),
                             )
                             df_delta = metrics_to_df_single_region(
                                 metrics=payload["metrics"],
                                 variables=payload["variables"],
-                                metric_names=metric_spec["delta_metric"],
+                                metric_names=metric_spec.delta_metric,
                                 kind="scalar",
-                                metric_type=metric_spec["delta_metric_type"],
+                                metric_type=metric_spec.delta_metric_type,
                                 diff="delta",
                                 models=self.config.models.comparison_models,
                             )
@@ -749,8 +774,8 @@ class CalculateMetricsRuntime:
                                 df_nodiff=df_nodiff,
                                 df_delta=df_delta,
                                 plot_folder=payload["plot_folder"],
-                                forecast_metric=metric_spec["forecast_metric"],
-                                delta_metric=metric_spec["delta_metric"],
+                                forecast_metric=metric_spec.forecast_metric,
+                                delta_metric=metric_spec.delta_metric,
                                 leadtime_unit=f" {leadtime_unit}" if leadtime_unit else "",
                                 region=payload["region"],
                                 filters=payload["filters"],
@@ -832,7 +857,7 @@ class CalculateMetricsRuntime:
                         for variable in variables:
                             progress.update(table_task, description=f"Generating {payload['region']} {variable} scalar tables")
                             variable_plot_folder = _table_output_folder(plot_root=payload["plot_folder"], variable=variable)
-                            base_color = _get_variable_table_color(variable=variable, variables=variables)
+                            base_color = _get_variable_table_color(variable_name=variable, variables=variables)
                             scalar_table_paths = save_scalar_metric_tables(
                                 metrics=metrics,
                                 variables=[variable],
@@ -862,7 +887,7 @@ class CalculateMetricsRuntime:
                             column_index=("model", "stat"),
                             stat_label_overrides={"prob": ""},
                             leadtime_unit=leadtime_unit,
-                            base_color=_get_variable_table_color(variable=variables[0], variables=variables),
+                            base_color=_get_variable_table_color(variable_name=variables[0], variables=variables),
                         )
                         self.logger.info(f"Scalar table variable ({payload['region']}): all_variables")
                         progress.advance(table_task)

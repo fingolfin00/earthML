@@ -14,46 +14,6 @@ from .utils import (
 from ...plots import plot_metric_vs_diff
 
 
-def _metric_vs_deltametric_specs(
-    knobs: CalculateMetricsMetricVsDeltaConfig
-) -> list[dict[str, str]]:
-    metric_pairs = knobs.get("metric_pairs")
-    if metric_pairs is None:
-        return [
-            {
-                "forecast_metric": str(knobs["forecast_metric"]),
-                "forecast_metric_type": str(knobs["forecast_metric_type"]),
-                "delta_metric": str(knobs["delta_metric"]),
-                "delta_metric_type": str(knobs["delta_metric_type"]),
-            }
-        ]
-
-    if not isinstance(metric_pairs, (list, tuple)) or not metric_pairs:
-        raise ValueError("CalculateMetricsMetricVsDeltaConfig.metric_pairs must be a non-empty list when provided.")
-
-    specs: list[dict[str, str]] = []
-    required_keys = (
-        "forecast_metric",
-        "forecast_metric_type",
-        "delta_metric",
-        "delta_metric_type",
-    )
-    for idx, pair in enumerate(metric_pairs):
-        if not isinstance(pair, dict):
-            raise ValueError(
-                "Each CalculateMetricsMetricVsDeltaConfig.metric_pairs item must be a dict "
-                f"with keys {required_keys!r}. Problem at index {idx}: {pair!r}"
-            )
-        missing = [key for key in required_keys if key not in pair or pair[key] is None or str(pair[key]) == ""]
-        if missing:
-            raise ValueError(
-                "Each CalculateMetricsMetricVsDeltaConfig.metric_pairs item must define "
-                f"{required_keys!r}. Missing {missing!r} at index {idx}."
-            )
-        specs.append({key: str(pair[key]) for key in required_keys})
-    return specs
-
-
 def save_metric_vs_deltametric_plot(
     *,
     df_nodiff,

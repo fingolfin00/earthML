@@ -1,6 +1,6 @@
 from dataclasses import fields, is_dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Sequence, Hashable
 from itertools import product
 from copy import deepcopy
 
@@ -124,7 +124,7 @@ def _get_da_unit(
 
 def _get_variable_units_from_runs(
     runs: dict[str, xr.Dataset],
-    variables: list[str]
+    variables: list[Hashable]
 ) -> dict[str, str | None]:
     out: dict[str, str | None] = {}
     for variable in variables:
@@ -173,7 +173,7 @@ def _infer_leadtime_unit_from_configs(
 
 
 def _ordered_unique_variables(
-    variables: list[str]
+    variables: list[Hashable]
 ) -> list[str]:
     unique_variables: list[str] = []
     for variable in variables:
@@ -183,7 +183,7 @@ def _ordered_unique_variables(
     return unique_variables
 
 def _filter_variables_by_filters(
-    variables: list[str],
+    variables: list[Hashable],
     filters: dict | None,
 ) -> list[str]:
     ordered_variables = _ordered_unique_variables(variables)
@@ -330,17 +330,6 @@ def _filters_filename_context(filters: dict | None) -> dict[str, object]:
     return context
 
 
-def _ordered_unique_variables(
-    variables: list[str]
-) -> list[str]:
-    unique_variables: list[str] = []
-    for variable in variables:
-        variable_str = str(variable)
-        if variable_str not in unique_variables:
-            unique_variables.append(variable_str)
-    return unique_variables
-
-
 def _format_metric_display_name(metric: str) -> str:
     return METRIC_DISPLAY_NAMES.get(metric, metric.replace("_", " "))
 
@@ -368,7 +357,7 @@ def _format_metric_label(
 
 def _get_variable_colors(
     *,
-    variables: list[str],
+    variables: list[Hashable],
     base_colors: Sequence[str] | dict[str, str] | None = None,
     overrides: dict[str, str] | None = None,
 ) -> dict[str, str]:
@@ -395,14 +384,14 @@ def _get_variable_colors(
 
 def _get_variable_table_color(
     *,
-    variable: str,
-    variables: list[str]
+    variable_name: str,
+    variables: list[Hashable]
 ) -> str:
     variable_colors = _get_variable_colors(variables=variables)
     default_color = next(iter(VARIABLE_COLORS.values()), "#4c4c4c")
     if not variable_colors:
         return default_color
-    return variable_colors.get(str(variable), default_color)
+    return variable_colors.get(str(variable_name), default_color)
 
 
 def _normalize_profile_axis_fields(
