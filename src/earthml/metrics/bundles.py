@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import Any, Sequence
 
 import xarray as xr
@@ -6,6 +7,105 @@ from .calculate.constants import METRIC_KIND, METRIC_SECTIONS
 from .metrics.deterministic import DeterministicMetrics
 from .metrics.correlation import CorrelationMetrics
 from .metrics.probabilistic import ProbabilisticMetrics
+
+MetricProgressHook = Callable[[str, str, str], None]
+
+_DETERMINISTIC_METRICS = (
+    "rmse",
+    "rmse_skill_clim",
+    "crmse",
+    "mae",
+    "bias",
+    "error_std",
+    "variance_ratio",
+    "r2",
+    "nrmse",
+    "ncrmse",
+    "nmae",
+    "nbias",
+)
+_CORRELATION_METRICS = ("corr", "clim_acc", "spatial_acc")
+_SPATIAL_MEAN_CORRELATION_METRICS = ("corr", "clim_acc")
+_PROBABILISTIC_METRICS = ("crps", "spread", "spread_error_ratio")
+
+
+def _normalize_requested_metrics(
+    metric_names: Sequence[str] | set[str] | None,
+) -> set[str] | None:
+    if metric_names is None:
+        return None
+    return {str(name) for name in metric_names}
+
+
+def _normalize_requested_kinds(
+    metric_kinds: str | Sequence[str] | set[str] | None,
+) -> tuple[str, ...]:
+    if metric_kinds is None:
+        return tuple(METRIC_KIND)
+    if isinstance(metric_kinds, str):
+        raw_kinds = (metric_kinds,)
+    else:
+        raw_kinds = tuple(str(kind) for kind in metric_kinds)
+    return tuple(kind for kind in METRIC_KIND if kind in raw_kinds)
+
+
+def _has_realization(deterministic: DeterministicMetrics) -> bool:
+    realization_dim = deterministic.dims.realization
+    return (
+        realization_dim is not None
+        and any(ds.sizes.get(realization_dim, 0) > 1 for ds in deterministic.model_data)
+    )
+
+
+def _count_requested(
+    requested_metrics: set[str] | None,
+    supported_metrics: Sequence[str],
+) -> int:
+    if requested_metrics is None:
+        return len(supported_metrics)
+    return sum(1 for metric_name in supported_metrics if metric_name in requested_metrics)
+
+
+def count_standard_metric_bundle_steps(
+    deterministic: DeterministicMetrics,
+    correlation: CorrelationMetrics | None = None,
+    probabilistic: ProbabilisticMetrics | None = None,
+    metric_names: Sequence[str] | set[str] | None = None,
+    metric_kinds: str | Sequence[str] | set[str] | None = None,
+) -> int:
+    """
+    Return the number of metric computations performed by ``build_standard_metric_bundle``.
+    """
+    requested_metrics = _normalize_requested_metrics(metric_names)
+    requested_kinds = _normalize_requested_kinds(metric_kinds)
+    has_realization = _has_realization(deterministic)
+
+    deterministic_count = _count_requested(requested_metrics, _DETERMINISTIC_METRICS)
+    correlation_count = _count_requested(requested_metrics, _CORRELATION_METRICS)
+    spatial_mean_correlation_count = _count_requested(
+        requested_metrics,
+        _SPATIAL_MEAN_CORRELATION_METRICS,
+    )
+    probabilistic_count = _count_requested(requested_metrics, _PROBABILISTIC_METRICS)
+
+    steps = len(requested_kinds) * deterministic_count
+    if "scalar" in requested_kinds:
+        steps += deterministic_count  # spatial_mean/scalar
+
+    if has_realization:
+        steps += len(requested_kinds) * deterministic_count
+
+    if correlation is not None:
+        steps += len(requested_kinds) * correlation_count
+        if "scalar" in requested_kinds:
+            steps += spatial_mean_correlation_count
+        if has_realization:
+            steps += len(requested_kinds) * correlation_count
+
+    if probabilistic is not None and has_realization:
+        steps += len(requested_kinds) * probabilistic_count
+
+    return steps
 
 
 def _stack_metric_section(section_metrics: dict[str, xr.Dataset]) -> xr.Dataset:
@@ -48,6 +148,8 @@ def build_standard_metric_bundle(
     norm: str = "std",
     clim_period: str = "month",
     metric_names: Sequence[str] | set[str] | None = None,
+    metric_kinds: str | Sequence[str] | set[str] | None = None,
+    progress_hook: MetricProgressHook | None = None,
     metric_mean_extra_dims: dict[str, str | Sequence[str] | None] | None = None,
 ) -> dict[str, Any]:
     """
@@ -80,6 +182,11 @@ def build_standard_metric_bundle(
         Climatology grouping period for anomaly correlation metrics.
     metric_names : Sequence[str] or set[str] or None, optional
         Metric names to compute. ``None`` computes all supported metrics.
+    metric_kinds : str or Sequence[str] or set[str] or None, optional
+        Metric output kinds to compute from ``METRIC_KIND``.
+    progress_hook : callable or None, optional
+        Callback invoked after each completed metric computation with
+        ``(metric_name, metric_type, kind)``.
 
     Returns
     -------
@@ -99,11 +206,9 @@ def build_standard_metric_bundle(
             raise ValueError("probabilistic and deterministic metric objects must share dims")
 
     realization_dim = deterministic.dims.realization
-    has_realization = (
-        realization_dim is not None
-        and any(ds.sizes.get(realization_dim, 0) > 1 for ds in deterministic.model_data)
-    )
-    requested_metrics = None if metric_names is None else {str(name) for name in metric_names}
+    has_realization = _has_realization(deterministic)
+    requested_metrics = _normalize_requested_metrics(metric_names)
+    requested_kinds = _normalize_requested_kinds(metric_kinds)
 
     def _normalize_dims(value: str | Sequence[str] | None) -> tuple[str, ...]:
         if value is None:
@@ -114,6 +219,20 @@ def build_standard_metric_bundle(
 
     def _wants(metric_name: str) -> bool:
         return requested_metrics is None or metric_name in requested_metrics
+
+    def _record_metric(
+        target: dict[str, xr.Dataset],
+        *,
+        metric_name: str,
+        metric_type: str,
+        kind: str,
+        compute: Callable[[], xr.Dataset],
+    ) -> None:
+        if not _wants(metric_name):
+            return
+        target[metric_name] = compute()
+        if progress_hook is not None:
+            progress_hook(metric_name, metric_type, kind)
 
     def _append_extra_dims(
         base_dims: tuple[str, ...],
@@ -145,72 +264,194 @@ def build_standard_metric_bundle(
         )
     )
     section_metrics = {
-        metric_type: {kind: {} for kind in reduce_dims}
+        metric_type: {kind: {} for kind in requested_kinds}
         for metric_type in METRIC_SECTIONS
     }
 
     # ------------------
     # All dims
     # ------------------
-    for kind, dims in reduce_dims.items():
+    for kind in requested_kinds:
+        dims = reduce_dims[kind]
         sm = section_metrics["all_dims"][kind]
 
-        if _wants("rmse"):
-            sm["rmse"] = deterministic.rmse(metric_mean_dims=dims)
-        if _wants("rmse_skill_clim"):
-            sm["rmse_skill_clim"] = deterministic.rmse_skill_clim(metric_mean_dims=dims, period=clim_period)
-        if _wants("crmse"):
-            sm["crmse"] = deterministic.crmse(metric_mean_dims=dims)
-        if _wants("mae"):
-            sm["mae"] = deterministic.mae(metric_mean_dims=dims)
-        if _wants("bias"):
-            sm["bias"] = deterministic.bias(metric_mean_dims=dims)
-        if _wants("error_std"):
-            sm["error_std"] = deterministic.error_std(metric_mean_dims=dims)
-        if _wants("variance_ratio"):
-            sm["variance_ratio"] = deterministic.variance_ratio(metric_mean_dims=dims)
-        if _wants("r2"):
-            sm["r2"] = deterministic.r2(metric_mean_dims=dims)
-        if _wants("nrmse"):
-            sm["nrmse"] = deterministic.nrmse(metric_mean_dims=dims, norm=norm)
-        if _wants("ncrmse"):
-            sm["ncrmse"] = deterministic.ncrmse(metric_mean_dims=dims, norm=norm)
-        if _wants("nmae"):
-            sm["nmae"] = deterministic.nmae(metric_mean_dims=dims, norm=norm)
-        if _wants("nbias"):
-            sm["nbias"] = deterministic.nbias(metric_mean_dims=dims, norm=norm)
+        _record_metric(
+            sm,
+            metric_name="rmse",
+            metric_type="all_dims",
+            kind=kind,
+            compute=lambda dims=dims: deterministic.rmse(metric_mean_dims=dims),
+        )
+        _record_metric(
+            sm,
+            metric_name="rmse_skill_clim",
+            metric_type="all_dims",
+            kind=kind,
+            compute=lambda dims=dims: deterministic.rmse_skill_clim(metric_mean_dims=dims, period=clim_period),
+        )
+        _record_metric(
+            sm,
+            metric_name="crmse",
+            metric_type="all_dims",
+            kind=kind,
+            compute=lambda dims=dims: deterministic.crmse(metric_mean_dims=dims),
+        )
+        _record_metric(
+            sm,
+            metric_name="mae",
+            metric_type="all_dims",
+            kind=kind,
+            compute=lambda dims=dims: deterministic.mae(metric_mean_dims=dims),
+        )
+        _record_metric(
+            sm,
+            metric_name="bias",
+            metric_type="all_dims",
+            kind=kind,
+            compute=lambda dims=dims: deterministic.bias(metric_mean_dims=dims),
+        )
+        _record_metric(
+            sm,
+            metric_name="error_std",
+            metric_type="all_dims",
+            kind=kind,
+            compute=lambda dims=dims: deterministic.error_std(metric_mean_dims=dims),
+        )
+        _record_metric(
+            sm,
+            metric_name="variance_ratio",
+            metric_type="all_dims",
+            kind=kind,
+            compute=lambda dims=dims: deterministic.variance_ratio(metric_mean_dims=dims),
+        )
+        _record_metric(
+            sm,
+            metric_name="r2",
+            metric_type="all_dims",
+            kind=kind,
+            compute=lambda dims=dims: deterministic.r2(metric_mean_dims=dims),
+        )
+        _record_metric(
+            sm,
+            metric_name="nrmse",
+            metric_type="all_dims",
+            kind=kind,
+            compute=lambda dims=dims: deterministic.nrmse(metric_mean_dims=dims, norm=norm),
+        )
+        _record_metric(
+            sm,
+            metric_name="ncrmse",
+            metric_type="all_dims",
+            kind=kind,
+            compute=lambda dims=dims: deterministic.ncrmse(metric_mean_dims=dims, norm=norm),
+        )
+        _record_metric(
+            sm,
+            metric_name="nmae",
+            metric_type="all_dims",
+            kind=kind,
+            compute=lambda dims=dims: deterministic.nmae(metric_mean_dims=dims, norm=norm),
+        )
+        _record_metric(
+            sm,
+            metric_name="nbias",
+            metric_type="all_dims",
+            kind=kind,
+            compute=lambda dims=dims: deterministic.nbias(metric_mean_dims=dims, norm=norm),
+        )
 
     # ------------------
     # Spatial mean
     # ------------------
     sdims = ts_dims
     tdim = tuple(dim for dim in scalar_dims if dim not in sdims)
-    sm = section_metrics["spatial_mean"]["scalar"]
+    if "scalar" in requested_kinds:
+        sm = section_metrics["spatial_mean"]["scalar"]
 
-    if _wants("rmse"):
-        sm["rmse"] = deterministic.rmse_of_mean(sdims, tdim)
-    if _wants("rmse_skill_clim"):
-        sm["rmse_skill_clim"] = deterministic.rmse_skill_clim_of_mean(sdims, tdim, period=clim_period)
-    if _wants("crmse"):
-        sm["crmse"] = deterministic.crmse_of_mean(sdims, tdim)
-    if _wants("mae"):
-        sm["mae"] = deterministic.mae_of_mean(sdims, tdim)
-    if _wants("bias"):
-        sm["bias"] = deterministic.bias_of_mean(sdims, tdim)
-    if _wants("error_std"):
-        sm["error_std"] = deterministic.error_std_of_mean(sdims, tdim)
-    if _wants("variance_ratio"):
-        sm["variance_ratio"] = deterministic.variance_ratio_of_mean(sdims, tdim)
-    if _wants("r2"):
-        sm["r2"] = deterministic.r2_of_mean(sdims, tdim)
-    if _wants("nrmse"):
-        sm["nrmse"] = deterministic.nrmse_of_mean(sdims, tdim, norm=norm)
-    if _wants("ncrmse"):
-        sm["ncrmse"] = deterministic.ncrmse_of_mean(sdims, tdim, norm=norm)
-    if _wants("nmae"):
-        sm["nmae"] = deterministic.nmae_of_mean(sdims, tdim, norm=norm)
-    if _wants("nbias"):
-        sm["nbias"] = deterministic.nbias_of_mean(sdims, tdim, norm=norm)
+        _record_metric(
+            sm,
+            metric_name="rmse",
+            metric_type="spatial_mean",
+            kind="scalar",
+            compute=lambda: deterministic.rmse_of_mean(sdims, tdim),
+        )
+        _record_metric(
+            sm,
+            metric_name="rmse_skill_clim",
+            metric_type="spatial_mean",
+            kind="scalar",
+            compute=lambda: deterministic.rmse_skill_clim_of_mean(sdims, tdim, period=clim_period),
+        )
+        _record_metric(
+            sm,
+            metric_name="crmse",
+            metric_type="spatial_mean",
+            kind="scalar",
+            compute=lambda: deterministic.crmse_of_mean(sdims, tdim),
+        )
+        _record_metric(
+            sm,
+            metric_name="mae",
+            metric_type="spatial_mean",
+            kind="scalar",
+            compute=lambda: deterministic.mae_of_mean(sdims, tdim),
+        )
+        _record_metric(
+            sm,
+            metric_name="bias",
+            metric_type="spatial_mean",
+            kind="scalar",
+            compute=lambda: deterministic.bias_of_mean(sdims, tdim),
+        )
+        _record_metric(
+            sm,
+            metric_name="error_std",
+            metric_type="spatial_mean",
+            kind="scalar",
+            compute=lambda: deterministic.error_std_of_mean(sdims, tdim),
+        )
+        _record_metric(
+            sm,
+            metric_name="variance_ratio",
+            metric_type="spatial_mean",
+            kind="scalar",
+            compute=lambda: deterministic.variance_ratio_of_mean(sdims, tdim),
+        )
+        _record_metric(
+            sm,
+            metric_name="r2",
+            metric_type="spatial_mean",
+            kind="scalar",
+            compute=lambda: deterministic.r2_of_mean(sdims, tdim),
+        )
+        _record_metric(
+            sm,
+            metric_name="nrmse",
+            metric_type="spatial_mean",
+            kind="scalar",
+            compute=lambda: deterministic.nrmse_of_mean(sdims, tdim, norm=norm),
+        )
+        _record_metric(
+            sm,
+            metric_name="ncrmse",
+            metric_type="spatial_mean",
+            kind="scalar",
+            compute=lambda: deterministic.ncrmse_of_mean(sdims, tdim, norm=norm),
+        )
+        _record_metric(
+            sm,
+            metric_name="nmae",
+            metric_type="spatial_mean",
+            kind="scalar",
+            compute=lambda: deterministic.nmae_of_mean(sdims, tdim, norm=norm),
+        )
+        _record_metric(
+            sm,
+            metric_name="nbias",
+            metric_type="spatial_mean",
+            kind="scalar",
+            compute=lambda: deterministic.nbias_of_mean(sdims, tdim, norm=norm),
+        )
 
     # ------------------
     # Ensemble mean
@@ -218,80 +459,200 @@ def build_standard_metric_bundle(
     if has_realization:
         rdim = realization_dim
 
-        for kind, dims in reduce_dims.items():
+        for kind in requested_kinds:
+            dims = reduce_dims[kind]
             sm = section_metrics["ensemble_mean"][kind]
 
-            if _wants("rmse"):
-                sm["rmse"] = deterministic.rmse_of_mean(rdim, dims)
-            if _wants("rmse_skill_clim"):
-                sm["rmse_skill_clim"] = deterministic.rmse_skill_clim_of_mean(rdim, dims, period=clim_period)
-            if _wants("crmse"):
-                sm["crmse"] = deterministic.crmse_of_mean(rdim, dims)
-            if _wants("mae"):
-                sm["mae"] = deterministic.mae_of_mean(rdim, dims)
-            if _wants("bias"):
-                sm["bias"] = deterministic.bias_of_mean(rdim, dims)
-            if _wants("error_std"):
-                sm["error_std"] = deterministic.error_std_of_mean(rdim, dims)
-            if _wants("variance_ratio"):
-                sm["variance_ratio"] = deterministic.variance_ratio_of_mean(rdim, dims)
-            if _wants("r2"):
-                sm["r2"] = deterministic.r2_of_mean(rdim, dims)
-            if _wants("nrmse"):
-                sm["nrmse"] = deterministic.nrmse_of_mean(rdim, dims, norm=norm)
-            if _wants("ncrmse"):
-                sm["ncrmse"] = deterministic.ncrmse_of_mean(rdim, dims, norm=norm)
-            if _wants("nmae"):
-                sm["nmae"] = deterministic.nmae_of_mean(rdim, dims, norm=norm)
-            if _wants("nbias"):
-                sm["nbias"] = deterministic.nbias_of_mean(rdim, dims, norm=norm)
+            _record_metric(
+                sm,
+                metric_name="rmse",
+                metric_type="ensemble_mean",
+                kind=kind,
+                compute=lambda dims=dims: deterministic.rmse_of_mean(rdim, dims),
+            )
+            _record_metric(
+                sm,
+                metric_name="rmse_skill_clim",
+                metric_type="ensemble_mean",
+                kind=kind,
+                compute=lambda dims=dims: deterministic.rmse_skill_clim_of_mean(rdim, dims, period=clim_period),
+            )
+            _record_metric(
+                sm,
+                metric_name="crmse",
+                metric_type="ensemble_mean",
+                kind=kind,
+                compute=lambda dims=dims: deterministic.crmse_of_mean(rdim, dims),
+            )
+            _record_metric(
+                sm,
+                metric_name="mae",
+                metric_type="ensemble_mean",
+                kind=kind,
+                compute=lambda dims=dims: deterministic.mae_of_mean(rdim, dims),
+            )
+            _record_metric(
+                sm,
+                metric_name="bias",
+                metric_type="ensemble_mean",
+                kind=kind,
+                compute=lambda dims=dims: deterministic.bias_of_mean(rdim, dims),
+            )
+            _record_metric(
+                sm,
+                metric_name="error_std",
+                metric_type="ensemble_mean",
+                kind=kind,
+                compute=lambda dims=dims: deterministic.error_std_of_mean(rdim, dims),
+            )
+            _record_metric(
+                sm,
+                metric_name="variance_ratio",
+                metric_type="ensemble_mean",
+                kind=kind,
+                compute=lambda dims=dims: deterministic.variance_ratio_of_mean(rdim, dims),
+            )
+            _record_metric(
+                sm,
+                metric_name="r2",
+                metric_type="ensemble_mean",
+                kind=kind,
+                compute=lambda dims=dims: deterministic.r2_of_mean(rdim, dims),
+            )
+            _record_metric(
+                sm,
+                metric_name="nrmse",
+                metric_type="ensemble_mean",
+                kind=kind,
+                compute=lambda dims=dims: deterministic.nrmse_of_mean(rdim, dims, norm=norm),
+            )
+            _record_metric(
+                sm,
+                metric_name="ncrmse",
+                metric_type="ensemble_mean",
+                kind=kind,
+                compute=lambda dims=dims: deterministic.ncrmse_of_mean(rdim, dims, norm=norm),
+            )
+            _record_metric(
+                sm,
+                metric_name="nmae",
+                metric_type="ensemble_mean",
+                kind=kind,
+                compute=lambda dims=dims: deterministic.nmae_of_mean(rdim, dims, norm=norm),
+            )
+            _record_metric(
+                sm,
+                metric_name="nbias",
+                metric_type="ensemble_mean",
+                kind=kind,
+                compute=lambda dims=dims: deterministic.nbias_of_mean(rdim, dims, norm=norm),
+            )
 
     # ------------------
     # Probabilistic
     # ------------------
     if probabilistic is not None and has_realization:
-        for kind, dims in reduce_dims.items():
+        for kind in requested_kinds:
+            dims = reduce_dims[kind]
             sm = section_metrics["probabilistic"][kind]
 
-            if _wants("crps"):
-                sm["crps"] = probabilistic.crps(dims)
-            if _wants("spread"):
-                sm["spread"] = probabilistic.spread(dims)
-            if _wants("spread_error_ratio"):
-                sm["spread_error_ratio"] = probabilistic.spread_error_ratio(dims)
+            _record_metric(
+                sm,
+                metric_name="crps",
+                metric_type="probabilistic",
+                kind=kind,
+                compute=lambda dims=dims: probabilistic.crps(dims),
+            )
+            _record_metric(
+                sm,
+                metric_name="spread",
+                metric_type="probabilistic",
+                kind=kind,
+                compute=lambda dims=dims: probabilistic.spread(dims),
+            )
+            _record_metric(
+                sm,
+                metric_name="spread_error_ratio",
+                metric_type="probabilistic",
+                kind=kind,
+                compute=lambda dims=dims: probabilistic.spread_error_ratio(dims),
+            )
             # sm["crps_skill_clim"] = probabilistic.crps_skill_clim(full_dims)
 
     # ------------------
     # Correlation
     # ------------------
     if correlation is not None:
-        for kind, dims in reduce_dims.items():
+        for kind in requested_kinds:
+            dims = reduce_dims[kind]
             sm = section_metrics["all_dims"][kind]
-            if _wants("corr"):
-                sm["corr"] = correlation.corr(dims)
-            if _wants("clim_acc"):
-                sm["clim_acc"] = correlation.clim_anom_corr(dims, period=clim_period)
-            if _wants("spatial_acc"):
-                sm["spatial_acc"] = correlation.spatial_anom_corr(dims)
+            _record_metric(
+                sm,
+                metric_name="corr",
+                metric_type="all_dims",
+                kind=kind,
+                compute=lambda dims=dims: correlation.corr(dims),
+            )
+            _record_metric(
+                sm,
+                metric_name="clim_acc",
+                metric_type="all_dims",
+                kind=kind,
+                compute=lambda dims=dims: correlation.clim_anom_corr(dims, period=clim_period),
+            )
+            _record_metric(
+                sm,
+                metric_name="spatial_acc",
+                metric_type="all_dims",
+                kind=kind,
+                compute=lambda dims=dims: correlation.spatial_anom_corr(dims),
+            )
 
-        sm = section_metrics["spatial_mean"]["scalar"]
-        if _wants("corr"):
-            sm["corr"] = correlation.corr_of_mean(sdims, tdim)
-        if _wants("clim_acc"):
-            sm["clim_acc"] = correlation.clim_anom_corr_of_mean(sdims, tdim, period=clim_period)
+        if "scalar" in requested_kinds:
+            sm = section_metrics["spatial_mean"]["scalar"]
+            _record_metric(
+                sm,
+                metric_name="corr",
+                metric_type="spatial_mean",
+                kind="scalar",
+                compute=lambda: correlation.corr_of_mean(sdims, tdim),
+            )
+            _record_metric(
+                sm,
+                metric_name="clim_acc",
+                metric_type="spatial_mean",
+                kind="scalar",
+                compute=lambda: correlation.clim_anom_corr_of_mean(sdims, tdim, period=clim_period),
+            )
 
         if has_realization:
             rdim = realization_dim
 
-            for kind, dims in reduce_dims.items():
+            for kind in requested_kinds:
+                dims = reduce_dims[kind]
                 sm = section_metrics["ensemble_mean"][kind]
 
-                if _wants("corr"):
-                    sm["corr"] = correlation.corr_of_mean(rdim, dims)
-                if _wants("clim_acc"):
-                    sm["clim_acc"] = correlation.clim_anom_corr_of_mean(rdim, dims, period=clim_period)
-                if _wants("spatial_acc"):
-                    sm["spatial_acc"] = correlation.spatial_anom_corr_of_mean(rdim, dims)
+                _record_metric(
+                    sm,
+                    metric_name="corr",
+                    metric_type="ensemble_mean",
+                    kind=kind,
+                    compute=lambda dims=dims: correlation.corr_of_mean(rdim, dims),
+                )
+                _record_metric(
+                    sm,
+                    metric_name="clim_acc",
+                    metric_type="ensemble_mean",
+                    kind=kind,
+                    compute=lambda dims=dims: correlation.clim_anom_corr_of_mean(rdim, dims, period=clim_period),
+                )
+                _record_metric(
+                    sm,
+                    metric_name="spatial_acc",
+                    metric_type="ensemble_mean",
+                    kind=kind,
+                    compute=lambda dims=dims: correlation.spatial_anom_corr_of_mean(rdim, dims),
+                )
 
     # ------------------
     # Stack
@@ -300,7 +661,10 @@ def build_standard_metric_bundle(
 
     for metric_type in METRIC_SECTIONS:
         for kind in METRIC_KIND:
-            result[f"{kind}_{metric_type}"] = _stack_metric_section(section_metrics[metric_type][kind])
+            if kind in requested_kinds:
+                result[f"{kind}_{metric_type}"] = _stack_metric_section(section_metrics[metric_type][kind])
+            else:
+                result[f"{kind}_{metric_type}"] = xr.Dataset()
 
     # ------------------
     # Attributes

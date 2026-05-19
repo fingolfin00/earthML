@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import json
+from collections.abc import Callable
 from typing import Any, Sequence, Literal
 from contextlib import nullcontext
 from itertools import product
@@ -31,7 +32,7 @@ import xarray as xr
 from .metrics.deterministic import DeterministicMetrics
 from .metrics.correlation import CorrelationMetrics
 from .metrics.probabilistic import ProbabilisticMetrics
-from .bundles import build_standard_metric_bundle
+from .bundles import build_standard_metric_bundle, count_standard_metric_bundle_steps
 from .calculate.constants import METRIC_KIND, METRIC_SECTIONS
 
 from ..experiments.mlbc.load import (
@@ -294,6 +295,7 @@ def _compute_metric_bundle(
     metric_names: str | Sequence[str] | None = None,
     metric_sections: str | Sequence[str] = ("scalar", "map", "timeseries"),
     metric_types: str | Sequence[str] | None = None,
+    metric_progress_hook: Callable[[str, str, str], None] | None = None,
     metric_mean_extra_dims: dict[str, str | Sequence[str] | None] | None = None,
 ) -> dict[str, dict[str, xr.Dataset]]:
     if isinstance(metric_names, str):
@@ -317,6 +319,8 @@ def _compute_metric_bundle(
         norm=norm,
         clim_period=clim_period,
         metric_names=metric_names,
+        metric_kinds=metric_sections,
+        progress_hook=metric_progress_hook,
         metric_mean_extra_dims=metric_mean_extra_dims,
     )
 
@@ -1337,10 +1341,11 @@ def _get_single_region_metrics(
 
     with progress_cm as prog:
         run_task = prog.add_task("Computing metric bundles", total=len(run_indexers)) if prog is not None else None
+        bundle_task = prog.add_task("Computing bundle metrics", total=1, visible=False) if prog is not None else None
 
         for indexers in run_indexers:
+            indexer_str = ", ".join(f"{dim}={value}" for dim, value in indexers.items()) or "all runs"
             if prog is not None and run_task is not None:
-                indexer_str = ", ".join(f"{dim}={value}" for dim, value in indexers.items()) or "all runs"
                 prog.update(run_task, description=f"Computing metrics | {indexer_str}")
             selected_leadtime_value = indexers.get("leadtime")
 
@@ -1429,7 +1434,7 @@ def _get_single_region_metrics(
                 leadtime_value=selected_leadtime_value,
             )
 
-            for operations in metric_group_operations:
+            for operation_idx, operations in enumerate(metric_group_operations, start=1):
                 group_truth_data: xr.Dataset | xr.DataArray | None = truth_data
                 group_model_data: Sequence[xr.Dataset | xr.DataArray | None] = model_data
                 group_mask_data: xr.Dataset | xr.DataArray | None = mask_data
@@ -1543,6 +1548,36 @@ def _get_single_region_metrics(
                     mask_data=group_mask_data,
                 )
 
+                bundle_progress_hook = None
+                if prog is not None and bundle_task is not None:
+                    bundle_total = count_standard_metric_bundle_steps(
+                        deterministic=group_dm,
+                        correlation=group_cm,
+                        probabilistic=group_pm,
+                        metric_names=metric_names,
+                        metric_kinds=metric_sections,
+                    )
+                    bundle_desc = (
+                        f"Computing bundle metrics | {indexer_str} | "
+                        f"group {operation_idx}/{len(metric_group_operations)}"
+                    )
+                    prog.update(
+                        bundle_task,
+                        description=bundle_desc,
+                        total=max(bundle_total, 1),
+                        completed=0,
+                        visible=bundle_total > 0,
+                    )
+
+                    def _bundle_progress_hook(metric_name: str, metric_type: str, kind: str) -> None:
+                        prog.update(
+                            bundle_task,
+                            description=f"{bundle_desc} | {metric_type}/{kind}/{metric_name}",
+                        )
+                        prog.advance(bundle_task)
+
+                    bundle_progress_hook = _bundle_progress_hook
+
                 metric_bundle = _compute_metric_bundle(
                     group_dm,
                     group_cm,
@@ -1552,8 +1587,12 @@ def _get_single_region_metrics(
                     metric_names=metric_names,
                     metric_sections=metric_sections,
                     metric_types=metric_types,
+                    metric_progress_hook=bundle_progress_hook,
                     metric_mean_extra_dims=metric_mean_extra_dims,
                 )
+
+                if prog is not None and bundle_task is not None:
+                    prog.update(bundle_task, visible=False)
 
                 for metric_type, section_dict in metric_bundle.items():
                     for section, ds in section_dict.items():
