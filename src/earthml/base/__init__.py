@@ -12,6 +12,7 @@ from .definitions import (
     ClimPeriod,
     TimeDimBasis,
 )
+from .settings import Settings
 
 __all__ = [
     "Region",
@@ -26,4 +27,5 @@ __all__ = [
     "RegionName",
     "ClimPeriod",
     "TimeDimBasis",
+    "Settings",
 ]

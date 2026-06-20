@@ -10,17 +10,14 @@ from .utils import (
     get_experiment_configs,
     convert_to_da_list,
     get_and_subset_datasets,
+    open_zarr,
+    open_zarr_var,
+    calculate_climatology,
     calculate_save_and_subset_climatologies,
-)
-
-from .settings import (
-    Settings,
 )
 
 
 __all__ = [
-    "Settings",
-
     "Metric",
     "is_deterministic",
     "is_probabilistic",
@@ -30,5 +27,10 @@ __all__ = [
     "get_experiment_configs",
     "convert_to_da_list",
     "get_and_subset_datasets",
+
+    "open_zarr",
+    "open_zarr_var",
+
+    "calculate_climatology",
     "calculate_save_and_subset_climatologies",
 ]

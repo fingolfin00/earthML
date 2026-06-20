@@ -1,5 +1,6 @@
 from pathlib import Path
-from typing import Sequence, cast
+from typing import Literal, Sequence, cast
+from dataclasses import dataclass
 
 import numpy as np
 import xarray as xr
@@ -9,12 +10,20 @@ from dask.diagnostics.progress import ProgressBar
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from matplotlib.colors import (
     BoundaryNorm,
     TwoSlopeNorm,
     Colormap,
+    to_rgb,
 )
 from matplotlib.cm import ScalarMappable
+
+from ..base.settings import Settings
+from ..metrics import safe_percent
+
+
+PlotMode = Literal["scalar_diff_scatter"]
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -580,6 +589,273 @@ def plot_rank_histogram(
     ax.set_ylabel("count")
     ax.grid(True, alpha=0.3)
     ax.legend()
+
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(out_file, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+LOWER_IS_BETTER = {
+    "mae",
+    "rmse",
+    "rmse_anom",
+    "nrmse_anom",
+    "rmse_an_anom",
+    "ens_member_rmse",
+    "ens_member_rmse_anom",
+    "mean_member_rmse_anom",
+    "crps",
+}
+
+HIGHER_IS_BETTER = {
+    "acc",
+    "r2",
+    "r2_anom",
+}
+
+
+def metric_improvement(
+    fc: xr.DataArray,
+    mlfc: xr.DataArray,
+    metric: str,
+) -> xr.DataArray:
+    """
+    Positive means ML forecast improved over FC.
+    """
+    if metric == "bias":
+        return safe_percent(abs(fc) - abs(mlfc), abs(fc))
+
+    if metric == "std_ratio":
+        return safe_percent(abs(fc - 1) - abs(mlfc - 1), abs(fc - 1))
+
+    if metric in LOWER_IS_BETTER:
+        return safe_percent(fc - mlfc, fc)
+
+    if metric in HIGHER_IS_BETTER:
+        return mlfc - fc
+
+    raise ValueError(f"No improvement rule for metric {metric!r}")
+
+
+@dataclass(frozen=True)
+class ScatterPoint:
+    x: float
+    y: float
+    variable: str
+    region: str
+    leadtime: object
+    start_month: object
+    total_months: object
+    experiment: str
+
+
+def get_total_months(s: Settings) -> object:
+    for name in ("total_months", "history_months", "input_months", "context_months"):
+        if hasattr(s, name):
+            return getattr(s, name)
+    return "all"
+
+
+def lighten(color, amount: float):
+    r, g, b = to_rgb(color)
+    return (
+        r + (1 - r) * amount,
+        g + (1 - g) * amount,
+        b + (1 - b) * amount,
+    )
+
+
+def point_field(p: ScatterPoint, field: str):
+    return getattr(p, field)
+
+
+def plot_metric_diff_scatter(
+    points: Sequence[ScatterPoint],
+    *,
+    forecast_metric: str,
+    diff_metric: str,
+    out_file: Path,
+    color_by: str = "variable",
+    marker_by: str = "leadtime",
+    shade_by: str = "total_months",
+    title: str | None = None,
+    xlabel: str | None = None,
+    ylabel: str | None = None,
+    figsize=(12, 12),
+    cmap_name: str = "tab10",
+    markers=("o", "s", "^", "D", "v", "P", "X"),
+    point_size: float = 22,
+    edgecolor: str = "black",
+    linewidth: float = 0.3,
+    shade_strength: float = 0.65,
+    fit_lines: bool = True,
+    fit_min_points: int = 3,
+    shade_positive_x: bool = True,
+) -> None:
+    fig, ax = plt.subplots(figsize=figsize)
+
+    if not points:
+        ax.set_title(title or "No data")
+        ax.set_xlabel(xlabel or f"{diff_metric} improvement")
+        ax.set_ylabel(ylabel or forecast_metric)
+        ax.grid(alpha=0.3)
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(out_file, dpi=200, bbox_inches="tight")
+        plt.close(fig)
+        return
+
+    color_values = sorted({point_field(p, color_by) for p in points}, key=str)
+    marker_values = sorted({point_field(p, marker_by) for p in points}, key=str)
+    shade_values = sorted({point_field(p, shade_by) for p in points}, key=str)
+
+    cmap = plt.get_cmap(cmap_name)
+
+    def base_color(value):
+        idx = color_values.index(value)
+        return cmap(idx % cmap.N)
+
+    for color_value in color_values:
+        base = base_color(color_value)
+
+        for shade_i, shade_value in enumerate(shade_values):
+            denom = max(1, len(shade_values) - 1)
+            shade = lighten(base, shade_strength * shade_i / denom)
+
+            for marker_i, marker_value in enumerate(marker_values):
+                subset = [
+                    p for p in points
+                    if point_field(p, color_by) == color_value
+                    and point_field(p, shade_by) == shade_value
+                    and point_field(p, marker_by) == marker_value
+                ]
+
+                if not subset:
+                    continue
+
+                ax.scatter(
+                    [p.x for p in subset],
+                    [p.y for p in subset],
+                    color=shade,
+                    marker=markers[marker_i % len(markers)],
+                    s=point_size,
+                    edgecolor=edgecolor,
+                    linewidth=linewidth,
+                )
+
+    if fit_lines:
+        neutral_base = (0.2, 0.2, 0.2)
+        linestyles = ["-", "--", ":", "-."]
+
+        for shade_i, shade_value in enumerate(shade_values):
+            denom = max(1, len(shade_values) - 1)
+            line_color = lighten(neutral_base, shade_strength * shade_i / denom)
+
+            for marker_i, marker_value in enumerate(marker_values):
+                subset = [
+                    p for p in points
+                    if point_field(p, shade_by) == shade_value
+                    and point_field(p, marker_by) == marker_value
+                ]
+
+                if len(subset) < fit_min_points:
+                    continue
+
+                x = np.asarray([p.x for p in subset], dtype=float)
+                y = np.asarray([p.y for p in subset], dtype=float)
+
+                mask = np.isfinite(x) & np.isfinite(y)
+                if mask.sum() < fit_min_points or np.allclose(x[mask], x[mask][0]):
+                    continue
+
+                a, b = np.polyfit(x[mask], y[mask], 1)
+                xs = np.linspace(x[mask].min(), x[mask].max(), 200)
+
+                ax.plot(
+                    xs,
+                    a * xs + b,
+                    color=line_color,
+                    linestyle=linestyles[marker_i % len(linestyles)],
+                    linewidth=1.0,
+                    alpha=0.9,
+                )
+
+    ax.axvline(0, color="black", alpha=0.5, linewidth=0.8)
+
+    ax.set_xlabel(xlabel or f"{METRIC_NAMES.get(diff_metric, diff_metric)} improvement")
+    ax.set_ylabel(ylabel or METRIC_NAMES.get(forecast_metric, forecast_metric))
+
+    if title:
+        ax.set_title(title)
+
+    ax.grid(alpha=0.3)
+
+    handles: list[Line2D] = []
+
+    handles.append(Line2D([], [], linestyle="None", label=color_by.replace("_", " ").title()))
+    for value in color_values:
+        handles.append(
+            Line2D(
+                [0], [0],
+                marker="o",
+                linestyle="None",
+                markersize=7,
+                markerfacecolor=base_color(value),
+                markeredgecolor=edgecolor,
+                label=str(value),
+            )
+        )
+
+    handles.append(Line2D([], [], linestyle="None", label=shade_by.replace("_", " ").title()))
+    neutral_base = (0.2, 0.2, 0.2)
+    denom = max(1, len(shade_values) - 1)
+    for i, value in enumerate(shade_values):
+        handles.append(
+            Line2D(
+                [0], [0],
+                marker="o",
+                linestyle="None",
+                markersize=7,
+                markerfacecolor=lighten(neutral_base, shade_strength * i / denom),
+                markeredgecolor=edgecolor,
+                label=str(value),
+            )
+        )
+
+    handles.append(Line2D([], [], linestyle="None", label=marker_by.replace("_", " ").title()))
+    for i, value in enumerate(marker_values):
+        handles.append(
+            Line2D(
+                [0], [0],
+                marker=markers[i % len(markers)],
+                linestyle="None",
+                markersize=7,
+                markerfacecolor="white",
+                markeredgecolor="black",
+                label=str(value),
+            )
+        )
+
+    leg = ax.legend(handles=handles, loc="upper left", fontsize=9, frameon=False)
+
+    for txt in leg.get_texts():
+        if txt.get_text() in {
+            color_by.replace("_", " ").title(),
+            shade_by.replace("_", " ").title(),
+            marker_by.replace("_", " ").title(),
+        }:
+            txt.set_weight("bold")
+
+    if shade_positive_x:
+        fig.canvas.draw()
+        xmin, xmax = ax.get_xlim()
+        ymin, ymax = ax.get_ylim()
+
+        if xmax > 0:
+            ax.axvspan(0, xmax, color="red", alpha=0.08, zorder=0)
+
+        ax.set_xlim(xmin, xmax)
+        ax.set_ylim(ymin, ymax)
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
     plt.tight_layout()

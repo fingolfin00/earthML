@@ -5,9 +5,16 @@ from .utils import (
     plot_profile,
     plot_rank_histogram,
     plot_timeseries,
+    plot_metric_diff_scatter,
+    ScatterPoint,
+    metric_improvement,
+    get_total_months,
 )
 
 from .colormaps import (
+    PiBRdY,
+    WRdY,
+    SeqBYRd,
     SeqBPi,
     SeqPiBRdY,
     SeqWRdY,
@@ -31,19 +38,27 @@ from .definitions import PlotMode
 
 
 __all__ = [
+    # utils
     "safe_label",
     "lead_label",
-
+    "metric_improvement",
+    "get_total_months",
+    # plotting
     "PlotMode",
     "plot_map",
     "plot_profile",
     "plot_rank_histogram",
     "plot_timeseries",
-
+    "plot_metric_diff_scatter",
+    "ScatterPoint",
+    # Ccolormaps
+    "PiBRdY",
+    "WRdY",
+    "SeqWRdY",
     "SeqBPi",
     "SeqPiBRdY",
-    "SeqWRdY",
-
+    "SeqBYRd",
+    # constants
     "DEFAULT_IMPROVEMENT_PLOT_CONFIG",
     "DEFAULT_PLOT_CONFIG",
     "VARIABLE_NAMES",
