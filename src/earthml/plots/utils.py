@@ -42,6 +42,7 @@ from .defaults import (
     METRIC_SKILL_UNITS,
     METRIC_UNITS,
     MODEL_COLORS,
+    SERIES_COLORS,
     TRANSLATION_TABLE,
 )
 
@@ -419,7 +420,7 @@ def metric_style(
 
 SQUARED_METRICS = {"mse", "mse_anom"}
 
-def get_plot_unit_and_scale(
+def get_plot_metric_unit_and_scale(
     da: xr.DataArray,
     *,
     var: str,
@@ -473,7 +474,7 @@ def plot_map(
         plot_unit = METRIC_SKILL_UNITS[metric]
         scale = 1.0
     else:
-        plot_unit, scale = get_plot_unit_and_scale(
+        plot_unit, scale = get_plot_metric_unit_and_scale(
             da,
             var=var,
             metric=metric,
@@ -860,4 +861,187 @@ def plot_metric_diff_scatter(
     out_file.parent.mkdir(parents=True, exist_ok=True)
     plt.tight_layout()
     plt.savefig(out_file, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+def get_plot_unit_and_scale(da: xr.DataArray) -> tuple[str, float]:
+    unit = da.attrs.get("units", "")
+    return UNIT_CONVERSIONS.get(unit, (unit, 1.0))
+
+
+def normalize_longitudes(da: xr.DataArray, lon_name: str) -> xr.DataArray:
+    if float(da[lon_name].max(skipna=True)) <= 180:
+        return da
+
+    new_lon = ((da[lon_name] + 180) % 360) - 180
+    return da.assign_coords({lon_name: new_lon}).sortby(lon_name)
+
+
+def prepare_map_da(da: xr.DataArray) -> xr.DataArray:
+    da = da.squeeze(drop=True)
+    lat, lon = "latitude", "longitude"
+    da = normalize_longitudes(da, lon)
+    return da.transpose(lat, lon)
+
+
+def reduce_to_timeseries(
+    da: xr.DataArray,
+    *,
+    spatial_dims: tuple[str, str] = ("latitude", "longitude"),
+) -> xr.DataArray:
+    reduce_dims = [dim for dim in spatial_dims if dim in da.dims]
+
+    if len(reduce_dims) == 2:
+        weights = np.cos(np.deg2rad(da[spatial_dims[0]]))
+        return da.weighted(weights).mean(reduce_dims, skipna=True)
+
+    if reduce_dims:
+        return da.mean(reduce_dims, skipna=True)
+
+    return da
+
+
+def plot_field_map(
+    da: xr.DataArray,
+    *,
+    var: str,
+    title: str,
+    out_file: Path,
+    cmap="viridis",
+    centered: bool = False,
+    spatial_dims: tuple[str, str] = ("latitude", "longitude"),
+) -> None:
+    plot_unit, scale = get_plot_unit_and_scale(da)
+    da = prepare_map_da(da / scale)
+
+    lat, lon = spatial_dims[0], spatial_dims[1]
+
+    fig, ax = plt.subplots(
+        figsize=(7, 5),
+        subplot_kw={"projection": ccrs.PlateCarree()},
+    )
+
+    norm = None
+    if centered:
+        vmax = float(np.nanmax(np.abs(da.values)))
+        norm = TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax)
+
+    im = ax.pcolormesh(
+        da[lon],
+        da[lat],
+        da,
+        transform=ccrs.PlateCarree(),
+        shading="auto",
+        cmap=cmap,
+        norm=norm,
+    )
+
+    ax.coastlines(linewidth=0.7)
+    ax.add_feature(cfeature.BORDERS, linewidth=0.3)
+
+    ax.set_title(title)
+
+    cb = plt.colorbar(im, ax=ax, orientation="horizontal", pad=0.07)
+    cb.set_label(f"{VARIABLE_NAMES.get(var, var.upper())} ({plot_unit})" if plot_unit else VARIABLE_NAMES.get(var, var.upper()))
+
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(out_file, dpi=200, bbox_inches="tight")
+    print(f"Saved map: {out_file}")
+    plt.close(fig)
+
+def plot_field_timeseries(
+    *,
+    series: dict[str, xr.DataArray | None],
+    member_series: dict[str, xr.DataArray | None] | None,
+    var: str,
+    title: str,
+    out_file: Path,
+    time_dim: str = "time",
+    spatial_dims: tuple[str, str] = ("latitude", "longitude"),
+    realization_dim: str = "realization",
+    spread: Literal["std", "minmax"] = "std",
+    train_end: str | None = None,
+) -> None:
+    valid = {name: da for name, da in series.items() if da is not None}
+    if not valid:
+        return
+
+    first = next(iter(valid.values()))
+    plot_unit, scale = get_plot_unit_and_scale(first)
+    ylabel = f"{VARIABLE_NAMES.get(var, var.upper())} ({plot_unit})" if plot_unit else VARIABLE_NAMES.get(var, var.upper())
+
+    reduced = {
+        name: reduce_to_timeseries(da / scale, spatial_dims=spatial_dims)
+        for name, da in valid.items()
+    }
+
+    aligned = xr.align(*reduced.values(), join="inner")
+    reduced = dict(zip(reduced.keys(), aligned))
+
+    reduced_members = {}
+    if member_series is not None:
+        for name, da in member_series.items():
+            if da is not None and realization_dim in da.dims:
+                reduced_members[name] = reduce_to_timeseries(
+                    da / scale,
+                    spatial_dims=spatial_dims,
+                )
+
+        if reduced_members:
+            aligned_members = xr.align(*reduced_members.values(), join="inner")
+            reduced_members = dict(zip(reduced_members.keys(), aligned_members))
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+
+    for name, da in reduced.items():
+        color = SERIES_COLORS.get(name)
+        x = da[time_dim].values
+
+        member_da = reduced_members.get(name)
+        if member_da is not None:
+            for i in range(member_da.sizes[realization_dim]):
+                ax.plot(
+                    x,
+                    member_da.isel({realization_dim: i}).values,
+                    linewidth=0.5,
+                    alpha=0.2,
+                    color=color,
+                )
+
+            member_mean = member_da.mean(realization_dim, skipna=True)
+
+            if spread == "std":
+                member_std = member_da.std(realization_dim, skipna=True)
+                lower = member_mean - member_std
+                upper = member_mean + member_std
+            else:
+                lower = member_da.min(realization_dim, skipna=True)
+                upper = member_da.max(realization_dim, skipna=True)
+
+            ax.fill_between(x, lower.values, upper.values, alpha=0.18, color=color)
+            ax.plot(
+                x,
+                member_mean.values,
+                linestyle=":",
+                linewidth=1.4,
+                color=color,
+                label=f"{name} member mean",
+            )
+
+        ax.plot(x, da.values, linewidth=1.8, color=color, label=name)
+
+    if train_end is not None:
+        ax.axvline(np.datetime64(train_end), color="red", linestyle="--", linewidth=1.3)
+
+    ax.set_title(title)
+    ax.set_xlabel(time_dim)
+    ax.set_ylabel(ylabel)
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(out_file, dpi=200, bbox_inches="tight")
+    print(f"Saved timeseries: {out_file}")
     plt.close(fig)

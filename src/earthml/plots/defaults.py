@@ -541,6 +541,14 @@ MODEL_COLORS = {
     "World_time_avg_mlfc": "tab:brown",
 }
 
+SERIES_COLORS = {
+    "Forecast": "tab:blue",
+    "Corrected forecast": "tab:green",
+    "Analysis": "tab:orange",
+    "Forecast anomaly": "tab:blue",
+    "Corrected forecast anomaly": "tab:green",
+    "Analysis anomaly": "tab:orange",
+}
 
 TRANSLATION_TABLE = str.maketrans({
     " ": "",

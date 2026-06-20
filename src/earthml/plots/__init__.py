@@ -9,6 +9,8 @@ from .utils import (
     ScatterPoint,
     metric_improvement,
     get_total_months,
+    plot_field_map,
+    plot_field_timeseries,
 )
 
 from .colormaps import (
@@ -51,6 +53,8 @@ __all__ = [
     "plot_timeseries",
     "plot_metric_diff_scatter",
     "ScatterPoint",
+    "plot_field_map",
+    "plot_field_timeseries",
     # Ccolormaps
     "PiBRdY",
     "WRdY",
