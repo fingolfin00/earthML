@@ -92,7 +92,7 @@ class Normalize:
 
         reduce_dims = (0, 2, 3) if per_channel_mean else (0, 1, 2, 3)
 
-        def _masked_mean_std(x: torch.Tensor, m: torch.Tensor) -> (torch.Tensor, torch.Tensor):
+        def _masked_mean_std(x: torch.Tensor, m: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
             m = m.bool()
             count = m.sum(dim=reduce_dims, keepdim=True).clamp_min(1).to(dtype=dtype)
             s = (x * m).sum(dim=reduce_dims, keepdim=True)
@@ -205,7 +205,7 @@ class Normalize:
 
         return mean.to(device=t.device, dtype=t.dtype), std.to(device=t.device, dtype=t.dtype)
 
-    def __call__(self, t: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    def __call__(self, t: torch.Tensor, eps: float = 1e-12, **kwargs) -> torch.Tensor:
         mean, std = self._broadcast_params(t)
         return (t - mean) / (std + eps)
 
@@ -213,3 +213,56 @@ class Normalize:
         self._check_filepath(filepath)
         mean, std = self._broadcast_params(t)
         return t * std + mean
+
+
+class MonthlyNormalize:
+    def __init__(self, mean=None, std=None):
+        self.mean = mean  # (12,C,1,1)
+        self.std = std    # (12,C,1,1)
+
+    def fit(self, dataset, dim: str = "x", eps: float = 1e-12):
+        data = getattr(dataset, dim)
+        mask = getattr(dataset, f"{dim}_mask")
+        months = dataset.months
+
+        means = []
+        stds = []
+
+        for month in range(1, 13):
+            sel = months == month
+            x_m = data[sel]
+            m_m = mask[sel]
+
+            stats = Normalize._masked_metrics(
+                pred=x_m,
+                target=x_m,
+                pred_mask=m_m,
+                target_mask=m_m,
+                metric_mask=m_m,
+                eps=eps,
+                per_channel_mean=True,
+            )
+
+            means.append(stats["target_mean"].squeeze(0))
+            stds.append(stats["target_std"].squeeze(0))
+
+        self.mean = torch.stack(means, dim=0)
+        self.std = torch.stack(stds, dim=0)
+        return self
+
+    def __call__(self, t: torch.Tensor, month: int, eps: float = 1e-12):
+        month_idx = month - 1
+        mean = self.mean[month_idx].to(t.device, t.dtype)
+        std = self.std[month_idx].to(t.device, t.dtype)
+        return (t - mean) / (std + eps)
+
+    def inverse_tensor(self, t: torch.Tensor, months: torch.Tensor, eps: float = 1e-12):
+        out = torch.empty_like(t)
+
+        for i in range(t.shape[0]):
+            month_idx = int(months[i].item()) - 1
+            mean = self.mean[month_idx].to(t.device, t.dtype)
+            std = self.std[month_idx].to(t.device, t.dtype)
+            out[i] = t[i] * (std + eps) + mean
+
+        return out

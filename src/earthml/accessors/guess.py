@@ -3,7 +3,7 @@ from typing import Sequence, Literal
 import cf_xarray
 import xarray as xr
 
-from ..base.dataclasses import Dims
+from ..base import Dims
 
 
 # Constants
@@ -18,9 +18,11 @@ DIM_NAMES = {
 
 
 class EarthMLGuess:
+    _obj: xr.Dataset | xr.DataArray
+
     def _guess_dim_or_coord_or_datavar_name(
         self,
-        ds: xr.Dataset,
+        ds: xr.Dataset | xr.DataArray,
         cf_name: str,
         name_type: Literal["coord", "dim", "data_var"],
         fallback_names: Sequence[str] | None = None,
@@ -39,7 +41,7 @@ class EarthMLGuess:
             # `valid_time`, and `source_time` coexisting in Earthkit datasets).
             pass
         # Try explicit fallback dimension names
-        fallback_names = (fallback_names or []) + [cf_name]
+        fallback_names = (list(fallback_names) if fallback_names is not None else []) + [cf_name]
         for name in fallback_names:
             # print(name_type, "Fallback:", name)
             # print(ds.coords.keys())
@@ -60,84 +62,84 @@ class EarthMLGuess:
 
     def guess_dim(
         self,
-        ds: xr.Dataset,
+        ds: xr.Dataset | xr.DataArray,
         cf_name: str,
         fallback_names: list[str] | None = None,
-    ):
+    ) -> str | None:
         return self._guess_dim_or_coord_or_datavar_name(ds, cf_name, 'dim', fallback_names)
 
     def guess_coord(
         self,
-        ds: xr.Dataset,
+        ds: xr.Dataset | xr.DataArray,
         cf_name: str,
         fallback_names: list[str] | None = None,
-    ):
+    ) -> str | None:
         coord = self._guess_dim_or_coord_or_datavar_name(ds, cf_name, 'coord', fallback_names)
         if coord is None: coord = self.guess_datavar(ds, cf_name, fallback_names)
         return coord
 
     def guess_datavar(
         self,
-        ds: xr.Dataset,
+        ds: xr.Dataset | xr.DataArray,
         cf_name: str,
         fallback_names: list[str] | None = None,
-    ):
+    ) -> str | None:
         return self._guess_dim_or_coord_or_datavar_name(ds, cf_name, 'data_var', fallback_names)
 
 
     # Dims
     @property
-    def guess_time_dim(self):
+    def guess_time_dim(self) -> str | None:
         return self.guess_dim(self._obj, "time", DIM_NAMES["time"])
 
     @property
-    def guess_lat_dim(self):
+    def guess_lat_dim(self) -> str | None:
         return self.guess_dim(self._obj, 'latitude', DIM_NAMES["latitude"])
 
     @property
-    def guess_lon_dim(self):
+    def guess_lon_dim(self) -> str | None:
         return self.guess_dim(self._obj, 'longitude', DIM_NAMES["longitude"])
 
     @property
-    def guess_lev_dim(self):
+    def guess_lev_dim(self) -> str | None:
         return self.guess_dim(self._obj, 'level', DIM_NAMES["level"])
 
     @property
-    def guess_realization_dim(self):
+    def guess_realization_dim(self) -> str | None:
         return self.guess_dim(self._obj, "realization", DIM_NAMES["realization"])
 
     @property
-    def guess_leadtime_dim(self):
+    def guess_leadtime_dim(self) -> str | None:
         return self.guess_dim(self._obj, "leadtime", DIM_NAMES["leadtime"])
 
 
     # Coords
     @property
-    def guess_time_coord(self):
+    def guess_time_coord(self) -> str | None:
         return self.guess_coord(self._obj, "time", DIM_NAMES["time"])
 
     @property
-    def guess_lat_coord(self):
+    def guess_lat_coord(self) -> str | None:
         return self.guess_coord(self._obj, 'latitude', DIM_NAMES["latitude"])
 
     @property
-    def guess_lon_coord(self):
+    def guess_lon_coord(self) -> str | None:
         return self.guess_coord(self._obj, 'longitude', DIM_NAMES["longitude"])
 
     @property
-    def guess_lev_coord(self):
+    def guess_lev_coord(self) -> str | None:
         return self.guess_coord(self._obj, 'level', DIM_NAMES["level"])
 
     @property
-    def guess_realization_coord(self):
+    def guess_realization_coord(self) -> str | None:
         return self.guess_coord(self._obj, "realization", DIM_NAMES["realization"])
 
     @property
-    def guess_leadtime_coord(self):
+    def guess_leadtime_coord(self) -> str | None:
         return self.guess_coord(self._obj, "leadtime", DIM_NAMES["leadtime"])
 
     @property
-    def guessed_dims(self):
+    def guessed_dims(self) -> Dims:
         return Dims(
             time=self.guess_time_dim,
             latitude=self.guess_lat_dim,
@@ -148,7 +150,7 @@ class EarthMLGuess:
         )
 
     @property
-    def guessed_coords(self):
+    def guessed_coords(self) -> Dims:
         return Dims(
             time=self.guess_time_coord,
             latitude=self.guess_lat_coord,

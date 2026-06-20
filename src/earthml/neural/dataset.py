@@ -1,6 +1,7 @@
 from typing import Sequence, Callable, Literal
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 import torch
@@ -18,10 +19,10 @@ class XarrayDataset(Dataset):
         input_ds: xr.Dataset,
         target_ds: xr.Dataset,
         target_realization_avg: bool = True,
-        transform_x: Callable = None,
-        transform_y: Callable = None,
-        transform_x_args: dict = None,
-        transform_y_args: dict = None,
+        transform_x: Callable | None = None,
+        transform_y: Callable | None = None,
+        transform_x_args: dict | None = None,
+        transform_y_args: dict | None = None,
         realization_as_channel: bool = False,
         output_realizations: Literal["deterministic", "ensemble"] = "deterministic", # deterministic -> output R = 1, ensemble -> output R = input R
         fill_nan_value: float = 0.0,
@@ -56,6 +57,8 @@ class XarrayDataset(Dataset):
 
         self.torch_mask = torch_mask
         self.realization_as_channel = realization_as_channel
+        self.target_realization_avg = target_realization_avg
+        self.output_realizations = output_realizations
         self.pass_mask_as_input_extra_channel = pass_mask_as_input_extra_channel
 
         # NumPy arrays with NaNs for missing data
@@ -234,6 +237,32 @@ class XarrayDataset(Dataset):
             # assert self.x.shape[1] == self.y.shape[1], f"Mismatched channel dimension: x={self.x.shape}, y={self.y.shape}"
             assert self.x.shape[2:] == self.y.shape[2:], f"Mismatched spatial dimensions: x={self.x.shape}, y={self.y.shape}"
 
+        self.months = self._make_sample_months()
+        assert len(self.months) == len(self.x)
+
+
+    def _make_sample_months(self) -> torch.Tensor:
+        times = pd.DatetimeIndex(self.input_ds.time.values)
+        base_months = torch.tensor([t.month for t in times], dtype=torch.long)
+
+        # self.x shape is (N, C, H, W)
+        n_samples = self.x.shape[0]
+        n_times = len(base_months)
+
+        if n_samples == n_times:
+            return base_months
+
+        if n_samples % n_times != 0:
+            raise ValueError(
+                f"Cannot infer sample months: n_samples={n_samples}, n_times={n_times}"
+            )
+
+        repeat_factor = n_samples // n_times
+
+        # Flattening is time-major: (T, R) -> T*R
+        return base_months.repeat_interleave(repeat_factor)
+
+
     @staticmethod
     def _transpose_dims_ds_to_da(
         ds: xr.Dataset,
@@ -241,13 +270,13 @@ class XarrayDataset(Dataset):
     ) -> xr.DataArray:
         # Normalize to set
         if excluded_vars is None:
-            excluded_vars = set()
+            excluded_vars_set = set()
         elif isinstance(excluded_vars, str):
-            excluded_vars = {excluded_vars}
+            excluded_vars_set = {excluded_vars}
         else:
-            excluded_vars = set(excluded_vars)
+            excluded_vars_set = set(excluded_vars)
 
-        vars = [v for v in ds.data_vars if v not in excluded_vars]
+        vars = [v for v in ds.data_vars if v not in excluded_vars_set]
         if not vars:
             raise ValueError("No data variables left after exclusion")
 
@@ -283,25 +312,30 @@ class XarrayDataset(Dataset):
                 f"realization_dim={realization_dim}"
             )
 
-    def __len__(self):
+
+    def __len__(self) -> int:
         return len(self.x)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         x, y = self.x[idx], self.y[idx]              # shapes: (C,H,W)
         mx, my = self.x_mask[idx], self.y_mask[idx]
 
         if self.torch_mask == "target":
-            mask = my # use target mask
+            mask = my
         elif self.torch_mask == "input":
-            mask = mx # use input mask
-        if self.torch_mask == "both":
-            mask = mx & my # combine input and target masks
+            mask = mx
+        elif self.torch_mask == "both":
+            mask = mx & my
+        else:
+            raise ValueError(f"Unsupported torch_mask={self.torch_mask}")
+
+        month = int(self.months[idx].item()) if hasattr(self, "months") else None
 
         if self.transform_x:
-            x = self.transform_x(x, **self.transform_x_args)
+            x = self.transform_x(x, month=month, **self.transform_x_args)
 
         if self.transform_y:
-            y = self.transform_y(y, **self.transform_y_args)
+            y = self.transform_y(y, month=month, **self.transform_y_args)
 
         x = x.masked_fill(~mx, 0.0)
         y = y.masked_fill(~my, 0.0)

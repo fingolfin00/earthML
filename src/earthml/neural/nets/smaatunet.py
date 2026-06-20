@@ -2,6 +2,8 @@
 Description: UNet architecture with CBAM. This script is derived from  SmaAT-UNet:
     https://github.com/HansBambel/SmaAt-UNet/tree/master/models
 '''
+from typing import Any
+
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -10,6 +12,7 @@ import lightning as L
 from ...logging import get_logger
 from .. import EarthMLLightningModule
 from .. import resolve_loss
+from .utils import make_norm
 
 logger = get_logger(__name__)
 
@@ -28,11 +31,15 @@ DEFAULT_DEBUG_NUMERICS = False
 # torch.Tensor.view = _debug_view
 
 class Flatten(nn.Module):
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x.contiguous().flatten(1)
 
 class ChannelAttention(nn.Module):
-    def __init__(self, input_channels, reduction_ratio=16):
+    def __init__(
+        self,
+        input_channels: int,
+        reduction_ratio: int = 16,
+    ) -> None:
         super(ChannelAttention, self).__init__()
         self.input_channels = input_channels
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
@@ -46,7 +53,7 @@ class ChannelAttention(nn.Module):
             nn.Linear(input_channels // reduction_ratio, input_channels),
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Take the input and apply average and max pooling
         avg_values = self.avg_pool(x).contiguous()
         max_values = self.max_pool(x).contiguous()
@@ -55,36 +62,52 @@ class ChannelAttention(nn.Module):
         return scale
 
 class SpatialAttention(nn.Module):
-    def __init__(self, kernel_size=7):
-        super(SpatialAttention, self).__init__()
+    def __init__(
+        self,
+        kernel_size: int = 7,
+        norm: str | None = "BatchNorm2d",
+    ) -> None:
+        super().__init__()
         assert kernel_size in (3, 7), "kernel size must be 3 or 7"
         padding = 3 if kernel_size == 7 else 1
         self.conv = nn.Conv2d(2, 1, kernel_size=kernel_size, padding=padding, bias=False)
-        self.bn = nn.BatchNorm2d(1)
+        self.norm = make_norm(norm, 1)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         avg_out = torch.mean(x, dim=1, keepdim=True)
         max_out, _ = torch.max(x, dim=1, keepdim=True)
         out = torch.cat([avg_out, max_out], dim=1)
         out = self.conv(out)
-        out = self.bn(out)
-        scale = x * torch.sigmoid(out)
-        return scale
+        out = self.norm(out)
+        return x * torch.sigmoid(out)
 
 
 class CBAM(nn.Module):
-    def __init__(self, input_channels, reduction_ratio=16, kernel_size=7):
-        super(CBAM, self).__init__()
+    def __init__(
+        self,
+        input_channels: int,
+        reduction_ratio: int = 16,
+        kernel_size: int = 7,
+        norm: str | None = "BatchNorm2d",
+    ) -> None:
+        super().__init__()
         self.channel_att = ChannelAttention(input_channels, reduction_ratio=reduction_ratio)
-        self.spatial_att = SpatialAttention(kernel_size=kernel_size)
+        self.spatial_att = SpatialAttention(kernel_size=kernel_size, norm=norm)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = self.channel_att(x)
         out = self.spatial_att(out)
         return out
 
 class DepthwiseSeparableConv(EarthMLLightningModule):
-    def __init__(self, in_channels, output_channels, kernel_size, padding=0, kernels_per_layer=1):
+    def __init__(
+        self,
+        in_channels: int,
+        output_channels: int,
+        kernel_size: int,
+        padding: int = 0,
+        kernels_per_layer: int = 1,
+    ) -> None:
         super(DepthwiseSeparableConv, self).__init__()
         # In Tensorflow DepthwiseConv2D has depth_multiplier instead of kernels_per_layer
         # print("DepthwiseSeparableConv params:")
@@ -99,7 +122,7 @@ class DepthwiseSeparableConv(EarthMLLightningModule):
         )
         self.pointwise = nn.Conv2d(in_channels * kernels_per_layer, output_channels, kernel_size=1)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # print(f"Depthwise input: shape={x.shape}, dtype={x.dtype}, device={x.device}")
         # # print(x)        
         x = self.depthwise(x)
@@ -112,8 +135,14 @@ class DepthwiseSeparableConv(EarthMLLightningModule):
 # class DoubleConvDS(CustomLightningModule):
 class DoubleConvDS(L.LightningModule):
     """(convolution => [BN] => ReLU) * 2"""
-
-    def __init__(self, in_channels, out_channels, mid_channels=None, kernels_per_layer=1):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        mid_channels: int | None = None,
+        kernels_per_layer: int = 1,
+        norm: str | None = "BatchNorm2d",
+    ) -> None:
         super().__init__()
         if not mid_channels:
             mid_channels = out_channels
@@ -131,7 +160,7 @@ class DoubleConvDS(L.LightningModule):
                 kernels_per_layer=kernels_per_layer,
                 padding=1,
             ),
-            nn.BatchNorm2d(mid_channels),
+            make_norm(norm, mid_channels),
             nn.LeakyReLU(inplace=True),
             DepthwiseSeparableConv(
                 mid_channels,
@@ -141,31 +170,47 @@ class DoubleConvDS(L.LightningModule):
                 kernels_per_layer=kernels_per_layer,
                 padding=1,
             ),
-            nn.BatchNorm2d(out_channels),
+            make_norm(norm, out_channels),
             nn.LeakyReLU(inplace=True),
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.double_conv(x)
 
 class DownDS(nn.Module):
     """Downscaling with maxpool then double conv"""
-
-    def __init__(self, in_channels, out_channels, kernels_per_layer=1):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernels_per_layer: int = 1,
+        norm: str | None = "BatchNorm2d",
+    ) -> None:
         super().__init__()
         self.maxpool_conv = nn.Sequential(
             nn.MaxPool2d(2),
-            DoubleConvDS(in_channels, out_channels, kernels_per_layer=kernels_per_layer),
+            DoubleConvDS(
+                in_channels,
+                out_channels,
+                kernels_per_layer=kernels_per_layer,
+                norm=norm,
+            ),
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.maxpool_conv(x)
 
 
 class UpDS(EarthMLLightningModule):
     """Upscaling then double conv"""
-
-    def __init__(self, in_channels, out_channels, bilinear=True, kernels_per_layer=1):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        bilinear: bool = True,
+        kernels_per_layer: int = 1,
+        norm: str | None = "BatchNorm2d",
+    ):
         super().__init__()
 
         # if bilinear, use the normal convolutions to reduce the number of channels
@@ -174,15 +219,24 @@ class UpDS(EarthMLLightningModule):
             self.conv = DoubleConvDS(
                 in_channels,
                 out_channels,
-                # extra_logger,
-                in_channels // 2, # mid channels
+                in_channels // 2,
                 kernels_per_layer=kernels_per_layer,
+                norm=norm,
             )
         else:
             self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
-            self.conv = DoubleConvDS(in_channels, out_channels, kernels_per_layer=kernels_per_layer)
+            self.conv = DoubleConvDS(
+                in_channels,
+                out_channels,
+                kernels_per_layer=kernels_per_layer,
+                norm=norm,
+            )
 
-    def forward(self, x1, x2):
+    def forward(
+        self,
+        x1: torch.Tensor,
+        x2: torch.Tensor,
+    ) -> torch.Tensor:
         # print(f"UpDS.forward - x1 (from deeper layer): shape={x1.shape}, dtype={x1.dtype}, device={x1.device}")
         # print(f"UpDS.forward - x2 (skip connection): shape={x2.shape}, dtype={x2.dtype}, device={x2.device}")
 
@@ -209,60 +263,80 @@ class UpDS(EarthMLLightningModule):
         return self.conv(x) # This calls DoubleConvDS, which in turn calls DepthwiseSeparableConv
 
 class OutConv(nn.Module):
-    def __init__(self, in_channels, out_channels):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+    ) -> None:
         super(OutConv, self).__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.conv(x)
 
 
 class SmaAt_UNet(EarthMLLightningModule):
     def __init__(
-        self, loss, learning_rate, norm, supervised,
-        loss_params: dict = None,
-        n_channels=1, n_classes=1,
-        kernels_per_layer=2,
-        bilinear=True,
-        reduction_ratio=16,
-    ):
-        super(SmaAt_UNet, self).__init__(**loss_params['net'])
-        
-        # self.extra_logger = extra_logger
+        self,
+        loss: str,
+        learning_rate: float,
+        weight_decay: float,
+        norm: str | None,
+        supervised: bool,
+        loss_params: dict[str, dict[str, Any]] | None = None,
+        n_channels: int = 1,
+        n_classes: int = 1,
+        kernels_per_layer: int = 2,
+        bilinear: bool = True,
+        reduction_ratio: int = 16,
+        base_channels: int = 64,
+    ) -> None:
+        loss_params = loss_params or {"loss": {}, "net": {}}
+
+        super().__init__(
+            **loss_params.get("net", {}),
+            optimizer_lr=learning_rate,
+            weight_decay=weight_decay,
+        )
+
         self.loss_name = loss
-        self.loss = resolve_loss(loss, loss_params['loss'])
-        self.learning_rate = learning_rate
+        self.loss = resolve_loss(loss, loss_params["loss"])
         self.supervised = supervised
 
-        needs_var = ("GaussianNLL" in loss) or ("GaussianNLLFromLogits" in loss)
-        
-        self.n_channels = n_channels # input channels
-        self.n_classes = n_classes   # output channels
+        needs_var: bool = ("GaussianNLL" in loss) or ("GaussianNLLFromLogits" in loss)
+
+        self.n_channels = n_channels
+        self.n_classes = n_classes
         self.debug_numerics = DEFAULT_DEBUG_NUMERICS
-        out_channels = (2 * self.n_classes) if needs_var else self.n_classes
-        kernels_per_layer = kernels_per_layer
         self.bilinear = bilinear
-        reduction_ratio = reduction_ratio
 
-        self.inc = DoubleConvDS(self.n_channels, 64, kernels_per_layer=kernels_per_layer)
-        self.cbam1 = CBAM(64, reduction_ratio=reduction_ratio)
-        self.down1 = DownDS(64, 128, kernels_per_layer=kernels_per_layer)
-        self.cbam2 = CBAM(128, reduction_ratio=reduction_ratio)
-        self.down2 = DownDS(128, 256, kernels_per_layer=kernels_per_layer)
-        self.cbam3 = CBAM(256, reduction_ratio=reduction_ratio)
-        self.down3 = DownDS(256, 512, kernels_per_layer=kernels_per_layer)
-        self.cbam4 = CBAM(512, reduction_ratio=reduction_ratio)
-        factor = 2 if self.bilinear else 1
-        self.down4 = DownDS(512, 1024 // factor, kernels_per_layer=kernels_per_layer)
-        self.cbam5 = CBAM(1024// factor, reduction_ratio=reduction_ratio)
-        self.up1 = UpDS(1024, 512 // factor, self.bilinear, kernels_per_layer=kernels_per_layer)
-        self.up2 = UpDS(512, 256 // factor, self.bilinear, kernels_per_layer=kernels_per_layer)
-        self.up3 = UpDS(256, 128 // factor, self.bilinear, kernels_per_layer=kernels_per_layer)
-        self.up4 = UpDS(128, 64, self.bilinear, kernels_per_layer=kernels_per_layer)
+        out_channels: int = (2 * self.n_classes) if needs_var else self.n_classes
+        factor: int = 2 if self.bilinear else 1
+        b: int = base_channels
 
-        self.outc = OutConv(64, out_channels)
+        self.inc = DoubleConvDS(self.n_channels, b, kernels_per_layer=kernels_per_layer, norm=norm)
+        self.cbam1 = CBAM(b, reduction_ratio=reduction_ratio, norm=norm)
 
-    def forward(self, x):
+        self.down1 = DownDS(b, 2 * b, kernels_per_layer=kernels_per_layer, norm=norm)
+        self.cbam2 = CBAM(2 * b, reduction_ratio=reduction_ratio, norm=norm)
+
+        self.down2 = DownDS(2 * b, 4 * b, kernels_per_layer=kernels_per_layer, norm=norm)
+        self.cbam3 = CBAM(4 * b, reduction_ratio=reduction_ratio, norm=norm)
+
+        self.down3 = DownDS(4 * b, 8 * b, kernels_per_layer=kernels_per_layer, norm=norm)
+        self.cbam4 = CBAM(8 * b, reduction_ratio=reduction_ratio, norm=norm)
+
+        self.down4 = DownDS(8 * b, 16 * b // factor, kernels_per_layer=kernels_per_layer, norm=norm)
+        self.cbam5 = CBAM(16 * b // factor, reduction_ratio=reduction_ratio, norm=norm)
+
+        self.up1 = UpDS(16 * b, 8 * b // factor, self.bilinear, kernels_per_layer=kernels_per_layer, norm=norm)
+        self.up2 = UpDS(8 * b, 4 * b // factor, self.bilinear, kernels_per_layer=kernels_per_layer, norm=norm)
+        self.up3 = UpDS(4 * b, 2 * b // factor, self.bilinear, kernels_per_layer=kernels_per_layer, norm=norm)
+        self.up4 = UpDS(2 * b, b, self.bilinear, kernels_per_layer=kernels_per_layer, norm=norm)
+
+        self.outc = OutConv(b, out_channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.debug_numerics:
             if torch.isnan(x).any() or torch.isinf(x).any():
                 raise ValueError(f"Input tensor contains NaN/Inf values: shape={tuple(x.shape)}")

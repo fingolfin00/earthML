@@ -1,5 +1,5 @@
 from matplotlib import colormaps
-from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.colors import LinearSegmentedColormap, ListedColormap
 
 
 PiBRdY = LinearSegmentedColormap.from_list(
@@ -30,10 +30,110 @@ WRdY = LinearSegmentedColormap.from_list(
     )
 )
 
+
+SeqWRdY_color = [
+    # positive side only (light red → red → orange → yellow)
+    "#FFFFFF",
+    "#F8B4B4",
+    "#F08080",
+    "#E85D5D",
+    "#D73027",
+    "#C81D25",
+    "#E66101",
+    "#F18F01",
+    "#FDB863",
+    "#F6EC01",
+]
+SeqWRdY = ListedColormap(
+    SeqWRdY_color,
+    name="SeqWRdY"
+)
+
+SeqPiBRdY_colors = [
+    # negative side (purple → blue)
+    "#F707D3",
+    "#AF30E1",
+    "#4B08F4",
+    "#3A0EEC",
+    "#3164EF",
+    "#546FC0",
+    "#6AABF5",
+    "#7BD0F7",
+    "#ADDAF0",
+
+    # center
+    "#FFFFFF",
+
+    # positive side (light red → red → orange → yellow)
+    "#F8B4B4",
+    "#F08080",
+    "#E85D5D",
+    "#D73027",
+    "#C81D25",
+    "#E66101",
+    "#F18F01",
+    "#FDB863",
+    "#F6EC01",
+]
+SeqPiBRdY = ListedColormap(
+    SeqPiBRdY_colors,
+    name="SeqPiBRdY"
+)
+
+SeqBPi_colors = [
+    # negative side (blue → lightblue)
+    "#08306B",
+    "#08519C",
+    "#2171B5",
+    "#4292C6",
+    "#6BAED6",
+    "#9ECAE1",
+    "#D6EFFA",
+
+    # center
+    "#FFFFFF",
+
+    # positive side (yellow → orange → red → purple)
+    "#F7EB08",
+    "#EDB61F",
+    "#FA8900",
+    "#F32B2B",
+    "#972312",
+    "#580000",
+    "#EB09E8",
+]
+SeqBPi = ListedColormap(
+    SeqBPi_colors,
+    name="SeqBPi"
+)
+
+SeqBYRd_colors = [
+    # negative side (blue → lightblue)
+    "#08306B",
+    "#2171B5",
+    "#53ACEB",
+    "#7CDAFC",
+    "#7DF5DB",
+    # positive side (yellow → orange → red → purple)
+    "#F0FA7D",
+    "#EDB61F",
+    "#FA8900",
+    "#F32B2B",
+    "#972312",
+]
+SeqBYRd = ListedColormap(
+    SeqBYRd_colors,
+    name="SeqBYRd"
+)
+
 def register_colormaps() -> None:
     try:
         colormaps.register(PiBRdY)
         colormaps.register(WRdY)
+        colormaps.register(SeqWRdY)
+        colormaps.register(SeqPiBRdY)
+        colormaps.register(SeqBPi)
+        colormaps.register(SeqBYRd)
     except ValueError:
         # Safe on repeated imports if the colormap is already registered.
         pass

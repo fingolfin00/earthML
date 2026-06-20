@@ -3,9 +3,10 @@ import numpy as np
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import random_split, DataLoader, SubsetRandomSampler, Dataset
+from torch.utils.data import random_split, DataLoader, SubsetRandomSampler, Dataset, Subset
 
 import lightning as L
+from lightning.pytorch.utilities.types import OptimizerLRScheduler
 
 import matplotlib.cm as cm
 
@@ -18,13 +19,23 @@ logger = get_logger(__name__)
 
 
 class EarthMLLightningModule(L.LightningModule):
+    optimizer_lr: float
+    weight_decay: float
+
     def __init__(
         self,
-        use_full_batch_input_as_baseline: bool = False
-    ):
+        use_full_batch_input_as_baseline: bool = False,
+        optimizer_lr: float = 1e-3,
+        weight_decay: float = 1e-4,
+    ) -> None:
         super().__init__()
-        # self.extra_logger = extra_logger
 
+        self.test_step_outputs = []
+        self.test_preds = None
+        self.test_targets = None
+
+        self.optimizer_lr = optimizer_lr
+        self.weight_decay = weight_decay
         self.use_full_batch_input_as_baseline = use_full_batch_input_as_baseline
 
         # Metrics
@@ -262,7 +273,7 @@ class EarthMLLightningModule(L.LightningModule):
 
         self.train_mae.update(mu, y, mask)
         self.train_rmse.update(mu, y, mask)
-        self.train_scc.update(mu, y, mask)
+        # self.train_scc.update(mu, y, mask)
         # self.train_acc.update(pred, y)
 
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
@@ -274,7 +285,7 @@ class EarthMLLightningModule(L.LightningModule):
             pass
         self.log("train_mae", self.train_mae, on_step=False, on_epoch=True)
         self.log("train_rmse", self.train_rmse, on_step=False, on_epoch=True)
-        self.log("train_scc", self.train_scc, on_step=False, on_epoch=True)
+        # self.log("train_scc", self.train_scc, on_step=False, on_epoch=True)
         # self.log("train_acc", self.train_acc, on_step=False, on_epoch=True)
         return loss
 
@@ -312,7 +323,7 @@ class EarthMLLightningModule(L.LightningModule):
 
         self.val_mae.update(mu, y, mask)
         self.val_rmse.update(mu, y, mask)
-        self.val_scc.update(mu, y, mask)
+        # self.val_scc.update(mu, y, mask)
         # self.val_acc.update(mu, y)
 
         self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
@@ -324,7 +335,7 @@ class EarthMLLightningModule(L.LightningModule):
             pass
         self.log("val_mae", self.val_mae, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log("val_rmse", self.val_rmse, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log("val_scc", self.val_scc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        # self.log("val_scc", self.val_scc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         # self.log("val_acc", self.val_acc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         
         self.last_val_pred = mu.detach().cpu()
@@ -483,6 +494,13 @@ class EarthMLLightningModule(L.LightningModule):
     #     self.last_val_pred = None
     #     self.last_val_target = None
 
+
+    def on_test_epoch_start(self):
+        """Clear test buffers before each trainer.test() call."""
+        self.test_step_outputs.clear()
+        self.test_preds = None
+        self.test_targets = None
+
     def on_test_epoch_end(self):
         """Process test results and store for external access"""
         # If you need to access the final aggregated metric values from the Test stage
@@ -505,18 +523,33 @@ class EarthMLLightningModule(L.LightningModule):
             self.test_targets = torch.cat([out["targets"] for out in self.test_step_outputs], dim=0)
         self.test_step_outputs.clear()
 
-    def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
-        scheduler = {
-            'scheduler': torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=4),
-            'monitor': 'val_loss',
-            'interval': 'epoch',
-            'frequency': 1
+    def configure_optimizers(self) -> OptimizerLRScheduler:
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=self.optimizer_lr,
+            weight_decay=self.weight_decay,
+        )
+
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=0.5,
+            patience=5,
+            min_lr=1e-6,
+        )
+
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "monitor": "val_loss",
+                "interval": "epoch",
+                "frequency": 1,
+            },
         }
-        return {'optimizer': optimizer, 'lr_scheduler': scheduler}
 
 
-class EpochRandomSplitDataModule(L.LightningDataModule):
+class SplitDataModule(L.LightningDataModule):
     def __init__(
         self,
         dataset: Dataset,
@@ -524,7 +557,9 @@ class EpochRandomSplitDataModule(L.LightningDataModule):
         batch_size: int = 32,
         seed: int = 42,
         num_workers: int = 0,
-        per_epoch_resplit: bool = False
+        split_strategy: Literal["random", "time"] = "time",
+        shuffle_train: bool = True,
+        per_epoch_resplit: bool = False,
     ):
         super().__init__()
         self.dataset = dataset
@@ -532,40 +567,83 @@ class EpochRandomSplitDataModule(L.LightningDataModule):
         self.batch_size = batch_size
         self.seed = seed
         self.num_workers = num_workers
+        self.split_strategy = split_strategy
+        self.shuffle_train = shuffle_train
         self.per_epoch_resplit = per_epoch_resplit
 
+        if per_epoch_resplit and split_strategy != "random":
+            raise ValueError("per_epoch_resplit only makes sense with split_strategy='random'.")
+
     def setup(self, stage=None):
-        # initial split
-        self._resplit()
+        self._make_loaders(epoch=0)
 
-    def _resplit(self):
-        torch.manual_seed(self.seed)
+    def _get_indices(self, epoch: int = 0):
+        n = len(self.dataset)
 
-        num_samples = len(self.dataset)
-        indices = torch.randperm(num_samples)
-        subset_size = int(num_samples * self.train_fraction)
+        if self.split_strategy == "time":
 
-        train_indices = indices[:subset_size]
-        valid_indices = indices[subset_size:]
+            n_times = len(self.dataset.input_ds.time)
 
-        train_sampler = SubsetRandomSampler(train_indices)
-        valid_sampler = SubsetRandomSampler(valid_indices)
+            if n % n_times != 0:
+                raise ValueError(
+                    f"Cannot infer realization grouping: n={n}, n_times={n_times}"
+                )
+
+            r = n // n_times
+            split_t = int(n_times * self.train_fraction)
+
+            train_indices: list[int] = []
+            val_indices: list[int] = []
+
+            for t in range(n_times):
+                start = t * r
+                end = start + r
+
+                if t < split_t:
+                    train_indices.extend(range(start, end))
+                else:
+                    val_indices.extend(range(start, end))
+
+            return train_indices, val_indices
+
+        elif self.split_strategy == "random":
+            g = torch.Generator()
+            g.manual_seed(self.seed + epoch)
+
+            indices = torch.randperm(n, generator=g).tolist()
+            split = int(n * self.train_fraction)
+
+            return indices[:split], indices[split:]
+
+        else:
+            raise ValueError(
+                f"Unknown split_strategy={self.split_strategy}"
+            )
+
+    def _make_loaders(self, epoch: int = 0):
+        train_indices, val_indices = self._get_indices(epoch)
+
+        train_subset = Subset(self.dataset, train_indices)
+        val_subset = Subset(self.dataset, val_indices)
 
         self._train_dl = DataLoader(
-            self.dataset,
+            train_subset,
             batch_size=self.batch_size,
-            sampler=train_sampler,
+            shuffle=self.shuffle_train,
             num_workers=self.num_workers,
             pin_memory=torch.cuda.is_available(),
-            persistent_workers=self.num_workers > 0,
+            persistent_workers=False,
+            # persistent_workers=self.num_workers > 0,
         )
+
         self._val_dl = DataLoader(
-            self.dataset,
+            val_subset,
             batch_size=self.batch_size,
-            sampler=valid_sampler,
+            shuffle=False,
             num_workers=self.num_workers,
             pin_memory=torch.cuda.is_available(),
-            persistent_workers=self.num_workers > 0,
+            persistent_workers=False,
+            # persistent_workers=self.num_workers > 0,
         )
 
     def train_dataloader(self):
@@ -576,6 +654,4 @@ class EpochRandomSplitDataModule(L.LightningDataModule):
 
     def on_train_epoch_start(self):
         if self.per_epoch_resplit:
-            torch.manual_seed(self.seed + self.trainer.current_epoch)
-            # re-split at every epoch
-            self._resplit()
+            self._make_loaders(epoch=self.trainer.current_epoch)

@@ -3,9 +3,8 @@ from typing import Sequence
 import numpy as np
 import cf_xarray
 import xarray as xr
-import pandas as pd
 
-from ..base.dataclasses import DataSelection
+from ..base import DataSelection
 from ..logging import get_logger
 
 

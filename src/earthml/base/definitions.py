@@ -1,6 +1,7 @@
 from dataclasses import dataclass, asdict, astuple
 from datetime import datetime
-from typing import Dict, Optional, Literal, TypeAlias
+from typing import Dict, Optional, Any, cast
+from enum import StrEnum
 
 import pandas as pd
 
@@ -12,12 +13,16 @@ class Region:
     lat     : tuple
 
 
-LeadtimeUnit: TypeAlias = Literal["hours", "days", "months"]
+class LeadtimeUnit(StrEnum):
+    HOURS  = "hours"
+    DAYS   = "days"
+    MONTHS = "months"
+
 @dataclass(frozen=True)
 class Leadtime:
-    name    : str # variable name if applicable
-    unit    : LeadtimeUnit
-    value   : int
+    name: str
+    unit: LeadtimeUnit
+    value: int
 
     def to_timedelta(
         self,
@@ -33,6 +38,21 @@ class Leadtime:
         if self.unit == "months":
             return pd.Timedelta(days=self.value * month_length_days)
         return pd.to_timedelta(f"{self.value} {self.unit}")
+    
+    def to_offset(self) -> pd.Timedelta | pd.DateOffset:
+        if self.unit == LeadtimeUnit.MONTHS:
+            return pd.DateOffset(months=self.value)
+
+        return pd.to_timedelta(
+            self.value,
+            unit=cast(Any, {
+                LeadtimeUnit.HOURS: "h",
+                LeadtimeUnit.DAYS: "D",
+            }[self.unit]),
+        )
+
+    def shift_time(self, time: pd.Timestamp) -> pd.Timestamp:
+        return time - self.to_offset()
 
 
 @dataclass(frozen=True)
@@ -82,9 +102,9 @@ class DataSelection:
 
 @dataclass(frozen=True)
 class Dims:
-    time: str
-    latitude: str
-    longitude: str
+    time: str | None
+    latitude: str | None
+    longitude: str | None
     level: str | None
     realization: str | None
     leadtime: str | None
@@ -102,3 +122,43 @@ class Dims:
 
     def __len__(self):
         return sum(1 for v in astuple(self) if v is not None)
+
+
+class VariableName(StrEnum):
+    T2M = "t2m"
+    MSL = "msl"
+    MSLP = "mslp"
+    D2M = "d2m"
+    U10 = "u10"
+    V10 = "v10"
+    TP = "tp"
+    TCC = "tcc"
+    SST = "sst"
+    SSS = "sss"
+    SSH = "ssh"
+    T14D = "t14d"
+
+class RegionName(StrEnum):
+    CONUS = "ConUS"
+    EUROPE = "Europe"
+    WORLD = "World"
+
+class ClimPeriod(StrEnum):
+    DAY = "day" # Feb 1 -> 1
+    DAYOFYEAR = "dayofyear" # Feb 1 -> 32
+    WEEK = "week"
+    DAYOFWEEK = "dayofweek"
+    MONTH = "month"
+    SEASON = "season"
+    YEAR = "year"
+
+class RunDims(StrEnum):
+    LEADTIME = "leadtime"
+    TRAIN_PERIOD = "train_period"
+    REGION = "region"
+    LOSS = "loss"
+    VARIANT = "variant"
+
+class TimeDimBasis(StrEnum):
+    TARGET = "target_time"
+    REFERENCE = "reference_time"

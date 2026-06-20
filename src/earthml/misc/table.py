@@ -12,11 +12,11 @@ class Table:
     def __init__(
         self,
         data: Any,
-        title: str = None,
-        params_name: str = None,
+        title: str | None = None,
+        params_name: str | None = None,
         twocols: bool = False,
         max_depth: int = 4,
-    ) -> RichTable:
+    ) -> RichTable | None:
         # Accept ExperimentConfig (dataclass) or dict; coerce as needed.
         if is_dataclass(data):
             data = self._to_pretty(data, max_depth=max_depth)
