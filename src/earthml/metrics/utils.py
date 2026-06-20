@@ -8,7 +8,7 @@ import xarray as xr
 
 from dask.diagnostics.progress import ProgressBar
 
-from ..settings import Settings
+from ..base import Settings
 
 
 T_Xarray = TypeVar("T_Xarray", xr.DataArray, xr.Dataset)
