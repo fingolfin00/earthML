@@ -33,6 +33,7 @@ from .defaults import (
     METRIC_SKILL_UNITS,
     METRIC_UNITS,
     MODEL_COLORS,
+    SERIES_COLORS,
     TRANSLATION_TABLE,
 )
 
@@ -73,5 +74,6 @@ __all__ = [
     "METRIC_SKILL_UNITS",
     "METRIC_UNITS",
     "MODEL_COLORS",
+    "SERIES_COLORS",
     "TRANSLATION_TABLE",
 ]

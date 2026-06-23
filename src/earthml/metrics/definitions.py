@@ -6,6 +6,7 @@ class Metric(StrEnum):
     BIAS = "bias"
     MAE = "mae"
     MSE = "mse"
+    MSE_SKILL_CLIM = "mse_skill_clim"
     RMSE = "rmse"
     NRMSE = "nrmse"
     R2 = "r2"
@@ -39,6 +40,8 @@ class Metric(StrEnum):
 
     ENS_MEMBER_RMSE_ANOM = "ens_member_rmse_anom"
     MEAN_MEMBER_RMSE_ANOM = "mean_member_rmse_anom"
+    ENS_MEMBER_MSE_ANOM_SKILL_CLIM = "ens_member_mse_anom_skill_clim"
+    MEAN_MEMBER_MSE_ANOM_SKILL_CLIM = "mean_member_mse_anom_skill_clim"
     SPREAD_ANOM = "spread_anom"
     SPREAD_ANOM_SKILL_RATIO = "spread_anom_skill_ratio"
     CRPS_ANOM = "crps_anom"
@@ -51,6 +54,7 @@ DETERMINISTIC_METRICS: set[Metric] = {
     Metric.BIAS,
     Metric.MAE,
     Metric.MSE,
+    Metric.MSE_SKILL_CLIM,
     Metric.RMSE,
     Metric.NRMSE,
     Metric.R2,
@@ -85,6 +89,8 @@ PROBABILISTIC_METRICS: set[Metric] = {
 
     Metric.ENS_MEMBER_RMSE_ANOM,
     Metric.MEAN_MEMBER_RMSE_ANOM,
+    Metric.ENS_MEMBER_MSE_ANOM_SKILL_CLIM,
+    Metric.MEAN_MEMBER_MSE_ANOM_SKILL_CLIM,
     Metric.SPREAD_ANOM,
     Metric.SPREAD_ANOM_SKILL_RATIO,
     Metric.CRPS_ANOM,

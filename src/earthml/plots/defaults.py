@@ -159,6 +159,13 @@ DEFAULT_PLOT_CONFIG = {
     },
 
     # Climatology skill
+    "mse_skill_clim": {
+        "vmin": -4,
+        "vmax": 1,
+        "ticks": [-4, -3, -2, -1.5, -0.9, -0.7, -0.5, -0.3, -0.2, -0.1, 0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
+        "cmap": SeqPiBRdY,
+        "scale_units": False,
+    },
     "mae_anom_skill_clim": {
         "vmin": -4,
         "vmax": 1,
@@ -174,6 +181,20 @@ DEFAULT_PLOT_CONFIG = {
         "scale_units": False,
     },
     "rmse_anom_skill_clim": {
+        "vmin": -4,
+        "vmax": 1,
+        "ticks": [-4, -3, -2, -1.5, -0.9, -0.7, -0.5, -0.3, -0.2, -0.1, 0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
+        "cmap": SeqPiBRdY,
+        "scale_units": False,
+    },
+    "ens_member_mse_anom_skill_clim": {
+        "vmin": -4,
+        "vmax": 1,
+        "ticks": [-4, -3, -2, -1.5, -0.9, -0.7, -0.5, -0.3, -0.2, -0.1, 0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
+        "cmap": SeqPiBRdY,
+        "scale_units": False,
+    },
+    "mean_member_mse_anom_skill_clim": {
         "vmin": -4,
         "vmax": 1,
         "ticks": [-4, -3, -2, -1.5, -0.9, -0.7, -0.5, -0.3, -0.2, -0.1, 0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
@@ -259,21 +280,21 @@ DEFAULT_PLOT_CONFIG = {
     "roc_anom_lower": {
         "vmin": 0,
         "vmax": 1,
-        "ticks": 11,
+        "ticks": 21,
         "cmap": SeqPiBRdY,
         "scale_units": False,
     },
     "roc_anom_middle": {
         "vmin": 0,
         "vmax": 1,
-        "ticks": 11,
+        "ticks": 21,
         "cmap": SeqPiBRdY,
         "scale_units": False,
     },
     "roc_anom_upper": {
         "vmin": 0,
         "vmax": 1,
-        "ticks": 11,
+        "ticks": 21,
         "cmap": SeqPiBRdY,
         "scale_units": False,
     },
@@ -301,6 +322,7 @@ METRIC_NAMES = {
     "bias": "Bias",
     "mae": "MAE",
     "mse": "MSE",
+    "mse_skill_clim": "MSE Skill vs Climatology",
     "rmse": "RMSE",
     "nrmse": "Normalized RMSE",
     "r2": "R²",
@@ -325,6 +347,8 @@ METRIC_NAMES = {
     "mae_anom_skill_clim": "Anomaly MAE Skill vs Climatology",
     "mse_anom_skill_clim": "Anomaly MSE Skill vs Climatology",
     "rmse_anom_skill_clim": "Anomaly RMSE Skill vs Climatology",
+    "ens_member_mse_anom_skill_clim": "Pooled Ensemble-Member Anomaly MSE Skill vs Climatology",
+    "mean_member_mse_anom_skill_clim": "Mean Member Anomaly MSE Skill vs Climatology",
 
     # Probabilistic / ensemble
     "ens_member_rmse": "Pooled Ensemble-Member RMSE",
@@ -376,9 +400,12 @@ METRIC_UNITS = {
     "std_ratio_anom": "",
 
     # Skill scores
+    "mse_skill_clim": "%",
     "mae_anom_skill_clim": "%",
     "mse_anom_skill_clim": "%",
     "rmse_anom_skill_clim": "%",
+    "ens_member_mse_anom_skill_clim": "%",
+    "mean_member_rmse_anom_skill_clim": "%",
 
     # Ensemble metrics
     "ens_member_rmse": "{unit}",
@@ -430,6 +457,14 @@ METRIC_IMPROVEMENT = {
     "acc": HIGHER_BETTER,
     "r2": HIGHER_BETTER,
     "r2_anom": HIGHER_BETTER,
+
+    # Skill scores
+    "mse_skill_clim": HIGHER_BETTER,
+    "mae_anom_skill_clim": HIGHER_BETTER,
+    "mse_anom_skill_clim": HIGHER_BETTER,
+    "rmse_anom_skill_clim": HIGHER_BETTER,
+    "ens_member_mse_anom_skill_clim": HIGHER_BETTER,
+    "mean_member_rmse_anom_skill_clim": HIGHER_BETTER,
 
     # Variance metrics: target ratio = 1
     "std_ratio": TARGET_ONE,
@@ -494,9 +529,12 @@ METRIC_SKILL_UNITS = {
     "roc_anom_upper": "Δ",
 
     # Climatology skill scores
+    "mse_skill_clim": "%",
     "mae_anom_skill_clim": "%",
     "mse_anom_skill_clim": "%",
     "rmse_anom_skill_clim": "%",
+    "ens_member_mse_anom_skill_clim": "%",
+    "mean_member_mse_anom_skill_clim": "%",
 }
 
 

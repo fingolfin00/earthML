@@ -47,9 +47,17 @@ def core_metrics(
     if fc_clim is not None and realization_dim in fc_clim.dims:
         fc_clim = fc_clim.chunk({realization_dim: -1})
 
+    if time_dim in dims:
+        fc = fc.chunk({time_dim: -1})
+        an = an.chunk({time_dim: -1})
+
     weights = cast(xr.DataArray, np.cos(np.deg2rad(fc[lat_dim])))
     error = fc - an
     metric_dims_no_time = tuple(d for d in dims if d != time_dim)
+
+    # fairness correction for MSSS
+    n = an[time_dim].count(time_dim)
+    correction = n / (n - 1)
 
     def want(metric: Metric) -> bool:
         return metric.value in metrics
@@ -150,6 +158,10 @@ def core_metrics(
         fc_anom = fc_anom.drop_vars((clim_period, leadtime_dim), errors="ignore")
         an_anom = an_anom.drop_vars((clim_period, leadtime_dim), errors="ignore")
 
+        if time_dim in dims:
+            fc_anom = fc_anom.chunk({time_dim: -1})
+            an_anom = an_anom.chunk({time_dim: -1})
+
         error_anom = fc_anom - an_anom
 
         if want(Metric.BIAS_ANOM):
@@ -192,9 +204,17 @@ def core_metrics(
             )
             out[Metric.NRMSE_ANOM.value] = rmse_anom / an_anom_std_total
 
+        if want(Metric.MSE_SKILL_CLIM):
+            mse = (error ** 2).weighted(weights).mean(dims)
+            clim_mse_anom = ((an_anom ** 2).weighted(weights).mean(dims)) * correction
+            out[Metric.MSE_SKILL_CLIM.value] = safe_div(
+                clim_mse_anom - mse,
+                clim_mse_anom,
+            )
+
         if want(Metric.MSE_ANOM_SKILL_CLIM):
             mse_anom = (error_anom ** 2).weighted(weights).mean(dims)
-            clim_mse_anom =((an_anom ** 2).weighted(weights).mean(dims))
+            clim_mse_anom = ((an_anom ** 2).weighted(weights).mean(dims)) * correction
             out[Metric.MSE_ANOM_SKILL_CLIM.value] = safe_div(
                 clim_mse_anom - mse_anom,
                 clim_mse_anom,
@@ -202,7 +222,7 @@ def core_metrics(
 
         if want(Metric.RMSE_ANOM_SKILL_CLIM):
             rmse_anom = cast(xr.DataArray, np.sqrt((error_anom ** 2).weighted(weights).mean(dims)))
-            clim_rmse_anom = cast(xr.DataArray, np.sqrt((an_anom ** 2).weighted(weights).mean(dims)))
+            clim_rmse_anom = cast(xr.DataArray, np.sqrt((an_anom ** 2).weighted(weights).mean(dims))) * correction
             out[Metric.RMSE_ANOM_SKILL_CLIM.value] = safe_div(
                 clim_rmse_anom - rmse_anom,
                 clim_rmse_anom,
@@ -210,7 +230,7 @@ def core_metrics(
 
         if want(Metric.MAE_ANOM_SKILL_CLIM):
             mae_anom = abs(error_anom).weighted(weights).mean(dims)
-            clim_mae_anom = abs(an_anom).weighted(weights).mean(dims)
+            clim_mae_anom = abs(an_anom).weighted(weights).mean(dims) * correction
             out[Metric.MAE_ANOM_SKILL_CLIM.value] = safe_div(
                 clim_mae_anom - mae_anom,
                 clim_mae_anom,
@@ -231,6 +251,22 @@ def core_metrics(
                     .weighted(weights)
                     .mean(dims)
                 ).mean(realization_dim)
+
+            if want(Metric.ENS_MEMBER_MSE_ANOM_SKILL_CLIM):
+                mse_anom = (error_anom ** 2).weighted(weights).mean((realization_dim, *dims))
+                clim_mse_anom = ((an_anom ** 2).weighted(weights).mean(dims)) * correction
+                out[Metric.ENS_MEMBER_MSE_ANOM_SKILL_CLIM.value] = safe_div(
+                    clim_mse_anom - mse_anom,
+                    clim_mse_anom,
+                )
+
+            if want(Metric.MEAN_MEMBER_MSE_ANOM_SKILL_CLIM):
+                mse_anom = ((error_anom ** 2).weighted(weights).mean(dims)).mean(realization_dim)
+                clim_mse_anom = (((an_anom ** 2).weighted(weights).mean(dims)) * correction)
+                out[Metric.MEAN_MEMBER_MSE_ANOM_SKILL_CLIM.value] = safe_div(
+                    clim_mse_anom - mse_anom,
+                    clim_mse_anom,
+                )
 
             if want(Metric.SPREAD_ANOM) or want(Metric.SPREAD_ANOM_SKILL_RATIO):
                 spread = fc_anom.std(realization_dim).weighted(weights).mean(dims)

@@ -113,6 +113,14 @@ _EXPORTS = {
     "SplitDataModule": (".neural.module", "SplitDataModule"),
 
     "get_metrics": (".metrics", "get_metrics"),
+
+    "get_and_subset_datasets": (".metrics", "get_and_subset_datasets"),
+    "get_experiment_configs": (".metrics", "get_experiment_configs"),
+    "open_zarr": (".metrics", "open_zarr"),
+    "open_zarr_var": (".metrics", "open_zarr_var"),
+
+    "calculate_climatology": (".metrics", "calculate_climatology"),
+    "calculate_save_and_subset_climatologies": (".metrics", "calculate_save_and_subset_climatologies"),
 }
 
 
