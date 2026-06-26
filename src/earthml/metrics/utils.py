@@ -1,4 +1,4 @@
-from typing import Sequence, TypeVar, cast
+from typing import Sequence, Literal, TypeVar, cast
 
 from pathlib import Path
 
@@ -46,6 +46,7 @@ def get_experiment_configs(
 
 def get_and_subset_datasets(
     s: Settings,
+    period: Literal["days", "months", "years"],
     lat_range: tuple[float, float] | None = None,
     lon_range: tuple[float, float] | None = None,
     time_range: tuple[str, str] | None = None,
@@ -57,7 +58,13 @@ def get_and_subset_datasets(
     lon_dim = fc_da.earthml.guessed_dims.longitude
     lat_dim = fc_da.earthml.guessed_dims.latitude
 
-    an_da = build_analysis_for_forecast_leadtimes(fc_da, an_da, leadtime_dim)
+    an_da = build_analysis_for_forecast_leadtimes(
+        fc_all=fc_da,
+        an_raw=an_da,
+        leadtime_dim=leadtime_dim,
+        period=period,
+        lead_period_offset=s.lead_period_offset,
+    )
 
     fc = subset_dataset(
         fc_da.to_dataset(name=s.var_fc),
@@ -112,9 +119,9 @@ def calculate_climatology(
 
 def calculate_save_and_subset_climatologies(
     s: Settings,
+    period: Literal["days", "months", "years"],
     force: bool = False,
-    time_dim: str = "time",
-    clim_period: str = "month",
+    clim_period: Literal["day", "month", "year"] = "month",
     lat_range: tuple[float, float] | None = None,
     lon_range: tuple[float, float] | None = None,
     time_range: tuple[str, str] | None = None,
@@ -149,7 +156,7 @@ def calculate_save_and_subset_climatologies(
             train_pred = open_zarr_var(train_pred_path, s.var_fc)
 
             with ProgressBar():
-                mlfc_clim = calculate_climatology(train_pred, time_dim=time_dim, clim_period=clim_period).compute()
+                mlfc_clim = calculate_climatology(train_pred, time_dim=train_pred.earthml.guessed_dims.time, clim_period=clim_period).compute()
 
             mlfc_clim.to_dataset(name=s.var_fc).to_zarr(
                 train_pred_clim_path,
@@ -167,7 +174,7 @@ def calculate_save_and_subset_climatologies(
         print("Save original forecast climatology to:", fc_clim_path.name)
 
         fc = open_zarr_var(fc_path, s.var_fc)
-        fc_train = fc.sel({time_dim: slice(s.train_start, s.train_end)})
+        fc_train = fc.sel({fc.earthml.guessed_dims.time: slice(s.train_start, s.train_end)})
 
         with ProgressBar():
             print("Calculate original forecast climatology")
@@ -193,11 +200,17 @@ def calculate_save_and_subset_climatologies(
             fc_train_lead = fc.sel(
                 indexers={
                     leadtime_dim: lead,
-                    time_dim: slice(s.train_start, s.train_end),
+                    fc.earthml.guessed_dims.time: slice(s.train_start, s.train_end),
                 }
             )
 
-            an_train_lead = select_target_for_lead(an, lead, fc_train_lead)
+            an_train_lead = select_target_for_lead(
+                an=an,
+                lead=lead,
+                period=period,
+                fc=fc_train_lead,
+                lead_period_offset=s.lead_period_offset,
+            )
 
             an_clims.append(
                 calculate_climatology(an_train_lead).expand_dims(
@@ -260,13 +273,13 @@ def calculate_save_and_subset_climatologies(
 def valid_times_from_init_times(
     init_times: xr.DataArray | pd.DatetimeIndex,
     lead: int,
+    period: Literal["days", "months", "years"],
+    lead_period_offset: int = -1,
 ) -> xr.DataArray:
-    s = Settings()
-
     init_values = init_times.values if isinstance(init_times, xr.DataArray) else init_times
 
     valid_times = [
-        pd.Timestamp(t) + pd.DateOffset(months=lead + s.lead_month_offset)
+        pd.Timestamp(t) + pd.DateOffset(**{period: lead + lead_period_offset})
         for t in init_values
     ]
 
@@ -279,9 +292,11 @@ def valid_times_from_init_times(
 def select_target_for_lead(
     an: xr.DataArray | xr.Dataset,
     lead: int,
+    period: Literal["days", "months", "years"],
     fc: xr.DataArray | xr.Dataset | None = None,
     start: str | None = None,
     end: str | None = None,
+    lead_period_offset: int = -1,
 ) -> T_Xarray:
     """Select analysis/an targets matching init time + lead."""
 
@@ -293,7 +308,12 @@ def select_target_for_lead(
 
         init_times = an.sel(time=slice(start, end)).time
 
-    valid_times = valid_times_from_init_times(init_times, lead)
+    valid_times = valid_times_from_init_times(
+        init_times,
+        lead,
+        period=period,
+        lead_period_offset=lead_period_offset,
+    )
 
     target_match = an.sel(time=valid_times.values)
 
@@ -305,6 +325,8 @@ def build_analysis_for_forecast_leadtimes(
     fc_all: xr.DataArray,
     an_raw: xr.DataArray,
     leadtime_dim: str,
+    period: Literal["days", "months", "years"],
+    lead_period_offset: int = -1,
 ) -> xr.DataArray:
     """
     Build an analysis dataset aligned with each forecast lead time.
@@ -326,6 +348,8 @@ def build_analysis_for_forecast_leadtimes(
         Analysis dataset from which target values are selected.
     leadtime_dim : str
         Name of the lead-time dimension.
+    lead_period_offset: int
+        The monthly offset for forecast leadtime naming convention.
 
     Returns
     -------
@@ -339,12 +363,20 @@ def build_analysis_for_forecast_leadtimes(
         lead = int(lead)
 
         fc = fc_all.sel({leadtime_dim: lead})
-        fc = common_time_range(fc, an_raw, max_lead=lead)
+        fc = common_time_range(
+            fc=fc,
+            an=an_raw,
+            max_lead=lead,
+            period=period,
+            lead_period_offset=lead_period_offset,
+        )
 
         an = select_target_for_lead(
             an=an_raw,
             lead=lead,
             fc=fc,
+            period=period,
+            lead_period_offset=lead_period_offset,
         )
 
         if leadtime_dim in an.dims:
@@ -366,17 +398,31 @@ def build_analysis_for_forecast_leadtimes(
 def valid_times_from_forecast(
     fc: xr.DataArray | xr.Dataset,
     lead: int,
+    period: Literal["days", "months", "years"],
+    lead_period_offset: int = -1,
 ) -> xr.DataArray:
-    return valid_times_from_init_times(fc.time, lead)
+    return valid_times_from_init_times(
+        init_times=fc.time,
+        lead=lead,
+        period=period,
+        lead_period_offset=lead_period_offset,
+    )
 
 
 def common_time_range(
     fc: xr.DataArray | xr.Dataset,
     an: xr.DataArray | xr.Dataset,
     max_lead: int,
+    period: Literal["days", "months", "years"],
+    lead_period_offset: int = -1,
 ) -> T_Xarray:
     """Drop forecast initializations whose verifying an time is unavailable."""
-    valid_times = valid_times_from_forecast(fc, max_lead)
+    valid_times = valid_times_from_forecast(
+        fc=fc,
+        lead=max_lead,
+        period=period,
+        lead_period_offset=lead_period_offset,
+    )
     available_an_times = set(pd.to_datetime(an.time.values))
     keep = [pd.Timestamp(t.item()) in available_an_times for t in valid_times.values]
 

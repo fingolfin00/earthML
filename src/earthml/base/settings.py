@@ -25,7 +25,7 @@ TrainerPrecision = Literal[
 class Settings:
     root_dir: Path = Path.home() / "ML" / "seasonal"
 
-    lead_month_offset: int = -1
+    lead_period_offset: int = -1
 
     var_fc: str = "mslp"
     var_an: str = "mslp"
@@ -154,7 +154,7 @@ class Settings:
             f"{self.var_fc}_"
             f"{self.var_an}_"
             f"{self.region_name}_"
-            f"lead{self.lead_month_offset:+d}_"
+            f"lead{self.lead_period_offset:+d}_"
             f"{self.net_name.lower()}_"
             f"{self.loss_name.lower()}_"
             f"c{self.base_channels}_"
