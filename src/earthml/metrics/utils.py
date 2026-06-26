@@ -50,6 +50,7 @@ def get_and_subset_datasets(
     lat_range: tuple[float, float] | None = None,
     lon_range: tuple[float, float] | None = None,
     time_range: tuple[str, str] | None = None,
+    interpolate: bool = True,
 ) -> tuple[xr.Dataset, xr.Dataset, xr.Dataset | None]:
     fc_da = open_zarr_var(s.input_fc, s.var_fc)
     an_da = open_zarr_var(s.input_an, s.var_an)
@@ -81,12 +82,13 @@ def get_and_subset_datasets(
     )
 
     # Regrid analysis into forecast
-    an = an.interp(
-        {
-            lat_dim: fc[lat_dim],
-            lon_dim: fc[lon_dim],
-        }
-    )
+    if interpolate:
+        an = an.interp(
+            {
+                lat_dim: fc[lat_dim],
+                lon_dim: fc[lon_dim],
+            }
+        )
 
     mlfc = None
     if s.input_mlfc_train.exists() and s.input_mlfc_test.exists():
