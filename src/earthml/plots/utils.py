@@ -2,8 +2,12 @@ from pathlib import Path
 from typing import Literal, Sequence, cast
 from dataclasses import dataclass
 
+from datetime import datetime
+
 import numpy as np
 import xarray as xr
+
+import earthml
 
 from dask.diagnostics.progress import ProgressBar
 
@@ -481,7 +485,28 @@ def plot_map(
             var_plot_config=var_plot_config,
         )
 
+    if is_skill_metric(metric):
+        unit_label = "(%)"
+        cb_label = f"{METRIC_NAMES[metric]} {unit_label}"
+    elif is_skill_model(model):
+        unit_label = "(%)"
+        cb_label = (
+            f"{METRIC_NAMES[metric]} improvement {unit_label}"
+            if plot_unit == "%"
+            else f"{METRIC_NAMES[metric]} improvement difference"
+        )
+    else:
+        unit_label = f"({plot_unit})"
+        cb_label = (
+            f"{METRIC_NAMES[metric]} {unit_label}"
+            if plot_unit
+            else METRIC_NAMES[metric]
+        )
+
     da = da / scale
+
+    avg = da.mean().values
+    geo_avg = da.earthml.geo_mean().values
 
     cmap, norm, ticks = metric_style(
         var,
@@ -507,9 +532,11 @@ def plot_map(
 
     label = lead_label(da, lead_value, leadtime_dim)
 
+    start_time = datetime.strptime(time_range[0], "%Y-%m-%d").strftime("%Y")
+    end_time = datetime.strptime(time_range[1], "%Y-%m-%d").strftime("%Y")
     ax.set_title(
-        f"{VARIABLE_NAMES[var]} · {model} · {safe_label(time_range)}\n"
-        f"start month={start_period} · leadtime={label}"
+        f"{VARIABLE_NAMES[var]} · {model} · {start_time}-{end_time}\n"
+        f"start month={start_period} · leadtime={label} · avg={avg:.3f} {unit_label} · geoavg={geo_avg:.3f} {unit_label}"
     )
 
     sm = ScalarMappable(norm=norm, cmap=cmap)
@@ -525,20 +552,7 @@ def plot_map(
         spacing="uniform",
     )
 
-    if is_skill_metric(metric):
-        cb.set_label(f"{METRIC_NAMES[metric]} (%)")
-    elif is_skill_model(model):
-        cb.set_label(
-            f"{METRIC_NAMES[metric]} improvement (%)"
-            if plot_unit == "%"
-            else f"{METRIC_NAMES[metric]} improvement difference"
-        )
-    else:
-        cb.set_label(
-            f"{METRIC_NAMES[metric]} ({plot_unit})"
-            if plot_unit
-            else METRIC_NAMES[metric]
-        )
+    cb.set_label(cb_label)
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
     plt.tight_layout()
@@ -585,7 +599,9 @@ def plot_rank_histogram(
             label=model,
         )
 
-    ax.set_title(f"{VARIABLE_NAMES[var]} · {METRIC_NAMES[metric]} · {safe_label(time_range)} · start month={start_period}")
+    start_time = datetime.strptime(time_range[0], "%Y-%m-%d").strftime("%Y")
+    end_time = datetime.strptime(time_range[1], "%Y.%m-%d").strftime("%Y")
+    ax.set_title(f"{VARIABLE_NAMES[var]} · {METRIC_NAMES[metric]} · {start_time}-{end_time} · start month={start_period}")
     ax.set_xlabel(rank_dim)
     ax.set_ylabel("count")
     ax.grid(True, alpha=0.3)
