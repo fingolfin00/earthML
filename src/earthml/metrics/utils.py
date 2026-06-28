@@ -46,7 +46,7 @@ def get_experiment_configs(
 
 def get_and_subset_datasets(
     s: Settings,
-    period: Literal["days", "months", "years"],
+    period: Literal["hours", "days", "months", "years"],
     lat_range: tuple[float, float] | None = None,
     lon_range: tuple[float, float] | None = None,
     time_range: tuple[str, str] | None = None,
@@ -121,7 +121,7 @@ def calculate_climatology(
 
 def calculate_save_and_subset_climatologies(
     s: Settings,
-    period: Literal["days", "months", "years"],
+    period: Literal["hours", "days", "months", "years"],
     force: bool = False,
     clim_period: Literal["day", "month", "year"] = "month",
     lat_range: tuple[float, float] | None = None,
@@ -275,7 +275,7 @@ def calculate_save_and_subset_climatologies(
 def valid_times_from_init_times(
     init_times: xr.DataArray | pd.DatetimeIndex,
     lead: int,
-    period: Literal["days", "months", "years"],
+    period: Literal["hours", "days", "months", "years"],
     lead_period_offset: int = -1,
 ) -> xr.DataArray:
     init_values = init_times.values if isinstance(init_times, xr.DataArray) else init_times
@@ -294,7 +294,7 @@ def valid_times_from_init_times(
 def select_target_for_lead(
     an: xr.DataArray | xr.Dataset,
     lead: int,
-    period: Literal["days", "months", "years"],
+    period: Literal["hours", "days", "months", "years"],
     fc: xr.DataArray | xr.Dataset | None = None,
     start: str | None = None,
     end: str | None = None,
@@ -327,7 +327,7 @@ def build_analysis_for_forecast_leadtimes(
     fc_all: xr.DataArray,
     an_raw: xr.DataArray,
     leadtime_dim: str,
-    period: Literal["days", "months", "years"],
+    period: Literal["hours", "days", "months", "years"],
     lead_period_offset: int = -1,
 ) -> xr.DataArray:
     """
@@ -400,7 +400,7 @@ def build_analysis_for_forecast_leadtimes(
 def valid_times_from_forecast(
     fc: xr.DataArray | xr.Dataset,
     lead: int,
-    period: Literal["days", "months", "years"],
+    period: Literal["hours", "days", "months", "years"],
     lead_period_offset: int = -1,
 ) -> xr.DataArray:
     return valid_times_from_init_times(
@@ -415,7 +415,7 @@ def common_time_range(
     fc: xr.DataArray | xr.Dataset,
     an: xr.DataArray | xr.Dataset,
     max_lead: int,
-    period: Literal["days", "months", "years"],
+    period: Literal["hours", "days", "months", "years"],
     lead_period_offset: int = -1,
 ) -> T_Xarray:
     """Drop forecast initializations whose verifying an time is unavailable."""
