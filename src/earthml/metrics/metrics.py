@@ -407,8 +407,6 @@ def calculate_metrics(
     valid_metrics = _validate_metrics(metrics)
     valid_periods, clim_period_range = _validate_periods(clim_period, periods_requested)
 
-    fc, an = xr.unify_chunks(fc, an)
-    fc, an = xr.align(fc, an, join="inner")
     an = an.reset_coords(drop=True)
     fc = fc.reset_coords(drop=True)
 
@@ -480,9 +478,17 @@ def metrics_by_lead(
     clim_period: str = "month",
     period_dim: str = "start_date",
     periods_requested: str | Sequence[str] | None = None,
+    align: bool = True,
 ) -> xr.Dataset:
-    results: list[xr.Dataset] = []
+    if align:
+        fc, an = xr.unify_chunks(fc, an)
+        fc, an = xr.align(fc, an, join="inner")
 
+        if fc_clim is not None and an_clim is not None:
+            fc_clim, an_clim = xr.unify_chunks(fc_clim, an_clim)
+            fc_clim, an_clim = xr.align(fc_clim, an_clim, join="inner")
+
+    results: list[xr.Dataset] = []
     for lead in fc[leadtime_dim].values:
         fc_l = fc.sel({leadtime_dim: lead}, drop=True)
         an_l = an.sel({leadtime_dim: lead}, drop=True)
@@ -535,6 +541,7 @@ def get_metrics(
     clim_period: str = "month",
     period_dim: str = "start_date",
     periods_requested: str | Sequence[str] | None = None,
+    align: bool = True,
 ) -> xr.Dataset:
     def _check_datasets(
         datasets: dict[str, xr.Dataset],
@@ -692,4 +699,5 @@ def get_metrics(
         clim_period=clim_period,
         period_dim=period_dim,
         periods_requested=periods_requested,
+        align=align,
     )
