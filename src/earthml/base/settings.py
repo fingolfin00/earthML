@@ -1,5 +1,5 @@
 from typing import Literal
-from dataclasses import dataclass, fields, asdict
+from dataclasses import dataclass, field, fields, asdict
 
 from pathlib import Path
 import hashlib, json
@@ -20,6 +20,14 @@ TrainerPrecision = Literal[
     "transformer-engine-bfloat16",
 ]
 
+HASH_IGNORE = {
+    "root_dir",
+    "max_epochs",
+    "early_stopping_patience",
+    "torch_workers",
+    "trainer_precision",
+}
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -32,6 +40,7 @@ class Settings:
     model_fc: str = "sps4_atmo"
     model_an: str = "era5"
 
+    leadtimes: list[int | float] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6])
     leadtime_unit: str = "month"
 
     region_name: str = "World"
@@ -57,6 +66,10 @@ class Settings:
     weight_decay: float = 1e-4
     batch_size: int = 32
     max_epochs: int = 50
+
+    target_realization_avg: bool = False
+    fill_nan_value: float = 0.0
+    torch_mask: Literal["target", "input", "both"] = "target"
 
     training_norm: str = "GroupNorm"
 
@@ -160,15 +173,15 @@ class Settings:
             f"c{self.base_channels}_"
             f"bs{self.batch_size}_"
             f"lr{self.init_learning_rate:.0e}_"
-            f"{self.training_norm.lower()}_"
-            f"{self.config_hash}"
+            f"{self.training_norm.lower()}"
         )
 
     @property
     def config_hash(self) -> str:
         config = asdict(self)
 
-        config.pop("root_dir", None)
+        for key in HASH_IGNORE:
+            config.pop(key, None)
 
         payload = json.dumps(
             config,
@@ -204,6 +217,7 @@ class Settings:
 
     def save_config(self) -> None:
         config = asdict(self)
+        config["config_hash"] = self.config_hash
 
         with open(self.config_path, "w") as f:
             json.dump(
