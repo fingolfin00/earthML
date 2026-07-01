@@ -33,8 +33,6 @@ import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 from cartopy.mpl.geoaxes import GeoAxes
 
-from ..metrics import convert_to_da_list
-
 from .defaults import (
     DEFAULT_IMPROVEMENT_PLOT_CONFIG,
     DEFAULT_PLOT_CONFIG,
@@ -129,6 +127,37 @@ def select_metric(
         da = da.sel(start_period=start_period)
 
     return da
+
+
+def convert_to_da_list(
+    ds: xr.DataArray | xr.Dataset | Sequence[xr.DataArray | xr.Dataset | None] | None,
+    var: str,
+) -> list[xr.DataArray]:
+    if ds is None:
+        return []
+
+    if isinstance(ds, xr.DataArray):
+        return [ds]
+
+    if isinstance(ds, xr.Dataset):
+        return [ds[var]]
+
+    if isinstance(ds, Sequence) and not isinstance(ds, (str, bytes)):
+        result: list[xr.DataArray] = []
+
+        for d in ds:
+            if d is None:
+                continue
+            if isinstance(d, xr.Dataset):
+                result.append(d[var])
+            elif isinstance(d, xr.DataArray):
+                result.append(d)
+            else:
+                raise TypeError(f"Type {type(d)} not supported.")
+
+        return result
+
+    raise TypeError(f"Type {type(ds)} not supported.")
 
 
 def plot_profile(
