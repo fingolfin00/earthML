@@ -4,6 +4,8 @@ from dataclasses import dataclass, field, fields, asdict
 from pathlib import Path
 import hashlib, json
 
+import pandas as pd
+
 
 TrainerPrecision = Literal[
     64,
@@ -22,10 +24,10 @@ TrainerPrecision = Literal[
 
 HASH_IGNORE = {
     "root_dir",
-    "max_epochs",
-    "early_stopping_patience",
+    # "max_epochs",
+    # "early_stopping_patience",
     "torch_workers",
-    "trainer_precision",
+    # "trainer_precision",
 }
 
 
@@ -35,6 +37,8 @@ class Settings:
 
     lead_period_offset: int = -1
 
+    var_file_fc: str = "mslp"
+    var_file_an: str = "mslp"
     var_fc: str = "mslp"
     var_an: str = "mslp"
     model_fc: str = "sps4_atmo"
@@ -130,11 +134,11 @@ class Settings:
 
     @property
     def input_fc(self) -> Path:
-        return self.input_dir / f"{self.model_fc}_{self.var_fc}.zarr"
+        return self._find_dataset(self.model_fc, self.var_file_fc)
 
     @property
     def input_an(self) -> Path:
-        return self.input_dir / f"{self.model_an}_{self.var_an}.zarr"
+        return self._find_dataset(self.model_an, self.var_file_an)
 
     @property
     def input_mlfc_test(self) -> Path:
@@ -228,6 +232,21 @@ class Settings:
                 default=str,
             )
 
+    def _find_dataset(
+        self,
+        model: str,
+        var: str,
+    ) -> Path:
+        base = self.input_dir / f"{model}_{var}"
+
+        for ext in (".zarr", ".nc"):
+            path = base.with_suffix(ext)
+            if path.exists():
+                return path
+
+        raise FileNotFoundError(f"No dataset found for {base} (.zarr or .nc)")
+
+
     @classmethod
     def from_json(cls, path: Path, **overrides) -> "Settings":
         with open(path) as f:
@@ -287,11 +306,11 @@ class Settings:
         for field in ignore:
             config.pop(field, None)
 
-        return tuple(sorted(config.items()))
+        return json.dumps(config, sort_keys=True, default=str)
 
 
     def __post_init__(self):
-        if self.train_end >= self.test_start:
+        if pd.Timestamp(self.train_end) >= pd.Timestamp(self.test_start):
             raise ValueError("Train and test periods overlap.")
         if self.batch_size <= 0:
             raise ValueError("batch_size must be positive.")
