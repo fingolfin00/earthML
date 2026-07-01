@@ -105,21 +105,25 @@ class EarthMLDims:
 
         return ds_out
 
-
     def _rename_dim_and_coord(
         self,
-        ds: xr.Dataset,
+        ds: xr.Dataset | xr.DataArray,
         src: str,
-        target: str
-    ) -> xr.Dataset:
+        target: str,
+    ) -> xr.Dataset | xr.DataArray:
         """
         Private method, to be used only in this module.
+        Works with both xarray Dataset and DataArray.
         """
         rename_map = {}
 
         if src in ds.dims:
             rename_map[src] = target
-        if src in ds.coords or src in ds.data_vars:
+
+        if src in ds.coords:
+            rename_map[src] = target
+
+        if isinstance(ds, xr.Dataset) and src in ds.data_vars:
             rename_map[src] = target
 
         if rename_map:
