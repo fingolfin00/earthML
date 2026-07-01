@@ -24,6 +24,9 @@ TrainerPrecision = Literal[
 
 HASH_IGNORE = {
     "root_dir",
+    "data_root_dir",
+    "exp_root_dir",
+    "plot_root_dir",
     # "max_epochs",
     # "early_stopping_patience",
     "torch_workers",
@@ -33,7 +36,11 @@ HASH_IGNORE = {
 
 @dataclass(frozen=True)
 class Settings:
-    root_dir: Path = Path.home() / "ML" / "seasonal"
+    root_dir: Path | None = Path.home() / "ML" / "seasonal"
+
+    data_root_dir: Path | None = None
+    exp_root_dir: Path | None = None
+    plot_root_dir: Path | None = None
 
     lead_period_offset: int = -1
 
@@ -94,6 +101,8 @@ class Settings:
 
     @property
     def data_dir(self) -> Path:
+        if self.data_root_dir is not None:
+            return self.data_root_dir
         return self.root_dir / "data"
 
     @property
@@ -110,7 +119,12 @@ class Settings:
 
     @property
     def exp_dir(self) -> Path:
-        return self.root_dir / "experiments" / self.output_name
+        base = (
+            self.exp_root_dir
+            if self.exp_root_dir is not None
+            else self.root_dir / "experiments"
+        )
+        return base / self.output_name
 
     @property
     def output_dir(self) -> Path:
@@ -126,7 +140,11 @@ class Settings:
 
     @property
     def plot_dir(self) -> Path:
-        return self.exp_dir / "plots"
+        return (
+            self.exp_dir / "plots"
+            if self.plot_root_dir is None
+            else self.plot_root_dir / self.output_name
+        )
 
     @property
     def config_path(self) -> Path:
@@ -214,6 +232,7 @@ class Settings:
             self.download_dir,
             self.input_dir,
             self.output_dir,
+            self.output_clim_dir,
             self.metrics_dir,
             self.plot_dir,
         ):
@@ -252,12 +271,18 @@ class Settings:
         with open(path) as f:
             config = json.load(f)
 
-        # Ignore metadata saved in config.json
         config.pop("config_hash", None)
 
-        # Restore Path
-        if "root_dir" in config:
-            config["root_dir"] = Path(config["root_dir"])
+        path_fields = {
+            "root_dir",
+            "data_root_dir",
+            "exp_root_dir",
+            "plot_root_dir",
+        }
+
+        for name in path_fields:
+            if config.get(name) is not None:
+                config[name] = Path(config[name])
 
         config.update(overrides)
 
@@ -283,9 +308,8 @@ class Settings:
         b = asdict(other)
 
         for field in ignore:
-            a.pop(field)
-
-            b.pop(field)
+            a.pop(field, None)
+            b.pop(field, None)
 
         return a == b
 
@@ -294,7 +318,7 @@ class Settings:
         self,
         *,
         ignore: set[str] | None = None,
-    ) -> tuple:
+    ) -> str:
         ignore = ignore or set()
 
         unknown = ignore - self.field_names()
@@ -310,7 +334,35 @@ class Settings:
 
 
     def __post_init__(self):
+        if self.root_dir is None:
+            missing = [
+                name
+                for name in ("data_root_dir", "exp_root_dir", "plot_root_dir")
+                if getattr(self, name) is None
+            ]
+            if missing:
+                raise ValueError(
+                    "When root_dir is None, the following must be provided: "
+                    + ", ".join(missing)
+                )
+
         if pd.Timestamp(self.train_end) >= pd.Timestamp(self.test_start):
             raise ValueError("Train and test periods overlap.")
+
         if self.batch_size <= 0:
             raise ValueError("batch_size must be positive.")
+
+        if self.accumulate_grad_batches <= 0:
+            raise ValueError("accumulate_grad_batches must be positive.")
+
+        if self.max_epochs <= 0:
+            raise ValueError("max_epochs must be positive.")
+
+        if not 0 < self.train_fraction <= 1:
+            raise ValueError("train_fraction must be in (0, 1].")
+
+        if self.leadtime_unit not in {"hour", "day", "month"}:
+            raise ValueError("leadtime_unit must be 'hour', 'day', or 'month'.")
+
+        if not self.leadtimes:
+            raise ValueError("leadtimes cannot be empty.")
