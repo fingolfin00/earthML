@@ -9,7 +9,7 @@ import xarray as xr
 from dask.diagnostics.progress import ProgressBar
 
 from .settings import Settings
-from .coords import ensure_time_coord
+from .coords import ensure_time_coord, normalize_lon_range
 
 
 T_Xarray = TypeVar("T_Xarray", xr.DataArray, xr.Dataset)
