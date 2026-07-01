@@ -21,6 +21,7 @@ from .datasets import (
     open_zarr_var,
     open_nc,
     open_nc_var,
+    select_target_for_lead,
     subset_dataset,
     get_and_subset_datasets,
 )
@@ -63,6 +64,7 @@ __all__ = [
     "open_nc",
     "open_nc_var",
     # dataset utils
+    "select_target_for_lead",
     "subset_dataset",
     "get_and_subset_datasets",
     # coords utils

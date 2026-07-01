@@ -9,6 +9,7 @@ import xarray as xr
 from dask.diagnostics.progress import ProgressBar
 
 from .settings import Settings
+from .coords import ensure_time_coord
 
 
 T_Xarray = TypeVar("T_Xarray", xr.DataArray, xr.Dataset)
@@ -102,9 +103,8 @@ def get_and_subset_datasets(
             period=period,
             lead_period_offset=s.lead_period_offset,
         )
-
     fc = subset_dataset(
-        fc_da.to_dataset(name=s.var_file),
+        fc_da.to_dataset(name=s.var_file_an),
         lat_range=lat_range,
         lon_range=lon_range,
         time_range=time_range,
@@ -112,7 +112,7 @@ def get_and_subset_datasets(
     )
 
     an = subset_dataset(
-        an_da.to_dataset(name=s.var_file),
+        an_da.to_dataset(name=s.var_file_fc),
         lat_range=lat_range,
         lon_range=lon_range,
         time_range=time_range,
