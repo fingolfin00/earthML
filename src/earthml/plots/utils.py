@@ -484,10 +484,12 @@ def plot_map(
     lead_value: object,
     out_file: Path,
     time_range: tuple[str, str],
+    plot_type: Literal["pcolormesh", "contourf"] = "pcolormesh",
     leadtime_dim: str = "leadtime",
     period_dim: str = "start_date",
     var_plot_config: dict = {},
     impro_plot_config: dict = {},
+    force_scale: int | float | None = None,
 ) -> None:
     is_skill = is_skill_model(model) # or is_skill_metric(metric)
 
@@ -532,6 +534,9 @@ def plot_map(
             else METRIC_NAMES[metric]
         )
 
+    if force_scale is not None:
+        scale = force_scale
+
     da = da / scale
 
     avg = da.mean().values
@@ -546,15 +551,39 @@ def plot_map(
         is_skill=is_skill,
     )
 
-    im = ax.pcolormesh(
-        da[lon],
-        da[lat],
-        da,
-        transform=ccrs.PlateCarree(),
-        cmap=cmap,
-        norm=norm,
-        shading="auto",
-    )
+    if plot_type == "pcolormesh":
+        im = ax.pcolormesh(
+            da[lon],
+            da[lat],
+            da,
+            transform=ccrs.PlateCarree(),
+            cmap=cmap,
+            norm=norm,
+            shading="auto",
+        )
+
+    elif plot_type == "contourf":
+        from cartopy.util import add_cyclic_point
+
+        data_cyclic, lon_cyclic = add_cyclic_point(
+            da.values,
+            coord=da[lon].values,
+            axis=da.get_axis_num(lon),
+        )
+
+        im = ax.contourf(
+            lon_cyclic,
+            da[lat].values,
+            data_cyclic,
+            levels=ticks,
+            transform=ccrs.PlateCarree(),
+            cmap=cmap,
+            norm=norm,
+            extend="both",
+        )
+
+    else:
+        raise ValueError(f"Unsupported plot_type {plot_type}, use one of [pcolormesh, contourf]")
 
     ax.coastlines(linewidth=0.7)
     ax.add_feature(cfeature.BORDERS, linewidth=0.3)
