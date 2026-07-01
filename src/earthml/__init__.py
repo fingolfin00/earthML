@@ -14,6 +14,14 @@ if TYPE_CHECKING:
         Leadtime,
         Region,
         Settings,
+
+        open_zarr,
+        open_zarr_var,
+        open_nc,
+        open_nc_var,
+
+        get_experiment_configs,
+        get_and_subset_datasets,
     )
 
     from .misc import (
@@ -31,13 +39,7 @@ if TYPE_CHECKING:
     )
 
     from .metrics import (
-        get_and_subset_datasets,
         get_metrics,
-        get_experiment_configs,
-
-        open_zarr,
-        open_zarr_var,
-
         calculate_climatology,
         calculate_save_and_subset_climatologies,
     )
@@ -82,6 +84,8 @@ __all__ = [
     "get_experiment_configs",
     "open_zarr",
     "open_zarr_var",
+    "open_nc",
+    "open_nc_var",
     # climatology
     "calculate_climatology",
     "calculate_save_and_subset_climatologies",
@@ -94,6 +98,14 @@ _EXPORTS = {
     "Leadtime": (".base", "Leadtime"),
     "Region": (".base", "Region"),
     "Settings": (".base", "Settings"),
+
+    "open_zarr": (".base", "open_zarr"),
+    "open_zarr_var": (".base", "open_zarr_var"),
+    "open_nc": (".base", "open_nc"),
+    "open_nc_var": (".base", "open_nc_var"),
+
+    "get_and_subset_datasets": (".base", "get_and_subset_datasets"),
+    "get_experiment_configs": (".base", "get_experiment_configs"),
 
     "Dask": (".misc", "Dask"),
     "Table": (".misc", "Table"),
@@ -113,11 +125,6 @@ _EXPORTS = {
     "SplitDataModule": (".neural.module", "SplitDataModule"),
 
     "get_metrics": (".metrics", "get_metrics"),
-
-    "get_and_subset_datasets": (".metrics", "get_and_subset_datasets"),
-    "get_experiment_configs": (".metrics", "get_experiment_configs"),
-    "open_zarr": (".metrics", "open_zarr"),
-    "open_zarr_var": (".metrics", "open_zarr_var"),
 
     "calculate_climatology": (".metrics", "calculate_climatology"),
     "calculate_save_and_subset_climatologies": (".metrics", "calculate_save_and_subset_climatologies"),

@@ -5,16 +5,20 @@ import numpy as np
 import xarray as xr
 import xskillscore as xs
 
-from .utils import (
-    safe_div,
-    aggregate_leadtime_da,
-)
+from ..base import aggregate_leadtime_da
 
 from .definitions import (
     Metric,
     DETERMINISTIC_METRICS,
     PROBABILISTIC_METRICS,
 )
+
+
+def safe_percent(num: xr.DataArray, den: xr.DataArray) -> xr.DataArray:
+    return xr.where(den != 0, 100 * num / den, np.nan)
+
+def safe_div(num: xr.DataArray, den: xr.DataArray) -> xr.DataArray:
+    return xr.where(den != 0, num / den, np.nan)
 
 
 def as_metric(metric: str | Metric) -> Metric:

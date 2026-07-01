@@ -23,7 +23,7 @@ from matplotlib.colors import (
 )
 from matplotlib.cm import ScalarMappable
 
-from ..base.settings import Settings
+from ..base import Settings
 from ..metrics import safe_percent
 
 
