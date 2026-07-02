@@ -36,6 +36,7 @@ def calculate_climatology(
     rolling_window: int | None = None,
     rolling_center: bool = True,
     rolling_min_periods: int = 1,
+    check_group_counts: bool = True,
 ) -> T_Xarray:
     if clim_period in ("dayofyear_hour", "day_hour", "month_hour"):
         if clim_period == "dayofyear_hour":
@@ -52,9 +53,50 @@ def calculate_climatology(
             }
         )
 
+        if check_group_counts:
+            counts = da.groupby([group_period, "hour"]).count(time_dim)
+
+            if isinstance(counts, xr.Dataset):
+                counts = next(iter(counts.data_vars.values()))
+
+            counts_1d = counts.isel(
+                {dim: 0 for dim in counts.dims if dim not in {group_period, "hour"}}
+            ).compute()
+
+            print(f"{clim_period} group counts:")
+            print("sizes:", counts_1d.sizes)
+            print("min count:", int(counts_1d.min()))
+            print("max count:", int(counts_1d.max()))
+
+            bad = counts_1d.where(counts_1d != counts_1d.max(), drop=True)
+
+            if bad.size:
+                print("Groups with fewer samples than max:")
+
+                for count_value in np.unique(bad.values[np.isfinite(bad.values)]):
+                    subset = bad.where(bad == count_value, drop=True)
+
+                    print(
+                        f"  count={int(count_value)}: "
+                        f"{group_period}={subset[group_period].values.tolist()}, "
+                        f"hour={subset['hour'].values.tolist()}"
+                    )
+
         clim = da.groupby([group_period, "hour"]).mean(time_dim)
 
+        clim = clim.chunk({group_period: -1})
+
+        print("clim dims:", clim.dims)
+        print("clim sizes:", clim.sizes)
+
         if rolling_window is not None:
+            if rolling_window > clim.sizes[group_period]:
+                raise ValueError(
+                    f"rolling_window={rolling_window} is larger than "
+                    f"{group_period} size={clim.sizes[group_period]} "
+                    f"for clim_period={clim_period}"
+                )
+
             clim = clim.rolling(
                 {group_period: rolling_window},
                 center=rolling_center,
@@ -65,7 +107,22 @@ def calculate_climatology(
 
     clim = da.groupby(f"{time_dim}.{clim_period}").mean(time_dim)
 
+    if check_group_counts:
+        counts = da[time_dim].groupby(f"{time_dim}.{clim_period}").count()
+        counts = counts.compute() if hasattr(counts.data, "compute") else counts
+
+        print(f"{clim_period} group counts:")
+        print("sizes:", counts.sizes)
+        print("min count:", int(counts.min()))
+        print("max count:", int(counts.max()))
+
     if rolling_window is not None:
+        if rolling_window > clim.sizes[clim_period]:
+            raise ValueError(
+                f"rolling_window={rolling_window} is larger than "
+                f"{clim_period} size={clim.sizes[clim_period]}"
+            )
+
         clim = clim.rolling(
             {clim_period: rolling_window},
             center=rolling_center,
