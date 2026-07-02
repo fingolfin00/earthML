@@ -23,17 +23,35 @@ from ..base import (
 
 def calculate_climatology(
     da: xr.DataArray | xr.Dataset,
-    time_dim = "time",
-    clim_period: Literal["day", "month", "year"] = "month",
+    time_dim: str = "time",
+    clim_period: Literal["dayofyear", "day", "month", "year", "month_hour", "day_hour"] = "month",
 ) -> T_Xarray:
-    return cast(T_Xarray, da.groupby(f"{time_dim}.{clim_period}").mean(time_dim))
+    if clim_period in ("month_hour", "day_hour"):
+        group_period = "month" if clim_period == "month_hour" else "day"
+
+        coord = xr.DataArray(
+            getattr(da[time_dim].dt, group_period).astype(str).str.zfill(2)
+            + "_"
+            + da[time_dim].dt.hour.astype(str).str.zfill(2),
+            coords={time_dim: da[time_dim]},
+            dims=time_dim,
+            name=clim_period,
+        )
+
+        da = da.assign_coords({clim_period: coord})
+        return cast(T_Xarray, da.groupby(clim_period).mean(time_dim))
+
+    return cast(
+        T_Xarray,
+        da.groupby(f"{time_dim}.{clim_period}").mean(time_dim),
+    )
 
 
 def calculate_save_and_subset_climatologies(
     s: Settings,
     leadtime_units: Literal["hours", "days", "months", "years"],
     force: bool = False,
-    clim_period: Literal["day", "month", "year"] = "month",
+    clim_period: Literal["dayofyear", "day", "month", "year", "month_hour", "day_hour"] = "month",
     lat_range: tuple[float, float] | None = None,
     lon_range: tuple[float, float] | None = None,
     time_range: tuple[str, str] | None = None,
