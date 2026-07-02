@@ -563,6 +563,8 @@ def plot_map(
         )
 
     elif plot_type == "contourf":
+        da = da.where(np.isfinite(da))
+
         from cartopy.util import add_cyclic_point
 
         data_cyclic, lon_cyclic = add_cyclic_point(
