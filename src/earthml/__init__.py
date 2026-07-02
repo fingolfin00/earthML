@@ -22,6 +22,12 @@ if TYPE_CHECKING:
 
         get_experiment_configs,
         get_and_subset_datasets,
+
+        aggregate_leadtime_ds,
+        aggregate_leadtime_da,
+        aggregate_leadtime_da_dayweighted,
+
+        ensure_time_coord,
     )
 
     from .misc import (
@@ -86,6 +92,11 @@ __all__ = [
     "open_zarr_var",
     "open_nc",
     "open_nc_var",
+    "ensure_time_coord",
+    # agggregation
+    "aggregate_leadtime_ds",
+    "aggregate_leadtime_da",
+    "aggregate_leadtime_da_dayweighted",
     # climatology
     "calculate_climatology",
     "calculate_save_and_subset_climatologies",
@@ -106,6 +117,12 @@ _EXPORTS = {
 
     "get_and_subset_datasets": (".base", "get_and_subset_datasets"),
     "get_experiment_configs": (".base", "get_experiment_configs"),
+
+    "aggregate_leadtime_ds": (".base", "aggregate_leadtime_ds"),
+    "aggregate_leadtime_da": (".base", "aggregate_leadtime_da"),
+    "aggregate_leadtime_da_dayweighted": (".base", "aggregate_leadtime_da_dayweighted"),
+
+    "ensure_time_coord": (".base", "ensure_time_coord"),
 
     "Dask": (".misc", "Dask"),
     "Table": (".misc", "Table"),
