@@ -39,22 +39,13 @@ def aggregate_leadtime_da(
     labels: list[str] = []
     centers: list[float] = []
 
-    print(da[leadtime_dim])
-    print(da[leadtime_dim].dtype)
-    print(da[leadtime_dim].values[:10])
-
     for name, leads in windows.items():
         leads = [int(x) for x in leads]
-        print("name:", name)
-        print("available:", sorted(available))
-        print("requested:", leads)
-        print("missing:", set(leads) - available)
 
         if not set(leads).issubset(available):
             continue
 
         x = da.sel({leadtime_dim: leads}).mean(leadtime_dim, skipna=False)
-        print("agg:", name, x)
 
         labels.append(name)
         centers.append(float(np.mean(leads)))
