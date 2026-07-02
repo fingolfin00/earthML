@@ -31,7 +31,7 @@ def calculate_climatology(
 
 def calculate_save_and_subset_climatologies(
     s: Settings,
-    period: Literal["hours", "days", "months", "years"],
+    leadtime_units: Literal["hours", "days", "months", "years"],
     force: bool = False,
     clim_period: Literal["day", "month", "year"] = "month",
     lat_range: tuple[float, float] | None = None,
@@ -63,8 +63,6 @@ def calculate_save_and_subset_climatologies(
     train_pred_path = s.output_dir / "train_corrected.zarr"
     train_pred_clim_path = s.output_clim_dir / "train_corrected_clim.zarr"
 
-    print(f"Get climatologies ({clim_time_range[0]} - {clim_time_range[1]}) for experiment {s.output_name}")
-
     s.make_dirs()
 
     need_base_clim = force or not fc_clim_path.exists() or not an_clim_path.exists()
@@ -75,7 +73,7 @@ def calculate_save_and_subset_climatologies(
     if need_input_data:
         fc, an, mlfc = get_and_subset_datasets(
             s,
-            period=period,
+            leadtime_units=leadtime_units,
             lat_range=lat_range,
             lon_range=lon_range,
             time_range=time_range,

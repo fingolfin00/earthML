@@ -57,7 +57,7 @@ def open_nc_var(
 
 def get_and_subset_datasets(
     s: Settings,
-    period: Literal["hours", "days", "months", "years"],
+    leadtime_units: Literal["hours", "days", "months", "years"],
     lat_range: tuple[float, float] | None = None,
     lon_range: tuple[float, float] | None = None,
     time_range: tuple[str, str] | None = None,
@@ -82,7 +82,6 @@ def get_and_subset_datasets(
 
     if coord_rename_fc is not None:
         for rename_seq in coord_rename_fc:
-            print(rename_seq)
             if len(list(rename_seq)) == 2:
                 fc_da = fc_da.earthml.rename_dim_and_coord(rename_seq[0], rename_seq[1])
     if coord_rename_an is not None:
@@ -100,7 +99,7 @@ def get_and_subset_datasets(
             fc_all=fc_da,
             an_raw=an_da,
             leadtime_dim=leadtime_dim,
-            period=period,
+            leadtime_units=leadtime_units,
             lead_period_offset=s.lead_period_offset,
         )
     fc = subset_dataset(
@@ -203,13 +202,13 @@ def subset_dataset(
 def valid_times_from_init_times(
     init_times: xr.DataArray | pd.DatetimeIndex,
     lead: int,
-    period: Literal["hours", "days", "months", "years"],
+    leadtime_units: Literal["hours", "days", "months", "years"],
     lead_period_offset: int = -1,
 ) -> xr.DataArray:
     init_values = init_times.values if isinstance(init_times, xr.DataArray) else init_times
 
     valid_times = [
-        pd.Timestamp(t) + pd.DateOffset(**{period: lead + lead_period_offset})
+        pd.Timestamp(t) + pd.DateOffset(**{leadtime_units: lead + lead_period_offset})
         for t in init_values
     ]
 
@@ -222,7 +221,7 @@ def valid_times_from_init_times(
 def select_target_for_lead(
     an: xr.DataArray | xr.Dataset,
     lead: int,
-    period: Literal["hours", "days", "months", "years"],
+    leadtime_units: Literal["hours", "days", "months", "years"],
     fc: xr.DataArray | xr.Dataset | None = None,
     start: str | None = None,
     end: str | None = None,
@@ -241,7 +240,7 @@ def select_target_for_lead(
     valid_times = valid_times_from_init_times(
         init_times,
         lead,
-        period=period,
+        leadtime_units=leadtime_units,
         lead_period_offset=lead_period_offset,
     )
 
@@ -256,7 +255,7 @@ def build_analysis_for_forecast_leadtimes(
     fc_all: xr.DataArray,
     an_raw: xr.DataArray,
     leadtime_dim: str,
-    period: Literal["hours", "days", "months", "years"],
+    leadtime_units: Literal["hours", "days", "months", "years"],
     lead_period_offset: int = -1,
 ) -> xr.DataArray:
     """
@@ -298,7 +297,7 @@ def build_analysis_for_forecast_leadtimes(
             fc=fc,
             an=an_raw,
             max_lead=lead,
-            period=period,
+            leadtime_units=leadtime_units,
             lead_period_offset=lead_period_offset,
         )
 
@@ -306,7 +305,7 @@ def build_analysis_for_forecast_leadtimes(
             an=an_raw,
             lead=lead,
             fc=fc,
-            period=period,
+            leadtime_units=leadtime_units,
             lead_period_offset=lead_period_offset,
         )
 
@@ -329,13 +328,13 @@ def build_analysis_for_forecast_leadtimes(
 def valid_times_from_forecast(
     fc: xr.DataArray | xr.Dataset,
     lead: int,
-    period: Literal["hours", "days", "months", "years"],
+    leadtime_units: Literal["hours", "days", "months", "years"],
     lead_period_offset: int = -1,
 ) -> xr.DataArray:
     return valid_times_from_init_times(
         init_times=fc.time,
         lead=lead,
-        period=period,
+        leadtime_units=leadtime_units,
         lead_period_offset=lead_period_offset,
     )
 
@@ -344,14 +343,14 @@ def common_time_range(
     fc: xr.DataArray | xr.Dataset,
     an: xr.DataArray | xr.Dataset,
     max_lead: int,
-    period: Literal["hours", "days", "months", "years"],
+    leadtime_units: Literal["hours", "days", "months", "years"],
     lead_period_offset: int = -1,
 ) -> T_Xarray:
     """Drop forecast initializations whose verifying an time is unavailable."""
     valid_times = valid_times_from_forecast(
         fc=fc,
         lead=max_lead,
-        period=period,
+        leadtime_units=leadtime_units,
         lead_period_offset=lead_period_offset,
     )
     available_an_times = set(pd.to_datetime(an.time.values))

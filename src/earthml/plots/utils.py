@@ -193,7 +193,6 @@ def plot_profile(
 
     for model, da, da_member in zip(models, plot_das, plot_das_member):
         da = da.reset_coords(drop=True)
-        print(da)
 
         color = MODEL_COLORS.get(model, None)
 
