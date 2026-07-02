@@ -24,34 +24,73 @@ from ..base import (
 def calculate_climatology(
     da: xr.DataArray | xr.Dataset,
     time_dim: str = "time",
-    clim_period: Literal["dayofyear", "day", "month", "year", "month_hour", "day_hour"] = "month",
+    clim_period: Literal[
+        "dayofyear",
+        "day",
+        "month",
+        "year",
+        "dayofyear_hour",
+        "day_hour",
+        "month_hour",
+    ] = "month",
+    rolling_window: int | None = None,
+    rolling_center: bool = True,
+    rolling_min_periods: int = 1,
 ) -> T_Xarray:
-    if clim_period in ("month_hour", "day_hour"):
-        group_period = "month" if clim_period == "month_hour" else "day"
+    if clim_period in ("dayofyear_hour", "day_hour", "month_hour"):
+        if clim_period == "dayofyear_hour":
+            group_period = "dayofyear"
+        elif clim_period == "day_hour":
+            group_period = "day"
+        else:
+            group_period = "month"
 
-        coord = xr.DataArray(
-            getattr(da[time_dim].dt, group_period).astype(str).str.zfill(2)
-            + "_"
-            + da[time_dim].dt.hour.astype(str).str.zfill(2),
-            coords={time_dim: da[time_dim]},
-            dims=time_dim,
-            name=clim_period,
+        da = da.assign_coords(
+            {
+                group_period: getattr(da[time_dim].dt, group_period),
+                "hour": da[time_dim].dt.hour,
+            }
         )
 
-        da = da.assign_coords({clim_period: coord})
-        return cast(T_Xarray, da.groupby(clim_period).mean(time_dim))
+        clim = da.groupby([group_period, "hour"]).mean(time_dim)
 
-    return cast(
-        T_Xarray,
-        da.groupby(f"{time_dim}.{clim_period}").mean(time_dim),
-    )
+        if rolling_window is not None:
+            clim = clim.rolling(
+                {group_period: rolling_window},
+                center=rolling_center,
+                min_periods=rolling_min_periods,
+            ).mean()
+
+        return cast(T_Xarray, clim)
+
+    clim = da.groupby(f"{time_dim}.{clim_period}").mean(time_dim)
+
+    if rolling_window is not None:
+        clim = clim.rolling(
+            {clim_period: rolling_window},
+            center=rolling_center,
+            min_periods=rolling_min_periods,
+        ).mean()
+
+    return cast(T_Xarray, clim)
 
 
 def calculate_save_and_subset_climatologies(
     s: Settings,
     leadtime_units: Literal["hours", "days", "months", "years"],
     force: bool = False,
-    clim_period: Literal["dayofyear", "day", "month", "year", "month_hour", "day_hour"] = "month",
+    clim_period: Literal[
+        "dayofyear",
+        "day",
+        "month",
+        "year",
+        "dayofyear_hour",
+        "day_hour",
+        "month_hour",
+    ] = "month",
+    rolling_window: int | None = None,
+    rolling_center: bool = True,
+    rolling_min_periods: int = 1,
     lat_range: tuple[float, float] | None = None,
     lon_range: tuple[float, float] | None = None,
     time_range: tuple[str, str] | None = None,
@@ -114,7 +153,14 @@ def calculate_save_and_subset_climatologies(
             train_pred = open_zarr_var(train_pred_path, s.var_fc)
 
             with ProgressBar():
-                mlfc_clim = calculate_climatology(train_pred, time_dim=train_pred.earthml.guessed_dims.time, clim_period=clim_period).compute()
+                mlfc_clim = calculate_climatology(
+                    train_pred,
+                    time_dim=train_pred.earthml.guessed_dims.time,
+                    clim_period=clim_period,
+                    rolling_window=rolling_window,
+                    rolling_center=rolling_center,
+                    rolling_min_periods=rolling_min_periods,
+                ).compute()
 
             mlfc_clim.to_dataset(name=s.var_file_fc).to_zarr(
                 train_pred_clim_path,
@@ -139,6 +185,9 @@ def calculate_save_and_subset_climatologies(
                 fc_train,
                 time_dim=fc_train.earthml.guessed_dims.time,
                 clim_period=clim_period,
+                rolling_window=rolling_window,
+                rolling_center=rolling_center,
+                rolling_min_periods=rolling_min_periods,
             ).compute()
 
         fc_clim.to_dataset(name=s.var_file_fc).to_zarr(
@@ -158,6 +207,9 @@ def calculate_save_and_subset_climatologies(
                 an_train,
                 time_dim=an_train.earthml.guessed_dims.time,
                 clim_period=clim_period,
+                rolling_window=rolling_window,
+                rolling_center=rolling_center,
+                rolling_min_periods=rolling_min_periods,
             ).compute()
 
         an_clim.to_dataset(name=s.var_file_an).to_zarr(
