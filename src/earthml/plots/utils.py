@@ -490,6 +490,7 @@ def plot_map(
     var_plot_config: dict = {},
     impro_plot_config: dict = {},
     force_scale: int | float | None = None,
+    title_strftime: str = "%Y",
 ) -> None:
     is_skill = is_skill_model(model) # or is_skill_metric(metric)
 
@@ -590,8 +591,8 @@ def plot_map(
 
     label = lead_label(da, lead_value, leadtime_dim)
 
-    start_time = datetime.strptime(time_range[0], "%Y-%m-%d").strftime("%Y")
-    end_time = datetime.strptime(time_range[1], "%Y-%m-%d").strftime("%Y")
+    start_time = datetime.strptime(time_range[0], "%Y-%m-%d").strftime(title_strftime)
+    end_time = datetime.strptime(time_range[1], "%Y-%m-%d").strftime(title_strftime)
     ax.set_title(
         f"{VARIABLE_NAMES[var]} · {model} · {start_time}-{end_time}\n"
         f"start month={start_period} · leadtime={label} · avg={avg:.3f} {unit_label} · geoavg={geo_avg:.3f} {unit_label}"
