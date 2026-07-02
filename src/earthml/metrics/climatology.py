@@ -24,7 +24,7 @@ from ..base import (
 def calculate_climatology(
     da: xr.DataArray | xr.Dataset,
     time_dim = "time",
-    clim_period: str = "month",
+    clim_period: Literal["day", "month", "year"] = "month",
 ) -> T_Xarray:
     return cast(T_Xarray, da.groupby(f"{time_dim}.{clim_period}").mean(time_dim))
 
@@ -119,7 +119,11 @@ def calculate_save_and_subset_climatologies(
 
         with ProgressBar():
             print("Calculate original forecast climatology")
-            fc_clim = calculate_climatology(fc_train).compute()
+            fc_clim = calculate_climatology(
+                fc_train,
+                time_dim=fc_train.earthml.guessed_dims.time,
+                clim_period=clim_period,
+            ).compute()
 
         fc_clim.to_dataset(name=s.var_file_fc).to_zarr(
             fc_clim_path,
@@ -130,11 +134,15 @@ def calculate_save_and_subset_climatologies(
 
         print("Save analysis climatology to:", an_clim_path.name)
 
-        an_train = an.sel({fc.earthml.guessed_dims.time: slice(*clim_time_range)})
+        an_train = an.sel({an.earthml.guessed_dims.time: slice(*clim_time_range)})
 
         with ProgressBar():
             print("Calculate original forecast climatology")
-            an_clim = calculate_climatology(an_train).compute()
+            an_clim = calculate_climatology(
+                an_train,
+                time_dim=an_train.earthml.guessed_dims.time,
+                clim_period=clim_period,
+            ).compute()
 
         an_clim.to_dataset(name=s.var_file_an).to_zarr(
             an_clim_path,
