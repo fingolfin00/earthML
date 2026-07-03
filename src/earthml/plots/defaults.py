@@ -543,16 +543,20 @@ VARIABLE_UNITS = {
     "t2m": "K",
     "d2m": "K",
     "sst": "K",
-    "u10": "m s**-1",
-    "v10": "m s**-1",
-    "tprate": "kg m**-2",
+    "u10": "m s-1",
+    "v10": "m s-1",
+    "tprate": "m s-1",
 }
 
 UNIT_CONVERSIONS = {
     "Pa": ("hPa", 100.0),
     "K": ("K", 1.0),
     "m": ("m", 1.0),
-    "kg m**-2": ("kg m$^{-2}$", 1.0),
+    # "m s-1": ("m s$^{-1}$", 1.0),
+
+    # plot precipitation as mm/day
+    "kg m-2 s-1": ("mm day$^{-1}$", 1 / 86400.0),
+    "m s-1": ("mm day$^{-1}$", 1 / (86400.0 * 1000.0)),
 }
 
 VARIABLE_NAMES = {
