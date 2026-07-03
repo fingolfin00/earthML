@@ -135,10 +135,6 @@ class Settings:
         return self.exp_dir / "climatology"
 
     @property
-    def metrics_dir(self) -> Path:
-        return self.exp_dir / "metrics"
-
-    @property
     def plot_dir(self) -> Path:
         return (
             self.exp_dir / "plots"
@@ -233,7 +229,6 @@ class Settings:
             self.input_dir,
             self.output_dir,
             self.output_clim_dir,
-            self.metrics_dir,
             self.plot_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
