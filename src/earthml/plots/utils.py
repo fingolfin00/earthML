@@ -56,7 +56,18 @@ def safe_label(x: object) -> str:
 
 
 def is_skill_metric(metric: str) -> bool:
-    return metric.endswith("_skill_clim")
+    return (
+        metric.endswith("_skill_clim")
+        or metric.startswith("roc_")
+        or metric in (
+            "corr",
+            "acc",
+            "acc_spatial",
+            "r2",
+            "r2_anom",
+            "spread_skill_ratio",
+        )
+    )
 
 def is_skill_model(model: str) -> bool:
     return model.endswith("_vs_fc")
@@ -517,7 +528,7 @@ def plot_map(
         )
 
     if is_skill_metric(metric):
-        unit_label = "(%)"
+        unit_label = ""
         cb_label = f"{METRIC_NAMES[metric]} {unit_label}"
     elif is_skill_model(model):
         unit_label = "(%)"
@@ -613,6 +624,7 @@ def plot_map(
     )
 
     cb.set_label(cb_label)
+    cb.ax.tick_params(labelsize=7)
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
     plt.tight_layout()
