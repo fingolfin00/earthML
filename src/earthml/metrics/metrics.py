@@ -284,7 +284,7 @@ def core_metrics(
                         .weighted(weights)
                         .mean((realization_dim, *dims))
                     )
-                    out[Metric.SPREAD_SKILL_RATIO.value] = spread / ens_member_rmse
+                    out[Metric.SPREAD_ANOM_SKILL_RATIO.value] = spread / ens_member_rmse
 
             if want(Metric.CRPS_ANOM):
                 out[Metric.CRPS_ANOM.value] = xs.crps_ensemble(
@@ -470,6 +470,84 @@ def calculate_metrics(
     )
 
 
+def metrics_by_lead_window(
+    fc: xr.DataArray,
+    an: xr.DataArray,
+    dims: str | Sequence[str],
+    leadtime_dim: str,
+    leadtime_windows: dict[str, list[int]],
+    *,
+    metrics: str | Sequence[str] | None = None,
+    fc_clim: xr.DataArray | None = None,
+    an_clim: xr.DataArray | None = None,
+    leadtime_agg_coord: str = "leadtime_seasonal",
+    clim_period: str = "month",
+    period_dim: str = "start_date",
+    periods_requested: str | Sequence[str] | None = None,
+    align: bool = True,
+) -> xr.Dataset:
+    if align:
+        fc, an = xr.unify_chunks(fc, an)
+        fc, an = xr.align(fc, an, join="inner")
+
+        if fc_clim is not None and an_clim is not None:
+            fc_clim, an_clim = xr.unify_chunks(fc_clim, an_clim)
+            fc_clim, an_clim = xr.align(fc_clim, an_clim, join="inner")
+
+    results: list[xr.Dataset] = []
+
+    dims_with_lead = list(dims)
+    if leadtime_dim not in dims_with_lead:
+        dims_with_lead.append(leadtime_dim)
+
+    for label, leads in leadtime_windows.items():
+        fc_w = fc.sel({leadtime_dim: leads})
+        an_w = an.sel({leadtime_dim: leads})
+
+        fc_clim_w = (
+            fc_clim.sel({leadtime_dim: leads})
+            if fc_clim is not None
+            else None
+        )
+        an_clim_w = (
+            an_clim.sel({leadtime_dim: leads})
+            if an_clim is not None
+            else None
+        )
+
+        ds = calculate_metrics(
+            fc=fc_w,
+            an=an_w,
+            dims=dims_with_lead,
+            metrics=metrics,
+            fc_clim=fc_clim_w,
+            an_clim=an_clim_w,
+            clim_period=clim_period,
+            period_dim=period_dim,
+            periods_requested=periods_requested,
+        )
+
+        # Force every metric, including CRPS, to carry the seasonal-window coordinate
+        fixed_vars = {}
+        for name, da in ds.data_vars.items():
+            if leadtime_agg_coord not in da.dims:
+                da = da.expand_dims({leadtime_agg_coord: [label]})
+            else:
+                da = da.assign_coords({leadtime_agg_coord: [label]})
+            fixed_vars[name] = da
+        ds = xr.Dataset(fixed_vars, attrs=ds.attrs)
+
+        results.append(ds)
+
+    return xr.concat(
+        results,
+        dim=leadtime_agg_coord,
+        coords="different",
+        compat="no_conflicts",
+        combine_attrs="override",
+    )
+
+
 def metrics_by_lead(
     fc: xr.DataArray,
     an: xr.DataArray,
@@ -526,7 +604,7 @@ def metrics_by_lead(
 
 
 MetricKind = Literal["scalar", "maps", "timeseries"]
-LeadtimeAgg = Literal["single", "aggregated"]
+LeadtimeAgg = Literal["single", "aggregated", "seasonal_window"]
 RealizationAgg = Literal["member", "ensemble_mean"]
 
 
@@ -535,7 +613,7 @@ def get_metrics(
     fc: xr.Dataset,
     var: str,
     metric_kind: MetricKind,
-    leadtime_agg: bool,
+    leadtime_agg: LeadtimeAgg,
     realization_agg: bool,
     fc_clim: xr.Dataset | None = None,
     an_clim: xr.Dataset | None = None,
@@ -642,7 +720,7 @@ def get_metrics(
     leadtime_dim = fc_da.earthml.guessed_dims.leadtime
 
     # Aggregate if requested
-    if leadtime_agg == True and leadtime_windows is not None:
+    if leadtime_agg == "aggregated" and leadtime_windows is not None:
         leadtime_dim = leadtime_agg_coord
         an_da = aggregate_leadtime_da(
             da=an_da,
@@ -692,12 +770,34 @@ def get_metrics(
             "timeseries": (da.earthml.guessed_dims.latitude, da.earthml.guessed_dims.longitude),
         }[kind]
 
+    metric_dims = _metric_dims(metric_kind, fc_da)
+
+    if leadtime_agg == "seasonal_window":
+        if leadtime_windows is None:
+            raise ValueError("leadtime_windows must be provided when leadtime_agg='seasonal_window'")
+
+        return metrics_by_lead_window(
+            fc=fc_da,
+            an=an_da,
+            fc_clim=fc_clim_da,
+            an_clim=an_clim_da,
+            dims=metric_dims,
+            leadtime_dim=fc_da.earthml.guessed_dims.leadtime,
+            leadtime_windows=leadtime_windows,
+            leadtime_agg_coord=leadtime_agg_coord,
+            metrics=metrics,
+            clim_period=clim_period,
+            period_dim=period_dim,
+            periods_requested=periods_requested,
+            align=align,
+        )
+
     return metrics_by_lead(
         fc=fc_da,
         an=an_da,
         fc_clim=fc_clim_da,
         an_clim=an_clim_da,
-        dims=_metric_dims(metric_kind, fc_da),
+        dims=metric_dims,
         leadtime_dim=leadtime_dim,
         metrics=metrics,
         clim_period=clim_period,
