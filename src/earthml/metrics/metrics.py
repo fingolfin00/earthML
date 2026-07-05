@@ -157,10 +157,8 @@ def core_metrics(
             )
 
     if fc_clim is not None and an_clim is not None:
-        fc_anom = fc.groupby(f"{time_dim}.{clim_period}") - fc_clim
-        an_anom = an.groupby(f"{time_dim}.{clim_period}") - an_clim
-        fc_anom = fc_anom.drop_vars((clim_period, leadtime_dim), errors="ignore")
-        an_anom = an_anom.drop_vars((clim_period, leadtime_dim), errors="ignore")
+        fc_anom = _groupby_period(fc, time_dim, clim_period) - fc_clim
+        an_anom = _groupby_period(an, time_dim, clim_period) - an_clim
 
         if time_dim in dims:
             fc_anom = fc_anom.chunk({time_dim: -1})
@@ -330,6 +328,96 @@ def core_metrics(
     return out
 
 
+def _stack_hour_clim(da: xr.DataArray, clim_period: str) -> xr.DataArray:
+    if clim_period == "dayofyear_hour":
+        dims = ("dayofyear", "hour")
+        new_dim = "dayofyear_hour"
+        formatter = lambda d, h: f"{int(d):03d}_{int(h):02d}"
+    elif clim_period == "day_hour":
+        dims = ("day", "hour")
+        new_dim = "day_hour"
+        formatter = lambda d, h: f"{int(d):02d}_{int(h):02d}"
+    elif clim_period == "month_hour":
+        dims = ("month", "hour")
+        new_dim = "month_hour"
+        formatter = lambda m, h: f"{int(m):02d}_{int(h):02d}"
+    else:
+        return da
+
+    if not set(dims) <= set(da.dims):
+        return da
+
+    zero_dims = {d: s for d, s in da.sizes.items() if s == 0}
+    if zero_dims:
+        raise ValueError(
+            f"Cannot stack climatology with empty dimension(s): {zero_dims}. "
+            f"Full sizes: {dict(da.sizes)}"
+        )
+
+    other_dims = [d for d in da.dims if d not in dims]
+    da = da.transpose(*other_dims, *dims)
+
+    # Make the two small climatology dims single chunks before reshape.
+    da = da.chunk({dims[0]: -1, dims[1]: -1})
+
+    da = da.stack({new_dim: dims}, create_index=False)
+
+    vals0 = da[dims[0]].values
+    vals1 = da[dims[1]].values
+
+    da = da.assign_coords({
+        new_dim: [
+            formatter(v0, v1)
+            for v0, v1 in zip(vals0, vals1)
+        ]
+    })
+
+    return da.drop_vars(dims, errors="ignore")
+
+
+def _clim_group_dims(clim_period: str) -> tuple[str, ...]:
+    if clim_period == "dayofyear_hour":
+        return ("dayofyear", "hour")
+    if clim_period == "day_hour":
+        return ("day", "hour")
+    if clim_period == "month_hour":
+        return ("month", "hour")
+    return (clim_period,)
+
+def _groupby_period(da: xr.DataArray, time_dim: str, clim_period: str):
+    if clim_period == "dayofyear_hour":
+        return da.assign_coords(
+            dayofyear_hour=(
+                time_dim,
+                da[time_dim].dt.dayofyear.astype(str).str.zfill(3).data
+                + "_"
+                + da[time_dim].dt.hour.astype(str).str.zfill(2).data
+            )
+        ).groupby("dayofyear_hour")
+
+    if clim_period == "day_hour":
+        return da.assign_coords(
+            day_hour=(
+                time_dim,
+                da[time_dim].dt.day.astype(str).str.zfill(2).data
+                + "_"
+                + da[time_dim].dt.hour.astype(str).str.zfill(2).data
+            )
+        ).groupby("day_hour")
+
+    if clim_period == "month_hour":
+        return da.assign_coords(
+            month_hour=(
+                time_dim,
+                da[time_dim].dt.month.astype(str).str.zfill(2).data
+                + "_"
+                + da[time_dim].dt.hour.astype(str).str.zfill(2).data
+            )
+        ).groupby("month_hour")
+
+    return da.groupby(f"{time_dim}.{clim_period}")
+
+
 def calculate_metrics(
     fc: xr.DataArray,
     an: xr.DataArray,
@@ -363,16 +451,60 @@ def calculate_metrics(
         return [Metric(m).value for m in metrics]
 
     def _gen_period_format(clim_period: str) -> str:
-        if clim_period == "month":
-            return "02d"
-        raise NotImplementedError(f"No other clim_period supported other than 'month'.")
+        return {
+            "month": "02d",
+            "day": "02d",
+            "dayofyear": "03d",
+            "year": "04d",
+        }[clim_period]
 
-    def _possible_periods(clim_period: str) -> tuple[list[str], range]:
+    def _possible_periods(clim_period: str) -> tuple[list[str], Sequence]:
         if clim_period == "month":
-            clim_period_range = range(1, 13)
-            return [f"{p:{_gen_period_format(clim_period)}}" for p in clim_period_range] + ["all"], clim_period_range
+            values = range(1, 13)
+
+        elif clim_period == "dayofyear":
+            values = range(1, 367)
+
+        elif clim_period == "day":
+            values = range(1, 32)
+
+        elif clim_period == "year":
+            raise ValueError(
+                "'year' climatology has no predefined period list. "
+                "Specify periods explicitly or use 'all'."
+            )
+
+        elif clim_period == "dayofyear_hour":
+            values = [(d, h) for d in range(1, 367) for h in range(24)]
+
+        elif clim_period == "day_hour":
+            values = [(d, h) for d in range(1, 32) for h in range(24)]
+
+        elif clim_period == "month_hour":
+            values = [(m, h) for m in range(1, 13) for h in range(24)]
+
         else:
-            raise NotImplementedError(f"No other clim_period supported other than 'month'.")
+            raise NotImplementedError(f"Unsupported clim_period={clim_period!r}")
+
+        if clim_period.endswith("_hour"):
+            periods = [f"{p0:03d}_{p1:02d}" for p0, p1 in values]
+        else:
+            periods = [f"{p:{_gen_period_format(clim_period)}}" for p in values]
+
+        return periods + ["all"], values
+
+    def _format_period(period, clim_period):
+        if clim_period == "dayofyear_hour":
+            d, h = period
+            return f"{d:03d}_{h:02d}"
+        elif clim_period == "day_hour":
+            d, h = period
+            return f"{d:02d}_{h:02d}"
+        elif clim_period == "month_hour":
+            m, h = period
+            return f"{m:02d}_{h:02d}"
+        else:
+            return f"{period:{_gen_period_format(clim_period)}}"
 
     def _validate_periods(
         clim_period: str,
@@ -403,9 +535,72 @@ def calculate_metrics(
                 f"Choose one of {possible_periods}"
             )
 
-        filtered_period_range = [p for p in clim_period_range if f"{p:{_gen_period_format(clim_period)}}" in periods]
+        filtered_period_range = [p for p in clim_period_range if _format_period(p, clim_period) in periods]
 
         return periods, filtered_period_range
+
+    def _select_period(
+        da: xr.DataArray,
+        period,
+        clim_period: str,
+        time_dim: str,
+    ) -> xr.DataArray:
+        if clim_period == "dayofyear_hour":
+            day, hour = period
+            return da.where(
+                (da[time_dim].dt.dayofyear == day)
+                & (da[time_dim].dt.hour == hour),
+                drop=True,
+            )
+
+        if clim_period == "day_hour":
+            day, hour = period
+            return da.where(
+                (da[time_dim].dt.day == day)
+                & (da[time_dim].dt.hour == hour),
+                drop=True,
+            )
+
+        if clim_period == "month_hour":
+            month, hour = period
+            return da.where(
+                (da[time_dim].dt.month == month)
+                & (da[time_dim].dt.hour == hour),
+                drop=True,
+            )
+
+        return da.where(getattr(da[time_dim].dt, clim_period) == period, drop=True)
+
+    def _select_climatology_period(
+        da: xr.DataArray,
+        period,
+        clim_period: str,
+    ) -> xr.DataArray:
+        if clim_period == "dayofyear_hour":
+            day, hour = period
+            return da.where(
+                (da.dayofyear == day)
+                & (da.hour == hour),
+                drop=True,
+            )
+
+        if clim_period == "day_hour":
+            day, hour = period
+            return da.where(
+                (da.day == day)
+                & (da.hour == hour),
+                drop=True,
+            )
+
+        if clim_period == "month_hour":
+            month, hour = period
+            return da.where(
+                (da.month == month)
+                & (da.hour == hour),
+                drop=True,
+            )
+
+        return da.where(da[clim_period] == period, drop=True)
 
     valid_dims = _validate_dims(dims, "dims")
     valid_metrics = _validate_metrics(metrics)
@@ -435,18 +630,16 @@ def calculate_metrics(
         results.append(all_dims_metrics)
 
     for period in clim_period_range:
-        fc_p = fc.where(getattr(fc[time_dim].dt, clim_period) == period, drop=True)
-        an_p = an.where(getattr(an[time_dim].dt, clim_period) == period, drop=True)
+        fc_p = _select_period(fc, period, clim_period, time_dim)
+        an_p = _select_period(an, period, clim_period, time_dim)
 
         fc_clim_p = (
-            fc_clim.where(fc_clim[clim_period] == period, drop=True)
-            if fc_clim is not None
-            else None
+            _select_climatology_period(fc_clim, period, clim_period)
+            if fc_clim is not None else None
         )
         an_clim_p = (
-            an_clim.where(an_clim[clim_period] == period, drop=True)
-            if an_clim is not None
-            else None
+            _select_climatology_period(an_clim, period, clim_period)
+            if an_clim is not None else None
         )
 
         results.append(
@@ -458,7 +651,7 @@ def calculate_metrics(
                 fc_clim=fc_clim_p,
                 an_clim=an_clim_p,
                 clim_period=clim_period,
-            ).expand_dims({period_dim: [f"{period:{_gen_period_format(clim_period)}}"]})
+            ).expand_dims({period_dim: [_format_period(period, clim_period)]})
         )
 
     return xr.concat(
@@ -704,18 +897,20 @@ def get_metrics(
             reference_name="fc_clim",
             var=var,
             common_dims=[
-                clim_period,
+                *_clim_group_dims(clim_period),
                 fc.earthml.guessed_dims.latitude,
                 fc.earthml.guessed_dims.longitude,
                 fc.earthml.guessed_dims.leadtime,
             ],
         )
 
-
     an_da = an[var]
     fc_da = fc[var]
     an_clim_da = an_clim[var] if an_clim is not None else None
     fc_clim_da = fc_clim[var] if fc_clim is not None else None
+
+    an_clim_da = _stack_hour_clim(an_clim_da, clim_period) if an_clim_da is not None else None
+    fc_clim_da = _stack_hour_clim(fc_clim_da, clim_period) if fc_clim_da is not None else None
 
     leadtime_dim = fc_da.earthml.guessed_dims.leadtime
 
