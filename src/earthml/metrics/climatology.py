@@ -159,14 +159,21 @@ def calculate_save_and_subset_climatologies(
     coord_rename_an: Sequence[Sequence[str]] | None = None,
 ) -> tuple[xr.Dataset, xr.Dataset, xr.Dataset | None]:
     clim_time_range = time_range or (s.train_start, s.train_end)
+    region_label = s.region_name or "global"
 
     # Original forecast climatology
     fc_path = s.input_fc
-    fc_clim_path = s.input_clim_dir / f"{s.model_fc}_{s.var_fc}_train_clim.zarr"
+    fc_clim_path = (
+        s.input_clim_dir
+        / f"{s.model_fc}_{s.var_fc}_{region_label}_{clim_period}_train_clim.zarr"
+    )
 
     # Analysis climatology
     an_path = s.input_an
-    an_clim_path = s.input_clim_dir / f"{s.model_an}_{s.var_an}_train_clim.zarr"
+    an_clim_path = (
+        s.input_clim_dir
+        / f"{s.model_an}_{s.var_an}_{region_label}_{clim_period}_train_clim.zarr"
+    )
 
     if not fc_path.exists():
         raise FileNotFoundError(f"Couldn't find forecast dataset {fc_path}")
