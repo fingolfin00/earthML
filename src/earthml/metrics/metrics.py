@@ -80,6 +80,15 @@ def core_metrics(
     if want(Metric.RMSE):
         out[Metric.RMSE.value] = np.sqrt((error ** 2).weighted(weights).mean(dims))
 
+    if want(Metric.NMSE):
+        nmse = (error ** 2).weighted(weights).mean(dims)
+        an_var_total = (
+            ((an - an.weighted(weights).mean(dims)) ** 2)
+            .weighted(weights)
+            .mean(dims)
+        )
+        out[Metric.NMSE.value] = nmse / an_var_total
+
     if want(Metric.NRMSE):
         rmse = np.sqrt((error ** 2).weighted(weights).mean(dims))
         an_std_total = np.sqrt(
@@ -196,6 +205,15 @@ def core_metrics(
 
         if want(Metric.STD_RATIO_ANOM):
             out[Metric.STD_RATIO_ANOM.value] = fc_anom_std / an_anom_std
+
+        if want(Metric.NMSE_ANOM):
+            nmse_anom = (error_anom ** 2).weighted(weights).mean(dims)
+            an_anom_var_total = (
+                ((an_anom - an_anom.weighted(weights).mean(dims)) ** 2)
+                .weighted(weights)
+                .mean(dims)
+            )
+            out[Metric.NMSE_ANOM.value] = nmse_anom / an_anom_var_total
 
         if want(Metric.NRMSE_ANOM):
             rmse_anom = np.sqrt((error_anom ** 2).weighted(weights).mean(dims))

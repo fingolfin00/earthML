@@ -8,6 +8,7 @@ class Metric(StrEnum):
     MSE = "mse"
     MSE_SKILL_CLIM = "mse_skill_clim"
     RMSE = "rmse"
+    NMSE = "nmse"
     NRMSE = "nrmse"
     R2 = "r2"
     CORR = "corr"
@@ -19,6 +20,7 @@ class Metric(StrEnum):
     MAE_ANOM = "mae_anom"
     RMSE_ANOM = "rmse_anom"
     MSE_ANOM = "mse_anom"
+    NMSE_ANOM = "nmse_anom"
     NRMSE_ANOM = "nrmse_anom"
     ACC = "acc"
     R2_ANOM = "r2_anom"
@@ -56,6 +58,7 @@ DETERMINISTIC_METRICS: set[Metric] = {
     Metric.MSE,
     Metric.MSE_SKILL_CLIM,
     Metric.RMSE,
+    Metric.NMSE,
     Metric.NRMSE,
     Metric.R2,
     Metric.CORR,
@@ -67,6 +70,7 @@ DETERMINISTIC_METRICS: set[Metric] = {
     Metric.MAE_ANOM,
     Metric.MSE_ANOM,
     Metric.RMSE_ANOM,
+    Metric.NMSE_ANOM,
     Metric.NRMSE_ANOM,
     Metric.ACC,
     Metric.R2_ANOM,
