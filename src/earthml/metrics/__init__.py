@@ -1,4 +1,5 @@
 from .metrics import (
+    LeadtimeAgg,
     Metric,
     safe_percent,
     safe_div,
@@ -14,6 +15,7 @@ from .climatology import (
 
 
 __all__ = [
+    "LeadtimeAgg",
     "Metric",
     # utils
     "is_deterministic",
