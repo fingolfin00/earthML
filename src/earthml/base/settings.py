@@ -69,6 +69,7 @@ class Settings:
     realization_as_channel: bool = False
     output_realizations: str = "deterministic"
     split_strategy: Literal["time", "random"] = "time"
+    pretrain_norm: Literal["full", "monthly"] = "full"
 
     net_name: str = "SmaAt_UNet"
     loss_name: str = "MSELoss"
@@ -186,6 +187,7 @@ class Settings:
             f"{self.var_an}_"
             f"{self.region_name}_"
             f"lead{self.lead_period_offset:+d}_"
+            f"pretrain_{self.pretrain_norm}_norm_"
             f"{self.net_name.lower()}_"
             f"{self.loss_name.lower()}_"
             f"c{self.base_channels}_"
@@ -355,6 +357,9 @@ class Settings:
 
         if not 0 < self.train_fraction <= 1:
             raise ValueError("train_fraction must be in (0, 1].")
+
+        if self.pretrain_norm not in {"full", "monthly"}:
+            raise ValueError("pretrain_norm must be 'full' or 'monthly'.")
 
         if self.leadtime_unit not in {"hour", "day", "month"}:
             raise ValueError("leadtime_unit must be 'hour', 'day', or 'month'.")
