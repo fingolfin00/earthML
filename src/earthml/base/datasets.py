@@ -182,15 +182,19 @@ def subset_dataset(
         lon_dim = ds.earthml.guessed_dims.longitude
         if lon_dim in ds.coords and ds.sizes[lon_dim] > 0:
             lon_coord = ds[lon_dim]
-            lon_range = normalize_lon_range(lon_range, lon_coord)
+            (lon0, lon1), wrap = normalize_lon_range(lon_range, lon_coord)
 
-            ascending = bool(lon_coord[0] < lon_coord[-1])
+            if wrap:
+                mask = (lon_coord >= lon0) | (lon_coord <= lon1)
+            else:
+                mask = (lon_coord >= lon0) & (lon_coord <= lon1)
 
-            selectors[lon_dim] = (
-                slice(min(lon_range), max(lon_range))
-                if ascending
-                else slice(max(lon_range), min(lon_range))
-            )
+            # print("lon input:", lon_range)
+            # print("lon coord min/max:", float(lon_coord.min()), float(lon_coord.max()))
+            # print("normalized:", (lon0, lon1), "wrap:", wrap)
+            # print("selected lon count:", int(mask.sum()))
+
+            ds = ds.where(mask, drop=True)
 
     time_dim = ds.earthml.guessed_dims.time
     if time_range is not None and time_dim in ds.coords:
