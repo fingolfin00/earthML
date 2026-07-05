@@ -496,7 +496,8 @@ def plot_map(
     time_range: tuple[str, str],
     plot_type: Literal["pcolormesh", "contourf"] = "pcolormesh",
     leadtime_dim: str = "leadtime",
-    period_dim: str = "start_date",
+    leadtime_units: str = "months",
+    period_dim: str = "start_month",
     var_plot_config: dict = {},
     impro_plot_config: dict = {},
     force_scale: int | float | None = None,
@@ -601,13 +602,13 @@ def plot_map(
     ax.coastlines(linewidth=0.7)
     ax.add_feature(cfeature.BORDERS, linewidth=0.3)
 
-    label = lead_label(da, lead_value, leadtime_dim)
+    label_lt = lead_label(da, lead_value, leadtime_dim)
 
     start_time = datetime.strptime(time_range[0], "%Y-%m-%d").strftime(title_strftime)
     end_time = datetime.strptime(time_range[1], "%Y-%m-%d").strftime(title_strftime)
     ax.set_title(
-        f"{VARIABLE_NAMES[var]} · {model} · {start_time}-{end_time}\n"
-        f"start month={start_period} · leadtime={label} · avg={avg:.3f} {unit_label} · geoavg={geo_avg:.3f} {unit_label}"
+        f"{VARIABLE_NAMES[var]} · {model} · {start_time}-{end_time} · {period_dim}={start_period}\n"
+        f"leadtime={label_lt} {leadtime_units} · avg={avg:.3f} {unit_label} · geoavg={geo_avg:.3f} {unit_label}"
     )
 
     sm = ScalarMappable(norm=norm, cmap=cmap)
