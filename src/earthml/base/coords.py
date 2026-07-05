@@ -25,12 +25,17 @@ def ensure_time_coord(
 def normalize_lon_range(
     lon_range: tuple[float, float],
     lon_coord: xr.DataArray,
-) -> tuple[float, float]:
+) -> tuple[tuple[float, float], bool]:
     lon_min = float(lon_coord.min())
     lon_max = float(lon_coord.max())
 
-    # Dataset uses 0..360 but requested -180..180
-    if lon_min >= 0 and lon_max > 180:
-        return tuple(lon % 360 for lon in lon_range)
+    wrap = False
 
-    return lon_range
+    if lon_min >= 0 and lon_max > 180:
+        lon0 = lon_range[0] % 360
+        lon1 = lon_range[1] % 360
+        wrap = lon0 > lon1
+        return (lon0, lon1), wrap
+
+    wrap = lon_range[0] > lon_range[1]
+    return lon_range, wrap
