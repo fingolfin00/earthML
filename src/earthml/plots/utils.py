@@ -143,7 +143,7 @@ def select_metric(
 def convert_to_da_list(
     ds: xr.DataArray | xr.Dataset | Sequence[xr.DataArray | xr.Dataset | None] | None,
     var: str,
-) -> list[xr.DataArray]:
+) -> list[xr.DataArray | None]:
     if ds is None:
         return []
 
@@ -154,12 +154,12 @@ def convert_to_da_list(
         return [ds[var]]
 
     if isinstance(ds, Sequence) and not isinstance(ds, (str, bytes)):
-        result: list[xr.DataArray] = []
+        result: list[xr.DataArray | None] = []
 
         for d in ds:
             if d is None:
-                continue
-            if isinstance(d, xr.Dataset):
+                result.append(None)
+            elif isinstance(d, xr.Dataset):
                 result.append(d[var])
             elif isinstance(d, xr.DataArray):
                 result.append(d)
@@ -197,17 +197,30 @@ def plot_profile(
 
     plot_das = convert_to_da_list(das, var)
     if das_member is None:
-        das_member = [None]*len(das)
+        das_member = [None]*len(plot_das)
     plot_das_member = convert_to_da_list(das_member, var)
 
     fig, ax = plt.subplots(figsize=(12, 8))
 
-    for model, da, da_member in zip(models, plot_das, plot_das_member):
-        da = da.reset_coords(drop=True)
-
+    for model, da, da_member in zip(models, plot_das, plot_das_member, strict=True):
         color = MODEL_COLORS.get(model, None)
 
-        x = da[leadtime_dim].values
+        if da is not None:
+            da = da.reset_coords(drop=True)
+
+            with ProgressBar():
+                da = da.sel({period_dim: start_period}).compute()
+
+            x = da[leadtime_dim].values
+
+            ax.plot(
+                x,
+                da.values,
+                linestyle="-",
+                linewidth=1.4,
+                label=f"{model} ensemble mean",
+                color=color,
+            )
 
         if da_member is not None:
             if realization_dim in da_member.dims:
@@ -215,6 +228,8 @@ def plot_profile(
                     da_member = da_member.sel({period_dim: start_period}).compute()
 
                 da_member = da_member.reset_coords(drop=True)
+                x = da_member[leadtime_dim].values
+
                 for i in range(da_member.sizes[realization_dim]):
                     ax.plot(
                         x,
@@ -248,19 +263,10 @@ def plot_profile(
                     x,
                     member_mean.values,
                     linewidth=1.4,
-                    linestyle="-",
+                    linestyle="--",
                     label=f"{model} member mean",
                     color=color,
                 )
-
-        ax.plot(
-            x,
-            da.sel({period_dim: start_period}).values,
-            linestyle="--",
-            linewidth=1.4,
-            label=f"{model} ensemble mean",
-            color=color,
-        )
 
     if metric in {"bias", "acc", "clim_acc", "spatial_acc"}:
         ax.axhline(0, linewidth=0.8)
