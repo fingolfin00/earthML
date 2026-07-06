@@ -72,6 +72,8 @@ SeqBYRd = ListedColormap(
         "#53ACEB",
         "#7CDAFC",
         "#7DF5DB",
+        # white
+        "#FFFFFF",
         # positive side (yellow → orange → red → purple)
         "#F0FA7D",
         "#EDB61F",
