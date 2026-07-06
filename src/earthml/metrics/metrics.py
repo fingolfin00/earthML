@@ -40,11 +40,12 @@ def core_metrics(
     fc_clim: xr.DataArray | None = None,
     an_clim: xr.DataArray | None = None,
     clim_period: str = "month",
+    fair_correction: bool = False,
 ) -> xr.Dataset:    
     time_dim = fc.earthml.guessed_dims.time
     lat_dim = fc.earthml.guessed_dims.latitude
     realization_dim = fc.earthml.guessed_dims.realization
-    leadtime_dim = fc.earthml.guessed_dims.leadtime
+    # leadtime_dim = fc.earthml.guessed_dims.leadtime
 
     if realization_dim in fc.dims:
         fc = fc.chunk({realization_dim: -1})
@@ -60,8 +61,11 @@ def core_metrics(
     metric_dims_no_time = tuple(d for d in dims if d != time_dim)
 
     # fairness correction for MSSS
-    n = an[time_dim].count(time_dim)
-    correction = n / (n - 1)
+    if fair_correction:
+        n = an[time_dim].count(time_dim)
+        correction = n / (n - 1)
+    else:
+        correction = 1
 
     def want(metric: Metric) -> bool:
         return metric.value in metrics
@@ -447,6 +451,7 @@ def calculate_metrics(
     clim_period: str = "month",
     period_dim: str = "start_date",
     periods_requested: str | Sequence[str] | None = None,
+    fair_correction: bool = False,
 ) -> xr.Dataset:
     def _validate_dims(
         dims: str | Sequence[str] | None,
@@ -640,6 +645,7 @@ def calculate_metrics(
             fc_clim=fc_clim,
             an_clim=an_clim,
             clim_period=clim_period,
+            fair_correction=fair_correction,
         ).expand_dims({period_dim: ["all"]})
 
         if time_dim not in valid_dims:
@@ -669,6 +675,7 @@ def calculate_metrics(
                 fc_clim=fc_clim_p,
                 an_clim=an_clim_p,
                 clim_period=clim_period,
+                fair_correction=fair_correction,
             ).expand_dims({period_dim: [_format_period(period, clim_period)]})
         )
 
@@ -696,6 +703,7 @@ def metrics_by_lead_window(
     period_dim: str = "start_date",
     periods_requested: str | Sequence[str] | None = None,
     align: bool = True,
+    fair_correction: bool = False,
 ) -> xr.Dataset:
     if align:
         fc, an = xr.unify_chunks(fc, an)
@@ -736,6 +744,7 @@ def metrics_by_lead_window(
             clim_period=clim_period,
             period_dim=period_dim,
             periods_requested=periods_requested,
+            fair_correction=fair_correction,
         )
 
         # Force every metric, including CRPS, to carry the seasonal-window coordinate
@@ -772,6 +781,7 @@ def metrics_by_lead(
     period_dim: str = "start_date",
     periods_requested: str | Sequence[str] | None = None,
     align: bool = True,
+    fair_correction: bool = False,
 ) -> xr.Dataset:
     if align:
         fc, an = xr.unify_chunks(fc, an)
@@ -798,6 +808,7 @@ def metrics_by_lead(
             clim_period=clim_period,
             period_dim=period_dim,
             periods_requested=periods_requested,
+            fair_correction=fair_correction,
         )
 
         ds = ds.expand_dims({leadtime_dim: [lead]})
@@ -835,6 +846,7 @@ def get_metrics(
     period_dim: str = "start_date",
     periods_requested: str | Sequence[str] | None = None,
     align: bool = True,
+    fair_correction: bool = False,
 ) -> xr.Dataset:
     def _check_datasets(
         datasets: dict[str, xr.Dataset],
@@ -1003,6 +1015,7 @@ def get_metrics(
             period_dim=period_dim,
             periods_requested=periods_requested,
             align=align,
+            fair_correction=fair_correction,
         )
 
     return metrics_by_lead(
@@ -1017,4 +1030,5 @@ def get_metrics(
         period_dim=period_dim,
         periods_requested=periods_requested,
         align=align,
+        fair_correction=fair_correction,
     )
