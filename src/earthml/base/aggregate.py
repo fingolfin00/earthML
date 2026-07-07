@@ -67,10 +67,25 @@ def aggregate_leadtime_da(
         leadtime_agg_coord: (leadtime_dim, np.asarray(labels, dtype="U")),
     })
 
-    # import sys; sys.exit("stop at aggregate")
-
     return result
 
+def aggregate_leadtime_ds(
+    ds: xr.Dataset,
+    windows: dict[str, Sequence[int]],
+    leadtime_dim: str = "leadtime",
+    leadtime_agg_coord: str = "seasonal_leadtime",
+) -> xr.Dataset:
+    return xr.Dataset(
+        {
+            var: (
+                aggregate_leadtime_da(ds[var], windows, leadtime_dim, leadtime_agg_coord)
+                if leadtime_dim in ds[var].dims
+                else ds[var]
+            )
+            for var in ds.data_vars
+        },
+        attrs=ds.attrs,
+    )
 
 def aggregate_leadtime_da_dayweighted(
     da: xr.DataArray,
@@ -124,7 +139,7 @@ def aggregate_leadtime_da_dayweighted(
 
     return result
 
-def aggregate_leadtime_ds(
+def aggregate_leadtime_ds_dayweighted(
     ds: xr.Dataset,
     windows: dict[str, Sequence[int]],
     init_month: int | float,

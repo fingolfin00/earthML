@@ -39,6 +39,7 @@ from .aggregate import (
     aggregate_leadtime_da,
     aggregate_leadtime_da_dayweighted,
     aggregate_leadtime_ds,
+    aggregate_leadtime_ds_dayweighted,
 )
 
 __all__ = [
@@ -76,4 +77,5 @@ __all__ = [
     "aggregate_leadtime_da",
     "aggregate_leadtime_da_dayweighted",
     "aggregate_leadtime_ds",
+    "aggregate_leadtime_ds_dayweighted",
 ]
