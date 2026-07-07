@@ -350,7 +350,7 @@ def core_metrics(
     return out
 
 
-def _stack_hour_clim(da: xr.DataArray, clim_period: str) -> xr.DataArray:
+def stack_hour_clim(da: xr.DataArray, clim_period: str) -> xr.DataArray:
     if clim_period == "dayofyear_hour":
         dims = ("dayofyear", "hour")
         new_dim = "dayofyear_hour"
@@ -943,8 +943,8 @@ def get_metrics(
     an_clim_da = an_clim[var] if an_clim is not None else None
     fc_clim_da = fc_clim[var] if fc_clim is not None else None
 
-    an_clim_da = _stack_hour_clim(an_clim_da, clim_period) if an_clim_da is not None else None
-    fc_clim_da = _stack_hour_clim(fc_clim_da, clim_period) if fc_clim_da is not None else None
+    an_clim_da = stack_hour_clim(an_clim_da, clim_period) if an_clim_da is not None else None
+    fc_clim_da = stack_hour_clim(fc_clim_da, clim_period) if fc_clim_da is not None else None
 
     leadtime_dim = fc_da.earthml.guessed_dims.leadtime
 

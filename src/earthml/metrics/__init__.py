@@ -7,6 +7,7 @@ from .metrics import (
     is_probabilistic,
     get_metrics,
     groupby_period,
+    stack_hour_clim,
 )
 
 from .climatology import (
@@ -24,6 +25,7 @@ __all__ = [
     "safe_percent",
     "safe_div",
     "groupby_period",
+    "stack_hour_clim",
     # metrics
     "get_metrics",
     # climatology
