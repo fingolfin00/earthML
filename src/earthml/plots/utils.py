@@ -1057,22 +1057,35 @@ def plot_field_timeseries(
     realization_dim: str = "realization",
     spread: Literal["std", "minmax"] = "std",
     train_end: str | None = None,
+    plot_single_members: bool = True,
+    member_linestyle: str = "-",
+    series_linestyle: str = "--",
 ) -> None:
     valid = {name: da for name, da in series.items() if da is not None}
-    if not valid:
+
+    valid_members = {
+        name: da
+        for name, da in (member_series or {}).items()
+        if da is not None and realization_dim in da.dims
+    }
+
+    if not valid and not valid_members:
         return
 
-    first = next(iter(valid.values()))
+    first = next(iter(list(valid.values()) + list(valid_members.values())))
+
     plot_unit, scale = get_plot_unit_and_scale(first)
-    ylabel = f"{VARIABLE_NAMES.get(var, var.upper())} ({plot_unit})" if plot_unit else VARIABLE_NAMES.get(var, var.upper())
+
+    ylabel = (
+        f"{VARIABLE_NAMES.get(var, var.upper())} ({plot_unit})"
+        if plot_unit
+        else VARIABLE_NAMES.get(var, var.upper())
+    )
 
     reduced = {
         name: reduce_to_timeseries(da / scale, spatial_dims=spatial_dims)
         for name, da in valid.items()
     }
-
-    aligned = xr.align(*reduced.values(), join="inner")
-    reduced = dict(zip(reduced.keys(), aligned))
 
     reduced_members = {}
     if member_series is not None:
@@ -1083,26 +1096,56 @@ def plot_field_timeseries(
                     spatial_dims=spatial_dims,
                 )
 
-        if reduced_members:
-            aligned_members = xr.align(*reduced_members.values(), join="inner")
-            reduced_members = dict(zip(reduced_members.keys(), aligned_members))
+    # Align everything together on the same time axis
+    all_names = list(reduced.keys()) + [f"__members__{k}" for k in reduced_members]
+    all_arrays = list(reduced.values()) + list(reduced_members.values())
 
-    fig, ax = plt.subplots(figsize=(12, 5))
+    aligned = xr.align(*all_arrays, join="inner")
 
-    for name, da in reduced.items():
+    aligned_map = dict(zip(all_names, aligned))
+
+    reduced = {
+        name: aligned_map[name]
+        for name in reduced
+    }
+
+    reduced_members = {
+        name: aligned_map[f"__members__{name}"]
+        for name in reduced_members
+    }
+
+    fig, ax = plt.subplots(figsize=(16, 8))
+
+    plot_names = list(dict.fromkeys([*reduced.keys(), *reduced_members.keys()]))
+
+    for name in plot_names:
         color = SERIES_COLORS.get(name)
-        x = da[time_dim].values
-
+        da = reduced.get(name)
         member_da = reduced_members.get(name)
+
+        if da is not None:
+            x = da[time_dim].values
+        elif member_da is not None:
+            x = member_da[time_dim].values
+        else:
+            continue
+
         if member_da is not None:
-            for i in range(member_da.sizes[realization_dim]):
-                ax.plot(
-                    x,
-                    member_da.isel({realization_dim: i}).values,
-                    linewidth=0.5,
-                    alpha=0.2,
-                    color=color,
-                )
+            with ProgressBar():
+                member_da = member_da.compute()
+
+            if plot_single_members:
+                for i in range(member_da.sizes[realization_dim]):
+                    member_da_i = member_da.isel({realization_dim: i})
+
+                    ax.plot(
+                        x,
+                        member_da_i.values,
+                        linestyle=member_linestyle,
+                        linewidth=0.5,
+                        alpha=0.2,
+                        color=color,
+                    )
 
             member_mean = member_da.mean(realization_dim, skipna=True)
 
@@ -1115,19 +1158,37 @@ def plot_field_timeseries(
                 upper = member_da.max(realization_dim, skipna=True)
 
             ax.fill_between(x, lower.values, upper.values, alpha=0.18, color=color)
+
             ax.plot(
                 x,
                 member_mean.values,
-                linestyle=":",
+                linestyle=member_linestyle,
                 linewidth=1.4,
                 color=color,
                 label=f"{name} member mean",
             )
 
-        ax.plot(x, da.values, linewidth=1.8, color=color, label=name)
+        if da is not None:
+            with ProgressBar():
+                da = da.compute()
+
+            ax.plot(
+                x,
+                da.values,
+                linewidth=1.4,
+                linestyle=series_linestyle,
+                color=color,
+                label=name,
+            )
 
     if train_end is not None:
-        ax.axvline(np.datetime64(train_end), color="red", linestyle="--", linewidth=1.3)
+        ax.axvline(
+            np.datetime64(train_end),
+            color="red",
+            linestyle="--",
+            linewidth=1.3,
+            label="Train end",
+        )
 
     ax.set_title(title)
     ax.set_xlabel(time_dim)
