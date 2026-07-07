@@ -6,6 +6,7 @@ from .metrics import (
     is_deterministic,
     is_probabilistic,
     get_metrics,
+    groupby_period,
 )
 
 from .climatology import (
@@ -22,6 +23,7 @@ __all__ = [
     "is_probabilistic",
     "safe_percent",
     "safe_div",
+    "groupby_period",
     # metrics
     "get_metrics",
     # climatology

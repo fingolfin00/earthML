@@ -170,8 +170,8 @@ def core_metrics(
             )
 
     if fc_clim is not None and an_clim is not None:
-        fc_anom = _groupby_period(fc, time_dim, clim_period) - fc_clim
-        an_anom = _groupby_period(an, time_dim, clim_period) - an_clim
+        fc_anom = groupby_period(fc, time_dim, clim_period) - fc_clim
+        an_anom = groupby_period(an, time_dim, clim_period) - an_clim
 
         if time_dim in dims:
             fc_anom = fc_anom.chunk({time_dim: -1})
@@ -406,7 +406,11 @@ def _clim_group_dims(clim_period: str) -> tuple[str, ...]:
         return ("month", "hour")
     return (clim_period,)
 
-def _groupby_period(da: xr.DataArray, time_dim: str, clim_period: str):
+def groupby_period(
+    da: xr.DataArray,
+    time_dim: str,
+    clim_period: str,
+):
     if clim_period == "dayofyear_hour":
         return da.assign_coords(
             dayofyear_hour=(
