@@ -977,8 +977,8 @@ def plot_metric_diff_scatter(
     plt.close(fig)
 
 
-def get_plot_unit_and_scale(da: xr.DataArray) -> tuple[str, float]:
-    unit = da.attrs.get("units", "")
+def get_plot_unit_and_scale(da: xr.DataArray, var: str) -> tuple[str, float]:
+    unit = da.attrs.get("units") or VARIABLE_UNITS.get(var, "")
     return UNIT_CONVERSIONS.get(unit, (unit, 1.0))
 
 
@@ -1024,7 +1024,7 @@ def plot_field_map(
     centered: bool = False,
     spatial_dims: tuple[str, str] = ("latitude", "longitude"),
 ) -> None:
-    plot_unit, scale = get_plot_unit_and_scale(da)
+    plot_unit, scale = get_plot_unit_and_scale(da, var)
     da = prepare_map_da(da / scale)
 
     lat, lon = spatial_dims[0], spatial_dims[1]
@@ -1092,7 +1092,7 @@ def plot_field_timeseries(
 
     first = next(iter(list(valid.values()) + list(valid_members.values())))
 
-    plot_unit, scale = get_plot_unit_and_scale(first)
+    plot_unit, scale = get_plot_unit_and_scale(first, var)
 
     ylabel = (
         f"{VARIABLE_NAMES.get(var, var.upper())} ({plot_unit})"
