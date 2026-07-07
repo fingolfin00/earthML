@@ -278,12 +278,23 @@ def plot_profile(
 
     start_period_str = "" if start_period=="all" else f" · start_period={start_period}"
     ax.set_title(f"{VARIABLE_NAMES[var]} · {METRIC_NAMES[metric]} · {safe_label(time_range)}{start_period_str}")
+
     ax.set_xlabel(f"{leadtime_dim} {leadtime_unit}")
+
+    unit = VARIABLE_UNITS[var]
+    unit_conversion = UNIT_CONVERSIONS.get(unit, (unit, 1.0))
+
+    if isinstance(unit_conversion, dict):
+        plot_unit, _ = unit_conversion[var]
+    else:
+        plot_unit, _ = unit_conversion
+
     ax.set_ylabel(
-        f"{METRIC_NAMES[metric]} [{METRIC_UNITS[metric].format(unit=UNIT_CONVERSIONS[VARIABLE_UNITS[var]][0])}]"
+        f"{METRIC_NAMES[metric]} [{METRIC_UNITS[metric].format(unit=plot_unit)}]"
         if METRIC_UNITS[metric]
         else METRIC_NAMES[metric]
     )
+
     ax.grid(True, alpha=0.3)
     ax.legend()
 
