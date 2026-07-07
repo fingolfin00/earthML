@@ -278,7 +278,7 @@ def plot_profile(
     ax.set_title(f"{VARIABLE_NAMES[var]} · {METRIC_NAMES[metric]} · {safe_label(time_range)}{start_period_str}")
     ax.set_xlabel(f"{leadtime_dim} {leadtime_unit}")
     ax.set_ylabel(
-        f"{METRIC_NAMES[metric]} [{METRIC_UNITS[metric].format(unit=UNIT_CONVERSIONS['K'][0])}]"
+        f"{METRIC_NAMES[metric]} [{METRIC_UNITS[metric].format(unit=UNIT_CONVERSIONS[VARIABLE_UNITS[var]][0])}]"
         if METRIC_UNITS[metric]
         else METRIC_NAMES[metric]
     )
