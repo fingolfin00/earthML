@@ -482,7 +482,12 @@ def get_plot_metric_unit_and_scale(
         return "", 1.0
 
     unit = da.attrs.get("units") or VARIABLE_UNITS.get(var, "")
-    plot_unit, scale = UNIT_CONVERSIONS.get(unit, (unit, 1.0))
+
+    unit_conversion = UNIT_CONVERSIONS.get(unit, (unit, 1.0))
+    if isinstance(unit_conversion, dict):
+        plot_unit, scale = unit_conversion[var]
+    else:
+        plot_unit, scale = unit_conversion
 
     if metric in SQUARED_METRICS:
         return f"{plot_unit}²", scale**2
