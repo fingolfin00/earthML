@@ -186,6 +186,7 @@ def plot_profile(
     period_dim: str = "start_date",
     realization_dim: str = "realization",
     spread: str = "std",
+    plot_single_members: bool = False,
 ) -> None:
     if isinstance(models, str):
         models = [models]
@@ -230,14 +231,15 @@ def plot_profile(
                 da_member = da_member.reset_coords(drop=True)
                 x = da_member[leadtime_dim].values
 
-                for i in range(da_member.sizes[realization_dim]):
-                    ax.plot(
-                        x,
-                        da_member.isel({realization_dim: i}).values,
-                        linewidth=0.6,
-                        alpha=0.25,
-                        color=color,
-                    )
+                if plot_single_members:
+                    for i in range(da_member.sizes[realization_dim]):
+                        ax.plot(
+                            x,
+                            da_member.isel({realization_dim: i}).values,
+                            linewidth=0.6,
+                            alpha=0.25,
+                            color=color,
+                        )
 
                 member_mean = da_member.mean(realization_dim, skipna=True)
 
