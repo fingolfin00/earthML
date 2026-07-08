@@ -12,3 +12,6 @@ uv.lock
 
 # Local regrid cache
 .earthml-cache/
+
+# vscode
+.vscode
