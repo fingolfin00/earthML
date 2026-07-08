@@ -70,7 +70,7 @@ class Settings:
     seed: int = 42
 
     realization_as_channel: bool = False
-    output_realizations: str = "deterministic"
+    output_realizations: Literal["deterministic", "ensemble"] = "deterministic" # used only if realization_as_channel is True
     split_strategy: Literal["time", "random"] = "time"
     pretrain_norm: Literal["full", "monthly"] = "full"
 
