@@ -1,13 +1,23 @@
-from typing import Literal, cast
+from typing import cast
 from collections.abc import Sequence
 
 import numpy as np
 import xarray as xr
 import xskillscore as xs
 
-from ..base import aggregate_leadtime_da
+from ..base import (
+    Settings,
+    LeadtimeUnit,
+    aggregate_leadtime_da,
+    get_and_subset_datasets,
+)
 
+from .climatology import calculate_save_and_subset_climatologies
 from .definitions import (
+    ClimPeriod,
+    MetricKind,
+    LeadtimeAgg,
+    MetricAgg,
     Metric,
     DETERMINISTIC_METRICS,
     PROBABILISTIC_METRICS,
@@ -39,7 +49,7 @@ def core_metrics(
     *,
     fc_clim: xr.DataArray | None = None,
     an_clim: xr.DataArray | None = None,
-    clim_period: str = "month",
+    clim_period: ClimPeriod = "month",
     fair_correction: bool = False,
 ) -> xr.Dataset:    
     time_dim = fc.earthml.guessed_dims.time
@@ -350,7 +360,10 @@ def core_metrics(
     return out
 
 
-def stack_hour_clim(da: xr.DataArray, clim_period: str) -> xr.DataArray:
+def stack_hour_clim(
+    da: xr.DataArray,
+    clim_period: ClimPeriod = "month",
+) -> xr.DataArray:
     if clim_period == "dayofyear_hour":
         dims = ("dayofyear", "hour")
         new_dim = "dayofyear_hour"
@@ -397,7 +410,7 @@ def stack_hour_clim(da: xr.DataArray, clim_period: str) -> xr.DataArray:
     return da.drop_vars(dims, errors="ignore")
 
 
-def _clim_group_dims(clim_period: str) -> tuple[str, ...]:
+def _clim_group_dims(clim_period: ClimPeriod = "month") -> tuple[str, ...]:
     if clim_period == "dayofyear_hour":
         return ("dayofyear", "hour")
     if clim_period == "day_hour":
@@ -409,7 +422,7 @@ def _clim_group_dims(clim_period: str) -> tuple[str, ...]:
 def groupby_period(
     da: xr.DataArray,
     time_dim: str,
-    clim_period: str,
+    clim_period: ClimPeriod = "month",
 ):
     if clim_period == "dayofyear_hour":
         return da.assign_coords(
@@ -452,7 +465,7 @@ def calculate_metrics(
     metrics: str | Sequence[str] | None = None,
     fc_clim: xr.DataArray | None = None,
     an_clim: xr.DataArray | None = None,
-    clim_period: str = "month",
+    clim_period: ClimPeriod = "month",
     period_dim: str = "start_date",
     periods_requested: str | Sequence[str] | None = None,
     fair_correction: bool = False,
@@ -485,7 +498,9 @@ def calculate_metrics(
             "year": "04d",
         }[clim_period]
 
-    def _possible_periods(clim_period: str) -> tuple[list[str], Sequence]:
+    def _possible_periods(
+        clim_period: str,
+    ) -> tuple[list[str], range | list[tuple[int, int]]]:
         if clim_period == "month":
             values = range(1, 13)
 
@@ -534,9 +549,9 @@ def calculate_metrics(
             return f"{period:{_gen_period_format(clim_period)}}"
 
     def _validate_periods(
-        clim_period: str,
+        clim_period: ClimPeriod = "month",
         periods: str | Sequence[str] | None = None,
-    ) -> tuple[list[str], range | list]:
+    ) -> tuple[list[str], range | list[int | tuple[int, int]]]:
         possible_periods, clim_period_range = _possible_periods(clim_period)
 
         if periods is None:
@@ -569,8 +584,8 @@ def calculate_metrics(
     def _select_period(
         da: xr.DataArray,
         period,
-        clim_period: str,
-        time_dim: str,
+        clim_period: ClimPeriod = "month",
+        time_dim: str = "time",
     ) -> xr.DataArray:
         if clim_period == "dayofyear_hour":
             day, hour = period
@@ -601,7 +616,7 @@ def calculate_metrics(
     def _select_climatology_period(
         da: xr.DataArray,
         period,
-        clim_period: str,
+        clim_period: ClimPeriod = "month",
     ) -> xr.DataArray:
         if clim_period == "dayofyear_hour":
             day, hour = period
@@ -697,13 +712,13 @@ def metrics_by_lead_window(
     an: xr.DataArray,
     dims: str | Sequence[str],
     leadtime_dim: str,
-    leadtime_windows: dict[str, list[int]],
+    leadtime_windows: dict[str, Sequence[int]],
     *,
     metrics: str | Sequence[str] | None = None,
     fc_clim: xr.DataArray | None = None,
     an_clim: xr.DataArray | None = None,
     leadtime_agg_coord: str = "leadtime_seasonal",
-    clim_period: str = "month",
+    clim_period: ClimPeriod = "month",
     period_dim: str = "start_date",
     periods_requested: str | Sequence[str] | None = None,
     align: bool = True,
@@ -781,7 +796,7 @@ def metrics_by_lead(
     metrics: str | Sequence[str] | None = None,
     fc_clim: xr.DataArray | None = None,
     an_clim: xr.DataArray | None = None,
-    clim_period: str = "month",
+    clim_period: ClimPeriod = "month",
     period_dim: str = "start_date",
     periods_requested: str | Sequence[str] | None = None,
     align: bool = True,
@@ -829,11 +844,6 @@ def metrics_by_lead(
     return out
 
 
-MetricKind = Literal["scalar", "maps", "timeseries"]
-LeadtimeAgg = Literal["single", "aggregated", "seasonal_window"]
-RealizationAgg = Literal["member", "ensemble_mean"]
-
-
 def get_metrics(
     an: xr.Dataset,
     fc: xr.Dataset,
@@ -844,9 +854,9 @@ def get_metrics(
     fc_clim: xr.Dataset | None = None,
     an_clim: xr.Dataset | None = None,
     metrics: str | Sequence[str] | None = None,
-    leadtime_windows: dict[str, list[int]] | None = None,
+    leadtime_windows: dict[str, Sequence[int]] | None = None,
     leadtime_agg_coord: str = "leadtime_seasonal",
-    clim_period: str = "month",
+    clim_period: ClimPeriod = "month",
     period_dim: str = "start_date",
     periods_requested: str | Sequence[str] | None = None,
     align: bool = True,
@@ -1036,3 +1046,153 @@ def get_metrics(
         align=align,
         fair_correction=fair_correction,
     )
+
+
+def get_scalar_metrics(
+    s: Settings,
+    *,
+    fc_metrics: str | Sequence[str],
+    mlfc_metrics: str | Sequence[str],
+    metric_agg_mode: MetricAgg,
+    leadtime_agg: LeadtimeAgg,
+    realization_agg: bool,
+    lat_range: tuple[float, float] | None = None,
+    lon_range: tuple[float, float] | None = None,
+    time_range: tuple[str, str] | None = None,
+    clim_period: ClimPeriod = "month",
+    clim_rolling_window: int | None = None,
+    clim_time_range: tuple[str, str] | None = None,
+    leadtime_units: LeadtimeUnit = LeadtimeUnit.MONTHS,
+    leadtime_agg_coord: str = "leadtime",
+    force_clim_recalc: bool = False,
+    period_dim: str = "start_months",
+    wanted_start_periods: Sequence[str] | None = None,
+    interpolate: bool = False,
+    build_analysis: bool = True,
+) -> tuple[xr.Dataset, xr.Dataset]:
+    valid_time_range = (s.train_start, s.test_end) if time_range is None else time_range
+    fc, an, mlfc = get_and_subset_datasets(
+        s,
+        leadtime_units=leadtime_units,
+        lat_range=lat_range,
+        lon_range=lon_range,
+        time_range=valid_time_range,
+        interpolate=interpolate,
+    )
+
+    if mlfc is None:
+        raise ValueError("ML-corrected forecast must be present to produce scatter plot.")
+
+    fc_clim, an_clim, mlfc_clim = calculate_save_and_subset_climatologies(
+        s,
+        leadtime_units=leadtime_units,
+        force=force_clim_recalc,
+        clim_period=clim_period,
+        rolling_window=clim_rolling_window,
+        rolling_center=True,
+        rolling_min_periods=1,
+        lat_range=lat_range,
+        lon_range=lon_range,
+        time_range=clim_time_range,
+        time_start=None,
+        interpolate=interpolate,
+        engine="zarr",
+        build_analysis=build_analysis,
+        coord_rename_fc=None,
+        coord_rename_an=None,
+    )
+
+    print(f"Calculating {metric_agg_mode} scalar metrics [fc={fc_metrics}, mlfc={mlfc_metrics}] for {s.output_name}")
+
+    if metric_agg_mode == "global":
+        metric_kind = "scalar"
+    elif metric_agg_mode in ("spatial_avg", "spatial_rmse"):
+        metric_kind = "maps"
+        if metric_agg_mode == "spatial_rmse":
+            if mlfc_metrics == "rmse":
+                mlfc_metrics = "mse"
+            elif mlfc_metrics == "rmse_anom":
+                mlfc_metrics = "mse_anom"
+            elif mlfc_metrics == "nrmse":
+                mlfc_metrics = "nmse"
+            elif mlfc_metrics == "nrmse_anom":
+                mlfc_metrics = "nmse_anom"
+            else:
+                raise ValueError(f"metric_agg_mode={metric_agg_mode} only supports RMSE metrics.")
+            if fc_metrics == "rmse":
+                fc_metrics = "mse"
+            elif fc_metrics == "rmse_anom":
+                fc_metrics = "mse_anom"
+            elif fc_metrics == "nrmse":
+                fc_metrics = "nmse"
+            elif fc_metrics == "nrmse_anom":
+                fc_metrics = "nmse_anom"
+            else:
+                raise ValueError(f"metric_agg_mode={metric_agg_mode} only supports RMSE metrics.")
+    else:
+        raise ValueError(f"metric_agg_mode={metric_agg_mode} not available. Choose between: 'spatial_avg', 'global', 'spatial_rmse.")
+
+    metric_scalar_fc = get_metrics(
+        an=an,
+        fc=fc,
+        var=s.var_fc,
+        metric_kind=metric_kind,
+        leadtime_agg=leadtime_agg,
+        realization_agg=realization_agg,
+        an_clim=an_clim,
+        fc_clim=fc_clim,
+        metrics=fc_metrics,
+        leadtime_windows=s.seasonal_leadtime_windows,
+        leadtime_agg_coord=leadtime_agg_coord,
+        clim_period=clim_period,
+        period_dim=period_dim,
+        periods_requested=wanted_start_periods,
+    )
+
+    metric_scalar_mlfc = get_metrics(
+        an=an,
+        fc=mlfc,
+        var=s.var_fc,
+        metric_kind=metric_kind,
+        leadtime_agg=leadtime_agg,
+        realization_agg=realization_agg,
+        an_clim=an_clim,
+        fc_clim=mlfc_clim,
+        metrics=mlfc_metrics,
+        leadtime_windows=s.seasonal_leadtime_windows,
+        leadtime_agg_coord=leadtime_agg_coord,
+        clim_period=clim_period,
+        period_dim=period_dim,
+        periods_requested=wanted_start_periods,
+    )
+
+    fc_metrics_list = [fc_metrics] if isinstance(fc_metrics, str) else list(fc_metrics)
+    missing_fc_metrics = [
+        metric for metric in fc_metrics_list
+        if metric not in metric_scalar_fc.data_vars
+    ]
+    if missing_fc_metrics:
+        print(f"Skipping {s.output_name}: missing forecast metrics {missing_fc_metrics!r}")
+        return xr.Dataset(), xr.Dataset()
+
+    mlfc_metrics_list = [mlfc_metrics] if isinstance(mlfc_metrics, str) else list(mlfc_metrics)
+    missing_mlfc_metrics = [
+        metric for metric in mlfc_metrics_list
+        if metric not in metric_scalar_mlfc.data_vars
+    ]
+    if missing_mlfc_metrics:
+        print(f"Skipping {s.output_name}: missing MLFC metrics {missing_mlfc_metrics!r}")
+        return xr.Dataset(), xr.Dataset()
+
+    if metric_agg_mode == "global":
+        return metric_scalar_fc[fc_metrics_list], metric_scalar_mlfc[mlfc_metrics_list]
+
+    if metric_agg_mode in ("spatial_avg", "spatial_rmse"):
+        lat_dim = fc.earthml.guessed_dims.latitude
+        lon_dim = fc.earthml.guessed_dims.longitude
+        weights = np.cos(np.deg2rad(fc[lat_dim]))
+
+        fc_metrics_da = metric_scalar_fc[fc_metrics_list].weighted(weights).mean(dim=(lat_dim, lon_dim))
+        mlfc_metrics_da = metric_scalar_mlfc[mlfc_metrics_list].weighted(weights).mean(dim=(lat_dim, lon_dim))
+
+        return fc_metrics_da, mlfc_metrics_da

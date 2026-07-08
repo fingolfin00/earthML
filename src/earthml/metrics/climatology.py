@@ -1,6 +1,4 @@
-from typing import Sequence, Literal, TypeVar, cast
-
-from pathlib import Path
+from typing import Sequence, Literal, cast
 
 import numpy as np
 import pandas as pd
@@ -9,30 +7,21 @@ import xarray as xr
 from dask.diagnostics.progress import ProgressBar
 
 from ..base import (
+    LeadtimeUnit,
     Settings,
-    open_zarr,
     open_zarr_var,
-    open_nc,
-    open_nc_var,
     T_Xarray,
-    select_target_for_lead,
     subset_dataset,
     get_and_subset_datasets,
 )
+
+from .definitions import ClimPeriod
 
 
 def calculate_climatology(
     da: xr.DataArray | xr.Dataset,
     time_dim: str = "time",
-    clim_period: Literal[
-        "dayofyear",
-        "day",
-        "month",
-        "year",
-        "dayofyear_hour",
-        "day_hour",
-        "month_hour",
-    ] = "month",
+    clim_period: ClimPeriod = "month",
     rolling_window: int | None = None,
     rolling_center: bool = True,
     rolling_min_periods: int = 1,
@@ -134,17 +123,9 @@ def calculate_climatology(
 
 def calculate_save_and_subset_climatologies(
     s: Settings,
-    leadtime_units: Literal["hours", "days", "months", "years"],
+    leadtime_units: LeadtimeUnit,
     force: bool = False,
-    clim_period: Literal[
-        "dayofyear",
-        "day",
-        "month",
-        "year",
-        "dayofyear_hour",
-        "day_hour",
-        "month_hour",
-    ] = "month",
+    clim_period: ClimPeriod = "month",
     rolling_window: int | None = None,
     rolling_center: bool = True,
     rolling_min_periods: int = 1,

@@ -1,4 +1,24 @@
+from typing import Literal
 from enum import StrEnum
+
+
+ClimPeriod = Literal[
+    "dayofyear",
+    "day",
+    "month",
+    "year",
+    "dayofyear_hour",
+    "day_hour",
+    "month_hour",
+]
+MetricKind = Literal["scalar", "maps", "timeseries"]
+LeadtimeAgg = Literal["single", "aggregated", "seasonal_window"]
+RealizationAgg = Literal["member", "ensemble_mean"]
+MetricAgg = Literal[
+    "global",       # sqrt(mean(error^2))
+    "spatial_avg",  # mean(point-wise RMSE)
+    "spatial_rmse", # sqrt(mean(point-wise MSE))
+]
 
 
 class Metric(StrEnum):
