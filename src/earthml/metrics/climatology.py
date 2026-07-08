@@ -41,41 +41,29 @@ def calculate_climatology(
             }
         )
 
+        count_summary = None
+
         if check_group_counts:
-            counts = da.groupby([group_period, "hour"]).count(time_dim)
+            time_groups = da[time_dim].assign_coords(
+                {
+                    group_period: getattr(da[time_dim].dt, group_period),
+                    "hour": da[time_dim].dt.hour,
+                }
+            )
 
-            if isinstance(counts, xr.Dataset):
-                counts = next(iter(counts.data_vars.values()))
+            counts = time_groups.groupby([group_period, "hour"]).count()
 
-            counts_1d = counts.isel(
-                {dim: 0 for dim in counts.dims if dim not in {group_period, "hour"}}
-            ).compute()
-
-            print(f"{clim_period} group counts:")
-            print("sizes:", counts_1d.sizes)
-            print("min count:", int(counts_1d.min()))
-            print("max count:", int(counts_1d.max()))
-
-            bad = counts_1d.where(counts_1d != counts_1d.max(), drop=True)
-
-            if bad.size:
-                print("Groups with fewer samples than max:")
-
-                for count_value in np.unique(bad.values[np.isfinite(bad.values)]):
-                    subset = bad.where(bad == count_value, drop=True)
-
-                    print(
-                        f"  count={int(count_value)}: "
-                        f"{group_period}={subset[group_period].values.tolist()}, "
-                        f"hour={subset['hour'].values.tolist()}"
-                    )
+            count_summary = _group_count_summary(
+                counts,
+                group_dims=(group_period, "hour"),
+            )
 
         clim = da.groupby([group_period, "hour"]).mean(time_dim)
 
-        clim = clim.chunk({group_period: -1})
+        if count_summary is not None:
+            clim.attrs["climatology_group_counts"] = count_summary
 
-        print("clim dims:", clim.dims)
-        print("clim sizes:", clim.sizes)
+        clim = clim.chunk({group_period: -1})
 
         if rolling_window is not None:
             if rolling_window > clim.sizes[group_period]:
@@ -93,16 +81,22 @@ def calculate_climatology(
 
         return cast(T_Xarray, clim)
 
-    clim = da.groupby(f"{time_dim}.{clim_period}").mean(time_dim)
+    count_summary = None
 
     if check_group_counts:
         counts = da[time_dim].groupby(f"{time_dim}.{clim_period}").count()
         counts = counts.compute() if hasattr(counts.data, "compute") else counts
 
-        print(f"{clim_period} group counts:")
-        print("sizes:", counts.sizes)
-        print("min count:", int(counts.min()))
-        print("max count:", int(counts.max()))
+        count_summary = {
+            "sizes": dict(counts.sizes),
+            "min_count": int(counts.min()),
+            "max_count": int(counts.max()),
+        }
+
+    clim = da.groupby(f"{time_dim}.{clim_period}").mean(time_dim)
+
+    if count_summary is not None:
+        clim.attrs["climatology_group_counts"] = count_summary
 
     if rolling_window is not None:
         if rolling_window > clim.sizes[clim_period]:
@@ -374,3 +368,41 @@ def select_clim_for_time(
         )
 
     raise ValueError(f"Unsupported clim_period={clim_period!r}")
+
+
+def _group_count_summary(counts: xr.DataArray, group_dims: tuple[str, ...]) -> dict:
+    counts_1d = counts.isel(
+        {dim: 0 for dim in counts.dims if dim not in group_dims}
+    ).compute()
+
+    max_count = int(counts_1d.max())
+    min_count = int(counts_1d.min())
+
+    summary = {
+        "min_count": min_count,
+        "max_count": max_count,
+        "sizes": dict(counts_1d.sizes),
+    }
+
+    bad = counts_1d.where(counts_1d != max_count, drop=True)
+
+    if bad.size:
+        bad_groups = []
+
+        for count_value in np.unique(bad.values[np.isfinite(bad.values)]):
+            subset = bad.where(bad == count_value, drop=True)
+
+            bad_groups.append(
+                {
+                    "count": int(count_value),
+                    **{
+                        dim: subset[dim].values.tolist()
+                        for dim in group_dims
+                        if dim in subset.coords
+                    },
+                }
+            )
+
+        summary["low_count_groups"] = bad_groups
+
+    return summary
