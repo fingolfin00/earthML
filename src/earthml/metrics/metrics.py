@@ -362,17 +362,17 @@ def core_metrics(
 
 def stack_hour_clim(
     da: xr.DataArray,
-    clim_period: ClimPeriod = "month",
+    clim_period: ClimPeriod = ClimPeriod.MONTH,
 ) -> xr.DataArray:
-    if clim_period == "dayofyear_hour":
+    if clim_period == ClimPeriod.DAYOFYEAR_HOUR:
         dims = ("dayofyear", "hour")
         new_dim = "dayofyear_hour"
         formatter = lambda d, h: f"{int(d):03d}_{int(h):02d}"
-    elif clim_period == "day_hour":
+    elif clim_period == ClimPeriod.DAY_HOUR:
         dims = ("day", "hour")
         new_dim = "day_hour"
         formatter = lambda d, h: f"{int(d):02d}_{int(h):02d}"
-    elif clim_period == "month_hour":
+    elif clim_period == ClimPeriod.MONTH_HOUR:
         dims = ("month", "hour")
         new_dim = "month_hour"
         formatter = lambda m, h: f"{int(m):02d}_{int(h):02d}"
@@ -410,7 +410,7 @@ def stack_hour_clim(
     return da.drop_vars(dims, errors="ignore")
 
 
-def _clim_group_dims(clim_period: ClimPeriod = "month") -> tuple[str, ...]:
+def _clim_group_dims(clim_period: ClimPeriod = ClimPeriod.MONTH) -> tuple[str, ...]:
     if clim_period == "dayofyear_hour":
         return ("dayofyear", "hour")
     if clim_period == "day_hour":
@@ -422,7 +422,7 @@ def _clim_group_dims(clim_period: ClimPeriod = "month") -> tuple[str, ...]:
 def groupby_period(
     da: xr.DataArray,
     time_dim: str,
-    clim_period: ClimPeriod = "month",
+    clim_period: ClimPeriod = ClimPeriod.MONTH,
 ):
     if clim_period == "dayofyear_hour":
         return da.assign_coords(
@@ -465,7 +465,7 @@ def calculate_metrics(
     metrics: str | Sequence[str] | None = None,
     fc_clim: xr.DataArray | None = None,
     an_clim: xr.DataArray | None = None,
-    clim_period: ClimPeriod = "month",
+    clim_period: ClimPeriod = ClimPeriod.MONTH,
     period_dim: str = "start_date",
     periods_requested: str | Sequence[str] | None = None,
     fair_correction: bool = False,
@@ -501,16 +501,16 @@ def calculate_metrics(
     def _possible_periods(
         clim_period: str,
     ) -> tuple[list[str], range | list[tuple[int, int]]]:
-        if clim_period == "month":
+        if clim_period == ClimPeriod.MONTH:
             values = range(1, 13)
 
-        elif clim_period == "dayofyear":
+        elif clim_period == ClimPeriod.DAYOFYEAR:
             values = range(1, 367)
 
-        elif clim_period == "day":
+        elif clim_period == ClimPeriod.DAY:
             values = range(1, 32)
 
-        elif clim_period == "year":
+        elif clim_period == ClimPeriod.YEAR:
             raise ValueError(
                 "'year' climatology has no predefined period list. "
                 "Specify periods explicitly or use 'all'."
@@ -549,7 +549,7 @@ def calculate_metrics(
             return f"{period:{_gen_period_format(clim_period)}}"
 
     def _validate_periods(
-        clim_period: ClimPeriod = "month",
+        clim_period: ClimPeriod = ClimPeriod.MONTH,
         periods: str | Sequence[str] | None = None,
     ) -> tuple[list[str], range | list[int | tuple[int, int]]]:
         possible_periods, clim_period_range = _possible_periods(clim_period)
@@ -584,10 +584,10 @@ def calculate_metrics(
     def _select_period(
         da: xr.DataArray,
         period,
-        clim_period: ClimPeriod = "month",
+        clim_period: ClimPeriod = ClimPeriod.MONTH,
         time_dim: str = "time",
     ) -> xr.DataArray:
-        if clim_period == "dayofyear_hour":
+        if clim_period == ClimPeriod.DAYOFYEAR_HOUR:
             day, hour = period
             return da.where(
                 (da[time_dim].dt.dayofyear == day)
@@ -595,7 +595,7 @@ def calculate_metrics(
                 drop=True,
             )
 
-        if clim_period == "day_hour":
+        if clim_period == ClimPeriod.DAY_HOUR:
             day, hour = period
             return da.where(
                 (da[time_dim].dt.day == day)
@@ -603,7 +603,7 @@ def calculate_metrics(
                 drop=True,
             )
 
-        if clim_period == "month_hour":
+        if clim_period == ClimPeriod.DAY_HOUR:
             month, hour = period
             return da.where(
                 (da[time_dim].dt.month == month)
@@ -616,9 +616,9 @@ def calculate_metrics(
     def _select_climatology_period(
         da: xr.DataArray,
         period,
-        clim_period: ClimPeriod = "month",
+        clim_period: ClimPeriod = ClimPeriod.MONTH,
     ) -> xr.DataArray:
-        if clim_period == "dayofyear_hour":
+        if clim_period == ClimPeriod.DAYOFYEAR_HOUR:
             day, hour = period
             return da.where(
                 (da.dayofyear == day)
@@ -626,7 +626,7 @@ def calculate_metrics(
                 drop=True,
             )
 
-        if clim_period == "day_hour":
+        if clim_period == ClimPeriod.DAY_HOUR:
             day, hour = period
             return da.where(
                 (da.day == day)
@@ -634,7 +634,7 @@ def calculate_metrics(
                 drop=True,
             )
 
-        if clim_period == "month_hour":
+        if clim_period == ClimPeriod.DAY_HOUR:
             month, hour = period
             return da.where(
                 (da.month == month)
@@ -718,7 +718,7 @@ def metrics_by_lead_window(
     fc_clim: xr.DataArray | None = None,
     an_clim: xr.DataArray | None = None,
     leadtime_agg_coord: str = "leadtime_seasonal",
-    clim_period: ClimPeriod = "month",
+    clim_period: ClimPeriod = ClimPeriod.MONTH,
     period_dim: str = "start_date",
     periods_requested: str | Sequence[str] | None = None,
     align: bool = True,
@@ -796,7 +796,7 @@ def metrics_by_lead(
     metrics: str | Sequence[str] | None = None,
     fc_clim: xr.DataArray | None = None,
     an_clim: xr.DataArray | None = None,
-    clim_period: ClimPeriod = "month",
+    clim_period: ClimPeriod = ClimPeriod.MONTH,
     period_dim: str = "start_date",
     periods_requested: str | Sequence[str] | None = None,
     align: bool = True,
@@ -856,7 +856,7 @@ def get_metrics(
     metrics: str | Sequence[str] | None = None,
     leadtime_windows: dict[str, Sequence[int]] | None = None,
     leadtime_agg_coord: str = "leadtime_seasonal",
-    clim_period: ClimPeriod = "month",
+    clim_period: ClimPeriod = ClimPeriod.MONTH,
     period_dim: str = "start_date",
     periods_requested: str | Sequence[str] | None = None,
     align: bool = True,
@@ -1059,7 +1059,7 @@ def get_scalar_metrics(
     lat_range: tuple[float, float] | None = None,
     lon_range: tuple[float, float] | None = None,
     time_range: tuple[str, str] | None = None,
-    clim_period: ClimPeriod = "month",
+    clim_period: ClimPeriod = ClimPeriod.MONTH,
     clim_rolling_window: int | None = None,
     clim_time_range: tuple[str, str] | None = None,
     leadtime_units: LeadtimeUnit = LeadtimeUnit.MONTHS,
