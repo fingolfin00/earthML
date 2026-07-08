@@ -10,6 +10,7 @@ from dask.diagnostics.progress import ProgressBar
 
 from .settings import Settings
 from .coords import ensure_time_coord, normalize_lon_range
+from. definitions import LeadtimeUnit
 
 
 T_Xarray = TypeVar("T_Xarray", xr.DataArray, xr.Dataset)
@@ -57,7 +58,7 @@ def open_nc_var(
 
 def get_and_subset_datasets(
     s: Settings,
-    leadtime_units: Literal["hours", "days", "months", "years"],
+    leadtime_units: LeadtimeUnit,
     lat_range: tuple[float, float] | None = None,
     lon_range: tuple[float, float] | None = None,
     time_range: tuple[str, str] | None = None,
@@ -206,13 +207,13 @@ def subset_dataset(
 def valid_times_from_init_times(
     init_times: xr.DataArray | pd.DatetimeIndex,
     lead: int,
-    leadtime_units: Literal["hours", "days", "months", "years"],
+    leadtime_units: LeadtimeUnit,
     lead_period_offset: int = -1,
 ) -> xr.DataArray:
     init_values = init_times.values if isinstance(init_times, xr.DataArray) else init_times
 
     valid_times = [
-        pd.Timestamp(t) + pd.DateOffset(**{leadtime_units: lead + lead_period_offset})
+        pd.Timestamp(t) + pd.DateOffset(**{leadtime_units.value: lead + lead_period_offset})
         for t in init_values
     ]
 
@@ -259,7 +260,7 @@ def build_analysis_for_forecast_leadtimes(
     fc_all: xr.DataArray,
     an_raw: xr.DataArray,
     leadtime_dim: str,
-    leadtime_units: Literal["hours", "days", "months", "years"],
+    leadtime_units: LeadtimeUnit,
     lead_period_offset: int = -1,
 ) -> xr.DataArray:
     """
@@ -332,7 +333,7 @@ def build_analysis_for_forecast_leadtimes(
 def valid_times_from_forecast(
     fc: xr.DataArray | xr.Dataset,
     lead: int,
-    leadtime_units: Literal["hours", "days", "months", "years"],
+    leadtime_units: LeadtimeUnit,
     lead_period_offset: int = -1,
 ) -> xr.DataArray:
     return valid_times_from_init_times(
@@ -347,7 +348,7 @@ def common_time_range(
     fc: xr.DataArray | xr.Dataset,
     an: xr.DataArray | xr.Dataset,
     max_lead: int,
-    leadtime_units: Literal["hours", "days", "months", "years"],
+    leadtime_units: LeadtimeUnit,
     lead_period_offset: int = -1,
 ) -> T_Xarray:
     """Drop forecast initializations whose verifying an time is unavailable."""

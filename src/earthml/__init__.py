@@ -12,6 +12,7 @@ if TYPE_CHECKING:
         DataSelection,
         TimeRange,
         Leadtime,
+        LeadtimeUnit,
         Region,
         Settings,
 
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
     )
 
     from .metrics import (
+        ClimPeriod,
         get_metrics,
         calculate_climatology,
         calculate_save_and_subset_climatologies,
@@ -64,8 +66,10 @@ __all__ = [
     "DataSelection",
     "TimeRange",
     "Leadtime",
+    "LeadtimeUnit",
     "Region",
     "Settings",
+    "ClimPeriod",
     # misc
     "Dask",
     "Table",
@@ -107,6 +111,7 @@ _EXPORTS = {
     "DataSelection": (".base", "DataSelection"),
     "TimeRange": (".base", "TimeRange"),
     "Leadtime": (".base", "Leadtime"),
+    "LeadtimeUnit": (".base", "LeadtimeUnit"),
     "Region": (".base", "Region"),
     "Settings": (".base", "Settings"),
 
@@ -140,6 +145,8 @@ _EXPORTS = {
     "Normalize": (".neural.normalize", "Normalize"),
     "MonthlyNormalize": (".neural.normalize", "MonthlyNormalize"),
     "SplitDataModule": (".neural.module", "SplitDataModule"),
+
+    "ClimPeriod": (".metrics", "ClimPeriod"),
 
     "get_metrics": (".metrics", "get_metrics"),
 

@@ -9,7 +9,6 @@ from .definitions import (
     RunDims,
     VariableName,
     RegionName,
-    ClimPeriod,
     TimeDimBasis,
 )
 
@@ -54,7 +53,6 @@ __all__ = [
     "RunDims",
     "VariableName",
     "RegionName",
-    "ClimPeriod",
     "TimeDimBasis",
     "Settings",
     # types

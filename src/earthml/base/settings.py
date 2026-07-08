@@ -6,6 +6,8 @@ import hashlib, json
 
 import pandas as pd
 
+from .definitions import LeadtimeUnit
+
 
 TrainerPrecision = Literal[
     64,
@@ -52,7 +54,7 @@ class Settings:
     model_an: str = "era5"
 
     leadtimes: list[int | float] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6])
-    leadtime_unit: str = "month"
+    leadtime_unit: LeadtimeUnit = LeadtimeUnit.MONTHS
 
     region_name: str = "World"
     region: dict[str, tuple[int | float, int | float]] | None = None
@@ -361,8 +363,8 @@ class Settings:
         if self.pretrain_norm not in {"full", "monthly"}:
             raise ValueError("pretrain_norm must be 'full' or 'monthly'.")
 
-        if self.leadtime_unit not in {"hour", "day", "month"}:
-            raise ValueError("leadtime_unit must be 'hour', 'day', or 'month'.")
+        if self.leadtime_unit not in list(LeadtimeUnit):
+            raise ValueError(f"leadtime_unit must be one of {list(LeadtimeUnit)}.")
 
         if not self.leadtimes:
             raise ValueError("leadtimes cannot be empty.")

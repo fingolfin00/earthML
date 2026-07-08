@@ -17,6 +17,7 @@ class LeadtimeUnit(StrEnum):
     HOURS  = "hours"
     DAYS   = "days"
     MONTHS = "months"
+    YEARS  = "years"
 
 @dataclass(frozen=True)
 class Leadtime:
@@ -142,15 +143,6 @@ class RegionName(StrEnum):
     CONUS = "ConUS"
     EUROPE = "Europe"
     WORLD = "World"
-
-class ClimPeriod(StrEnum):
-    DAY = "day" # Feb 1 -> 1
-    DAYOFYEAR = "dayofyear" # Feb 1 -> 32
-    WEEK = "week"
-    DAYOFWEEK = "dayofweek"
-    MONTH = "month"
-    SEASON = "season"
-    YEAR = "year"
 
 class RunDims(StrEnum):
     LEADTIME = "leadtime"
