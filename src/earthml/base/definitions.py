@@ -1,9 +1,12 @@
 from dataclasses import dataclass, asdict, astuple
 from datetime import datetime
-from typing import Dict, Optional, Any, cast
+from typing import Dict, Optional, Any, Literal, cast
 from enum import StrEnum
 
 import pandas as pd
+
+
+TargetMode = Literal["analysis", "residual", "anomaly", "anomaly_residual"]
 
 
 @dataclass(frozen=True)
@@ -150,6 +153,15 @@ class RunDims(StrEnum):
     REGION = "region"
     LOSS = "loss"
     VARIANT = "variant"
+
+class ClimPeriod(StrEnum):
+    DAYOFYEAR = "dayofyear"
+    DAY = "day"
+    MONTH = "month"
+    YEAR = "year"
+    DAYOFYEAR_HOUR = "dayofyear_hour"
+    DAY_HOUR = "day_hour"
+    MONTH_HOUR = "month_hour"
 
 class TimeDimBasis(StrEnum):
     TARGET = "target_time"

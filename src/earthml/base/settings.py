@@ -6,7 +6,7 @@ import hashlib, json
 
 import pandas as pd
 
-from .definitions import LeadtimeUnit
+from .definitions import LeadtimeUnit, ClimPeriod, TargetMode
 
 
 TrainerPrecision = Literal[
@@ -64,7 +64,8 @@ class Settings:
     test_start: str = "2021-01-01"
     test_end: str = "2022-12-01"
 
-    target_mode: Literal["analysis", "residual", "anomaly", "anomaly_residual"] = "analysis"
+    target_mode: TargetMode = "analysis"
+    clim_period: ClimPeriod = ClimPeriod.MONTH
 
     seed: int = 42
 
@@ -183,20 +184,28 @@ class Settings:
 
     @property
     def output_name(self) -> str:
-        return (
-            f"{self.target_mode}_"
-            f"{self.var_fc}_"
-            f"{self.var_an}_"
-            f"{self.region_name}_"
-            f"lead{self.lead_period_offset:+d}_"
-            f"pretrain_{self.pretrain_norm}_norm_"
-            f"{self.net_name.lower()}_"
-            f"{self.loss_name.lower()}_"
-            f"c{self.base_channels}_"
-            f"bs{self.batch_size}_"
-            f"lr{self.init_learning_rate:.0e}_"
-            f"{self.training_norm.lower()}"
-        )
+        parts = [
+            str(self.target_mode),
+        ]
+
+        if self.target_mode in ("anomaly", "anomaly_residual"):
+            parts.append(f"climperiod_{self.clim_period.value}")
+
+        parts += [
+            self.var_fc,
+            self.var_an,
+            self.region_name,
+            f"lead{self.lead_period_offset:+d}",
+            f"pretrain_{self.pretrain_norm}_norm",
+            self.net_name.lower(),
+            self.loss_name.lower(),
+            f"c{self.base_channels}",
+            f"bs{self.batch_size}",
+            f"lr{self.init_learning_rate:.0e}",
+            self.training_norm.lower(),
+        ]
+
+        return "_".join(parts)
 
     @property
     def config_hash(self) -> str:

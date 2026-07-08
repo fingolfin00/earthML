@@ -1,5 +1,4 @@
 from .definitions import (
-    ClimPeriod,
     MetricKind,
     LeadtimeAgg,
     RealizationAgg,
@@ -21,11 +20,11 @@ from .metrics import (
 from .climatology import (
     calculate_climatology,
     calculate_save_and_subset_climatologies,
+    select_clim_for_time,
 )
 
 
 __all__ = [
-    "ClimPeriod",
     "MetricKind",
     "LeadtimeAgg",
     "RealizationAgg",
@@ -44,4 +43,5 @@ __all__ = [
     # climatology
     "calculate_climatology",
     "calculate_save_and_subset_climatologies",
+    "select_clim_for_time",
 ]

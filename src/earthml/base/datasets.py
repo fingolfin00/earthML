@@ -2,11 +2,8 @@ from typing import Sequence, Literal, TypeVar, cast
 
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import xarray as xr
-
-from dask.diagnostics.progress import ProgressBar
 
 from .settings import Settings
 from .coords import ensure_time_coord, normalize_lon_range

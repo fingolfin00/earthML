@@ -8,6 +8,7 @@ from dask.diagnostics.progress import ProgressBar
 
 from ..base import (
     LeadtimeUnit,
+    ClimPeriod,
     Settings,
     open_zarr_var,
     T_Xarray,
@@ -15,13 +16,11 @@ from ..base import (
     get_and_subset_datasets,
 )
 
-from .definitions import ClimPeriod
-
 
 def calculate_climatology(
     da: xr.DataArray | xr.Dataset,
     time_dim: str = "time",
-    clim_period: ClimPeriod = "month",
+    clim_period: ClimPeriod = ClimPeriod.MONTH,
     rolling_window: int | None = None,
     rolling_center: bool = True,
     rolling_min_periods: int = 1,
@@ -302,3 +301,76 @@ def calculate_save_and_subset_climatologies(
             time_start=time_start,
         ) if mlfc_clim is not None else None,
     )
+
+
+def select_clim_for_time(
+    clim: xr.Dataset,
+    times,
+    clim_period: ClimPeriod,
+    time_dim: str = "time",
+) -> xr.Dataset:
+    times = pd.DatetimeIndex(times)
+
+    if clim_period == "month":
+        return clim.sel(
+            month=xr.DataArray(
+                times.month,
+                dims=time_dim,
+                coords={time_dim: times},
+            )
+        )
+
+    if clim_period == "dayofyear":
+        return clim.sel(
+            dayofyear=xr.DataArray(
+                times.dayofyear,
+                dims=time_dim,
+                coords={time_dim: times},
+            )
+        )
+
+    if clim_period == "day":
+        return clim.sel(
+            day=xr.DataArray(
+                times.day,
+                dims=time_dim,
+                coords={time_dim: times},
+            )
+        )
+
+    if clim_period == "hour":
+        return clim.sel(
+            hour=xr.DataArray(
+                times.hour,
+                dims=time_dim,
+                coords={time_dim: times},
+            )
+        )
+
+    if clim_period in {"dayofyear_hour", "day_hour", "month_hour"}:
+        if clim_period == "dayofyear_hour":
+            group_period = "dayofyear"
+            group_values = times.dayofyear
+        elif clim_period == "day_hour":
+            group_period = "day"
+            group_values = times.day
+        else:
+            group_period = "month"
+            group_values = times.month
+
+        return clim.sel(
+            {
+                group_period: xr.DataArray(
+                    group_values,
+                    dims=time_dim,
+                    coords={time_dim: times},
+                ),
+                "hour": xr.DataArray(
+                    times.hour,
+                    dims=time_dim,
+                    coords={time_dim: times},
+                ),
+            }
+        )
+
+    raise ValueError(f"Unsupported clim_period={clim_period!r}")

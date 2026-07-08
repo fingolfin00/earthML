@@ -14,6 +14,8 @@ if TYPE_CHECKING:
         Leadtime,
         LeadtimeUnit,
         Region,
+        ClimPeriod,
+        TargetMode,
         Settings,
 
         open_zarr,
@@ -46,10 +48,10 @@ if TYPE_CHECKING:
     )
 
     from .metrics import (
-        ClimPeriod,
         get_metrics,
         calculate_climatology,
         calculate_save_and_subset_climatologies,
+        select_clim_for_time,
     )
 
     from .neural.losses import build_loss
@@ -70,6 +72,7 @@ __all__ = [
     "Region",
     "Settings",
     "ClimPeriod",
+    "TargetMode",
     # misc
     "Dask",
     "Table",
@@ -104,6 +107,7 @@ __all__ = [
     # climatology
     "calculate_climatology",
     "calculate_save_and_subset_climatologies",
+    "select_clim_for_time",
 ]
 
 # Lazy dynamical imports
@@ -113,6 +117,8 @@ _EXPORTS = {
     "Leadtime": (".base", "Leadtime"),
     "LeadtimeUnit": (".base", "LeadtimeUnit"),
     "Region": (".base", "Region"),
+    "ClimPeriod": (".base", "ClimPeriod"),
+    "TargetMode": (".base", "TargetMode"),
     "Settings": (".base", "Settings"),
 
     "open_zarr": (".base", "open_zarr"),
@@ -146,12 +152,11 @@ _EXPORTS = {
     "MonthlyNormalize": (".neural.normalize", "MonthlyNormalize"),
     "SplitDataModule": (".neural.module", "SplitDataModule"),
 
-    "ClimPeriod": (".metrics", "ClimPeriod"),
-
     "get_metrics": (".metrics", "get_metrics"),
 
     "calculate_climatology": (".metrics", "calculate_climatology"),
     "calculate_save_and_subset_climatologies": (".metrics", "calculate_save_and_subset_climatologies"),
+    "select_clim_for_time": (".metrics", "select_clim_for_time"),
 }
 
 

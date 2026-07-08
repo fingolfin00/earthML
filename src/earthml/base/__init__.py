@@ -9,7 +9,9 @@ from .definitions import (
     RunDims,
     VariableName,
     RegionName,
+    ClimPeriod,
     TimeDimBasis,
+    TargetMode,
 )
 
 from .settings import Settings
@@ -53,7 +55,9 @@ __all__ = [
     "RunDims",
     "VariableName",
     "RegionName",
+    "ClimPeriod",
     "TimeDimBasis",
+    "TargetMode",
     "Settings",
     # types
     "T_Xarray",

@@ -2,15 +2,6 @@ from typing import Literal
 from enum import StrEnum
 
 
-ClimPeriod = Literal[
-    "dayofyear",
-    "day",
-    "month",
-    "year",
-    "dayofyear_hour",
-    "day_hour",
-    "month_hour",
-]
 MetricKind = Literal["scalar", "maps", "timeseries"]
 LeadtimeAgg = Literal["single", "aggregated", "seasonal_window"]
 RealizationAgg = Literal["member", "ensemble_mean"]

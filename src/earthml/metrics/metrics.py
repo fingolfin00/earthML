@@ -8,13 +8,13 @@ import xskillscore as xs
 from ..base import (
     Settings,
     LeadtimeUnit,
+    ClimPeriod,
     aggregate_leadtime_da,
     get_and_subset_datasets,
 )
 
 from .climatology import calculate_save_and_subset_climatologies
 from .definitions import (
-    ClimPeriod,
     MetricKind,
     LeadtimeAgg,
     MetricAgg,
