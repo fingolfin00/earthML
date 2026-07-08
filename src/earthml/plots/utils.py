@@ -979,7 +979,13 @@ def plot_metric_diff_scatter(
 
 def get_plot_unit_and_scale(da: xr.DataArray, var: str) -> tuple[str, float]:
     unit = da.attrs.get("units") or VARIABLE_UNITS.get(var, "")
-    return UNIT_CONVERSIONS.get(unit, (unit, 1.0))
+
+    unit_conversion = UNIT_CONVERSIONS.get(unit, (unit, 1.0))
+
+    if isinstance(unit_conversion, dict):
+        return unit_conversion.get(var, (unit, 1.0))
+
+    return unit_conversion
 
 
 def normalize_longitudes(da: xr.DataArray, lon_name: str) -> xr.DataArray:
