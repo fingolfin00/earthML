@@ -10,10 +10,13 @@ from ..base import (
     LeadtimeUnit,
     ClimPeriod,
     Settings,
+    open_zarr,
     open_zarr_var,
     T_Xarray,
     subset_dataset,
     get_and_subset_datasets,
+    save_zarr,
+    safe_chunk_spec,
 )
 
 
@@ -118,7 +121,7 @@ def calculate_save_and_subset_climatologies(
     s: Settings,
     leadtime_units: LeadtimeUnit,
     force: bool = False,
-    clim_period: ClimPeriod = "month",
+    clim_period: ClimPeriod = ClimPeriod.MONTH,
     rolling_window: int | None = None,
     rolling_center: bool = True,
     rolling_min_periods: int = 1,
@@ -135,18 +138,29 @@ def calculate_save_and_subset_climatologies(
     clim_time_range = time_range or (s.train_start, s.train_end)
     region_label = s.region_name or "global"
 
+    start_label = pd.Timestamp(clim_time_range[0]).strftime("%Y%m%d")
+    end_label = pd.Timestamp(clim_time_range[1]).strftime("%Y%m%d")
+
+    clim_label = f"{clim_period}_{start_label}_{end_label}"
+
     # Original forecast climatology
     fc_path = s.input_fc
     fc_clim_path = (
         s.input_clim_dir
-        / f"{s.model_fc}_{s.var_fc}_{region_label}_{clim_period}_train_clim.zarr"
+        / (
+            f"{s.model_fc}_{s.var_fc}_{region_label}_"
+            f"{clim_label}_climatology.zarr"
+        )
     )
 
     # Analysis climatology
     an_path = s.input_an
     an_clim_path = (
         s.input_clim_dir
-        / f"{s.model_an}_{s.var_an}_{region_label}_{clim_period}_train_clim.zarr"
+        / (
+            f"{s.model_an}_{s.var_an}_{region_label}_"
+            f"{clim_label}_climatology.zarr"
+        )
     )
 
     if not fc_path.exists():
@@ -156,7 +170,10 @@ def calculate_save_and_subset_climatologies(
 
     # Corrected forecast climatology
     train_pred_path = s.output_dir / "train_corrected.zarr"
-    train_pred_clim_path = s.output_clim_dir / "train_corrected_clim.zarr"
+    train_pred_clim_path = (
+        s.output_clim_dir
+        / f"train_corrected_{clim_label}_climatology.zarr"
+    )
 
     s.make_dirs()
 
@@ -188,11 +205,11 @@ def calculate_save_and_subset_climatologies(
         if need_mlfc_clim:
             print("Save ML-corrected forecast climatology to:", train_pred_clim_path.name)
 
-            train_pred = open_zarr_var(train_pred_path, s.var_fc)
+            train_pred = open_zarr(train_pred_path)
 
             with ProgressBar():
                 mlfc_clim = calculate_climatology(
-                    train_pred,
+                    train_pred[s.var_fc],
                     time_dim=train_pred.earthml.guessed_dims.time,
                     clim_period=clim_period,
                     rolling_window=rolling_window,
@@ -200,12 +217,13 @@ def calculate_save_and_subset_climatologies(
                     rolling_min_periods=rolling_min_periods,
                 ).compute()
 
-            mlfc_clim.to_dataset(name=s.var_file_fc).to_zarr(
+            mlfc_clim_ds = mlfc_clim.to_dataset(name=s.var_file_fc)
+            mlfc_clim_ds = save_zarr(
+                mlfc_clim_ds,
                 train_pred_clim_path,
-                mode="w",
-                consolidated=False,
-                zarr_format=2,
+                safe_chunk_spec(mlfc_clim_ds, train_pred.unify_chunks()),
             )
+            mlfc_clim = mlfc_clim_ds[s.var_fc]
         else:
             mlfc_clim = open_zarr_var(train_pred_clim_path, s.var_fc)
     else:
@@ -228,12 +246,13 @@ def calculate_save_and_subset_climatologies(
                 rolling_min_periods=rolling_min_periods,
             ).compute()
 
-        fc_clim.to_dataset(name=s.var_file_fc).to_zarr(
+        fc_clim_ds = fc_clim.to_dataset(name=s.var_file_fc)
+        fc_clim_ds = save_zarr(
+            fc_clim_ds,
             fc_clim_path,
-            mode="w",
-            consolidated=False,
-            zarr_format=2,
+            safe_chunk_spec(fc_clim_ds, fc_train.to_dataset(name=s.var_file_fc).unify_chunks()),
         )
+        fc_clim = fc_clim_ds[s.var_fc]
 
         print("Save analysis climatology to:", an_clim_path.name)
 
@@ -250,12 +269,14 @@ def calculate_save_and_subset_climatologies(
                 rolling_min_periods=rolling_min_periods,
             ).compute()
 
-        an_clim.to_dataset(name=s.var_file_an).to_zarr(
+        an_clim_ds = an_clim.to_dataset(name=s.var_file_an)
+        an_clim_ds = save_zarr(
+            an_clim_ds,
             an_clim_path,
-            mode="w",
-            consolidated=False,
-            zarr_format=2,
+            safe_chunk_spec(an_clim_ds, an_train.to_dataset(name=s.var_file_an).unify_chunks()),
         )
+        an_clim = an_clim_ds[s.var_an]
+
     else:
         fc_clim = open_zarr_var(fc_clim_path, s.var_file_fc)
         an_clim = open_zarr_var(an_clim_path, s.var_file_an)
