@@ -259,7 +259,7 @@ def calculate_save_and_subset_climatologies(
         an_train = an.sel({an.earthml.guessed_dims.time: slice(*clim_time_range)})
 
         with ProgressBar():
-            print("Calculate original forecast climatology")
+            print("Calculate analysis climatology")
             an_clim = calculate_climatology(
                 an_train,
                 time_dim=an_train.earthml.guessed_dims.time,
