@@ -1084,6 +1084,7 @@ def plot_field_timeseries(
     plot_single_members: bool = True,
     member_linestyle: str = "-",
     series_linestyle: str = "--",
+    series_offsets: dict[str, float] | None = None,
 ) -> None:
     valid = {name: da for name, da in series.items() if da is not None}
 
@@ -1140,12 +1141,27 @@ def plot_field_timeseries(
 
     fig, ax = plt.subplots(figsize=(16, 8))
 
+    if series_offsets:
+        for name, offset in series_offsets.items():
+            color = SERIES_COLORS.get(name)
+
+            ax.axhline(
+                offset,
+                color=color,
+                linewidth=1,
+                alpha=0.35,
+                linestyle="--",
+                zorder=0,
+            )
+
     plot_names = list(dict.fromkeys([*reduced.keys(), *reduced_members.keys()]))
 
     for name in plot_names:
         color = SERIES_COLORS.get(name)
         da = reduced.get(name)
         member_da = reduced_members.get(name)
+
+        offset = 0.0 if series_offsets is None else series_offsets.get(name, 0.0)
 
         if da is not None:
             x = da[time_dim].values
@@ -1164,7 +1180,7 @@ def plot_field_timeseries(
 
                     ax.plot(
                         x,
-                        member_da_i.values,
+                        member_da_i.values + offset,
                         linestyle=member_linestyle,
                         linewidth=0.5,
                         alpha=0.2,
@@ -1181,11 +1197,17 @@ def plot_field_timeseries(
                 lower = member_da.min(realization_dim, skipna=True)
                 upper = member_da.max(realization_dim, skipna=True)
 
-            ax.fill_between(x, lower.values, upper.values, alpha=0.18, color=color)
+            ax.fill_between(
+                x,
+                lower.values + offset,
+                upper.values + offset,
+                alpha=0.18,
+                color=color,
+            )
 
             ax.plot(
                 x,
-                member_mean.values,
+                member_mean.values + offset,
                 linestyle=member_linestyle,
                 linewidth=1.4,
                 color=color,
@@ -1198,7 +1220,7 @@ def plot_field_timeseries(
 
             ax.plot(
                 x,
-                da.values,
+                da.values + offset,
                 linewidth=1.4,
                 linestyle=series_linestyle,
                 color=color,
@@ -1219,6 +1241,19 @@ def plot_field_timeseries(
     ax.set_ylabel(ylabel)
     ax.grid(True, alpha=0.3)
     ax.legend()
+
+    if series_offsets:
+        ax2 = ax.twinx()
+        ax2.set_ylim(ax.get_ylim())
+
+        tick_names = [n for n in plot_names if n in series_offsets]
+        ax2.set_yticks([series_offsets[n] for n in tick_names])
+        tick_zeros = ["0" for n in plot_names if n in series_offsets]
+
+        ax2.set_yticklabels(tick_zeros)
+
+        for label, name in zip(ax2.get_yticklabels(), tick_names):
+            label.set_color(SERIES_COLORS.get(name))
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
     plt.tight_layout()
