@@ -208,7 +208,7 @@ class Settings:
             self.extra_suffix_folder,
         ]
 
-        return "_".join(parts)
+        return "_".join(filter(None, parts))
 
     @property
     def config_hash(self) -> str:
