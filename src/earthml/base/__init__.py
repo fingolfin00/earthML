@@ -22,6 +22,7 @@ from .datasets import (
     open_zarr_var,
     open_nc,
     open_nc_var,
+    save_zarr,
     select_target_for_lead,
     subset_dataset,
     get_and_subset_datasets,
@@ -61,11 +62,12 @@ __all__ = [
     "Settings",
     # types
     "T_Xarray",
-    # opening utils
+    # opening and saving utils
     "open_zarr",
     "open_zarr_var",
     "open_nc",
     "open_nc_var",
+    "save_zarr",
     # dataset utils
     "select_target_for_lead",
     "subset_dataset",

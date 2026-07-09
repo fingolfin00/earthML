@@ -1,4 +1,5 @@
-from typing import Sequence
+from typing import Any
+from collections.abc import Sequence
 from pathlib import Path
 
 from .settings import Settings
@@ -6,9 +7,12 @@ from .settings import Settings
 
 def get_experiment_configs(
     experiments_root: str | Path,
-    variables: Sequence | None = None,
-    regions: Sequence | None = None,
+    **filters: Any,
 ) -> list[Settings]:
+    unknown = set(filters) - Settings.field_names()
+    if unknown:
+        raise ValueError(f"Unknown Settings fields: {unknown}")
+
     config_paths = list(Path(experiments_root).rglob("config.json"))
 
     matching_settings: list[Settings] = []
@@ -16,12 +20,19 @@ def get_experiment_configs(
     for config_path in config_paths:
         s = Settings.from_json(config_path)
 
-        if variables is not None and s.var_fc not in variables:
-            continue
+        for name, expected in filters.items():
+            if expected is None:
+                continue
 
-        if regions is not None and s.region_name not in regions:
-            continue
+            actual = getattr(s, name)
 
-        matching_settings.append(s)
+            if isinstance(expected, Sequence) and not isinstance(expected, (str, bytes)):
+                if actual not in expected:
+                    break
+            else:
+                if actual != expected:
+                    break
+        else:
+            matching_settings.append(s)
 
     return matching_settings

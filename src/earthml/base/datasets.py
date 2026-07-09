@@ -5,6 +5,8 @@ from pathlib import Path
 import pandas as pd
 import xarray as xr
 
+from numcodecs import Blosc
+
 from .settings import Settings
 from .coords import ensure_time_coord, normalize_lon_range
 from. definitions import LeadtimeUnit
@@ -51,6 +53,46 @@ def open_nc_var(
         raise ValueError(f"No data variables found in {path}")
 
     return ds[var]
+
+def save_zarr(
+    ds: xr.Dataset,
+    store: str | Path,
+    chunks: xr.Dataset | dict | None = None,
+    compressor: object | None = None,
+) -> xr.Dataset:
+    if isinstance(chunks, xr.Dataset):
+        chunk_spec = {
+            dim: chunks.chunksizes[dim][0]
+            for dim in ds.dims
+            if dim in chunks.chunksizes
+        }
+        ds = ds.chunk(chunk_spec)
+
+    elif isinstance(chunks, dict):
+        ds = ds.chunk(chunks)
+
+    if compressor is None:
+        compressor = Blosc(
+            cname="zstd",
+            clevel=3,
+            shuffle=Blosc.BITSHUFFLE,
+        )
+
+    encoding = {
+        name: {"compressor": compressor}
+        for name in ds.data_vars
+    }
+
+    ds.to_zarr(
+        store,
+        mode="w",
+        consolidated=False,
+        zarr_format=2,
+        align_chunks=True,
+        encoding=encoding,
+    )
+
+    return ds
 
 
 def get_and_subset_datasets(

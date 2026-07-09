@@ -44,6 +44,8 @@ class Settings:
     exp_root_dir: Path | None = None
     plot_root_dir: Path | None = None
 
+    extra_suffix_folder: str = ""
+
     lead_period_offset: int = -1
 
     var_file_fc: str = "mslp"
@@ -189,7 +191,7 @@ class Settings:
         ]
 
         if self.target_mode in ("anomaly", "anomaly_residual"):
-            parts.append(f"climperiod_{self.clim_period.value}")
+            parts.append(f"climperiod_{self.clim_period}")
 
         parts += [
             self.var_fc,
@@ -203,6 +205,7 @@ class Settings:
             f"bs{self.batch_size}",
             f"lr{self.init_learning_rate:.0e}",
             self.training_norm.lower(),
+            self.extra_suffix_folder,
         ]
 
         return "_".join(parts)
