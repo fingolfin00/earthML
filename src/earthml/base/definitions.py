@@ -6,7 +6,7 @@ from enum import StrEnum
 import pandas as pd
 
 
-TargetMode = Literal["analysis", "residual", "anomaly", "anomaly_residual"]
+TargetMode = Literal["analysis", "residual", "anomaly", "anomaly_residual", "anomaly_residual_realization"]
 
 
 @dataclass(frozen=True)
