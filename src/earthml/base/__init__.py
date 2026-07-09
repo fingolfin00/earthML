@@ -23,6 +23,7 @@ from .datasets import (
     open_nc,
     open_nc_var,
     save_zarr,
+    safe_chunk_spec,
     select_target_for_lead,
     subset_dataset,
     get_and_subset_datasets,
@@ -68,6 +69,7 @@ __all__ = [
     "open_nc",
     "open_nc_var",
     "save_zarr",
+    "safe_chunk_spec",
     # dataset utils
     "select_target_for_lead",
     "subset_dataset",

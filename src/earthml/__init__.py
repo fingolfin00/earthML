@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         open_nc,
         open_nc_var,
         save_zarr,
+        safe_chunk_spec,
 
         get_experiment_configs,
         get_and_subset_datasets,
@@ -101,6 +102,7 @@ __all__ = [
     "open_nc",
     "open_nc_var",
     "save_zarr",
+    "safe_chunk_spec",
     "ensure_time_coord",
     # agggregation
     "aggregate_leadtime_ds",
@@ -128,6 +130,7 @@ _EXPORTS = {
     "open_nc": (".base", "open_nc"),
     "open_nc_var": (".base", "open_nc_var"),
     "save_zarr": (".base", "save_zarr"),
+    "safe_chunk_spec": (".base", "safe_chunk_spec"),
 
     "get_and_subset_datasets": (".base", "get_and_subset_datasets"),
     "get_experiment_configs": (".base", "get_experiment_configs"),

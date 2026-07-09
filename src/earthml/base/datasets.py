@@ -7,6 +7,8 @@ import xarray as xr
 
 from numcodecs import Blosc
 
+from dask.diagnostics.progress import ProgressBar
+
 from .settings import Settings
 from .coords import ensure_time_coord, normalize_lon_range
 from. definitions import LeadtimeUnit
@@ -17,14 +19,31 @@ T_Xarray = TypeVar("T_Xarray", xr.DataArray, xr.Dataset)
 
 def open_zarr(
     path: str | Path,
+    chunks: dict[str, int] | str | None = "auto",
 ) -> xr.Dataset:
-    return xr.open_zarr(path, consolidated=False)
+    ds = xr.open_zarr(path, consolidated=False)
+
+    if chunks is None:
+        return ds
+
+    if isinstance(chunks, str):
+        return ds.chunk(chunks)
+
+    valid_chunks = {
+        dim: size
+        for dim, size in chunks.items()
+        if dim in ds.dims
+    }
+
+    return ds.chunk(valid_chunks)
 
 def open_zarr_var(
     path: str | Path,
     var: str,
+    chunks: dict[str, int] | str | None = "auto",
 ) -> xr.DataArray:
-    return open_zarr(path)[var]
+    return open_zarr(path, chunks=chunks)[var]
+
 
 def open_nc(
     path: str | Path,
@@ -54,22 +73,64 @@ def open_nc_var(
 
     return ds[var]
 
+
+def safe_chunk_spec(
+    ds: xr.Dataset | xr.DataArray,
+    reference: xr.Dataset | None = None,
+    max_bytes: int = 256 * 1024**2,
+    default_chunks: dict[str, int] | None = None,
+) -> dict[str, int]:
+    sizes = ds.sizes
+
+    if default_chunks is None:
+        default_chunks = {
+            "time": 64,
+            "lead_time": 1,
+            "lat": 128,
+            "latitude": 128,
+            "lon": 128,
+            "longitude": 128,
+        }
+
+    spec: dict[str, int] = {}
+
+    for dim, size in sizes.items():
+        if reference is not None and dim in reference.chunksizes:
+            chunk = reference.chunksizes[dim][0]
+        else:
+            chunk = default_chunks.get(dim, size)
+
+        spec[dim] = min(int(chunk), int(size))
+
+    if isinstance(ds, xr.Dataset):
+        itemsize = max(v.dtype.itemsize for v in ds.data_vars.values())
+    else:
+        itemsize = ds.dtype.itemsize
+
+    def chunk_bytes() -> int:
+        n = 1
+        for dim in sizes:
+            n *= spec[dim]
+        return n * itemsize
+
+    while chunk_bytes() > max_bytes:
+        dim = max(spec, key=spec.get)
+
+        if spec[dim] <= 1:
+            break
+
+        spec[dim] = max(1, spec[dim] // 2)
+
+    return spec
+
 def save_zarr(
     ds: xr.Dataset,
     store: str | Path,
-    chunks: xr.Dataset | dict | None = None,
+    chunks: dict[str, int] | None = None,
     compressor: object | None = None,
 ) -> xr.Dataset:
-    if isinstance(chunks, xr.Dataset):
-        chunk_spec = {
-            dim: chunks.chunksizes[dim][0]
-            for dim in ds.dims
-            if dim in chunks.chunksizes
-        }
-        ds = ds.chunk(chunk_spec)
-
-    elif isinstance(chunks, dict):
-        ds = ds.chunk(chunks)
+    if chunks is not None:
+        ds = ds.chunk(chunks).unify_chunks()
 
     if compressor is None:
         compressor = Blosc(
@@ -83,14 +144,15 @@ def save_zarr(
         for name in ds.data_vars
     }
 
-    ds.to_zarr(
-        store,
-        mode="w",
-        consolidated=False,
-        zarr_format=2,
-        align_chunks=True,
-        encoding=encoding,
-    )
+    with ProgressBar():
+        ds.to_zarr(
+            store,
+            mode="w",
+            consolidated=False,
+            zarr_format=2,
+            align_chunks=True,
+            encoding=encoding,
+        )
 
     return ds
 
