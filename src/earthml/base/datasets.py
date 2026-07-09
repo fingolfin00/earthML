@@ -76,7 +76,7 @@ def open_nc_var(
 
 def safe_chunk_spec(
     ds: xr.Dataset | xr.DataArray,
-    reference: xr.Dataset | None = None,
+    reference: xr.Dataset | xr.DataArray | None = None,
     max_bytes: int = 256 * 1024**2,
     default_chunks: dict[str, int] | None = None,
 ) -> dict[str, int]:
@@ -86,17 +86,38 @@ def safe_chunk_spec(
         default_chunks = {
             "time": 64,
             "lead_time": 1,
+            "leadtime": 1,
             "lat": 128,
             "latitude": 128,
             "lon": 128,
             "longitude": 128,
         }
 
+    def first_ref_chunk(dim: str) -> int | None:
+        if reference is None:
+            return None
+
+        if isinstance(reference, xr.DataArray):
+            if reference.chunks is None or dim not in reference.dims:
+                return None
+            axis = reference.get_axis_num(dim)
+            return int(reference.chunks[axis][0])
+
+        for var in reference.data_vars.values():
+            if var.chunks is None or dim not in var.dims:
+                continue
+            axis = var.get_axis_num(dim)
+            return int(var.chunks[axis][0])
+
+        return None
+
     spec: dict[str, int] = {}
 
     for dim, size in sizes.items():
-        if reference is not None and dim in reference.chunksizes:
-            chunk = reference.chunksizes[dim][0]
+        ref_chunk = first_ref_chunk(dim)
+
+        if ref_chunk is not None:
+            chunk = ref_chunk
         else:
             chunk = default_chunks.get(dim, size)
 
