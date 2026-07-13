@@ -7,7 +7,10 @@ import hashlib, json
 import pandas as pd
 
 from .definitions import LeadtimeUnit, ClimPeriod, TargetMode
-from ..neural.module import SplitStrategy
+from ..neural import (
+    SplitStrategy,
+    NormalizationMode,
+)
 
 
 TrainerPrecision = Literal[
@@ -77,7 +80,8 @@ class Settings:
     realization_as_channel: bool = False
     output_realizations: Literal["deterministic", "ensemble"] = "deterministic" # used only if realization_as_channel is True
     split_strategy: SplitStrategy = "time"
-    pretrain_norm: Literal["full", "monthly"] = "full"
+    normalization: Literal["full", "monthly"] = "full"
+    normalization_mode: NormalizationMode = "channel"
 
     net_name: str = "SmaAt_UNet"
     loss_name: str = "MSELoss"
