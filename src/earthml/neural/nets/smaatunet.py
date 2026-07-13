@@ -290,7 +290,11 @@ class SmaAt_UNet(EarthMLLightningModule):
         bilinear: bool = True,
         reduction_ratio: int = 16,
         base_channels: int = 64,
+        depth: int = 5, # total encoder levels, including input block
     ) -> None:
+        if depth < 2:
+            raise ValueError(f"depth must be at least 2, got {depth}")
+
         loss_params = loss_params or {"loss": {}, "net": {}}
 
         super().__init__(
@@ -303,66 +307,120 @@ class SmaAt_UNet(EarthMLLightningModule):
         self.loss = resolve_loss(loss, loss_params["loss"])
         self.supervised = supervised
 
-        needs_var: bool = ("GaussianNLL" in loss) or ("GaussianNLLFromLogits" in loss)
+        needs_var = (
+            "GaussianNLL" in loss
+            or "GaussianNLLFromLogits" in loss
+        )
 
         self.n_channels = n_channels
         self.n_classes = n_classes
         self.debug_numerics = DEFAULT_DEBUG_NUMERICS
         self.bilinear = bilinear
+        self.depth = depth
 
-        out_channels: int = (2 * self.n_classes) if needs_var else self.n_classes
-        factor: int = 2 if self.bilinear else 1
-        b: int = base_channels
+        out_channels = 2 * n_classes if needs_var else n_classes
+        factor = 2 if bilinear else 1
 
-        self.inc = DoubleConvDS(self.n_channels, b, kernels_per_layer=kernels_per_layer, norm=norm)
-        self.cbam1 = CBAM(b, reduction_ratio=reduction_ratio, norm=norm)
+        # Nominal U-Net widths before the bilinear bottleneck adjustment.
+        channels = [
+            base_channels * (2**level)
+            for level in range(depth)
+        ]
 
-        self.down1 = DownDS(b, 2 * b, kernels_per_layer=kernels_per_layer, norm=norm)
-        self.cbam2 = CBAM(2 * b, reduction_ratio=reduction_ratio, norm=norm)
+        self.inc = DoubleConvDS(
+            n_channels,
+            channels[0],
+            kernels_per_layer=kernels_per_layer,
+            norm=norm,
+        )
 
-        self.down2 = DownDS(2 * b, 4 * b, kernels_per_layer=kernels_per_layer, norm=norm)
-        self.cbam3 = CBAM(4 * b, reduction_ratio=reduction_ratio, norm=norm)
+        self.encoder_cbam = nn.ModuleList([
+            CBAM(
+                channels[0],
+                reduction_ratio=reduction_ratio,
+                norm=norm,
+            )
+        ])
 
-        self.down3 = DownDS(4 * b, 8 * b, kernels_per_layer=kernels_per_layer, norm=norm)
-        self.cbam4 = CBAM(8 * b, reduction_ratio=reduction_ratio, norm=norm)
+        # Encoder
+        self.downs = nn.ModuleList()
 
-        self.down4 = DownDS(8 * b, 16 * b // factor, kernels_per_layer=kernels_per_layer, norm=norm)
-        self.cbam5 = CBAM(16 * b // factor, reduction_ratio=reduction_ratio, norm=norm)
+        for level in range(1, depth):
+            in_ch = channels[level - 1]
+            out_ch = channels[level]
 
-        self.up1 = UpDS(16 * b, 8 * b // factor, self.bilinear, kernels_per_layer=kernels_per_layer, norm=norm)
-        self.up2 = UpDS(8 * b, 4 * b // factor, self.bilinear, kernels_per_layer=kernels_per_layer, norm=norm)
-        self.up3 = UpDS(4 * b, 2 * b // factor, self.bilinear, kernels_per_layer=kernels_per_layer, norm=norm)
-        self.up4 = UpDS(2 * b, b, self.bilinear, kernels_per_layer=kernels_per_layer, norm=norm)
+            if level == depth - 1:
+                out_ch //= factor
 
-        self.outc = OutConv(b, out_channels)
+            self.downs.append(
+                DownDS(
+                    in_ch,
+                    out_ch,
+                    kernels_per_layer=kernels_per_layer,
+                    norm=norm,
+                )
+            )
+
+            self.encoder_cbam.append(
+                CBAM(
+                    out_ch,
+                    reduction_ratio=reduction_ratio,
+                    norm=norm,
+                )
+            )
+
+        # Decoder
+        self.ups = nn.ModuleList()
+
+        for level in reversed(range(depth - 1)):
+            out_ch = (
+                channels[level]
+                if level == 0
+                else channels[level] // factor
+            )
+
+            self.ups.append(
+                UpDS(
+                    channels[level + 1],
+                    out_ch,
+                    bilinear,
+                    kernels_per_layer=kernels_per_layer,
+                    norm=norm,
+                )
+            )
+
+        self.outc = OutConv(
+            channels[0],
+            out_channels,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.debug_numerics:
             if torch.isnan(x).any() or torch.isinf(x).any():
-                raise ValueError(f"Input tensor contains NaN/Inf values: shape={tuple(x.shape)}")
+                raise ValueError(
+                    "Input tensor contains NaN/Inf values: "
+                    f"shape={tuple(x.shape)}"
+                )
 
             for name, param in self.named_parameters():
                 if torch.isnan(param).any() or torch.isinf(param).any():
-                    raise ValueError(f"Model parameter '{name}' contains NaN/Inf values")
-        # logger.debug("SmaAt_UNet forward input shape: %s", tuple(x.shape))
-        x1 = self.inc(x)
-        x1Att = self.cbam1(x1)
-        x2 = self.down1(x1)
-        x2Att = self.cbam2(x2)
-        x3 = self.down2(x2)
-        x3Att = self.cbam3(x3)
-        x4 = self.down3(x3)
-        x4Att = self.cbam4(x4)
-        x5 = self.down4(x4)
-        x5Att = self.cbam5(x5)
-        # print(f"Before up1: x5Att shape: {x5Att.shape}, x4Att shape: {x4Att.shape}")
-        x = self.up1(x5Att, x4Att)
-        # print(f"After up1: x shape: {x.shape}, x3Att shape: {x3Att.shape}")
-        x = self.up2(x, x3Att)
-        # print(f"After up2: x shape: {x.shape}, x2Att shape: {x2Att.shape}")
-        x = self.up3(x, x2Att)
-        # print(f"After up3: x shape: {x.shape}, x1Att shape: {x1Att.shape}")
-        x = self.up4(x, x1Att)
-        # print(f"After up4: x shape: {x.shape}")
-        logits = self.outc(x)
-        return logits
+                    raise ValueError(
+                        f"Model parameter {name!r} contains NaN/Inf values"
+                    )
+
+        x = self.inc(x)
+        x = self.encoder_cbam[0](x)
+
+        skips = [x]
+
+        for level, down in enumerate(self.downs, start=1):
+            x = down(x)
+            x = self.encoder_cbam[level](x)
+            skips.append(x)
+
+        x = skips.pop() # bottleneck
+
+        for up in self.ups:
+            x = up(x, skips.pop())
+
+        return self.outc(x)
