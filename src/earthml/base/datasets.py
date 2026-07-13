@@ -85,11 +85,8 @@ def safe_chunk_spec(
     if default_chunks is None:
         default_chunks = {
             "time": 64,
-            "lead_time": 1,
             "leadtime": 1,
-            "lat": 128,
             "latitude": 128,
-            "lon": 128,
             "longitude": 128,
         }
 
