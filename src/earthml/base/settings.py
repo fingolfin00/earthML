@@ -1,9 +1,10 @@
-from typing import Literal
+from typing import Literal, get_args
 from dataclasses import dataclass, field, fields, asdict
 
 from pathlib import Path
 import hashlib, json
 
+import math
 import pandas as pd
 
 from .definitions import LeadtimeUnit, ClimPeriod, TargetMode
@@ -206,7 +207,7 @@ class Settings:
             self.var_an,
             self.region_name,
             f"lead{self.lead_period_offset:+d}",
-            f"pretrain_{self.pretrain_norm}_norm",
+            f"{self.normalization}_{self.normalization_mode}_norm",
             self.net_name.lower(),
             self.loss_name.lower(),
             f"depth{self.depth}",
@@ -353,39 +354,329 @@ class Settings:
         return json.dumps(config, sort_keys=True, default=str)
 
 
-    def __post_init__(self):
-        if self.root_dir is None:
-            missing = [
-                name
-                for name in ("data_root_dir", "exp_root_dir", "plot_root_dir")
-                if getattr(self, name) is None
-            ]
-            if missing:
-                raise ValueError(
-                    "When root_dir is None, the following must be provided: "
-                    + ", ".join(missing)
+def __post_init__(self) -> None:
+    # ---------------------------
+    # Paths
+    # ---------------------------
+
+    if self.root_dir is None:
+        missing = [
+            name
+            for name in (
+                "data_root_dir",
+                "exp_root_dir",
+                "plot_root_dir",
+            )
+            if getattr(self, name) is None
+        ]
+        if missing:
+            raise ValueError(
+                "When root_dir is None, the following must be provided: "
+                + ", ".join(missing)
+            )
+
+    for name in (
+        "root_dir",
+        "data_root_dir",
+        "exp_root_dir",
+        "plot_root_dir",
+    ):
+        value = getattr(self, name)
+        if value is not None and not isinstance(value, Path):
+            raise TypeError(
+                f"{name} must be a pathlib.Path or None, "
+                f"got {type(value).__name__}."
+            )
+
+    # ---------------------------
+    # Strings and identifiers
+    # ---------------------------
+
+    for name in (
+        "var_file_fc",
+        "var_file_an",
+        "var_fc",
+        "var_an",
+        "model_fc",
+        "model_an",
+        "region_name",
+        "net_name",
+        "loss_name",
+        "training_norm",
+    ):
+        value = getattr(self, name)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{name} must be a non-empty string.")
+
+    if not isinstance(self.extra_suffix_folder, str):
+        raise TypeError("extra_suffix_folder must be a string.")
+
+    # ---------------------------
+    # Date ranges
+    # ---------------------------
+
+    date_names = (
+        "train_start",
+        "train_end",
+        "val_start",
+        "val_end",
+        "test_start",
+        "test_end",
+    )
+
+    dates: dict[str, pd.Timestamp] = {}
+
+    for name in date_names:
+        value = getattr(self, name)
+
+        try:
+            timestamp = pd.Timestamp(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{name} must be a valid datetime-like value, got {value!r}."
+            ) from exc
+
+        if pd.isna(timestamp):
+            raise ValueError(f"{name} cannot be NaT.")
+
+        dates[name] = timestamp
+
+    if dates["train_start"] > dates["train_end"]:
+        raise ValueError("train_start must be before or equal to train_end.")
+
+    if dates["val_start"] > dates["val_end"]:
+        raise ValueError("val_start must be before or equal to val_end.")
+
+    if dates["test_start"] > dates["test_end"]:
+        raise ValueError("test_start must be before or equal to test_end.")
+
+    if dates["train_end"] >= dates["val_start"]:
+        raise ValueError(
+            "Training and validation periods overlap: "
+            "train_end must be earlier than val_start."
+        )
+
+    if dates["val_end"] >= dates["test_start"]:
+        raise ValueError(
+            "Validation and test periods overlap: "
+            "val_end must be earlier than test_start."
+        )
+
+    # ---------------------------
+    # Literal and enum settings
+    # ---------------------------
+
+    def check_literal(name: str, literal_type: object) -> None:
+        value = getattr(self, name)
+        allowed = get_args(literal_type)
+
+        if value not in allowed:
+            raise ValueError(
+                f"{name} must be one of {allowed}, got {value!r}."
+            )
+
+    check_literal("target_mode", TargetMode)
+    check_literal("output_realizations", Literal["deterministic", "ensemble"])
+    check_literal("split_strategy", SplitStrategy)
+    check_literal("normalization", Literal["full", "monthly"])
+    check_literal("normalization_mode", NormalizationMode)
+    check_literal("torch_mask", Literal["target", "input", "both"])
+    check_literal("trainer_precision", TrainerPrecision)
+
+    if not isinstance(self.leadtime_unit, LeadtimeUnit):
+        try:
+            LeadtimeUnit(self.leadtime_unit)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"leadtime_unit must be one of "
+                f"{tuple(member.value for member in LeadtimeUnit)}, "
+                f"got {self.leadtime_unit!r}."
+            ) from exc
+
+    if not isinstance(self.clim_period, ClimPeriod):
+        try:
+            ClimPeriod(self.clim_period)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"clim_period must be one of "
+                f"{tuple(member.value for member in ClimPeriod)}, "
+                f"got {self.clim_period!r}."
+            ) from exc
+
+    # ---------------------------
+    # Lead times and region
+    # ---------------------------
+
+    if not isinstance(self.lead_period_offset, int):
+        raise TypeError("lead_period_offset must be an integer.")
+
+    if not isinstance(self.leadtimes, list):
+        raise TypeError("leadtimes must be a list.")
+
+    if not self.leadtimes:
+        raise ValueError("leadtimes cannot be empty.")
+
+    if any(
+        isinstance(value, bool) or not isinstance(value, (int, float))
+        for value in self.leadtimes
+    ):
+        raise TypeError(
+            "Every leadtime must be an int or float, excluding bool."
+        )
+
+    if any(not math.isfinite(float(value)) for value in self.leadtimes):
+        raise ValueError("leadtimes cannot contain NaN values.")
+
+    if len(set(self.leadtimes)) != len(self.leadtimes):
+        raise ValueError("leadtimes cannot contain duplicate values.")
+
+    if self.region is not None:
+        if not isinstance(self.region, dict):
+            raise TypeError("region must be a dictionary or None.")
+
+        allowed_region_keys = {"latitude", "longitude"}
+        unknown_keys = set(self.region) - allowed_region_keys
+
+        if unknown_keys:
+            raise ValueError(
+                f"Unknown region coordinates: {sorted(unknown_keys)}. "
+                f"Expected only {sorted(allowed_region_keys)}."
+            )
+
+        for coordinate, bounds in self.region.items():
+            if (
+                not isinstance(bounds, tuple)
+                or len(bounds) != 2
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    for value in bounds
+                )
+            ):
+                raise TypeError(
+                    f"region[{coordinate!r}] must be a tuple of two numbers."
                 )
 
-        if pd.Timestamp(self.train_end) >= pd.Timestamp(self.test_start):
-            raise ValueError("Train and test periods overlap.")
+            lower, upper = bounds
 
-        if self.batch_size <= 0:
-            raise ValueError("batch_size must be positive.")
+            if lower >= upper:
+                raise ValueError(
+                    f"region[{coordinate!r}] lower bound must be "
+                    f"smaller than its upper bound."
+                )
 
-        if self.accumulate_grad_batches <= 0:
-            raise ValueError("accumulate_grad_batches must be positive.")
+            if coordinate == "latitude" and not (
+                -90 <= lower <= 90 and -90 <= upper <= 90
+            ):
+                raise ValueError(
+                    "Latitude bounds must lie within [-90, 90]."
+                )
 
-        if self.max_epochs <= 0:
-            raise ValueError("max_epochs must be positive.")
+            if coordinate == "longitude" and not (
+                -360 <= lower <= 360 and -360 <= upper <= 360
+            ):
+                raise ValueError(
+                    "Longitude bounds must lie within [-360, 360]."
+                )
 
-        if not 0 < self.train_fraction <= 1:
-            raise ValueError("train_fraction must be in (0, 1].")
+    # ---------------------------
+    # Boolean options
+    # ---------------------------
 
-        if self.pretrain_norm not in {"full", "monthly"}:
-            raise ValueError("pretrain_norm must be 'full' or 'monthly'.")
+    for name in (
+        "realization_as_channel",
+        "target_realization_avg",
+    ):
+        if not isinstance(getattr(self, name), bool):
+            raise TypeError(f"{name} must be a bool.")
 
-        if self.leadtime_unit not in list(LeadtimeUnit):
-            raise ValueError(f"leadtime_unit must be one of {list(LeadtimeUnit)}.")
+    if (
+        self.output_realizations == "ensemble"
+        and not self.realization_as_channel
+    ):
+        raise ValueError(
+            "output_realizations='ensemble' requires "
+            "realization_as_channel=True."
+        )
 
-        if not self.leadtimes:
-            raise ValueError("leadtimes cannot be empty.")
+    # ---------------------------
+    # Numeric training settings
+    # ---------------------------
+
+    positive_int_fields = (
+        "seed",
+        "batch_size",
+        "max_epochs",
+        "depth",
+        "reduction_ratio",
+        "kernels_per_layer",
+        "base_channels",
+        "accumulate_grad_batches",
+        "early_stopping_patience",
+    )
+
+    for name in positive_int_fields:
+        value = getattr(self, name)
+
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{name} must be an integer.")
+
+        if name == "seed":
+            if value < 0:
+                raise ValueError("seed must be non-negative.")
+        elif value <= 0:
+            raise ValueError(f"{name} must be positive.")
+
+    if (
+        isinstance(self.torch_workers, bool)
+        or not isinstance(self.torch_workers, int)
+    ):
+        raise TypeError("torch_workers must be an integer.")
+
+    if self.torch_workers < 0:
+        raise ValueError("torch_workers must be non-negative.")
+
+    positive_float_fields = (
+        "init_learning_rate",
+        "weight_decay",
+    )
+
+    for name in positive_float_fields:
+        value = getattr(self, name)
+
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(f"{name} must be numeric.")
+
+        if not math.isfinite(float(value)):
+            raise ValueError(f"{name} must be finite.")
+
+        if name == "weight_decay":
+            if value < 0:
+                raise ValueError("weight_decay must be non-negative.")
+        elif value <= 0:
+            raise ValueError(f"{name} must be positive.")
+
+    if (
+        isinstance(self.train_fraction, bool)
+        or not isinstance(self.train_fraction, (int, float))
+    ):
+        raise TypeError("train_fraction must be numeric.")
+
+    if not 0 < self.train_fraction <= 1:
+        raise ValueError("train_fraction must be in (0, 1].")
+
+    if (
+        isinstance(self.fill_nan_value, bool)
+        or not isinstance(self.fill_nan_value, (int, float))
+    ):
+        raise TypeError("fill_nan_value must be numeric.")
+
+    if not math.isfinite(float(self.fill_nan_value)):
+        raise ValueError("fill_nan_value must be finite.")
+
+    # ---------------------------
+    # Network consistency
+    # ---------------------------
+
+    if self.depth < 2:
+        raise ValueError("depth must be at least 2.")
