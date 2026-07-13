@@ -23,7 +23,7 @@ from matplotlib.colors import (
 )
 from matplotlib.cm import ScalarMappable
 
-from ..base import Settings
+from ..base import Settings, ClimPeriod
 from ..metrics import safe_percent
 
 
@@ -421,20 +421,6 @@ def plot_timeseries(
     plt.close(fig)
 
 
-def infer_coord_dim(
-    da: xr.DataArray,
-    kind: Literal["time", "latitude", "longitude"],
-) -> str:
-    dim = getattr(da.earthml.guessed_dims, kind)
-
-    if dim is None or dim not in da.dims:
-        raise ValueError(
-            f"Could not infer {kind} dimension from dims={da.dims}"
-        )
-
-    return dim
-
-
 def metric_style(
     var: str,
     metric: str,
@@ -527,7 +513,7 @@ def plot_map(
     leadtime_dim: str = "leadtime",
     leadtime_units: str = "months",
     period_dim: str = "start_month",
-    time_dim: str | None = None,
+    clim_period: ClimPeriod | None = None,
     var_plot_config: dict | None = None,
     impro_plot_config: dict | None = None,
     force_scale: int | float | None = None,
@@ -538,6 +524,9 @@ def plot_map(
 
     is_skill = is_skill_model(model)
 
+    time_dim = da.earthml.guessed_dims.time or clim_period
+    lat, lon = da.earthml.guessed_dims.latitude, da.earthml.guessed_dims.longitude
+
     da = da.sel(
         {
             leadtime_dim: lead_value,
@@ -546,37 +535,13 @@ def plot_map(
     ).squeeze(drop=True)
 
     if plot_kind == "map":
-        lat, lon = infer_lat_lon(da)
         required_dims = (lat, lon)
 
     elif plot_kind == "time_lon":
-        time_dim = time_dim or infer_coord_dim(da, "time")
-        lon = infer_coord_dim(da, "longitude")
-        lat = None
         required_dims = (time_dim, lon)
 
     elif plot_kind == "time_lat":
-        time_dim = time_dim or infer_coord_dim(da, "time")
-        lat = infer_coord_dim(da, "latitude")
-        lon = None
         required_dims = (time_dim, lat)
-
-    transpose_dims = required_dims
-
-    if time_dim is None:
-        time_dim = da.earthml.guessed_dims.time
-
-    if plot_kind == "map":
-        required_dims = (lat, lon)
-        transpose_dims = (lat, lon)
-
-    elif plot_kind == "time_lon":
-        required_dims = (time_dim, lon)
-        transpose_dims = (time_dim, lon)
-
-    elif plot_kind == "time_lat":
-        required_dims = (time_dim, lat)
-        transpose_dims = (time_dim, lat)
 
     else:
         raise ValueError(
@@ -604,7 +569,7 @@ def plot_map(
         )
 
     with ProgressBar():
-        da = da.transpose(*transpose_dims).compute()
+        da = da.transpose(*required_dims).compute()
 
     if is_skill:
         plot_unit = METRIC_SKILL_UNITS[metric]
@@ -747,7 +712,17 @@ def plot_map(
             )
 
         ax.set_xlabel(x_label)
-        ax.set_ylabel("Time")
+
+        if clim_period == ClimPeriod.MONTH:
+            ax.set_ylabel("Month")
+            ax.set_yticks(np.arange(1, 13))
+            ax.set_yticklabels(
+                ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+            )
+        else:
+            ax.set_ylabel("Time")
+
         ax.grid(True, alpha=0.2)
 
         if plot_kind == "time_lon":
