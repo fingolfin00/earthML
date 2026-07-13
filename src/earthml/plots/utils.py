@@ -421,14 +421,18 @@ def plot_timeseries(
     plt.close(fig)
 
 
-def infer_lat_lon(da: xr.DataArray) -> tuple[str, str]:
-    lat = "latitude" if "latitude" in da.dims else "lat"
-    lon = "longitude" if "longitude" in da.dims else "lon"
+def infer_coord_dim(
+    da: xr.DataArray,
+    kind: Literal["time", "latitude", "longitude"],
+) -> str:
+    dim = getattr(da.earthml.guessed_dims, kind)
 
-    if lat not in da.dims or lon not in da.dims:
-        raise ValueError(f"Could not infer lat/lon from dims={da.dims}")
+    if dim is None or dim not in da.dims:
+        raise ValueError(
+            f"Could not infer {kind} dimension from dims={da.dims}"
+        )
 
-    return lat, lon
+    return dim
 
 
 def metric_style(
@@ -518,28 +522,89 @@ def plot_map(
     lead_value: object,
     out_file: Path,
     time_range: tuple[str, str],
+    plot_kind: Literal["map", "time_lon", "time_lat"] = "map",
     plot_type: Literal["pcolormesh", "contourf"] = "pcolormesh",
     leadtime_dim: str = "leadtime",
     leadtime_units: str = "months",
     period_dim: str = "start_month",
-    var_plot_config: dict = {},
-    impro_plot_config: dict = {},
+    time_dim: str | None = None,
+    var_plot_config: dict | None = None,
+    impro_plot_config: dict | None = None,
     force_scale: int | float | None = None,
     title_strftime: str = "%Y",
 ) -> None:
-    is_skill = is_skill_model(model) # or is_skill_metric(metric)
+    var_plot_config = var_plot_config or {}
+    impro_plot_config = impro_plot_config or {}
 
-    da = da.sel({leadtime_dim: lead_value, period_dim: start_period}).squeeze(drop=True)
+    is_skill = is_skill_model(model)
 
-    lat, lon = infer_lat_lon(da)
+    da = da.sel(
+        {
+            leadtime_dim: lead_value,
+            period_dim: start_period,
+        }
+    ).squeeze(drop=True)
+
+    if plot_kind == "map":
+        lat, lon = infer_lat_lon(da)
+        required_dims = (lat, lon)
+
+    elif plot_kind == "time_lon":
+        time_dim = time_dim or infer_coord_dim(da, "time")
+        lon = infer_coord_dim(da, "longitude")
+        lat = None
+        required_dims = (time_dim, lon)
+
+    elif plot_kind == "time_lat":
+        time_dim = time_dim or infer_coord_dim(da, "time")
+        lat = infer_coord_dim(da, "latitude")
+        lon = None
+        required_dims = (time_dim, lat)
+
+    transpose_dims = required_dims
+
+    if time_dim is None:
+        time_dim = da.earthml.guessed_dims.time
+
+    if plot_kind == "map":
+        required_dims = (lat, lon)
+        transpose_dims = (lat, lon)
+
+    elif plot_kind == "time_lon":
+        required_dims = (time_dim, lon)
+        transpose_dims = (time_dim, lon)
+
+    elif plot_kind == "time_lat":
+        required_dims = (time_dim, lat)
+        transpose_dims = (time_dim, lat)
+
+    else:
+        raise ValueError(
+            f"Unsupported plot_kind={plot_kind!r}. "
+            "Choose one of: 'map', 'time_lon', 'time_lat'."
+        )
+
+    missing_dims = [dim for dim in required_dims if dim not in da.dims]
+    if missing_dims:
+        raise ValueError(
+            f"Cannot create {plot_kind!r} plot. "
+            f"Missing dimensions: {missing_dims}. "
+            f"Available dimensions: {da.dims}"
+        )
+
+    extra_dims = [
+        dim
+        for dim in da.dims
+        if dim not in required_dims
+    ]
+    if extra_dims:
+        raise ValueError(
+            f"Unexpected dimensions remain before plotting: {extra_dims}. "
+            f"Expected only {required_dims}, got {da.dims}."
+        )
+
     with ProgressBar():
-        da = da.transpose(lat, lon).compute()
-
-    fig, ax = plt.subplots(
-        figsize=(7, 5),
-        subplot_kw={"projection": ccrs.PlateCarree()},
-    )
-    ax = cast(GeoAxes, ax)
+        da = da.transpose(*transpose_dims).compute()
 
     if is_skill:
         plot_unit = METRIC_SKILL_UNITS[metric]
@@ -552,9 +617,15 @@ def plot_map(
             var_plot_config=var_plot_config,
         )
 
+    if force_scale is not None:
+        scale = force_scale
+
+    da = da / scale
+
     if is_skill_metric(metric):
         unit_label = ""
-        cb_label = f"{METRIC_NAMES[metric]} {unit_label}"
+        cb_label = METRIC_NAMES[metric]
+
     elif is_skill_model(model):
         unit_label = "(%)"
         cb_label = (
@@ -562,21 +633,21 @@ def plot_map(
             if plot_unit == "%"
             else f"{METRIC_NAMES[metric]} improvement difference"
         )
+
     else:
-        unit_label = f"({plot_unit})"
+        unit_label = f"({plot_unit})" if plot_unit else ""
         cb_label = (
             f"{METRIC_NAMES[metric]} {unit_label}"
-            if plot_unit
+            if unit_label
             else METRIC_NAMES[metric]
         )
 
-    if force_scale is not None:
-        scale = force_scale
+    avg = float(da.mean(skipna=True).values)
 
-    da = da / scale
-
-    avg = da.mean().values
-    geo_avg = da.earthml.geo_mean().values
+    if plot_kind == "map":
+        geo_avg = float(da.earthml.geo_mean().values)
+    else:
+        geo_avg = None
 
     cmap, norm, ticks = metric_style(
         var,
@@ -587,62 +658,151 @@ def plot_map(
         is_skill=is_skill,
     )
 
-    if plot_type == "pcolormesh":
-        im = ax.pcolormesh(
-            da[lon],
-            da[lat],
-            da,
-            transform=ccrs.PlateCarree(),
-            cmap=cmap,
-            norm=norm,
-            shading="auto",
+    if plot_kind == "map":
+        fig, ax = plt.subplots(
+            figsize=(7, 5),
+            subplot_kw={"projection": ccrs.PlateCarree()},
         )
+        ax = cast(GeoAxes, ax)
 
-    elif plot_type == "contourf":
-        da = da.where(np.isfinite(da))
+        if plot_type == "pcolormesh":
+            im = ax.pcolormesh(
+                da[lon],
+                da[lat],
+                da,
+                transform=ccrs.PlateCarree(),
+                cmap=cmap,
+                norm=norm,
+                shading="auto",
+            )
 
-        from cartopy.util import add_cyclic_point
+        elif plot_type == "contourf":
+            from cartopy.util import add_cyclic_point
 
-        data_cyclic, lon_cyclic = add_cyclic_point(
-            da.values,
-            coord=da[lon].values,
-            axis=da.get_axis_num(lon),
-        )
+            finite_da = da.where(np.isfinite(da))
 
-        im = ax.contourf(
-            lon_cyclic,
-            da[lat].values,
-            data_cyclic,
-            levels=ticks,
-            transform=ccrs.PlateCarree(),
-            cmap=cmap,
-            norm=norm,
-            extend="both",
-        )
+            data_cyclic, lon_cyclic = add_cyclic_point(
+                finite_da.values,
+                coord=finite_da[lon].values,
+                axis=finite_da.get_axis_num(lon),
+            )
+
+            im = ax.contourf(
+                lon_cyclic,
+                finite_da[lat].values,
+                data_cyclic,
+                levels=ticks,
+                transform=ccrs.PlateCarree(),
+                cmap=cmap,
+                norm=norm,
+                extend="both",
+            )
+
+        else:
+            raise ValueError(
+                f"Unsupported plot_type={plot_type!r}. "
+                "Choose one of: 'pcolormesh', 'contourf'."
+            )
+
+        ax.coastlines(linewidth=0.7)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.3)
 
     else:
-        raise ValueError(f"Unsupported plot_type {plot_type}, use one of [pcolormesh, contourf]")
+        fig, ax = plt.subplots(figsize=(9, 5.5))
 
-    ax.coastlines(linewidth=0.7)
-    ax.add_feature(cfeature.BORDERS, linewidth=0.3)
+        if plot_kind == "time_lon":
+            x_dim = lon
+            x_label = "Longitude"
+        else:
+            x_dim = lat
+            x_label = "Latitude"
 
-    label_lt = lead_label(da, lead_value, leadtime_dim)
+        finite_da = da.where(np.isfinite(da))
 
-    start_time = datetime.strptime(time_range[0], "%Y-%m-%d").strftime(title_strftime)
-    end_time = datetime.strptime(time_range[1], "%Y-%m-%d").strftime(title_strftime)
-    ax.set_title(
-        f"{VARIABLE_NAMES[var]} · {model} · {start_time}-{end_time} · {period_dim}={start_period}\n"
-        f"leadtime={label_lt} {leadtime_units} · avg={avg:.3f} {unit_label} · geoavg={geo_avg:.3f} {unit_label}"
+        if plot_type == "pcolormesh":
+            im = ax.pcolormesh(
+                finite_da[x_dim],
+                finite_da[time_dim],
+                finite_da,
+                cmap=cmap,
+                norm=norm,
+                shading="auto",
+            )
+
+        elif plot_type == "contourf":
+            im = ax.contourf(
+                finite_da[x_dim],
+                finite_da[time_dim],
+                finite_da,
+                levels=ticks,
+                cmap=cmap,
+                norm=norm,
+                extend="both",
+            )
+
+        else:
+            raise ValueError(
+                f"Unsupported plot_type={plot_type!r}. "
+                "Choose one of: 'pcolormesh', 'contourf'."
+            )
+
+        ax.set_xlabel(x_label)
+        ax.set_ylabel("Time")
+        ax.grid(True, alpha=0.2)
+
+        if plot_kind == "time_lon":
+            ax.set_xlim(
+                float(finite_da[lon].min()),
+                float(finite_da[lon].max()),
+            )
+
+        else:
+            ax.set_ylim(
+                finite_da[time_dim].min().values,
+                finite_da[time_dim].max().values,
+            )
+
+    label_lt = lead_label(
+        da,
+        lead_value,
+        leadtime_dim,
     )
 
-    sm = ScalarMappable(norm=norm, cmap=cmap)
-    sm.set_array([])
+    start_time = datetime.strptime(
+        time_range[0],
+        "%Y-%m-%d",
+    ).strftime(title_strftime)
+
+    end_time = datetime.strptime(
+        time_range[1],
+        "%Y-%m-%d",
+    ).strftime(title_strftime)
+
+    if plot_kind == "map":
+        summary = (
+            f"avg={avg:.3f} {unit_label} · "
+            f"geoavg={geo_avg:.3f} {unit_label}"
+        )
+    else:
+        summary = f"avg={avg:.3f} {unit_label}"
+
+    plot_kind_label = {
+        "map": "map",
+        "time_lon": "time-longitude",
+        "time_lat": "time-latitude",
+    }[plot_kind]
+
+    ax.set_title(
+        f"{VARIABLE_NAMES[var]} · {model} · {plot_kind_label} · "
+        f"{start_time}-{end_time} · {period_dim}={start_period}\n"
+        f"leadtime={label_lt} {leadtime_units} · {summary}"
+    )
 
     cb = fig.colorbar(
-        sm,
+        im,
         ax=ax,
         orientation="horizontal",
-        pad=0.07,
+        pad=0.10 if plot_kind == "map" else 0.13,
         ticks=ticks,
         boundaries=ticks,
         spacing="uniform",
@@ -651,9 +811,17 @@ def plot_map(
     cb.set_label(cb_label)
     cb.ax.tick_params(labelsize=7)
 
-    out_file.parent.mkdir(parents=True, exist_ok=True)
+    out_file.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
     plt.tight_layout()
-    plt.savefig(out_file, dpi=200, bbox_inches="tight")
+    plt.savefig(
+        out_file,
+        dpi=200,
+        bbox_inches="tight",
+    )
     plt.close(fig)
 
 

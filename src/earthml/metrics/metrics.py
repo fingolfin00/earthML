@@ -1006,6 +1006,8 @@ def get_metrics(
         return {
             "scalar": (da.earthml.guessed_dims.time, da.earthml.guessed_dims.latitude, da.earthml.guessed_dims.longitude),
             "maps": (da.earthml.guessed_dims.time,),
+            "time_lon": (da.earthml.guessed_dims.latitude,),
+            "time_lat": (da.earthml.guessed_dims.longitude,),
             "timeseries": (da.earthml.guessed_dims.latitude, da.earthml.guessed_dims.longitude),
         }[kind]
 

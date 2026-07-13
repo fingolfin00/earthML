@@ -2,7 +2,7 @@ from typing import Literal
 from enum import StrEnum
 
 
-MetricKind = Literal["scalar", "maps", "timeseries"]
+MetricKind = Literal["scalar", "maps", "time_lon", "time_lat", "timeseries"]
 LeadtimeAgg = Literal["single", "aggregated", "seasonal_window"]
 RealizationAgg = Literal["member", "ensemble_mean"]
 MetricAgg = Literal[
