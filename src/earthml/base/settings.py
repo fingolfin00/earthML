@@ -90,6 +90,7 @@ class Settings:
 
     training_norm: str = "GroupNorm"
 
+    depth: int = 5 # total encoder levels, including input block
     reduction_ratio: int = 16
     kernels_per_layer: int = 1
     base_channels: int = 32
@@ -201,6 +202,7 @@ class Settings:
             f"pretrain_{self.pretrain_norm}_norm",
             self.net_name.lower(),
             self.loss_name.lower(),
+            f"depth{self.depth}",
             f"c{self.base_channels}",
             f"bs{self.batch_size}",
             f"lr{self.init_learning_rate:.0e}",
