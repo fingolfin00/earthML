@@ -340,13 +340,13 @@ class XarrayDataset(Dataset):
         else:
             raise ValueError(f"Unsupported torch_mask={self.torch_mask}")
 
-        month = int(self.months[idx].item()) if hasattr(self, "months") else None
+        months = int(self.months[idx].item()) if hasattr(self, "months") else None
 
         if self.transform_x:
-            x = self.transform_x(x, month=month, **self.transform_x_args)
+            x = self.transform_x(x, months=months, **self.transform_x_args)
 
         if self.transform_y:
-            y = self.transform_y(y, month=month, **self.transform_y_args)
+            y = self.transform_y(y, months=months, **self.transform_y_args)
 
         x = x.masked_fill(~mx, 0.0)
         y = y.masked_fill(~my, 0.0)
