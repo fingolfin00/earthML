@@ -49,7 +49,7 @@ def core_metrics(
     *,
     fc_clim: xr.DataArray | None = None,
     an_clim: xr.DataArray | None = None,
-    clim_period: ClimPeriod = "month",
+    clim_period: ClimPeriod = ClimPeriod.MONTH,
     fair_correction: bool = False,
 ) -> xr.Dataset:    
     time_dim = fc.earthml.guessed_dims.time
