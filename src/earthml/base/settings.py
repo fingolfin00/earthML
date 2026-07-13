@@ -190,7 +190,7 @@ class Settings:
             str(self.target_mode),
         ]
 
-        if self.target_mode in ("anomaly", "anomaly_residual"):
+        if self.target_mode in ("anomaly", "anomaly_residual", "anomaly_residual_realization"):
             parts.append(f"climperiod_{self.clim_period}")
 
         parts += [
