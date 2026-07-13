@@ -69,8 +69,12 @@ class SpatialAttention(nn.Module):
     ) -> None:
         super().__init__()
         assert kernel_size in (3, 7), "kernel size must be 3 or 7"
-        padding = 3 if kernel_size == 7 else 1
-        self.conv = nn.Conv2d(2, 1, kernel_size=kernel_size, padding=padding, bias=False)
+        self.conv = SphericalPadConv2d(
+            2,
+            1,
+            kernel_size=kernel_size,
+            bias=False,
+        )
         self.norm = make_norm(norm, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -99,38 +103,82 @@ class CBAM(nn.Module):
         out = self.spatial_att(out)
         return out
 
-class DepthwiseSeparableConv(EarthMLLightningModule):
+
+class SphericalPadConv2d(nn.Module):
+    """
+    Conv2d with:
+    - circular padding in longitude
+    - replicate padding in latitude
+
+    Input shape: (N, C, latitude, longitude)
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        *,
+        groups: int = 1,
+        bias: bool = True,
+    ) -> None:
+        super().__init__()
+
+        if kernel_size % 2 == 0:
+            raise ValueError("kernel_size must be odd")
+
+        self.pad = kernel_size // 2
+
+        self.conv = nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size=kernel_size,
+            padding=0,
+            groups=groups,
+            bias=bias,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        p = self.pad
+
+        if p > 0:
+            # Longitude: periodic.
+            x = F.pad(x, (p, p, 0, 0), mode="circular")
+
+            # Latitude: not periodic.
+            x = F.pad(x, (0, 0, p, p), mode="replicate")
+
+        return self.conv(x)
+
+
+class DepthwiseSeparableConv(nn.Module):
     def __init__(
         self,
         in_channels: int,
         output_channels: int,
         kernel_size: int,
-        padding: int = 0,
         kernels_per_layer: int = 1,
     ) -> None:
-        super(DepthwiseSeparableConv, self).__init__()
-        # In Tensorflow DepthwiseConv2D has depth_multiplier instead of kernels_per_layer
-        # print("DepthwiseSeparableConv params:")
-        # print(f" kernel_size: {kernel_size}")
-        # print(f" padding: {padding}")
-        self.depthwise = nn.Conv2d(
+        super().__init__()
+
+        depthwise_channels = in_channels * kernels_per_layer
+
+        self.depthwise = SphericalPadConv2d(
             in_channels,
-            in_channels * kernels_per_layer,
+            depthwise_channels,
             kernel_size=kernel_size,
-            padding=padding,
             groups=in_channels,
+            bias=True,
         )
-        self.pointwise = nn.Conv2d(in_channels * kernels_per_layer, output_channels, kernel_size=1)
+
+        self.pointwise = nn.Conv2d(
+            depthwise_channels,
+            output_channels,
+            kernel_size=1,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # print(f"Depthwise input: shape={x.shape}, dtype={x.dtype}, device={x.device}")
-        # # print(x)        
-        x = self.depthwise(x)
-        # print(f"Depthwise output: shape={x.shape}, dtype={x.dtype}, device={x.device}")
-        # print(f"Pointwise input: shape={x.shape}, dtype={x.dtype}, device={x.device}")
-        x = self.pointwise(x)
-        # print(f"Pointwise output: shape={x.shape}, dtype={x.dtype}, device={x.device}")
-        return x
+        return self.pointwise(self.depthwise(x))
 
 # class DoubleConvDS(CustomLightningModule):
 class DoubleConvDS(L.LightningModule):
@@ -156,9 +204,7 @@ class DoubleConvDS(L.LightningModule):
                 in_channels,
                 mid_channels,
                 kernel_size=3,
-                # extra_logger=extra_logger,
                 kernels_per_layer=kernels_per_layer,
-                padding=1,
             ),
             make_norm(norm, mid_channels),
             nn.LeakyReLU(inplace=True),
@@ -166,9 +212,7 @@ class DoubleConvDS(L.LightningModule):
                 mid_channels,
                 out_channels,
                 kernel_size=3,
-                # extra_logger=extra_logger,
                 kernels_per_layer=kernels_per_layer,
-                padding=1,
             ),
             make_norm(norm, out_channels),
             nn.LeakyReLU(inplace=True),
@@ -201,8 +245,7 @@ class DownDS(nn.Module):
         return self.maxpool_conv(x)
 
 
-class UpDS(EarthMLLightningModule):
-    """Upscaling then double conv"""
+class UpDS(nn.Module):
     def __init__(
         self,
         in_channels: int,
@@ -210,12 +253,13 @@ class UpDS(EarthMLLightningModule):
         bilinear: bool = True,
         kernels_per_layer: int = 1,
         norm: str | None = "BatchNorm2d",
-    ):
+    ) -> None:
         super().__init__()
 
-        # if bilinear, use the normal convolutions to reduce the number of channels
+        self.bilinear = bilinear
+
         if bilinear:
-            self.up = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
+            self.up = None
             self.conv = DoubleConvDS(
                 in_channels,
                 out_channels,
@@ -224,7 +268,12 @@ class UpDS(EarthMLLightningModule):
                 norm=norm,
             )
         else:
-            self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
+            self.up = nn.ConvTranspose2d(
+                in_channels,
+                in_channels // 2,
+                kernel_size=2,
+                stride=2,
+            )
             self.conv = DoubleConvDS(
                 in_channels,
                 out_channels,
@@ -237,30 +286,27 @@ class UpDS(EarthMLLightningModule):
         x1: torch.Tensor,
         x2: torch.Tensor,
     ) -> torch.Tensor:
-        # print(f"UpDS.forward - x1 (from deeper layer): shape={x1.shape}, dtype={x1.dtype}, device={x1.device}")
-        # print(f"UpDS.forward - x2 (skip connection): shape={x2.shape}, dtype={x2.dtype}, device={x2.device}")
+        if self.bilinear:
+            x1 = F.interpolate(
+                x1,
+                size=x2.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            )
+        else:
+            x1 = self.up(x1)
 
-        x1 = self.up(x1)
-        # print(f"UpDS.forward - x1 after upsample: shape={x1.shape}, dtype={x1.dtype}, device={x1.device}")
-        
-        # input is CHW
-        diffY = x2.size()[2] - x1.size()[2]
-        diffX = x2.size()[3] - x1.size()[3]
-
-        if diffX < 0 or diffY < 0:
-            logger.warning("UpDS.forward - Negative padding needed! x1:%s, x2:%s", x1.shape, x2.shape)
-            # This indicates an issue with dimensions being larger than expected,
-            # which could lead to problematic padding arguments.
-            # You might want to raise an error or adjust logic here.
-
-        # print(f"UpDS.forward - padding: [{diffX // 2}, {diffX - diffX // 2}, {diffY // 2}, {diffY - diffY // 2}]")
-        x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2, diffY // 2, diffY - diffY // 2])
-        # print(f"UpDS.forward - x1 after padding: shape={x1.shape}, dtype={x1.dtype}, device={x1.device}")
+            if x1.shape[-2:] != x2.shape[-2:]:
+                x1 = F.interpolate(
+                    x1,
+                    size=x2.shape[-2:],
+                    mode="bilinear",
+                    align_corners=False,
+                )
 
         x = torch.cat([x2, x1], dim=1)
-        # print(f"UpDS.forward - x after concatenation: shape={x.shape}, dtype={x.dtype}, device={x.device}")
-        
-        return self.conv(x) # This calls DoubleConvDS, which in turn calls DepthwiseSeparableConv
+        return self.conv(x)
+
 
 class OutConv(nn.Module):
     def __init__(

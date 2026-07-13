@@ -18,7 +18,7 @@ def get_loss_class(name: str) -> Type[Any]:
     try:
         target = _LOSSES[name]
     except KeyError as e:
-        raise KeyError(f"Unknown net '{name}'. Known: {sorted(_LOSSES)}") from e
+        raise KeyError(f"Unknown loss '{name}'. Known: {sorted(_LOSSES)}") from e
 
     module_path, class_name = target.split(":")
     module = importlib.import_module(module_path)

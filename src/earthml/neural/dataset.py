@@ -220,6 +220,17 @@ class XarrayDataset(Dataset):
             # print("self.y shape:", self.y.shape)
             # print("self.y_mask shape:", self.y_mask.shape)
 
+            # Expose samples per init time
+            self.n_init_times = int(self.input_ds.sizes["time"])
+
+            if len(self.x) % self.n_init_times != 0:
+                raise ValueError(
+                    f"Dataset length {len(self.x)} is not divisible by "
+                    f"number of initialization times {self.n_init_times}"
+                )
+
+            self.samples_per_init = len(self.x) // self.n_init_times
+
             # Final checks
             assert self.x.numel() > 0, f"Empty torch dataset x: {self.x.shape}"
             assert self.y.numel() > 0, f"Empty torch dataset y: {self.y.shape}"

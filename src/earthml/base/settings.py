@@ -7,6 +7,7 @@ import hashlib, json
 import pandas as pd
 
 from .definitions import LeadtimeUnit, ClimPeriod, TargetMode
+from ..neural.module import SplitStrategy
 
 
 TrainerPrecision = Literal[
@@ -62,7 +63,9 @@ class Settings:
     region: dict[str, tuple[int | float, int | float]] | None = None
 
     train_start: str = "1993-01-01"
-    train_end: str = "2020-12-01"
+    train_end: str = "2016-12-01"
+    val_start: str = "2017-01-01"
+    val_end: str = "2020-12-01"
     test_start: str = "2021-01-01"
     test_end: str = "2022-12-01"
 
@@ -73,7 +76,7 @@ class Settings:
 
     realization_as_channel: bool = False
     output_realizations: Literal["deterministic", "ensemble"] = "deterministic" # used only if realization_as_channel is True
-    split_strategy: Literal["time", "random"] = "time"
+    split_strategy: SplitStrategy = "time"
     pretrain_norm: Literal["full", "monthly"] = "full"
 
     net_name: str = "SmaAt_UNet"

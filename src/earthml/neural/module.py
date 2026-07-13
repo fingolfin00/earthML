@@ -1,515 +1,297 @@
-from typing import List, Any, Optional, Callable, Literal, Dict
-import numpy as np
-
-import torch
-import torch.nn.functional as F
-from torch.utils.data import random_split, DataLoader, SubsetRandomSampler, Dataset, Subset
+from typing import Literal
 
 import lightning as L
+import torch
+import torch.nn.functional as F
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
-
-import matplotlib.cm as cm
+from torch import nn
+from torch.utils.data import DataLoader, Dataset, Subset
 
 from ..logging import get_logger
 from .metrics import MaskedMAE, MaskedRMSE, MaskedSpatialCorr
-from .utils import call_loss
 
 
 logger = get_logger(__name__)
+
+SplitStrategy = Literal[
+    "explicit",  # separately supplied train and validation datasets
+    "time",  # chronological percentage split by initialization time
+    "random",  # random percentage split by initialization time
+]
+
+Stage = Literal["train", "validation", "test"]
 
 
 class EarthMLLightningModule(L.LightningModule):
     optimizer_lr: float
     weight_decay: float
 
+    loss: nn.Module
+    loss_name: str
+    supervised: bool
+
     def __init__(
         self,
-        use_full_batch_input_as_baseline: bool = False,
         optimizer_lr: float = 1e-3,
         weight_decay: float = 1e-4,
     ) -> None:
         super().__init__()
 
-        self.test_step_outputs = []
-        self.test_preds = None
-        self.test_targets = None
-
         self.optimizer_lr = optimizer_lr
         self.weight_decay = weight_decay
-        self.use_full_batch_input_as_baseline = use_full_batch_input_as_baseline
 
-        # Metrics
         self.train_mae = MaskedMAE()
         self.train_rmse = MaskedRMSE()
-        self.train_scc = MaskedSpatialCorr()
-        # self.train_acc = AnomalyCorrelationCoefficient()
 
         self.val_mae = MaskedMAE()
         self.val_rmse = MaskedRMSE()
-        self.val_scc = MaskedSpatialCorr() # Your custom SCC
-        # self.val_acc = AnomalyCorrelationCoefficient() # Your custom ACC
 
         self.test_mae = MaskedMAE()
         self.test_rmse = MaskedRMSE()
         self.test_scc = MaskedSpatialCorr()
-        # self.test_acc = AnomalyCorrelationCoefficient()
 
-        # Metrics storage
-        self.test_step_outputs = []
-        self.pic_log_interval = 1 # set to 1 to log at every epoch
-        self.last_val_pred = None
-        self.last_val_target = None
-        # Temporary performance debugging state. Uncomment if you need detailed
-        # per-epoch timing and device placement logs again.
-        # self._train_epoch_batch_time = 0.0
-        # self._train_epoch_batch_count = 0
-        # self._val_epoch_batch_time = 0.0
-        # self._val_epoch_batch_count = 0
-        # self._train_batch_start_time = None
-        # self._val_batch_start_time = None
-        # self._logged_train_batch_info = False
-        # self._logged_val_batch_info = False
+        self.test_step_outputs: list[dict[str, torch.Tensor]] = []
+        self.test_preds: torch.Tensor | None = None
+        self.test_targets: torch.Tensor | None = None
 
+    def _log_loss_components(self, stage: Stage) -> None:
+        components = getattr(self.loss, "loss_components", None)
+        if not components:
+            return
+
+        for name, value in components.items():
+            self.log(
+                f"{stage}_{name}",
+                value,
+                on_step=False,
+                on_epoch=True,
+                logger=True,
+            )
+
+    def _shared_step(
+        self,
+        batch,
+        stage: Stage,
+    ) -> torch.Tensor:
+        if self.supervised:
+            x, y, mask = batch
+        else:
+            x, _, mask = batch
+            y = x
+
+        pred = self(x).contiguous()
+        y = y.contiguous()
+        mask = mask.to(self.device)
+
+        loss = self.compute_loss(
+            prediction=pred,
+            target=y,
+            mask=mask,
+            model_input=x,
+        )
+
+        # Probabilistic losses may return distribution parameters. Metrics use
+        # only the predictive mean.
+        if self.loss_name == "GaussianNLLFromLogits":
+            mu, _ = torch.chunk(pred, 2, dim=1)
+        else:
+            mu = pred
+
+        mu = mu.contiguous()
+        batch_size = x.shape[0]
+
+        if stage == "train":
+            self.train_mae.update(mu, y, mask)
+            self.train_rmse.update(mu, y, mask)
+
+            self.log(
+                "train_loss",
+                loss,
+                on_step=True,
+                on_epoch=True,
+                prog_bar=True,
+                logger=True,
+                batch_size=batch_size,
+            )
+            self.log(
+                "train_mae",
+                self.train_mae,
+                on_step=False,
+                on_epoch=True,
+            )
+            self.log(
+                "train_rmse",
+                self.train_rmse,
+                on_step=False,
+                on_epoch=True,
+            )
+
+        elif stage == "validation":
+            self.val_mae.update(mu, y, mask)
+            self.val_rmse.update(mu, y, mask)
+
+            self.log(
+                "val_loss",
+                loss,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=True,
+                logger=True,
+                batch_size=batch_size,
+            )
+            self.log(
+                "val_mae",
+                self.val_mae,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=True,
+            )
+            self.log(
+                "val_rmse",
+                self.val_rmse,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=True,
+            )
+
+        else:
+            self.test_mae.update(mu, y, mask)
+            self.test_rmse.update(mu, y, mask)
+            self.test_scc.update(mu, y, mask)
+
+            self.log(
+                "test_loss",
+                loss,
+                on_step=False,
+                on_epoch=True,
+                logger=True,
+                batch_size=batch_size,
+            )
+            self.log(
+                "test_mae",
+                self.test_mae,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=True,
+            )
+            self.log(
+                "test_rmse",
+                self.test_rmse,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=True,
+            )
+            self.log(
+                "test_scc",
+                self.test_scc,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=True,
+            )
+
+            self.test_step_outputs.append(
+                {
+                    "preds": mu.detach().float().cpu(),
+                    "targets": y.detach().float().cpu(),
+                }
+            )
+
+        self._log_loss_components(stage)
+        return loss
 
     @staticmethod
     def center_crop_to(
-        x,
-        target_h,
-        target_w
-    ):
-        _, _, h, w = x.shape
-        off_y = max((h - target_h) // 2, 0)
-        off_x = max((w - target_w) // 2, 0)
-        return x[:, :, off_y:off_y + target_h, off_x:off_x + target_w]
+        x: torch.Tensor,
+        target_h: int,
+        target_w: int,
+    ) -> torch.Tensor:
+        _, _, height, width = x.shape
+        offset_y = max((height - target_h) // 2, 0)
+        offset_x = max((width - target_w) // 2, 0)
+
+        return x[
+            :,
+            :,
+            offset_y : offset_y + target_h,
+            offset_x : offset_x + target_w,
+        ]
 
     def match_spatial(
         self,
-        x,
-        H,
-        W
-    ):
-        """Match tensor x to ref's HxW by center-cropping or padding (replicate) without interpolation."""
-        _, _, h, w = x.shape
-        dy, dx = H - h, W - w
-        if dy == 0 and dx == 0:
+        x: torch.Tensor,
+        target_h: int,
+        target_w: int,
+    ) -> torch.Tensor:
+        """Center-crop or replicate-pad ``x`` to the requested size."""
+        _, _, height, width = x.shape
+        delta_h = target_h - height
+        delta_w = target_w - width
+
+        if delta_h == 0 and delta_w == 0:
             return x
 
-        # If x is larger -> crop; if smaller -> pad (replicate) to avoid introducing zeros
-        if dy < 0 or dx < 0:
-            x = self.center_crop_to(x, min(h, H), min(w, W))
-            _, _, h, w = x.shape
-            dy, dx = H - h, W - w
+        if delta_h < 0 or delta_w < 0:
+            x = self.center_crop_to(
+                x,
+                min(height, target_h),
+                min(width, target_w),
+            )
+            _, _, height, width = x.shape
+            delta_h = target_h - height
+            delta_w = target_w - width
 
-        # Now only non-negative pads remain
-        if dy != 0 or dx != 0:
-            pad_left   = dx // 2
-            pad_right  = dx - pad_left
-            pad_top    = dy // 2
-            pad_bottom = dy - pad_top
-            x = F.pad(x, (pad_left, pad_right, pad_top, pad_bottom), mode="replicate")
+        if delta_h != 0 or delta_w != 0:
+            pad_left = delta_w // 2
+            pad_right = delta_w - pad_left
+            pad_top = delta_h // 2
+            pad_bottom = delta_h - pad_top
+
+            x = F.pad(
+                x,
+                (pad_left, pad_right, pad_top, pad_bottom),
+                mode="replicate",
+            )
+
         return x
 
-    def _squeeze_and_add_log_img(
-        self,
-        img_tensor,
-        name_tag,
-        logger_instance,
-        colormap=None,
-        vmin=None,
-        vmax=None
-    ):
-        """
-        Logs a single 2D image to the logger, with optional colormap.
-        img_tensor: A 2D tensor (H, W) for grayscale, or 3D tensor (C, H, W) for RGB/RGBA.
-                    For colormapping, it should typically be a 2D grayscale tensor.
-        name_tag: The name to appear in the logger (e.g., "Validation/Prediction_Sample").
-        logger_instance: The logger object (e.g., self.logger).
-        colormap: String name of a matplotlib colormap (e.g., 'viridis', 'jet', 'gray').
-                  If None, the image is logged as is (assuming it's already in the correct format).
-        vmin, vmax: Optional min/max values for normalization before applying colormap.
-                    If None, min/max of the tensor will be used.
-        """
-        if self.trainer.sanity_checking:
-            return # Don't log images during sanity check
+    def training_step(self, batch, batch_idx: int) -> torch.Tensor:
+        return self._shared_step(batch, "train")
 
-        # Detach from graph and move to CPU if not already
-        img_tensor = img_tensor.detach().cpu()
+    def validation_step(self, batch, batch_idx: int) -> None:
+        self._shared_step(batch, "validation")
 
-        if colormap:
-            # Apply colormap
-            if img_tensor.dim() not in [2, 3]: # Should be 2D (H,W) or (1,H,W) for colormapping
-                logger.warning(
-                    "Colormap applied to unexpected tensor dim: %s. Expecting 2D or (1,H,W).",
-                    img_tensor.shape,
-                )
-                return
+    def test_step(self, batch, batch_idx: int) -> None:
+        self._shared_step(batch, "test")
 
-            # If it's (1, H, W), squeeze to (H, W) for colormapping
-            if img_tensor.dim() == 3 and img_tensor.shape[0] == 1:
-                img_tensor = img_tensor.squeeze(0)
-            
-            # Convert to numpy array
-            np_img = img_tensor.numpy()
-
-            # Normalize values before colormapping if vmin/vmax are provided, or use auto-scaling
-            if vmin is None:
-                vmin = np_img.min()
-            if vmax is None:
-                vmax = np_img.max()
-            scale = vmax - vmin
-            if not np.isfinite(scale) or scale == 0:
-                normalized = np.zeros_like(np_img, dtype=np.float32)
-            else:
-                normalized = (np_img - vmin) / scale
-
-            # Get the colormap
-            cmap = cm.get_cmap(colormap)
-            
-            # Apply colormap. cmap returns RGBA (H, W, 4) in float [0, 1]
-            # Convert to RGB (H, W, 3) and then to uint8 (0-255)
-            # TensorBoard expects uint8 for image summaries for better visualization range
-            color_mapped_np = (cmap(normalized)[:, :, :3] * 255).astype(np.uint8)
-
-            # Convert back to torch.Tensor and permute to (C, H, W)
-            log_tensor = torch.from_numpy(color_mapped_np).permute(2, 0, 1) # HWC -> CHW
-            
-        else:
-            # No colormap, assume image is already in suitable format (e.g., grayscale 1xHxW or RGB 3xHxW)
-            if img_tensor.dim() == 2:
-                log_tensor = img_tensor.unsqueeze(0) # Grayscale (H, W) -> (1, H, W)
-            elif img_tensor.dim() == 3:
-                log_tensor = img_tensor # Already (C, H, W)
-            else:
-                logger.warning("Unexpected tensor dimension for image logging without colormap: %s. Skipping.", img_tensor.shape)
-                return
-
-        logger_instance.experiment.add_image(name_tag, log_tensor, self.global_step)
-        # print(f"Logged image '{name_tag}' at step {self.global_step}")
-
-
-    def _log_prediction(
-        self,
-        pred_tensor,
-        target_tensor,
-        tag_prefix,
-        logger_instance,
-        colormap: str = 'bwr'
-    ):
-        """
-        Logs a sample prediction and its corresponding target.
-        pred_tensor: The prediction tensor (e.g., from self.last_val_pred). Expected 4D (N, C, H, W).
-        target_tensor: The target tensor (e.g., from self.last_val_target). Expected 4D (N, C, H, W).
-        tag_prefix: Base string for the log name (e.g., "Val").
-        logger_instance: The logger object (e.g., self.logger).
-        colormap: The colormap to apply. Defaults to 'bwr'.
-        """
-        if self.trainer.sanity_checking:
-            return
-
-        if pred_tensor is None or target_tensor is None:
-            logger.warning("Attempted to log image, but prediction or target tensor is None.")
-            return
-        
-        if pred_tensor.dim() != 4 or pred_tensor.shape[0] == 0:
-            logger.warning("Prediction tensor not 4D (N,C,H,W) or empty for logging: %s. Skipping.", pred_tensor.shape)
-            return
-        if target_tensor.dim() != 4 or target_tensor.shape[0] == 0:
-            logger.warning("Target tensor not 4D (N,C,H,W) or empty for logging: %s. Skipping.", target_tensor.shape)
-            return
-
-        # Choose the first sample (index 0) and the first channel (index 0)
-        sample_idx = 0 
-        channel_idx = 0 
-
-        # Extract the single image slice (H, W)
-        # pred_img_slice = pred_tensor[sample_idx, channel_idx, :, :]
-        # target_img_slice = target_tensor[sample_idx, channel_idx, :, :]
-        pred_img_slice = pred_tensor.mean(axis=(0,1))
-        target_img_slice = target_tensor.mean(axis=(0,1))
-
-        # Determine vmin/vmax for consistent color mapping across prediction and target
-        # This is important for comparing them visually
-        all_values = target_img_slice.flatten()-pred_img_slice.flatten()
-        vmin = all_values.min().item()
-        vmax = all_values.max().item()
-
-        self._squeeze_and_add_log_img(
-            target_img_slice-pred_img_slice, 
-            tag_prefix, 
-            logger_instance, 
-            colormap=colormap, 
-            vmin=vmin, vmax=vmax
-        )
-
-    def training_step(
-        self,
-        batch,
-        batch_idx
-    ):
-        if self.supervised:
-            x, y, mask = batch
-        else:
-            x, _, mask = batch
-            y = x
-        pred = self(x)
-        mask = mask.to(self.device)
-        # ensure contiguous
-        pred = pred.contiguous()
-        y = y.contiguous()
-
-        # If pred has 2C channels, first half is mean
-        if pred.shape[1] == 2 * y.shape[1]:
-            mu = pred[:, : y.shape[1], ...]
-        else:
-            mu = pred
-
-        if self.use_full_batch_input_as_baseline:
-            loss = call_loss(self.loss, mu, y, x0=x, mask=mask)
-        else:
-            loss = call_loss(self.loss, mu, y, mask=mask)
-
-        mu = mu.contiguous()
-        y  = y.contiguous()
-
-        self.train_mae.update(mu, y, mask)
-        self.train_rmse.update(mu, y, mask)
-        # self.train_scc.update(mu, y, mask)
-        # self.train_acc.update(pred, y)
-
-        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-        try:
-            comps = self.loss.loss_components
-            for k,v in comps.items():
-                self.log(f"train_{k}", v)
-        except:
-            pass
-        self.log("train_mae", self.train_mae, on_step=False, on_epoch=True)
-        self.log("train_rmse", self.train_rmse, on_step=False, on_epoch=True)
-        # self.log("train_scc", self.train_scc, on_step=False, on_epoch=True)
-        # self.log("train_acc", self.train_acc, on_step=False, on_epoch=True)
-        return loss
-
-    def validation_step(
-        self,
-        batch,
-        batch_idx
-    ):
-        if self.supervised:
-            x, y, mask = batch
-        else:
-            x, _, mask = batch
-            y = x
-
-        pred = self(x)
-        mask = mask.to(self.device)
-        # ensure contiguous
-        pred = pred.contiguous()
-        y = y.contiguous()
-
-        # If pred has 2C channels, first half is mean
-        # # TODO make it more robust: very weak condition, what if we have input R=2 and target R=1?
-        if pred.shape[1] == 2 * y.shape[1]:
-            mu = pred[:, : y.shape[1], ...]
-        else:
-            mu = pred
-
-        if self.use_full_batch_input_as_baseline:
-            loss = call_loss(self.loss, mu, y, x0=x, mask=mask)
-        else:
-            loss = call_loss(self.loss, mu, y, mask=mask)
-
-        mu = mu.contiguous()
-        y  = y.contiguous()
-
-        self.val_mae.update(mu, y, mask)
-        self.val_rmse.update(mu, y, mask)
-        # self.val_scc.update(mu, y, mask)
-        # self.val_acc.update(mu, y)
-
-        self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-        try:
-            comps = self.loss.loss_components
-            for k,v in comps.items():
-                self.log(f"val_{k}", v)
-        except:
-            pass
-        self.log("val_mae", self.val_mae, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log("val_rmse", self.val_rmse, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        # self.log("val_scc", self.val_scc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        # self.log("val_acc", self.val_acc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        
-        self.last_val_pred = mu.detach().cpu()
-        self.last_val_target = y.detach().cpu()
-
-    def test_step(
-        self,
-        batch,
-        batch_idx
-    ):
-        if self.supervised:
-            x, y, mask = batch
-        else:
-            x, _, mask = batch
-            y = x
-        pred = self(x)
-        mask = mask.to(self.device)
-        # ensure contiguous
-        pred = pred.contiguous()
-        y = y.contiguous()
-
-        # If pred has 2C channels, first half is mean
-        if pred.shape[1] == 2 * y.shape[1]:
-            mu = pred[:, : y.shape[1], ...]
-        else:
-            mu = pred
-
-        if self.use_full_batch_input_as_baseline:
-            loss = call_loss(self.loss, mu, y, x0=x, mask=mask)
-        else:
-            loss = call_loss(self.loss, mu, y, mask=mask)
-
-        mu = mu.contiguous()
-        y  = y.contiguous()
-
-        self.test_mae.update(mu, y, mask)
-        self.test_rmse.update(mu, y, mask)
-        self.test_scc.update(mu, y, mask)
-        # self.test_acc.update(mu, y)
-
-        # Log per-batch loss. Metrics will be logged at epoch end using their aggregated state.
-        self.log("test_loss", loss, on_step=True, on_epoch=True, logger=True) # Corrected: use `loss`
-        self.log("test_mae", self.test_mae, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log("test_rmse", self.test_rmse, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log("test_scc", self.test_scc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        # self.log("test_acc", self.test_acc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-
-        self.test_step_outputs.append(
-            {
-                "preds": mu.detach().float().cpu(),
-                "targets": y.detach().float().cpu(),
-            }
-        )
-
-    def on_train_epoch_start(self):
-        # self._train_epoch_batch_time = 0.0
-        # self._train_epoch_batch_count = 0
-        # self._logged_train_batch_info = False
-        # Access the optimizer's learning rate
+    def on_train_epoch_start(self) -> None:
         scheduler = self.lr_schedulers()
-        current_lr = scheduler.get_last_lr()[0]  # list of LRs, usually one
-        self.log("lr", current_lr, on_step=False, on_epoch=True, prog_bar=True)
-        # optimizer = self.optimizers()
-        # current_lr = optimizer.param_groups[0]['lr']
-        # self.log('lr', current_lr, on_step=False, on_epoch=True)
-        logger.info("Epoch %s: learning Rate = %s", self.current_epoch, current_lr)
+        current_lr = scheduler.get_last_lr()[0]
 
-    # Temporary performance debugging hooks. Uncomment if you need detailed
-    # timing/device diagnostics again.
-    # def on_fit_start(self):
-    #     trainer_device = getattr(getattr(self.trainer, "strategy", None), "root_device", None)
-    #     try:
-    #         param_device = next(self.parameters()).device
-    #     except StopIteration:
-    #         param_device = "unknown"
-    #     logger.info(
-    #         "Fit start: trainer root_device=%s, parameter_device=%s, cuda_available=%s, cuda_device_count=%s",
-    #         trainer_device,
-    #         param_device,
-    #         torch.cuda.is_available(),
-    #         torch.cuda.device_count(),
-    #     )
+        self.log(
+            "lr",
+            current_lr,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+        )
+        logger.info(
+            "Epoch %s: learning rate = %s",
+            self.current_epoch,
+            current_lr,
+        )
 
-    # def on_train_batch_start(self, batch, batch_idx):
-    #     self._train_batch_start_time = time.perf_counter()
-    #     if not self._logged_train_batch_info:
-    #         x = batch[0]
-    #         y = batch[1] if len(batch) > 1 else None
-    #         logger.info(
-    #             "First train batch epoch=%s: x.device=%s, y.device=%s, x.shape=%s, y.shape=%s, parameter_device=%s",
-    #             self.current_epoch,
-    #             x.device,
-    #             y.device if y is not None else "n/a",
-    #             tuple(x.shape),
-    #             tuple(y.shape) if y is not None else "n/a",
-    #             next(self.parameters()).device,
-    #         )
-    #         self._logged_train_batch_info = True
-
-    # def on_train_batch_end(self, outputs, batch, batch_idx):
-    #     if self._train_batch_start_time is not None:
-    #         self._train_epoch_batch_time += time.perf_counter() - self._train_batch_start_time
-    #         self._train_epoch_batch_count += 1
-
-    # def on_train_epoch_end(self):
-    #     if self._train_epoch_batch_count > 0:
-    #         logger.info(
-    #             "Epoch %s train timing: total_batch_time=%.2fs mean_batch_time=%.2fs batches=%s",
-    #             self.current_epoch,
-    #             self._train_epoch_batch_time,
-    #             self._train_epoch_batch_time / self._train_epoch_batch_count,
-    #             self._train_epoch_batch_count,
-    #         )
-
-    # def on_validation_epoch_start(self):
-    #     self._val_epoch_batch_time = 0.0
-    #     self._val_epoch_batch_count = 0
-    #     self._logged_val_batch_info = False
-
-    # def on_validation_batch_start(self, batch, batch_idx, dataloader_idx=0):
-    #     self._val_batch_start_time = time.perf_counter()
-    #     if not self._logged_val_batch_info:
-    #         x = batch[0]
-    #         y = batch[1] if len(batch) > 1 else None
-    #         logger.info(
-    #             "First val batch epoch=%s: x.device=%s, y.device=%s, x.shape=%s, y.shape=%s, parameter_device=%s",
-    #             self.current_epoch,
-    #             x.device,
-    #             y.device if y is not None else "n/a",
-    #             tuple(x.shape),
-    #             tuple(y.shape) if y is not None else "n/a",
-    #             next(self.parameters()).device,
-    #         )
-    #         self._logged_val_batch_info = True
-
-    # def on_validation_batch_end(self, outputs, batch, batch_idx, dataloader_idx=0):
-    #     if self._val_batch_start_time is not None:
-    #         self._val_epoch_batch_time += time.perf_counter() - self._val_batch_start_time
-    #         self._val_epoch_batch_count += 1
-
-    # def on_validation_epoch_end(self):
-    #     if self._val_epoch_batch_count > 0:
-    #         logger.info(
-    #             "Epoch %s val timing: total_batch_time=%.2fs mean_batch_time=%.2fs batches=%s",
-    #             self.current_epoch,
-    #             self._val_epoch_batch_time,
-    #             self._val_epoch_batch_time / self._val_epoch_batch_count,
-    #             self._val_epoch_batch_count,
-    #         )
-
-    # def on_validation_epoch_end (self):
-    #     """Process validation results, including logging a sample image"""
-    #     if self.current_epoch % self.pic_log_interval == 0:
-    #         self._log_prediction(self.last_val_pred, self.last_val_target, "Prediction Error", self.logger)
-    #     # Clean up the stored tensors to prevent accidental reuse or memory issues
-    #     self.last_val_pred = None
-    #     self.last_val_target = None
-
-
-    def on_test_epoch_start(self):
-        """Clear test buffers before each trainer.test() call."""
+    def on_test_epoch_start(self) -> None:
+        """Clear test buffers before each ``trainer.test()`` call."""
         self.test_step_outputs.clear()
         self.test_preds = None
         self.test_targets = None
 
-    def on_test_epoch_end(self):
-        """Process test results and store for external access"""
-        # If you need to access the final aggregated metric values from the Test stage
-        # *after* trainer.test() has completed, you can get them from the logger or from trainer.callback_metrics.
+    def on_test_epoch_end(self) -> None:
+        """Store concatenated test predictions and targets for later access."""
         final_test_mae = self.test_mae.compute()
         final_test_rmse = self.test_rmse.compute()
         final_test_scc = self.test_scc.compute()
-        # final_test_acc = self.test_acc.compute()
-        
+
         logger.info(
             "Test Results - MAE: %.4f, RMSE: %.4f, SCC: %.4f",
             final_test_mae,
@@ -517,10 +299,16 @@ class EarthMLLightningModule(L.LightningModule):
             final_test_scc,
         )
 
-        # Store all test_preds/targets for post-test analysis
-        if self.test_step_outputs: # Check if there were any batches
-            self.test_preds = torch.cat([out["preds"] for out in self.test_step_outputs], dim=0)
-            self.test_targets = torch.cat([out["targets"] for out in self.test_step_outputs], dim=0)
+        if self.test_step_outputs:
+            self.test_preds = torch.cat(
+                [output["preds"] for output in self.test_step_outputs],
+                dim=0,
+            )
+            self.test_targets = torch.cat(
+                [output["targets"] for output in self.test_step_outputs],
+                dim=0,
+            )
+
         self.test_step_outputs.clear()
 
     def configure_optimizers(self) -> OptimizerLRScheduler:
@@ -548,110 +336,263 @@ class EarthMLLightningModule(L.LightningModule):
             },
         }
 
+    def compute_loss(
+        self,
+        *,
+        prediction: torch.Tensor,
+        target: torch.Tensor,
+        mask: torch.Tensor | None = None,
+        model_input: torch.Tensor | None = None,
+        var_field: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if self.loss_name in {
+            "MSELoss",
+            "GeoMSELoss",
+        }:
+            return self.loss(prediction, target)
+
+        if self.loss_name in {
+            "MaskedMSELoss",
+            "GeoMaskedMSELoss",
+            "GaussianNLLFromLogits",
+            "EmpiricalCRPSLoss",
+        }:
+            return self.loss(
+                prediction,
+                target,
+                mask=mask,
+            )
+
+        if self.loss_name == "VarNormMaskMSELoss":
+            return self.loss(
+                y_pred=prediction,
+                y_true=target,
+                var_field=var_field,
+                mask=mask,
+            )
+
+        if self.loss_name == "HeteroBiasCorrectionLoss":
+            if model_input is None:
+                raise ValueError(
+                    "HeteroBiasCorrectionLoss requires model_input."
+                )
+
+            return self.loss(
+                y_pred=prediction,
+                y_true=target,
+                x_input=model_input,
+                var_field=var_field,
+                mask=mask,
+            )
+
+        raise ValueError(
+            f"No loss-call rule is defined for {self.loss_name!r}"
+        )
+
 
 class SplitDataModule(L.LightningDataModule):
     def __init__(
         self,
-        dataset: Dataset,
+        train_dataset: Dataset,
+        val_dataset: Dataset | None = None,
+        *,
         train_fraction: float = 0.9,
         batch_size: int = 32,
         seed: int = 42,
         num_workers: int = 0,
-        split_strategy: Literal["random", "time"] = "time",
+        split_strategy: SplitStrategy = "time",
         shuffle_train: bool = True,
-        per_epoch_resplit: bool = False,
-    ):
+        pin_memory: bool | None = None,
+        persistent_workers: bool | None = None,
+        drop_last_train: bool = False,
+    ) -> None:
         super().__init__()
-        self.dataset = dataset
+
+        if not 0.0 < train_fraction < 1.0:
+            raise ValueError(
+                "train_fraction must be between 0 and 1, "
+                f"got {train_fraction}"
+            )
+
+        if split_strategy == "explicit" and val_dataset is None:
+            raise ValueError(
+                "val_dataset is required when split_strategy='explicit'."
+            )
+
+        if split_strategy != "explicit" and val_dataset is not None:
+            raise ValueError(
+                "val_dataset must be None unless split_strategy='explicit'."
+            )
+
+        self.source_dataset = train_dataset
+        self.explicit_val_dataset = val_dataset
+
         self.train_fraction = train_fraction
         self.batch_size = batch_size
         self.seed = seed
         self.num_workers = num_workers
         self.split_strategy = split_strategy
         self.shuffle_train = shuffle_train
-        self.per_epoch_resplit = per_epoch_resplit
+        self.drop_last_train = drop_last_train
 
-        if per_epoch_resplit and split_strategy != "random":
-            raise ValueError("per_epoch_resplit only makes sense with split_strategy='random'.")
+        self.pin_memory = (
+            torch.cuda.is_available()
+            if pin_memory is None
+            else pin_memory
+        )
+        self.persistent_workers = (
+            num_workers > 0
+            if persistent_workers is None
+            else persistent_workers
+        )
 
-    def setup(self, stage=None):
-        self._make_loaders(epoch=0)
+        if self.persistent_workers and self.num_workers == 0:
+            raise ValueError(
+                "persistent_workers=True requires num_workers > 0."
+            )
 
-    def _get_indices(self, epoch: int = 0):
-        n = len(self.dataset)
+        self.train_dataset: Dataset
+        self.val_dataset: Dataset
+        self.train_indices: list[int] | None = None
+        self.val_indices: list[int] | None = None
+
+    def _samples_per_initialization(self) -> tuple[int, int]:
+        """
+        Return the number of initialization times and samples per time.
+
+        Samples are assumed to be flattened in time-major order.
+        """
+        dataset = self.source_dataset
+
+        if not hasattr(dataset, "input_ds"):
+            raise TypeError(
+                f"split_strategy={self.split_strategy!r} requires a dataset "
+                "with an input_ds time dimension."
+            )
+
+        input_ds = dataset.input_ds
+        time_dim = input_ds.earthml.guessed_dims.time
+
+        if time_dim is None or time_dim not in input_ds.dims:
+            raise ValueError(
+                "Could not determine the initialization-time dimension."
+            )
+
+        n_times = int(input_ds.sizes[time_dim])
+        n_samples = len(dataset)
+
+        if n_samples % n_times != 0:
+            raise ValueError(
+                "Cannot group samples by initialization time: "
+                f"n_samples={n_samples}, n_times={n_times}."
+            )
+
+        return n_times, n_samples // n_times
+
+    @staticmethod
+    def _expand_time_indices(
+        time_indices: list[int],
+        samples_per_time: int,
+    ) -> list[int]:
+        sample_indices: list[int] = []
+
+        for time_idx in time_indices:
+            start = time_idx * samples_per_time
+            sample_indices.extend(
+                range(start, start + samples_per_time)
+            )
+
+        return sample_indices
+
+    def _get_indices(self) -> tuple[list[int], list[int]]:
+        if self.split_strategy == "explicit":
+            raise RuntimeError(
+                "_get_indices() is not used for "
+                "split_strategy='explicit'."
+            )
+
+        n_times, samples_per_time = self._samples_per_initialization()
+        n_train_times = int(n_times * self.train_fraction)
+
+        if not 0 < n_train_times < n_times:
+            raise ValueError(
+                "The requested split produces an empty partition: "
+                f"n_times={n_times}, "
+                f"train_fraction={self.train_fraction}, "
+                f"n_train_times={n_train_times}."
+            )
 
         if self.split_strategy == "time":
-
-            n_times = len(self.dataset.input_ds.time)
-
-            if n % n_times != 0:
-                raise ValueError(
-                    f"Cannot infer realization grouping: n={n}, n_times={n_times}"
-                )
-
-            r = n // n_times
-            split_t = int(n_times * self.train_fraction)
-
-            train_indices: list[int] = []
-            val_indices: list[int] = []
-
-            for t in range(n_times):
-                start = t * r
-                end = start + r
-
-                if t < split_t:
-                    train_indices.extend(range(start, end))
-                else:
-                    val_indices.extend(range(start, end))
-
-            return train_indices, val_indices
+            train_time_indices = list(range(n_train_times))
+            val_time_indices = list(range(n_train_times, n_times))
 
         elif self.split_strategy == "random":
-            g = torch.Generator()
-            g.manual_seed(self.seed + epoch)
+            generator = torch.Generator().manual_seed(self.seed)
+            shuffled_times = torch.randperm(
+                n_times,
+                generator=generator,
+            ).tolist()
 
-            indices = torch.randperm(n, generator=g).tolist()
-            split = int(n * self.train_fraction)
-
-            return indices[:split], indices[split:]
+            train_time_indices = sorted(
+                shuffled_times[:n_train_times]
+            )
+            val_time_indices = sorted(
+                shuffled_times[n_train_times:]
+            )
 
         else:
             raise ValueError(
-                f"Unknown split_strategy={self.split_strategy}"
+                f"Unknown split_strategy={self.split_strategy!r}"
             )
 
-    def _make_loaders(self, epoch: int = 0):
-        train_indices, val_indices = self._get_indices(epoch)
+        return (
+            self._expand_time_indices(
+                train_time_indices,
+                samples_per_time,
+            ),
+            self._expand_time_indices(
+                val_time_indices,
+                samples_per_time,
+            ),
+        )
 
-        train_subset = Subset(self.dataset, train_indices)
-        val_subset = Subset(self.dataset, val_indices)
+    def setup(self, stage: str | None = None) -> None:
+        if self.split_strategy == "explicit":
+            self.train_dataset = self.source_dataset
+            assert self.explicit_val_dataset is not None
+            self.val_dataset = self.explicit_val_dataset
+            self.train_indices = None
+            self.val_indices = None
+            return
 
-        self._train_dl = DataLoader(
-            train_subset,
+        self.train_indices, self.val_indices = self._get_indices()
+        self.train_dataset = Subset(
+            self.source_dataset,
+            self.train_indices,
+        )
+        self.val_dataset = Subset(
+            self.source_dataset,
+            self.val_indices,
+        )
+
+    def train_dataloader(self) -> DataLoader:
+        return DataLoader(
+            self.train_dataset,
             batch_size=self.batch_size,
             shuffle=self.shuffle_train,
             num_workers=self.num_workers,
-            pin_memory=torch.cuda.is_available(),
-            persistent_workers=False,
-            # persistent_workers=self.num_workers > 0,
+            pin_memory=self.pin_memory,
+            persistent_workers=self.persistent_workers,
+            drop_last=self.drop_last_train,
         )
 
-        self._val_dl = DataLoader(
-            val_subset,
+    def val_dataloader(self) -> DataLoader:
+        return DataLoader(
+            self.val_dataset,
             batch_size=self.batch_size,
             shuffle=False,
             num_workers=self.num_workers,
-            pin_memory=torch.cuda.is_available(),
-            persistent_workers=False,
-            # persistent_workers=self.num_workers > 0,
+            pin_memory=self.pin_memory,
+            persistent_workers=self.persistent_workers,
+            drop_last=False,
         )
-
-    def train_dataloader(self):
-        return self._train_dl
-
-    def val_dataloader(self):
-        return self._val_dl
-
-    def on_train_epoch_start(self):
-        if self.per_epoch_resplit:
-            self._make_loaders(epoch=self.trainer.current_epoch)

@@ -175,13 +175,13 @@ class Normalize:
             self.save(filepath)
         return self
 
-    def _check_filepath(self, filepath: str):
-        if self.mean is None or self.std is None:
-            try:
-                self = self.load(filepath)
-            except Exception as e:
-                logger.exception("Failed to load normalizer from %s", filepath)
-                raise ValueError("Transform not fitted.")
+    def _check_filepath(self, filepath: str) -> None:
+        if self.fitted():
+            return
+
+        loaded = self.load(filepath)
+        self.mean = loaded.mean
+        self.std = loaded.std
 
     def _broadcast_params(self, t: torch.Tensor):
         """
@@ -209,8 +209,11 @@ class Normalize:
         mean, std = self._broadcast_params(t)
         return (t - mean) / (std + eps)
 
-    def inverse_tensor(self, t: torch.Tensor, filepath: str) -> torch.Tensor:
-        self._check_filepath(filepath)
+    def inverse_tensor(
+        self,
+        t: torch.Tensor,
+        months: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         mean, std = self._broadcast_params(t)
         return t * std + mean
 
@@ -230,6 +233,10 @@ class MonthlyNormalize:
 
         for month in range(1, 13):
             sel = months == month
+
+            if not torch.any(sel):
+                raise ValueError(f"No samples available for month {month}")
+
             x_m = data[sel]
             m_m = mask[sel]
 

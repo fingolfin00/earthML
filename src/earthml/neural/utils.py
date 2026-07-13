@@ -8,30 +8,38 @@ from .losses import get_loss_class
 
 def resolve_loss(
     name: str,
-    params: dict,
-):
-    """
-    Try to resolve loss with thiw priority order:
-    - first try our custom losses
-    - then if there's no "." in name try to import from torch.nn
-    - last resort import directly the module as is with importlib, if "." is name
-    """
-    # if one of our custom losses
+    params: dict | None = None,
+) -> nn.Module:
+    params = params or {}
+
     try:
         return get_loss_class(name)(**params)
     except KeyError:
-        loss_import_name = name
+        pass
 
-    # simple name -> try torch.nn
-    if "." not in loss_import_name:
-        if hasattr(nn, loss_import_name):
-            return getattr(nn, loss_import_name)(**params)
-        raise ValueError(f"Loss '{loss_import_name}' not found in torch.nn")
+    if "." not in name:
+        loss_cls = getattr(nn, name, None)
 
-    # dotted path -> dynamic import
-    module_path, class_name = loss_import_name.rsplit(".", 1)
+        if loss_cls is None:
+            raise ValueError(
+                f"Loss {name!r} not found in the custom registry or torch.nn"
+            )
+
+        return loss_cls(**params)
+
+    module_path, class_name = name.rsplit(".", 1)
     module = importlib.import_module(module_path)
-    return getattr(module, class_name)(**params)
+    loss_cls = getattr(module, class_name)
+
+    loss_instance = loss_cls(**params)
+
+    if not isinstance(loss_instance, nn.Module):
+        raise TypeError(
+            f"Resolved loss {name!r} is not an nn.Module: "
+            f"{type(loss_instance).__name__}"
+        )
+
+    return loss_instance
 
 
 def call_loss(
