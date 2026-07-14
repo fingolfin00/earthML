@@ -261,21 +261,23 @@ def get_and_subset_datasets(
         if ds is not None:
             ds_list.append(ds)
 
-    mlfc = xr.concat(
-        ds_list,
-        dim=time_dim,
-        coords="minimal",
-        compat="equals",
-        join="exact",
-    )
+    mlfc = None
+    if ds_list:
+        mlfc = xr.concat(
+            ds_list,
+            dim=time_dim,
+            coords="minimal",
+            compat="equals",
+            join="exact",
+        )
 
-    mlfc = subset_dataset(
-        mlfc,
-        lat_range=lat_range,
-        lon_range=lon_range,
-        time_range=time_range,
-        time_start=time_start,
-    )
+        mlfc = subset_dataset(
+            mlfc,
+            lat_range=lat_range,
+            lon_range=lon_range,
+            time_range=time_range,
+            time_start=time_start,
+        )
 
     return (fc, an, mlfc)
 
