@@ -190,10 +190,7 @@ class EarthMLLightningModule(L.LightningModule):
             )
 
             self.test_step_outputs.append(
-                {
-                    "preds": mu.detach().float().cpu(),
-                    "targets": y.detach().float().cpu(),
-                }
+                {"preds": mu.detach().float().cpu()}
             )
 
         self._log_loss_components(stage)
@@ -281,13 +278,11 @@ class EarthMLLightningModule(L.LightningModule):
         )
 
     def on_test_epoch_start(self) -> None:
-        """Clear test buffers before each ``trainer.test()`` call."""
         self.test_step_outputs.clear()
         self.test_preds = None
-        self.test_targets = None
+
 
     def on_test_epoch_end(self) -> None:
-        """Store concatenated test predictions and targets for later access."""
         final_test_mae = self.test_mae.compute()
         final_test_rmse = self.test_rmse.compute()
         final_test_scc = self.test_scc.compute()
@@ -299,15 +294,13 @@ class EarthMLLightningModule(L.LightningModule):
             final_test_scc,
         )
 
-        if self.test_step_outputs:
-            self.test_preds = torch.cat(
-                [output["preds"] for output in self.test_step_outputs],
-                dim=0,
-            )
-            self.test_targets = torch.cat(
-                [output["targets"] for output in self.test_step_outputs],
-                dim=0,
-            )
+        if not self.test_step_outputs:
+            raise RuntimeError("Testing produced no prediction batches.")
+
+        self.test_preds = torch.cat(
+            [output["preds"] for output in self.test_step_outputs],
+            dim=0,
+        )
 
         self.test_step_outputs.clear()
 
@@ -557,6 +550,9 @@ class SplitDataModule(L.LightningDataModule):
         )
 
     def setup(self, stage: str | None = None) -> None:
+        if hasattr(self, "train_dataset") and hasattr(self, "val_dataset"):
+            return
+
         if self.split_strategy == "explicit":
             self.train_dataset = self.source_dataset
             assert self.explicit_val_dataset is not None
