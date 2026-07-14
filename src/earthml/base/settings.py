@@ -170,12 +170,16 @@ class Settings:
         return self._find_dataset(self.model_an, self.var_file_an)
 
     @property
-    def input_mlfc_test(self) -> Path:
-        return self.output_dir / "test_corrected.zarr"
-
-    @property
     def input_mlfc_train(self) -> Path:
         return self.output_dir / "train_corrected.zarr"
+
+    @property
+    def input_mlfc_val(self) -> Path:
+        return self.output_dir / "val_corrected.zarr"
+
+    @property
+    def input_mlfc_test(self) -> Path:
+        return self.output_dir / "test_corrected.zarr"
 
     @property
     def input_fc_clim(self) -> Path:
