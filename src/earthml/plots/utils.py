@@ -508,7 +508,7 @@ def plot_map(
     lead_value: object,
     out_file: Path,
     time_range: tuple[str, str],
-    plot_kind: Literal["map", "time_lon", "time_lat"] = "map",
+    plot_kind: Literal["maps", "time_lon", "time_lat"] = "maps",
     plot_type: Literal["pcolormesh", "contourf"] = "pcolormesh",
     leadtime_dim: str = "leadtime",
     leadtime_units: str = "months",
@@ -534,7 +534,7 @@ def plot_map(
         }
     ).squeeze(drop=True)
 
-    if plot_kind == "map":
+    if plot_kind == "maps":
         required_dims = (lat, lon)
 
     elif plot_kind == "time_lon":
@@ -609,7 +609,7 @@ def plot_map(
 
     avg = float(da.mean(skipna=True).values)
 
-    if plot_kind == "map":
+    if plot_kind == "maps":
         geo_avg = float(da.earthml.geo_mean().values)
     else:
         geo_avg = None
@@ -623,7 +623,7 @@ def plot_map(
         is_skill=is_skill,
     )
 
-    if plot_kind == "map":
+    if plot_kind == "maps":
         fig, ax = plt.subplots(
             figsize=(7, 5),
             subplot_kw={"projection": ccrs.PlateCarree()},
@@ -753,7 +753,7 @@ def plot_map(
         "%Y-%m-%d",
     ).strftime(title_strftime)
 
-    if plot_kind == "map":
+    if plot_kind == "maps":
         summary = (
             f"avg={avg:.3f} {unit_label} · "
             f"geoavg={geo_avg:.3f} {unit_label}"
@@ -762,7 +762,7 @@ def plot_map(
         summary = f"avg={avg:.3f} {unit_label}"
 
     plot_kind_label = {
-        "map": "map",
+        "maps": "maps",
         "time_lon": "time-longitude",
         "time_lat": "time-latitude",
     }[plot_kind]
@@ -777,7 +777,7 @@ def plot_map(
         im,
         ax=ax,
         orientation="horizontal",
-        pad=0.10 if plot_kind == "map" else 0.13,
+        pad=0.10 if plot_kind == "maps" else 0.13,
         ticks=ticks,
         boundaries=ticks,
         spacing="uniform",
@@ -1223,6 +1223,7 @@ def plot_field_timeseries(
     spatial_dims: tuple[str, str] = ("latitude", "longitude"),
     realization_dim: str = "realization",
     spread: Literal["std", "minmax"] = "std",
+    val_end: str | None = None,
     train_end: str | None = None,
     plot_single_members: bool = True,
     member_linestyle: str = "-",
@@ -1377,6 +1378,15 @@ def plot_field_timeseries(
             linestyle="--",
             linewidth=1.3,
             label="Train end",
+        )
+
+    if val_end is not None:
+        ax.axvline(
+            np.datetime64(val_end),
+            color="blue",
+            linestyle="--",
+            linewidth=1.3,
+            label="Val end",
         )
 
     ax.set_title(title)
