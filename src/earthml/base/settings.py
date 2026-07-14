@@ -201,6 +201,9 @@ class Settings:
     @property
     def output_name(self) -> str:
         parts = [
+            self.var_fc,
+            self.var_an,
+            self.region_name,
             str(self.target_mode),
         ]
 
@@ -211,9 +214,6 @@ class Settings:
             parts.append("seasonal_encoding")
 
         parts += [
-            self.var_fc,
-            self.var_an,
-            self.region_name,
             f"lead{self.lead_period_offset:+d}",
             f"{self.normalization}_{self.normalization_mode}_norm",
             self.net_name.lower(),
