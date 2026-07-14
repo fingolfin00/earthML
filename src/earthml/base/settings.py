@@ -83,6 +83,7 @@ class Settings:
     split_strategy: SplitStrategy = "time"
     normalization: Literal["full", "monthly"] = "full"
     normalization_mode: NormalizationMode = "channel"
+    seasonal_encoding: bool = False
 
     net_name: str = "SmaAt_UNet"
     loss_name: str = "MSELoss"
@@ -205,6 +206,9 @@ class Settings:
 
         if self.target_mode in ("anomaly", "anomaly_residual", "anomaly_residual_realization"):
             parts.append(f"climperiod_{self.clim_period}")
+
+        if self.seasonal_encoding == True:
+            parts.append("seasonal_encoding")
 
         parts += [
             self.var_fc,
