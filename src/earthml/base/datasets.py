@@ -247,25 +247,35 @@ def get_and_subset_datasets(
             }
         )
 
-    mlfc = None
-    if s.input_mlfc_train.exists() and s.input_mlfc_test.exists():
-        mlfc = xr.concat(
-            [open_engine(s.input_mlfc_train), open_engine(s.input_mlfc_test)],
-            dim=time_dim,
-            coords="minimal",
-            compat="override",
-        ).sortby(time_dim)
-    elif s.input_mlfc_test.exists():
-        mlfc = open_engine(s.input_mlfc_test)
+    ds_list: list[xr.Dataset] = []
+    if s.input_mlfc_train.exists():
+        ds = open_engine(s.input_mlfc_train)
+        if ds is not None:
+            ds_list.append(ds)
+    if s.input_mlfc_val.exists():
+        ds = open_engine(s.input_mlfc_val)
+        if ds is not None:
+            ds_list.append(ds)
+    if s.input_mlfc_test.exists():
+        ds = open_engine(s.input_mlfc_test)
+        if ds is not None:
+            ds_list.append(ds)
 
-    if mlfc is not None:
-        mlfc = subset_dataset(
-            mlfc,
-            lat_range=lat_range,
-            lon_range=lon_range,
-            time_range=time_range,
-            time_start=time_start,
-        )
+    mlfc = xr.concat(
+        ds_list,
+        dim=time_dim,
+        coords="minimal",
+        compat="equals",
+        join="exact",
+    )
+
+    mlfc = subset_dataset(
+        mlfc,
+        lat_range=lat_range,
+        lon_range=lon_range,
+        time_range=time_range,
+        time_start=time_start,
+    )
 
     return (fc, an, mlfc)
 
