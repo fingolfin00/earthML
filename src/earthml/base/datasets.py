@@ -345,7 +345,7 @@ def valid_times_from_init_times(
 def select_target_for_lead(
     an: xr.DataArray | xr.Dataset,
     lead: int,
-    leadtime_units: Literal["hours", "days", "months", "years"],
+    leadtime_units: LeadtimeUnit,
     fc: xr.DataArray | xr.Dataset | None = None,
     start: str | None = None,
     end: str | None = None,
