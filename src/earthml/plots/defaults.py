@@ -591,6 +591,7 @@ SERIES_COLORS = {
     "Forecast": "tab:blue",
     "Corrected forecast": "tab:green",
     "Analysis": "tab:orange",
+    "Clim-corrected forecast": "tab:gray",
     "Forecast anomaly": "tab:blue",
     "Corrected forecast anomaly": "tab:green",
     "Analysis anomaly": "tab:orange",
