@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Sequence
 
 import joblib, torch
 
@@ -42,11 +42,19 @@ class Normalize:
         *,
         mode: NormalizationMode = "channel",
         eps: float = 1e-6,
+        exclude_channels: Sequence[int] | None = None,
     ) -> None:
         self.mean = mean
         self.std = std
         self.mode = mode
         self.eps = eps
+
+        self.exclude_channels = tuple(exclude_channels or ())
+
+        # Resolved after fit(), so negative channel indices can be supported.
+        self.n_channels: int | None = None
+        self.included_channels: tuple[int, ...] | None = None
+        self.excluded_channels: tuple[int, ...] | None = None
 
     def fitted(self) -> bool:
         return self.mean is not None and self.std is not None
@@ -159,6 +167,114 @@ class Normalize:
 
         return mean, std
 
+
+    def _resolve_channels(
+        self,
+        n_channels: int,
+    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        resolved_excluded: set[int] = set()
+
+        for channel in self.exclude_channels:
+            resolved = channel if channel >= 0 else n_channels + channel
+
+            if not 0 <= resolved < n_channels:
+                raise ValueError(
+                    f"Excluded channel index {channel} is invalid for "
+                    f"{n_channels} channels."
+                )
+
+            resolved_excluded.add(resolved)
+
+        excluded = tuple(sorted(resolved_excluded))
+        included = tuple(
+            channel
+            for channel in range(n_channels)
+            if channel not in resolved_excluded
+        )
+
+        if not included:
+            raise ValueError(
+                "All input channels were excluded from normalization."
+            )
+
+        return included, excluded
+
+
+    def _set_channel_configuration(
+        self,
+        n_channels: int,
+    ) -> None:
+        included, excluded = self._resolve_channels(n_channels)
+
+        self.n_channels = n_channels
+        self.included_channels = included
+        self.excluded_channels = excluded
+
+
+    def _check_channel_configuration(
+        self,
+        tensor: torch.Tensor,
+    ) -> None:
+        if self.n_channels is None or self.included_channels is None:
+            raise ValueError(
+                "Normalizer channel configuration is not initialized."
+            )
+
+        channel_dim = 1 if tensor.ndim == 4 else 0
+        actual_channels = tensor.shape[channel_dim]
+
+        if actual_channels != self.n_channels:
+            raise ValueError(
+                f"Normalizer was fitted with {self.n_channels} channels, "
+                f"but received a tensor with {actual_channels} channels."
+            )
+
+
+    def _select_included_channels(
+        self,
+        tensor: torch.Tensor,
+    ) -> torch.Tensor:
+        self._check_channel_configuration(tensor)
+
+        assert self.included_channels is not None
+
+        indices = torch.as_tensor(
+            self.included_channels,
+            device=tensor.device,
+            dtype=torch.long,
+        )
+
+        channel_dim = 1 if tensor.ndim == 4 else 0
+        return tensor.index_select(channel_dim, indices)
+
+
+    def _restore_included_channels(
+        self,
+        original: torch.Tensor,
+        transformed: torch.Tensor,
+    ) -> torch.Tensor:
+        self._check_channel_configuration(original)
+
+        assert self.included_channels is not None
+
+        indices = torch.as_tensor(
+            self.included_channels,
+            device=original.device,
+            dtype=torch.long,
+        )
+
+        result = original.clone()
+        channel_dim = 1 if original.ndim == 4 else 0
+
+        result.index_copy_(
+            channel_dim,
+            indices,
+            transformed,
+        )
+
+        return result
+
+
     def fit(
         self,
         dataset,
@@ -169,10 +285,28 @@ class Normalize:
         data = getattr(dataset, dim)
         mask = getattr(dataset, f"{dim}_mask", None)
 
-        valid_mask = self._prepare_mask(data, mask)
+        if data.ndim != 4:
+            raise ValueError(
+                "Expected dataset data shape (N,C,H,W), "
+                f"got {tuple(data.shape)}"
+            )
+
+        self._set_channel_configuration(data.shape[1])
+
+        data_for_fit = self._select_included_channels(data)
+
+        if mask is not None:
+            mask_for_fit = self._select_included_channels(mask)
+        else:
+            mask_for_fit = None
+
+        valid_mask = self._prepare_mask(
+            data_for_fit,
+            mask_for_fit,
+        )
 
         mean, std = self._masked_mean_std(
-            data,
+            data_for_fit,
             valid_mask,
             reduce_dims=self._reduce_dims(),
             eps=self.eps,
@@ -227,21 +361,38 @@ class Normalize:
             ),
         )
 
+
     def __call__(
         self,
         tensor: torch.Tensor,
         **kwargs,
     ) -> torch.Tensor:
-        mean, std = self._params_for(tensor)
-        return (tensor - mean) / std
+        included = self._select_included_channels(tensor)
+
+        mean, std = self._params_for(included)
+        normalized = (included - mean) / std
+
+        return self._restore_included_channels(
+            tensor,
+            normalized,
+        )
+
 
     def inverse_tensor(
         self,
         tensor: torch.Tensor,
         **kwargs,
     ) -> torch.Tensor:
-        mean, std = self._params_for(tensor)
-        return tensor * std + mean
+        included = self._select_included_channels(tensor)
+
+        mean, std = self._params_for(included)
+        restored = included * std + mean
+
+        return self._restore_included_channels(
+            tensor,
+            restored,
+        )
+
 
     def save(
         self,
@@ -251,6 +402,7 @@ class Normalize:
             raise ValueError("Cannot save an unfitted normalizer")
 
         joblib.dump(self, filepath)
+
 
     @classmethod
     def load(
@@ -297,6 +449,21 @@ class MonthlyNormalize(Normalize):
         data = getattr(dataset, dim)
         mask = getattr(dataset, f"{dim}_mask", None)
 
+        if data.ndim != 4:
+            raise ValueError(
+                "Expected dataset data shape (N,C,H,W), "
+                f"got {tuple(data.shape)}"
+            )
+
+        self._set_channel_configuration(data.shape[1])
+
+        data_for_fit = self._select_included_channels(data)
+
+        if mask is not None:
+            mask_for_fit = self._select_included_channels(mask)
+        else:
+            mask_for_fit = None
+
         months = torch.as_tensor(
             dataset.months,
             device=data.device,
@@ -317,7 +484,10 @@ class MonthlyNormalize(Normalize):
         if torch.any((months < 1) | (months > 12)):
             raise ValueError("Month values must be between 1 and 12")
 
-        valid_mask = self._prepare_mask(data, mask)
+        valid_mask = self._prepare_mask(
+            data_for_fit,
+            mask_for_fit,
+        )
 
         means: list[torch.Tensor] = []
         stds: list[torch.Tensor] = []
@@ -333,7 +503,7 @@ class MonthlyNormalize(Normalize):
                 )
 
             mean, std = self._masked_mean_std(
-                data[selection],
+                data_for_fit[selection],
                 valid_mask[selection],
                 reduce_dims=reduce_dims,
                 eps=self.eps,
@@ -350,6 +520,7 @@ class MonthlyNormalize(Normalize):
             self.save(filepath)
 
         return self
+
 
     def _monthly_params_for(
         self,
@@ -422,6 +593,7 @@ class MonthlyNormalize(Normalize):
 
         return mean, std
 
+
     def __call__(
         self,
         tensor: torch.Tensor,
@@ -429,11 +601,20 @@ class MonthlyNormalize(Normalize):
         months: torch.Tensor | int,
         **kwargs,
     ) -> torch.Tensor:
+        included = self._select_included_channels(tensor)
+
         mean, std = self._monthly_params_for(
-            tensor,
+            included,
             months,
         )
-        return (tensor - mean) / std
+
+        normalized = (included - mean) / std
+
+        return self._restore_included_channels(
+            tensor,
+            normalized,
+        )
+
 
     def inverse_tensor(
         self,
@@ -442,8 +623,16 @@ class MonthlyNormalize(Normalize):
         months: torch.Tensor | int,
         **kwargs,
     ) -> torch.Tensor:
+        included = self._select_included_channels(tensor)
+
         mean, std = self._monthly_params_for(
-            tensor,
+            included,
             months,
         )
-        return tensor * std + mean
+
+        restored = included * std + mean
+
+        return self._restore_included_channels(
+            tensor,
+            restored,
+        )
