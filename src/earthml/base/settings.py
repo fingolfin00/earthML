@@ -62,6 +62,7 @@ class Settings:
 
     leadtimes: list[int | float] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6])
     leadtime_unit: LeadtimeUnit = LeadtimeUnit.MONTHS
+    seasonal_window_size: int = 3
 
     region_name: str = "World"
     region: dict[str, tuple[int | float, int | float]] | None = None
@@ -247,12 +248,18 @@ class Settings:
         return hashlib.sha1(payload.encode()).hexdigest()[:6]
 
     @property
-    def seasonal_leadtime_windows(self) -> dict:
+    def seasonal_leadtime_windows(self) -> dict[str, list[int | float]]:
+        n = self.seasonal_window_size
+
         return {
-            "0-1-2": [1, 2, 3],
-            "1-2-3": [2, 3, 4],
-            "2-3-4": [3, 4, 5],
-            "3-4-5": [4, 5, 6],
+            "-".join(
+                str(lead + self.lead_period_offset)
+                for lead in window
+            ): list(window)
+            for window in (
+                self.leadtimes[i:i + n]
+                for i in range(len(self.leadtimes) - n + 1)
+            )
         }
 
     # ---------------------------
@@ -540,6 +547,17 @@ def __post_init__(self) -> None:
 
     if len(set(self.leadtimes)) != len(self.leadtimes):
         raise ValueError("leadtimes cannot contain duplicate values.")
+
+    if not isinstance(self.seasonal_window_size, int):
+        raise TypeError("seasonal_window_size must be an integer.")
+
+    if self.seasonal_window_size < 1:
+        raise ValueError("seasonal_window_size must be at least 1.")
+
+    if self.seasonal_window_size > len(self.leadtimes):
+        raise ValueError(
+            "seasonal_window_size cannot exceed the number of leadtimes."
+        )
 
     if self.region is not None:
         if not isinstance(self.region, dict):
