@@ -337,6 +337,7 @@ class SmaAt_UNet(EarthMLLightningModule):
         reduction_ratio: int = 16,
         base_channels: int = 64,
         depth: int = 5, # total encoder levels, including input block
+        zero_init_output: bool = False,
     ) -> None:
         if depth < 2:
             raise ValueError(f"depth must be at least 2, got {depth}")
@@ -439,6 +440,13 @@ class SmaAt_UNet(EarthMLLightningModule):
             channels[0],
             out_channels,
         )
+
+        if zero_init_output:
+            # Weight and bias init to zero
+            nn.init.zeros_(self.outc.conv.weight)
+
+            if self.outc.conv.bias is not None:
+                nn.init.zeros_(self.outc.conv.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.debug_numerics:
