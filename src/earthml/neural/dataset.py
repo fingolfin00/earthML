@@ -7,6 +7,8 @@ import xarray as xr
 import torch
 from torch.utils.data import Dataset
 
+from ..base import ClimPeriod
+
 from ..logging import get_logger
 
 
@@ -23,7 +25,8 @@ class XarrayDataset(Dataset):
         transform_y: Callable | None = None,
         transform_x_args: dict | None = None,
         transform_y_args: dict | None = None,
-        realization_as_channel: bool = False,
+        channel_representation: Literal["variable", "realization", "init_period"] = "variable",
+        init_period_dim: ClimPeriod = ClimPeriod.MONTH,
         output_realizations: Literal["deterministic", "ensemble"] = "deterministic", # deterministic -> output R = 1, ensemble -> output R = input R
         fill_nan_value: float = 0.0,
         pass_mask_as_input_extra_channel: bool = False,
@@ -32,21 +35,27 @@ class XarrayDataset(Dataset):
         """
         input_ds: xarray.Dataset
         target_ds: xarray.Dataset
-        target_realization_avg: if True average target across realization dimensions, only used in realization_as_channel==False branch
+        target_realization_avg: if True average target across realization dimensions, only used in channel_representation!="realization" branch
         transform_x: callable with signature (x, **kwargs) -> x (for input)
         transform_y: callable with signature (y, **kwargs) -> y (for target)
         transform_x_args: dict of keyword args to pass to transform_x
         transform_y_args: dict of keyword args to pass to transform_y
-        realization_as_channel: if True, treat the realization dimension R as channels (C), so output shape is (C=R,T,H,W).
-                                If False, treat realization as independent samples and merge R with T and output shape is (C,T*R,H,W).
+        channel_representation: if "realization", treat the realization dimension R as channels (C), so output shape is (C=R,T,H,W).
+                                If "variable", treat realization as independent samples and merge R with T and output shape is (C,T*R,H,W).
+                                If "init_period", use "init_period_dim" to create M independent period channels, merge R with T and output
+                                shape is (C=M,T*R,H,W).
         output_realizations: if "deterministic", the target will be averaged across R (if it has R) to produce a deterministic target (C,T,H,W).
                              If "ensemble", the target will be repeated across R_in (the number of input realizations) and merged into channels.
-                             Only relevant if realization_as_channel is True. If False, target R dimension is merged with T and this setting is ignored.
+                             Only relevant if channel_representation is "realization". For other cases, target R dimension is merged with T and
+                             this setting is ignored.
+        init_period_dim: only relevant if channel_representation is "init_period"
         fill_nan_value: value used to fill NaNs
+        pass_mask_as_input_extra_channel: pass mask as input channel
+        torch_mask: final mask to apply
         """
         self.fill_nan_value = fill_nan_value
 
-        self.target_ds = target_ds # .load(scheduler="synchronous")
+        self.target_ds = target_ds
         self.input_ds = input_ds
         assert isinstance(self.input_ds, xr.Dataset) and isinstance(self.target_ds, xr.Dataset), \
             f"Expected xr.Dataset, got input={type(self.input_ds)}, target={type(self.target_ds)}"
@@ -56,7 +65,7 @@ class XarrayDataset(Dataset):
         self.transform_y_args = transform_y_args or {}
 
         self.torch_mask = torch_mask
-        self.realization_as_channel = realization_as_channel
+        self.channel_representation = channel_representation
         self.target_realization_avg = target_realization_avg
         self.output_realizations = output_realizations
         self.pass_mask_as_input_extra_channel = pass_mask_as_input_extra_channel
@@ -87,7 +96,7 @@ class XarrayDataset(Dataset):
         # print("target vars:", list(target_ds.data_vars))
         # print(f"Input shape: {self.x_np.shape}, target shape: {self.y_np.shape}")
 
-        if realization_as_channel:
+        if channel_representation == "realization":
             logger.info("Realization as channel branch")
             # X: merge R into C
             if self.x_np_filled.ndim == 5:  # (C,T,R,H,W)
@@ -152,7 +161,7 @@ class XarrayDataset(Dataset):
             assert self.x.shape[0]  == self.y.shape[0], (f"Mismatched dataset shape: x={self.x.shape}, y={self.y.shape}")  # same T
             assert self.x.shape[2:] == self.y.shape[2:], (f"Mismatched dataset shape: x={self.x.shape}, y={self.y.shape}") # same H,W
 
-        else:
+        elif channel_representation in ("variable", "init_period"):
             if target_realization_avg and len(self.y_np.shape) == 5: # C,T,R,H,W
                 self.y_np_filled = np.nanmean(self.y_np, axis=2)                                # average over R
                 self.mask_y_np = np.any(self.mask_y_np, axis=2)                                 # valid if any realization is valid
@@ -215,21 +224,46 @@ class XarrayDataset(Dataset):
                     self.y = torch.from_numpy(self.y_np_filled).float().permute(1, 0, 2, 3)
                     self.y_mask = torch.from_numpy(self.mask_y_np).bool().permute(1, 0, 2, 3)
 
-            # print("self.x shape:", self.x.shape)
-            # print("self.x_mask shape:", self.x_mask.shape)
-            # print("self.y shape:", self.y.shape)
-            # print("self.y_mask shape:", self.y_mask.shape)
-
             # Expose samples per init time
             self.n_init_times = int(self.input_ds.sizes["time"])
+            n_samples_x, n_channels_x, height_x, width_x = self.x.shape
 
-            if len(self.x) % self.n_init_times != 0:
+            if n_samples_x % self.n_init_times != 0:
                 raise ValueError(
-                    f"Dataset length {len(self.x)} is not divisible by "
+                    f"Dataset length {n_samples_x} is not divisible by "
                     f"number of initialization times {self.n_init_times}"
                 )
 
-            self.samples_per_init = len(self.x) // self.n_init_times
+            self.samples_per_init = n_samples_x // self.n_init_times
+
+            if channel_representation == "init_period":
+                times = pd.DatetimeIndex(self.input_ds.time.values)
+                if init_period_dim == ClimPeriod.MONTH:
+                    # January -> 0, ..., December -> 11
+                    base_indices = torch.as_tensor(
+                        times.month.to_numpy() - 1,
+                        dtype=torch.long,
+                    )
+                    n_periods = 12
+                    period_indices = base_indices.repeat_interleave(self.samples_per_init)
+                    if len(period_indices) != n_samples_x:
+                        raise RuntimeError(
+                            f"Initialization-period construction produced "
+                            f"{len(period_indices)} indices for {n_samples_x} samples"
+                        )
+                else:
+                    raise NotImplementedError(f"Currently only init_period_dim={ClimPeriod.MONTH} is supported")
+
+                # Expand only input
+                expanded_values_x = self.x.new_zeros(n_samples_x, n_periods, n_channels_x, height_x, width_x)
+                sample_indices_x = torch.arange(n_samples_x)
+                expanded_values_x[sample_indices_x, period_indices] = self.x
+
+                expanded_mask_x = torch.zeros((n_samples_x, n_periods, n_channels_x, height_x, width_x), dtype=torch.bool)
+                expanded_mask_x[sample_indices_x, period_indices] = self.x_mask
+
+                self.x = expanded_values_x.flatten(1, 2)
+                self.x_mask = expanded_mask_x.flatten(1, 2)
 
             # Final checks
             assert self.x.numel() > 0, f"Empty torch dataset x: {self.x.shape}"
@@ -336,7 +370,11 @@ class XarrayDataset(Dataset):
         elif self.torch_mask == "input":
             mask = mx
         elif self.torch_mask == "both":
-            mask = mx & my
+            if self.channel_representation == "init_period":
+                input_valid = mx.any(dim=0, keepdim=True)
+                mask = input_valid & my
+            else:
+                mask = mx & my
         else:
             raise ValueError(f"Unsupported torch_mask={self.torch_mask}")
 
@@ -352,7 +390,7 @@ class XarrayDataset(Dataset):
         y = y.masked_fill(~my, 0.0)
 
         if self.pass_mask_as_input_extra_channel:
-            if self.realization_as_channel:
+            if self.channel_representation == "realization":
                 # Add one single mask channel (C -> C+1)
                 mask_channel = mx.any(dim=0, keepdim=True).to(dtype=x.dtype)
             else:

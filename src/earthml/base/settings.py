@@ -78,8 +78,9 @@ class Settings:
 
     seed: int = 42
 
-    realization_as_channel: bool = False
-    output_realizations: Literal["deterministic", "ensemble"] = "deterministic" # used only if realization_as_channel is True
+    channel_representation: Literal["variable", "realization", "init_period"] = "variable"
+    init_period_dim: ClimPeriod = ClimPeriod.MONTH
+    output_realizations: Literal["deterministic", "ensemble"] = "deterministic" # used only if channel_representation=="realization"
     split_strategy: SplitStrategy = "time"
     normalization: Literal["full", "monthly"] = "full"
     normalization_mode: NormalizationMode = "channel"
@@ -214,12 +215,13 @@ class Settings:
             parts.append("seasonal_encoding")
 
         parts += [
+            f"{self.channel_representation}_as_c",
             f"lead{self.lead_period_offset:+d}",
             f"{self.normalization}_{self.normalization_mode}_norm",
             self.net_name.lower(),
             self.loss_name.lower(),
             f"depth{self.depth}",
-            f"c{self.base_channels}",
+            f"bc{self.base_channels}",
             f"bs{self.batch_size}",
             f"lr{self.init_learning_rate:.0e}",
             self.training_norm.lower(),
@@ -600,11 +602,11 @@ def __post_init__(self) -> None:
 
     if (
         self.output_realizations == "ensemble"
-        and not self.realization_as_channel
+        and self.channel_representation=="realization"
     ):
         raise ValueError(
             "output_realizations='ensemble' requires "
-            "realization_as_channel=True."
+            "channel_representation='realization."
         )
 
     # ---------------------------
