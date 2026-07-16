@@ -407,3 +407,194 @@ class GaussianNLLFromLogits(nn.Module):
         valid_count = valid_count.clamp_min(self.eps)
         loss = nll_elem.sum() / valid_count
         return loss
+
+
+class GeoMaskedMSELowFreqLoss(nn.Module):
+    """
+    Latitude-weighted masked pixel MSE plus a low-frequency bias penalty.
+
+    The low-frequency component:
+    1. Computes prediction error.
+    2. Applies mask-aware spatial average pooling.
+    3. Penalizes the pooled signed error.
+
+    This discourages broad coherent regional biases without requiring
+    predefined geographical regions.
+    """
+
+    def __init__(
+        self,
+        latitudes: torch.Tensor,
+        lambda_low_freq: float = 0.1,
+        pool_kernel_size: int = 9,
+        pool_stride: int | None = None,
+        eps: float = 1e-8,
+    ) -> None:
+        super().__init__()
+
+        if pool_kernel_size < 1:
+            raise ValueError("pool_kernel_size must be positive")
+
+        if pool_stride is None:
+            pool_stride = pool_kernel_size
+
+        if pool_stride < 1:
+            raise ValueError("pool_stride must be positive")
+
+        self.lambda_low_freq = float(lambda_low_freq)
+        self.pool_kernel_size = int(pool_kernel_size)
+        self.pool_stride = int(pool_stride)
+        self.eps = float(eps)
+
+        latitudes = torch.as_tensor(
+            latitudes,
+            dtype=torch.float32,
+        )
+
+        self.register_buffer(
+            "latitude_weights",
+            torch.cos(torch.deg2rad(latitudes)),
+        )
+
+        self.pixel_loss = GeoMaskedMSELoss(
+            latitudes=latitudes,
+            eps=eps,
+        )
+
+        self.loss_components: dict[str, torch.Tensor] | None = None
+
+    def _masked_pool(
+        self,
+        x: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Mask-aware spatial average pooling.
+
+        Returns:
+            pooled_x:
+                Mean of valid values within each pooling window.
+            pooled_valid_fraction:
+                Fraction of valid cells within each pooling window.
+        """
+        mask_f = mask.to(dtype=x.dtype)
+
+        pooled_sum = F.avg_pool2d(
+            x * mask_f,
+            kernel_size=self.pool_kernel_size,
+            stride=self.pool_stride,
+            ceil_mode=True,
+            count_include_pad=False,
+        )
+
+        pooled_valid_fraction = F.avg_pool2d(
+            mask_f,
+            kernel_size=self.pool_kernel_size,
+            stride=self.pool_stride,
+            ceil_mode=True,
+            count_include_pad=False,
+        )
+
+        pooled_x = pooled_sum / pooled_valid_fraction.clamp_min(self.eps)
+
+        return pooled_x, pooled_valid_fraction
+
+    def forward(
+        self,
+        y_pred: torch.Tensor,
+        y_true: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if y_pred.shape != y_true.shape:
+            raise ValueError(
+                "y_pred and y_true must have the same shape"
+            )
+
+        if y_pred.ndim != 4:
+            raise ValueError(
+                "Expected tensors with shape (N, C, H, W)"
+            )
+
+        mask_b = _expand_mask_to(
+            y_true,
+            mask,
+        ).to(
+            device=y_true.device,
+            dtype=torch.bool,
+        )
+
+        pixel_loss = self.pixel_loss(
+            y_pred,
+            y_true,
+            mask=mask_b,
+        )
+
+        # Signed error is important: broad positive and negative biases
+        # should remain visible before squaring.
+        error = y_pred - y_true
+
+        pooled_error, pooled_valid_fraction = self._masked_pool(
+            error,
+            mask_b,
+        )
+
+        # Pool latitude weights using the same spatial geometry.
+        _, _, height, width = y_true.shape
+
+        lat_weights = self.latitude_weights.to(
+            device=y_true.device,
+            dtype=y_true.dtype,
+        )
+
+        if lat_weights.numel() != height:
+            raise ValueError(
+                f"Latitude count {lat_weights.numel()} "
+                f"does not match tensor height {height}"
+            )
+
+        geo_weights = lat_weights.view(
+            1,
+            1,
+            height,
+            1,
+        ).expand(
+            1,
+            1,
+            height,
+            width,
+        )
+
+        pooled_geo_weights = F.avg_pool2d(
+            geo_weights,
+            kernel_size=self.pool_kernel_size,
+            stride=self.pool_stride,
+            ceil_mode=True,
+            count_include_pad=False,
+        )
+
+        # A pooled cell is usable if it contains at least one valid cell.
+        pooled_mask = pooled_valid_fraction > 0
+
+        weights = (
+            pooled_geo_weights
+            * pooled_valid_fraction
+            * pooled_mask.to(dtype=y_true.dtype)
+        )
+
+        numerator = (pooled_error.square() * weights).sum()
+        denominator = weights.sum().clamp_min(self.eps)
+
+        low_freq_loss = numerator / denominator
+
+        total_loss = (
+            pixel_loss
+            + self.lambda_low_freq * low_freq_loss
+        )
+
+        self.loss_components = {
+            "pixel_loss": pixel_loss.detach(),
+            "low_freq_loss": low_freq_loss.detach(),
+        }
+
+        return total_loss
+    

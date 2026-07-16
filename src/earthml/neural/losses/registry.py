@@ -7,6 +7,7 @@ _LOSSES: dict[str, str] = {
     "MaskedMSELoss"             : "earthml.neural.losses.mse:MaskedMSELoss",
     "GeoMSELoss"                : "earthml.neural.losses.mse:GeoMSELoss",
     "GeoMaskedMSELoss"          : "earthml.neural.losses.mse:GeoMaskedMSELoss",
+    "GeoMaskedMSELowFreqLoss"   : "earthml.neural.losses.mse:GeoMaskedMSELowFreqLoss",
     "VarNormMaskMSELoss"        : "earthml.neural.losses.mse:VarNormMaskMSELoss",
     "HeteroBiasCorrectionLoss"  : "earthml.neural.losses.mse:HeteroBiasCorrectionLoss",
     "EmpiricalCRPSLoss"         : "earthml.neural.losses.crps:EmpiricalCRPSLoss",

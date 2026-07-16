@@ -347,6 +347,7 @@ class EarthMLLightningModule(L.LightningModule):
         if self.loss_name in {
             "MaskedMSELoss",
             "GeoMaskedMSELoss",
+            "GeoMaskedMSELowFreqLoss",
             "GaussianNLLFromLogits",
             "EmpiricalCRPSLoss",
         }:

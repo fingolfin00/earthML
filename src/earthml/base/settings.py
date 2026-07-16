@@ -88,6 +88,7 @@ class Settings:
 
     net_name: str = "SmaAt_UNet"
     loss_name: str = "MSELoss"
+    target_scale_degrees: int | float = 15.0 # only for GeoMaskedMSELowFreqLoss
 
     init_learning_rate: float = 3e-4
     weight_decay: float = 1e-4
