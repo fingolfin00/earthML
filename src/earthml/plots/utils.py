@@ -32,6 +32,7 @@ PlotMode = Literal["scalar_diff_scatter"]
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 from cartopy.mpl.geoaxes import GeoAxes
+from cartopy.mpl.gridliner import LONGITUDE_FORMATTER, LATITUDE_FORMATTER
 
 from .defaults import (
     DEFAULT_IMPROVEMENT_PLOT_CONFIG,
@@ -671,6 +672,22 @@ def plot_map(
 
         ax.coastlines(linewidth=0.7)
         ax.add_feature(cfeature.BORDERS, linewidth=0.3)
+
+        gl = ax.gridlines(
+            crs=ccrs.PlateCarree(),
+            draw_labels=True,
+            linewidth=0.5,
+            color="gray",
+            alpha=0.4,
+            linestyle="--",
+        )
+
+        gl.top_labels = False
+        gl.right_labels = False
+        gl.xformatter = LONGITUDE_FORMATTER
+        gl.yformatter = LATITUDE_FORMATTER
+        gl.xlabel_style = {"size": 8}
+        gl.ylabel_style = {"size": 8}
 
     else:
         fig, ax = plt.subplots(figsize=(9, 5.5))
