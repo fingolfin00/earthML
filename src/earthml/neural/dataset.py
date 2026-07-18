@@ -361,7 +361,7 @@ class XarrayDataset(Dataset):
     def __len__(self) -> int:
         return len(self.x)
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         x, y = self.x[idx], self.y[idx]              # shapes: (C,H,W)
         mx, my = self.x_mask[idx], self.y_mask[idx]
 
@@ -398,4 +398,4 @@ class XarrayDataset(Dataset):
                 mask_channel = mx.to(dtype=x.dtype)
             x = torch.cat([x, mask_channel], dim=0)
 
-        return x, y, mask
+        return x, y, mask, self.months[idx]

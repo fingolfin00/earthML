@@ -428,6 +428,7 @@ class GeoMaskedMSELowFreqLoss(nn.Module):
         lambda_low_freq: float = 0.1,
         pool_kernel_size: int = 9,
         pool_stride: int | None = None,
+        lambda_batch_mean: float = 0.1,
         eps: float = 1e-8,
     ) -> None:
         super().__init__()
@@ -442,6 +443,7 @@ class GeoMaskedMSELowFreqLoss(nn.Module):
             raise ValueError("pool_stride must be positive")
 
         self.lambda_low_freq = float(lambda_low_freq)
+        self.lambda_batch_mean = float(lambda_batch_mean)
         self.pool_kernel_size = int(pool_kernel_size)
         self.pool_stride = int(pool_stride)
         self.eps = float(eps)
@@ -462,6 +464,84 @@ class GeoMaskedMSELowFreqLoss(nn.Module):
         )
 
         self.loss_components: dict[str, torch.Tensor] | None = None
+
+    def batch_mean_low_freq_bias_loss(
+        self,
+        y_pred: torch.Tensor,
+        y_true: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Penalize broad spatial patterns in the mean signed batch error.
+        """
+        mask_f = mask.to(
+            device=y_pred.device,
+            dtype=y_pred.dtype,
+        )
+
+        error = y_pred - y_true
+
+        valid_count = mask_f.sum(dim=0, keepdim=True)  # (1, C, H, W)
+
+        mean_error = (
+            error * mask_f
+        ).sum(
+            dim=0,
+            keepdim=True,
+        ) / valid_count.clamp_min(1.0)
+
+        batch_valid = valid_count > 0
+
+        pooled_error, pooled_valid_fraction = self._masked_pool(
+            mean_error,
+            batch_valid,
+        )
+
+        _, _, height, width = mean_error.shape
+
+        lat_weights = self.latitude_weights.to(
+            device=y_pred.device,
+            dtype=y_pred.dtype,
+        )
+
+        if lat_weights.numel() != height:
+            raise ValueError(
+                f"Expected {height} latitude weights, "
+                f"got {lat_weights.numel()}"
+            )
+
+        geo_weights = lat_weights.view(
+            1,
+            1,
+            height,
+            1,
+        ).expand(
+            1,
+            1,
+            height,
+            width,
+        )
+
+        pooled_geo_weights = F.avg_pool2d(
+            geo_weights,
+            kernel_size=self.pool_kernel_size,
+            stride=self.pool_stride,
+            ceil_mode=True,
+            count_include_pad=False,
+        )
+
+        weights = (
+            pooled_geo_weights
+            * pooled_valid_fraction
+        )
+
+        numerator = (
+            pooled_error.square() * weights
+        ).sum()
+
+        denominator = weights.sum().clamp_min(self.eps)
+
+        return numerator / denominator
 
     def _masked_pool(
         self,
@@ -504,6 +584,7 @@ class GeoMaskedMSELowFreqLoss(nn.Module):
         y_pred: torch.Tensor,
         y_true: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
+        months: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if y_pred.shape != y_true.shape:
             raise ValueError(
@@ -586,14 +667,55 @@ class GeoMaskedMSELowFreqLoss(nn.Module):
 
         low_freq_loss = numerator / denominator
 
+        # Monthly mean batched bias loss component
+        if months is None:
+            raise ValueError(
+                "months must be provided for month-grouped batch bias loss"
+            )
+
+        months = months.to(
+            device=y_pred.device,
+            dtype=torch.long,
+        )
+
+        month_losses: list[torch.Tensor] = []
+
+        for month in months.unique():
+            selected = months == month
+
+            if selected.sum().item() < 2:
+                continue
+
+            month_losses.append(
+                self.batch_mean_low_freq_bias_loss(
+                    y_pred=y_pred[selected],
+                    y_true=y_true[selected],
+                    mask=mask_b[selected],
+                )
+            )
+
+        if month_losses:
+            batch_mean_loss = torch.stack(month_losses).mean()
+        else:
+            # Differentiable zero attached to the prediction graph.
+            batch_mean_loss = y_pred.sum() * 0.0
+
         total_loss = (
             pixel_loss
             + self.lambda_low_freq * low_freq_loss
+            + self.lambda_batch_mean * batch_mean_loss
         )
 
         self.loss_components = {
             "pixel_loss": pixel_loss.detach(),
             "low_freq_loss": low_freq_loss.detach(),
+            "batch_mean_loss": batch_mean_loss.detach(),
+            "weighted_low_freq_loss": (
+                self.lambda_low_freq * low_freq_loss
+            ).detach(),
+            "weighted_batch_mean_loss": (
+                self.lambda_batch_mean * batch_mean_loss
+            ).detach(),
         }
 
         return total_loss

@@ -74,9 +74,9 @@ class EarthMLLightningModule(L.LightningModule):
         stage: Stage,
     ) -> torch.Tensor:
         if self.supervised:
-            x, y, mask = batch
+            x, y, mask, months = batch
         else:
-            x, _, mask = batch
+            x, _, mask, months = batch
             y = x
 
         pred = self(x).contiguous()
@@ -88,6 +88,7 @@ class EarthMLLightningModule(L.LightningModule):
             target=y,
             mask=mask,
             model_input=x,
+            months=months,
         )
 
         # Probabilistic losses may return distribution parameters. Metrics use
@@ -337,6 +338,7 @@ class EarthMLLightningModule(L.LightningModule):
         mask: torch.Tensor | None = None,
         model_input: torch.Tensor | None = None,
         var_field: torch.Tensor | None = None,
+        months: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if self.loss_name in {
             "MSELoss",
@@ -347,7 +349,6 @@ class EarthMLLightningModule(L.LightningModule):
         if self.loss_name in {
             "MaskedMSELoss",
             "GeoMaskedMSELoss",
-            "GeoMaskedMSELowFreqLoss",
             "GaussianNLLFromLogits",
             "EmpiricalCRPSLoss",
         }:
@@ -355,6 +356,14 @@ class EarthMLLightningModule(L.LightningModule):
                 prediction,
                 target,
                 mask=mask,
+            )
+
+        if self.loss_name == "GeoMaskedMSELowFreqLoss":
+            return self.loss(
+                prediction,
+                target,
+                mask=mask,
+                months=months,
             )
 
         if self.loss_name == "VarNormMaskMSELoss":
