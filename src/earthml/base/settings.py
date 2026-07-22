@@ -66,6 +66,10 @@ class Settings:
 
     separate_training_by_init_period: ClimPeriod | None = None
 
+    regional_training: bool = False
+    regional_training_lat_size: int | float = 30
+    regional_training_lon_size: int | float = 30
+
     region_name: str = "World"
     region: dict[str, tuple[int | float, int | float]] | None = None
 
@@ -237,6 +241,9 @@ class Settings:
 
         if self.separate_training_by_init_period is not None:
             parts.append(f"by_init_{self.separate_training_by_init_period}")
+
+        if self.regional_training:
+            parts.append(f"regional_boxes_lon_{self.regional_training_lon_size}_lat_{self.regional_training_lat_size}")
 
         parts += [
             f"{self.channel_representation}_as_c",
