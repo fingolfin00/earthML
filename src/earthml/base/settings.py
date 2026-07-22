@@ -64,6 +64,8 @@ class Settings:
     leadtime_unit: LeadtimeUnit = LeadtimeUnit.MONTHS
     seasonal_window_size: int = 3
 
+    separate_training_by_init_period: ClimPeriod | None = None
+
     region_name: str = "World"
     region: dict[str, tuple[int | float, int | float]] | None = None
 
@@ -83,6 +85,7 @@ class Settings:
     init_period_dim: ClimPeriod = ClimPeriod.MONTH
     output_realizations: Literal["deterministic", "ensemble"] = "deterministic" # used only if channel_representation=="realization"
     split_strategy: SplitStrategy = "time"
+    shuffle_train_batch: bool = True
     normalization: Literal["full", "monthly"] = "full"
     normalization_mode: NormalizationMode = "channel"
 
@@ -102,7 +105,7 @@ class Settings:
     fill_nan_value: float = 0.0
     torch_mask: Literal["target", "input", "both"] = "target"
 
-    training_norm: str = "GroupNorm"
+    training_norm: Literal["BatchNorm2d", "GroupNorm", "InstanceNorm2d", "LayerNorm"] = "GroupNorm"
 
     depth: int = 5 # total encoder levels, including input block
     reduction_ratio: int = 16
@@ -209,6 +212,18 @@ class Settings:
             self.var_fc,
             self.var_an,
             self.region_name,
+            (
+                f"train{pd.Timestamp(self.train_start):%Y%m}-"
+                f"{pd.Timestamp(self.train_end):%Y%m}"
+            ),
+            (
+                f"val{pd.Timestamp(self.val_start):%Y%m}-"
+                f"{pd.Timestamp(self.val_end):%Y%m}"
+            ),
+            (
+                f"test{pd.Timestamp(self.test_start):%Y%m}-"
+                f"{pd.Timestamp(self.test_end):%Y%m}"
+            ),
             str(self.target_mode),
         ]
 
@@ -219,6 +234,9 @@ class Settings:
             parts.append("seasonal_encoding")
         if self.ensemble_encoding == True:
             parts.append("ens_encoding")
+
+        if self.separate_training_by_init_period is not None:
+            parts.append(f"by_init_{self.separate_training_by_init_period}")
 
         parts += [
             f"{self.channel_representation}_as_c",
