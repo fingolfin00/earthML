@@ -53,6 +53,7 @@ class EarthMLLightningModule(L.LightningModule):
         self.test_step_outputs: list[dict[str, torch.Tensor]] = []
         self.test_preds: torch.Tensor | None = None
         self.test_targets: torch.Tensor | None = None
+        self.test_months: torch.Tensor | None = None
 
     def _log_loss_components(self, stage: Stage) -> None:
         components = getattr(self.loss, "loss_components", None)
@@ -191,7 +192,12 @@ class EarthMLLightningModule(L.LightningModule):
             )
 
             self.test_step_outputs.append(
-                {"preds": mu.detach().float().cpu()}
+                {
+                    "preds": mu.detach().float().cpu(),
+                    "targets": y.detach().float().cpu(),
+                    "mask": mask.detach().cpu(),
+                    "months": months.detach().cpu(),
+                }
             )
 
         self._log_loss_components(stage)
@@ -281,7 +287,8 @@ class EarthMLLightningModule(L.LightningModule):
     def on_test_epoch_start(self) -> None:
         self.test_step_outputs.clear()
         self.test_preds = None
-
+        self.test_targets = None
+        self.test_months = None
 
     def on_test_epoch_end(self) -> None:
         final_test_mae = self.test_mae.compute()
@@ -300,6 +307,16 @@ class EarthMLLightningModule(L.LightningModule):
 
         self.test_preds = torch.cat(
             [output["preds"] for output in self.test_step_outputs],
+            dim=0,
+        )
+
+        self.test_targets = torch.cat(
+            [output["targets"] for output in self.test_step_outputs],
+            dim=0,
+        )
+
+        self.test_months = torch.cat(
+            [output["months"] for output in self.test_step_outputs],
             dim=0,
         )
 
