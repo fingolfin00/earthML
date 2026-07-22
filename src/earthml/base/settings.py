@@ -217,42 +217,49 @@ class Settings:
             self.var_an,
             self.region_name,
             (
-                f"train{pd.Timestamp(self.train_start):%Y%m}-"
+                f"tr{pd.Timestamp(self.train_start):%Y%m}-"
                 f"{pd.Timestamp(self.train_end):%Y%m}"
             ),
             (
-                f"val{pd.Timestamp(self.val_start):%Y%m}-"
+                f"va{pd.Timestamp(self.val_start):%Y%m}-"
                 f"{pd.Timestamp(self.val_end):%Y%m}"
             ),
             (
-                f"test{pd.Timestamp(self.test_start):%Y%m}-"
+                f"te{pd.Timestamp(self.test_start):%Y%m}-"
                 f"{pd.Timestamp(self.test_end):%Y%m}"
             ),
             str(self.target_mode),
         ]
 
-        if self.target_mode in ("anomaly", "anomaly_residual", "anomaly_residual_realization"):
-            parts.append(f"climperiod_{self.clim_period}")
+        if self.target_mode in (
+            "anomaly",
+            "anomaly_residual",
+            "anomaly_residual_realization",
+        ):
+            parts.append(f"clim-{self.clim_period}")
 
-        if self.seasonal_encoding == True and self.channel_representation!="init_period":
-            parts.append("seasonal_encoding")
-        if self.ensemble_encoding == True:
-            parts.append("ens_encoding")
+        if self.seasonal_encoding and self.channel_representation != "init_period":
+            parts.append("se")
+
+        if self.ensemble_encoding:
+            parts.append("ee")
 
         if self.separate_training_by_init_period is not None:
-            parts.append(f"by_init_{self.separate_training_by_init_period}")
+            parts.append(f"init-{self.separate_training_by_init_period}")
 
         if self.regional_training:
-            parts.append(f"regional_boxes_lon_{self.regional_training_lon_size}_lat_{self.regional_training_lat_size}")
+            parts.append(
+                f"rbox-{self.regional_training_lon_size:g}x{self.regional_training_lat_size:g}"
+            )
 
         parts += [
-            f"{self.channel_representation}_as_c",
-            f"lead{self.lead_period_offset:+d}",
-            f"{self.normalization}_{self.normalization_mode}_norm",
+            f"c-{self.channel_representation}",
+            f"l{self.lead_period_offset:+d}",
+            f"{self.normalization}-{self.normalization_mode}",
             self.net_name.lower(),
-            self.loss_name.lower(),
-            f"depth{self.depth}",
-            f"bc{self.base_channels}",
+            self.loss_name.lower().replace("loss", ""),
+            f"d{self.depth}",
+            f"c{self.base_channels}",
             f"bs{self.batch_size}",
             f"lr{self.init_learning_rate:.0e}",
             self.training_norm.lower(),
