@@ -54,6 +54,7 @@ class EarthMLLightningModule(L.LightningModule):
         self.test_preds: torch.Tensor | None = None
         self.test_targets: torch.Tensor | None = None
         self.test_months: torch.Tensor | None = None
+        self.test_masks: torch.Tensor | None = None
 
     def _log_loss_components(self, stage: Stage) -> None:
         components = getattr(self.loss, "loss_components", None)
@@ -288,6 +289,7 @@ class EarthMLLightningModule(L.LightningModule):
         self.test_step_outputs.clear()
         self.test_preds = None
         self.test_targets = None
+        self.test_masks = None
         self.test_months = None
 
     def on_test_epoch_end(self) -> None:
@@ -317,6 +319,11 @@ class EarthMLLightningModule(L.LightningModule):
 
         self.test_months = torch.cat(
             [output["months"] for output in self.test_step_outputs],
+            dim=0,
+        )
+
+        self.test_masks = torch.cat(
+            [output["mask"] for output in self.test_step_outputs],
             dim=0,
         )
 
