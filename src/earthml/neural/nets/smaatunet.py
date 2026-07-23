@@ -2,7 +2,7 @@
 Description: UNet architecture with CBAM. This script is derived from  SmaAT-UNet:
     https://github.com/HansBambel/SmaAt-UNet/tree/master/models
 '''
-from typing import Any
+from typing import Any, Literal
 
 import torch
 from torch import nn
@@ -12,7 +12,7 @@ import lightning as L
 from ...logging import get_logger
 from .. import EarthMLLightningModule
 from .. import resolve_loss
-from .utils import make_norm
+from .utils import make_norm, GeoPadConv2d
 
 logger = get_logger(__name__)
 
@@ -66,14 +66,17 @@ class SpatialAttention(nn.Module):
         self,
         kernel_size: int = 7,
         norm: str | None = "BatchNorm2d",
+        longitude_padding: Literal["circular", "replicate", "zero"] = "zero",
     ) -> None:
         super().__init__()
         assert kernel_size in (3, 7), "kernel size must be 3 or 7"
-        self.conv = SphericalPadConv2d(
+
+        self.conv = GeoPadConv2d(
             2,
             1,
             kernel_size=kernel_size,
             bias=False,
+            longitude_padding=longitude_padding,
         )
         self.norm = make_norm(norm, 1)
 
@@ -93,62 +96,23 @@ class CBAM(nn.Module):
         reduction_ratio: int = 16,
         kernel_size: int = 7,
         norm: str | None = "BatchNorm2d",
+        longitude_padding: Literal["circular", "replicate", "zero"] = "zero",
     ) -> None:
         super().__init__()
-        self.channel_att = ChannelAttention(input_channels, reduction_ratio=reduction_ratio)
-        self.spatial_att = SpatialAttention(kernel_size=kernel_size, norm=norm)
+        self.channel_att = ChannelAttention(
+            input_channels,
+            reduction_ratio=reduction_ratio,
+        )
+        self.spatial_att = SpatialAttention(
+            kernel_size=kernel_size,
+            norm=norm,
+            longitude_padding=longitude_padding,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = self.channel_att(x)
         out = self.spatial_att(out)
         return out
-
-
-class SphericalPadConv2d(nn.Module):
-    """
-    Conv2d with:
-    - circular padding in longitude
-    - replicate padding in latitude
-
-    Input shape: (N, C, latitude, longitude)
-    """
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int,
-        *,
-        groups: int = 1,
-        bias: bool = True,
-    ) -> None:
-        super().__init__()
-
-        if kernel_size % 2 == 0:
-            raise ValueError("kernel_size must be odd")
-
-        self.pad = kernel_size // 2
-
-        self.conv = nn.Conv2d(
-            in_channels,
-            out_channels,
-            kernel_size=kernel_size,
-            padding=0,
-            groups=groups,
-            bias=bias,
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        p = self.pad
-
-        if p > 0:
-            # Longitude: periodic.
-            x = F.pad(x, (p, p, 0, 0), mode="circular")
-
-            # Latitude: not periodic.
-            x = F.pad(x, (0, 0, p, p), mode="replicate")
-
-        return self.conv(x)
 
 
 class DepthwiseSeparableConv(nn.Module):
@@ -158,17 +122,19 @@ class DepthwiseSeparableConv(nn.Module):
         output_channels: int,
         kernel_size: int,
         kernels_per_layer: int = 1,
+        longitude_padding: Literal["circular", "replicate", "zero"] = "zero",
     ) -> None:
         super().__init__()
 
         depthwise_channels = in_channels * kernels_per_layer
 
-        self.depthwise = SphericalPadConv2d(
+        self.depthwise = GeoPadConv2d(
             in_channels,
             depthwise_channels,
             kernel_size=kernel_size,
             groups=in_channels,
             bias=True,
+            longitude_padding=longitude_padding,
         )
 
         self.pointwise = nn.Conv2d(
@@ -190,6 +156,7 @@ class DoubleConvDS(L.LightningModule):
         mid_channels: int | None = None,
         kernels_per_layer: int = 1,
         norm: str | None = "BatchNorm2d",
+        longitude_padding: Literal["circular", "replicate", "zero"] = "zero",
     ) -> None:
         super().__init__()
         if not mid_channels:
@@ -205,6 +172,7 @@ class DoubleConvDS(L.LightningModule):
                 mid_channels,
                 kernel_size=3,
                 kernels_per_layer=kernels_per_layer,
+                longitude_padding=longitude_padding,
             ),
             make_norm(norm, mid_channels),
             nn.LeakyReLU(inplace=True),
@@ -213,6 +181,7 @@ class DoubleConvDS(L.LightningModule):
                 out_channels,
                 kernel_size=3,
                 kernels_per_layer=kernels_per_layer,
+                longitude_padding=longitude_padding,
             ),
             make_norm(norm, out_channels),
             nn.LeakyReLU(inplace=True),
@@ -229,6 +198,7 @@ class DownDS(nn.Module):
         out_channels: int,
         kernels_per_layer: int = 1,
         norm: str | None = "BatchNorm2d",
+        longitude_padding: Literal["circular", "replicate", "zero"] = "zero",
     ) -> None:
         super().__init__()
         self.maxpool_conv = nn.Sequential(
@@ -238,6 +208,7 @@ class DownDS(nn.Module):
                 out_channels,
                 kernels_per_layer=kernels_per_layer,
                 norm=norm,
+                longitude_padding=longitude_padding,
             ),
         )
 
@@ -253,6 +224,7 @@ class UpDS(nn.Module):
         bilinear: bool = True,
         kernels_per_layer: int = 1,
         norm: str | None = "BatchNorm2d",
+        longitude_padding: Literal["circular", "replicate", "zero"] = "zero",
     ) -> None:
         super().__init__()
 
@@ -266,6 +238,7 @@ class UpDS(nn.Module):
                 in_channels // 2,
                 kernels_per_layer=kernels_per_layer,
                 norm=norm,
+                longitude_padding=longitude_padding,
             )
         else:
             self.up = nn.ConvTranspose2d(
@@ -279,6 +252,7 @@ class UpDS(nn.Module):
                 out_channels,
                 kernels_per_layer=kernels_per_layer,
                 norm=norm,
+                longitude_padding=longitude_padding,
             )
 
     def forward(
@@ -332,12 +306,13 @@ class SmaAt_UNet(EarthMLLightningModule):
         loss_params: dict[str, dict[str, Any]] | None = None,
         n_channels: int = 1,
         n_classes: int = 1,
+        zero_init_output: bool = False,
+        longitude_padding: Literal["circular", "replicate", "zero"] = "zero",
         kernels_per_layer: int = 2,
         bilinear: bool = True,
         reduction_ratio: int = 16,
         base_channels: int = 64,
         depth: int = 5, # total encoder levels, including input block
-        zero_init_output: bool = False,
     ) -> None:
         if depth < 2:
             raise ValueError(f"depth must be at least 2, got {depth}")
@@ -379,6 +354,7 @@ class SmaAt_UNet(EarthMLLightningModule):
             channels[0],
             kernels_per_layer=kernels_per_layer,
             norm=norm,
+            longitude_padding=longitude_padding,
         )
 
         self.encoder_cbam = nn.ModuleList([
@@ -386,6 +362,7 @@ class SmaAt_UNet(EarthMLLightningModule):
                 channels[0],
                 reduction_ratio=reduction_ratio,
                 norm=norm,
+                longitude_padding=longitude_padding,
             )
         ])
 
@@ -405,6 +382,7 @@ class SmaAt_UNet(EarthMLLightningModule):
                     out_ch,
                     kernels_per_layer=kernels_per_layer,
                     norm=norm,
+                    longitude_padding=longitude_padding,
                 )
             )
 
@@ -413,6 +391,7 @@ class SmaAt_UNet(EarthMLLightningModule):
                     out_ch,
                     reduction_ratio=reduction_ratio,
                     norm=norm,
+                    longitude_padding=longitude_padding,
                 )
             )
 
@@ -433,6 +412,7 @@ class SmaAt_UNet(EarthMLLightningModule):
                     bilinear,
                     kernels_per_layer=kernels_per_layer,
                     norm=norm,
+                    longitude_padding=longitude_padding,
                 )
             )
 
