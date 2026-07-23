@@ -96,7 +96,7 @@ class Settings:
     seasonal_encoding: bool = False
     ensemble_encoding: bool = False
 
-    net_name: str = "SmaAt_UNet"
+    net_name: Literal["SmaAt_UNet", "ConvNeXt"] = "SmaAt_UNet"
     loss_name: str = "MSELoss"
     target_scale_degrees: int | float = 15.0 # only for GeoMaskedMSELowFreqLoss
 
@@ -111,10 +111,24 @@ class Settings:
 
     training_norm: Literal["BatchNorm2d", "GroupNorm", "InstanceNorm2d", "LayerNorm"] = "GroupNorm"
 
-    depth: int = 5 # total encoder levels, including input block
-    reduction_ratio: int = 16
-    kernels_per_layer: int = 1
-    base_channels: int = 32
+    smaatunet_kwargs: dict = field(
+        default_factory=lambda: {
+            "depth": 5,
+            "reduction_ratio": 16,
+            "kernels_per_layer": 1,
+            "base_channels": 32,
+        }
+    )
+
+    convnext_kwargs: dict = field(
+        default_factory=lambda: {
+            "depths": (3, 3, 9, 3),
+            "dims": (96, 192, 384, 768),
+            "drop_path_rate": 0.0,
+            "layer_scale_init_value": 1e-6,
+            "head_init_scale": 1.0,
+        }
+    )
 
     train_fraction: float = 0.85
     accumulate_grad_batches: int = 2
@@ -257,9 +271,8 @@ class Settings:
             f"l{self.lead_period_offset:+d}",
             f"{self.normalization}-{self.normalization_mode}",
             self.net_name.lower(),
+            self.net_kwargs_suffix,
             self.loss_name.lower().replace("loss", ""),
-            f"d{self.depth}",
-            f"c{self.base_channels}",
             f"bs{self.batch_size}",
             f"lr{self.init_learning_rate:.0e}",
             self.training_norm.lower(),
@@ -297,6 +310,42 @@ class Settings:
                 for i in range(len(self.leadtimes) - n + 1)
             )
         }
+
+    @property
+    def extra_net_kwargs(self):
+        if self.net_name == "SmaAt_UNet":
+            return self.smaatunet_kwargs
+        elif self.net_name == "ConvNeXt":
+            return self.convnext_kwargs
+        raise ValueError(f"Unknown network {self.net_name}")
+
+    @property
+    def net_kwargs_suffix(self) -> str:
+        abbreviations = {
+            "depth": "d",
+            "depths": "d",
+            "base_channels": "c",
+            "dims": "c",
+            "reduction_ratio": "rr",
+            "kernels_per_layer": "k",
+            "drop_path_rate": "dp",
+            "layer_scale_init_value": "ls",
+            "head_init_scale": "hs",
+        }
+
+        parts = []
+
+        for key, value in self.extra_net_kwargs.items():
+            key = abbreviations.get(key, key)
+
+            if isinstance(value, (tuple, list)):
+                value = "-".join(map(str, value))
+            elif isinstance(value, float):
+                value = f"{value:g}"
+
+            parts.append(f"{key}{value}")
+
+        return "_".join(parts)
 
     # ---------------------------
     # Helpers
