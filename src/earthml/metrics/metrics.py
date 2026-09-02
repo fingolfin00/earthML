@@ -1083,7 +1083,7 @@ def get_scalar_metrics(
     )
 
     if mlfc is None:
-        raise ValueError("ML-corrected forecast must be present to produce scatter plot.")
+        raise ValueError(f"ML-corrected forecast is not available for {s.output_name}.")
 
     fc_clim, an_clim, mlfc_clim = calculate_save_and_subset_climatologies(
         s,
