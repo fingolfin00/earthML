@@ -848,8 +848,9 @@ def plot_map(
     if plot_kind == "maps":
         fig.suptitle(
             title,
-            fontsize=11,
-            y=0.98,
+            fontsize=10,
+            y=0.97,
+            linespacing=1.05,
         )
     else:
         ax.set_title(
@@ -861,7 +862,9 @@ def plot_map(
         im,
         ax=ax,
         orientation="horizontal",
-        pad=0.10 if plot_kind == "maps" else 0.13,
+        pad=0.05 if plot_kind == "maps" else 0.13,
+        fraction=0.055 if plot_kind == "maps" else 0.15,
+        aspect=35 if plot_kind == "maps" else 20,
         ticks=ticks,
         boundaries=ticks,
         spacing="uniform",
@@ -872,10 +875,10 @@ def plot_map(
 
     if plot_kind == "maps":
         fig.subplots_adjust(
-            top=0.84,
-            bottom=0.18,
-            left=0.08,
-            right=0.96,
+            top=0.86,
+            bottom=0.13,
+            left=0.055,
+            right=0.97,
         )
     else:
         fig.subplots_adjust(
@@ -893,6 +896,8 @@ def plot_map(
     plt.savefig(
         out_file,
         dpi=200,
+        bbox_inches="tight",
+        pad_inches=0.05,
     )
     plt.close(fig)
 
