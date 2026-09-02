@@ -71,7 +71,7 @@ def is_skill_metric(metric: str) -> bool:
     )
 
 def is_skill_model(model: str) -> bool:
-    return model.endswith("_vs_fc")
+    return "_vs_" in model
 
 
 def get_plot_config(
@@ -91,15 +91,25 @@ def get_skill_plot_config(
     metric: str,
     var_plot_config: dict,
     impro_plot_config: dict,
+    improvement_unit: Literal["%", "Δ"] | None = None,
 ) -> dict:
     if metric.endswith("_skill_clim"):
         cfg = DEFAULT_PLOT_CONFIG[metric].copy()
         cfg.update(var_plot_config.get(var, {}).get(metric, {}))
         return cfg
 
-    unit = METRIC_SKILL_UNITS[metric]
+    unit = improvement_unit or METRIC_SKILL_UNITS[metric]
     cfg = DEFAULT_IMPROVEMENT_PLOT_CONFIG[unit].copy()
-    cfg.update(impro_plot_config.get(var, {}).get(metric, {}))
+
+    custom_cfg = impro_plot_config.get(var, {}).get(metric, {})
+
+    # Preferred format: {var: {metric: {"%": {...}, "Δ": {...}}}}.
+    # Keep accepting the former flat per-metric format for compatibility.
+    if "%" in custom_cfg or "Δ" in custom_cfg:
+        cfg.update(custom_cfg.get(unit, {}))
+    else:
+        cfg.update(custom_cfg)
+
     return cfg
 
 
@@ -430,11 +440,18 @@ def metric_style(
     var_plot_config: dict = {},
     impro_plot_config: dict = {},
     is_skill: bool = False,
+    improvement_unit: Literal["%", "Δ"] | None = None,
 ) -> tuple[Colormap, BoundaryNorm | TwoSlopeNorm, np.ndarray]:
 
     try:
         if is_skill:
-            cfg = get_skill_plot_config(var, metric, var_plot_config, impro_plot_config)
+            cfg = get_skill_plot_config(
+                var,
+                metric,
+                var_plot_config,
+                impro_plot_config,
+                improvement_unit=improvement_unit,
+            )
         else:
             cfg = get_plot_config(var, metric, var_plot_config)
     except KeyError:
@@ -525,6 +542,16 @@ def plot_map(
 
     is_skill = is_skill_model(model)
 
+    if is_skill:
+        if model.endswith("_percentage") or da.attrs.get("units") == "%":
+            improvement_unit: Literal["%", "Δ"] = "%"
+        elif model.endswith("_difference"):
+            improvement_unit = "Δ"
+        else:
+            improvement_unit = METRIC_SKILL_UNITS[metric]
+    else:
+        improvement_unit = None
+
     time_dim = da.earthml.guessed_dims.time or clim_period
     lat, lon = da.earthml.guessed_dims.latitude, da.earthml.guessed_dims.longitude
 
@@ -573,8 +600,16 @@ def plot_map(
         da = da.transpose(*required_dims).compute()
 
     if is_skill:
-        plot_unit = METRIC_SKILL_UNITS[metric]
-        scale = 1.0
+        if improvement_unit == "%":
+            plot_unit = "%"
+            scale = 1.0
+        else:
+            plot_unit, scale = get_plot_metric_unit_and_scale(
+                da,
+                var=var,
+                metric=metric,
+                var_plot_config=var_plot_config,
+            )
     else:
         plot_unit, scale = get_plot_metric_unit_and_scale(
             da,
@@ -593,11 +628,11 @@ def plot_map(
         cb_label = METRIC_NAMES[metric]
 
     elif is_skill_model(model):
-        unit_label = "(%)"
+        unit_label = f"({plot_unit})" if plot_unit else ""
         cb_label = (
             f"{METRIC_NAMES[metric]} improvement {unit_label}"
-            if plot_unit == "%"
-            else f"{METRIC_NAMES[metric]} improvement difference"
+            if improvement_unit == "%"
+            else f"{METRIC_NAMES[metric]} improvement difference {unit_label}"
         )
 
     else:
@@ -622,6 +657,7 @@ def plot_map(
         var_plot_config=var_plot_config,
         impro_plot_config=impro_plot_config,
         is_skill=is_skill,
+        improvement_unit=improvement_unit,
     )
 
     if plot_kind == "maps":
