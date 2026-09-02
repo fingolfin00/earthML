@@ -3,7 +3,8 @@ from typing import Any, Literal
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from timm.models.layers import DropPath, trunc_normal_
+from timm.layers.drop import DropPath
+from timm.layers.weight_init import trunc_normal_
 
 from .. import EarthMLLightningModule
 from .. import resolve_loss
