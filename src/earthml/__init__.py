@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     from .neural.dataset import XarrayDataset
     from .neural.nets import build_net
     from .neural.normalize import Normalize, MonthlyNormalize
-    from .neural.module import SplitDataModule
+    from .neural.module import SplitDataModule, SingleMonthBatchSampler
 
     from .logging import (
         EarthMLLogger,
@@ -101,6 +101,7 @@ __all__ = [
     "Normalize",
     "MonthlyNormalize",
     "SplitDataModule",
+    "SingleMonthBatchSampler",
     # metrics
     "get_metrics",
     # utils
@@ -173,6 +174,8 @@ _EXPORTS = {
     "Normalize": (".neural.normalize", "Normalize"),
     "MonthlyNormalize": (".neural.normalize", "MonthlyNormalize"),
     "SplitDataModule": (".neural.module", "SplitDataModule"),
+    "SingleMonthBatchSampler": (".neural.module", "SingleMonthBatchSampler"),
+
 
     "get_metrics": (".metrics", "get_metrics"),
 

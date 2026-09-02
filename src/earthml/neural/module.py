@@ -1,14 +1,21 @@
 from typing import Literal
+from collections.abc import Iterator, Sequence
 
 import lightning as L
 import torch
+
 import torch.nn.functional as F
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch import nn
-from torch.utils.data import DataLoader, Dataset, Subset
+from torch.utils.data import DataLoader, Dataset, Subset, BatchSampler
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 from ..logging import get_logger
 from .metrics import MaskedMAE, MaskedRMSE, MaskedSpatialCorr
+from .losses.mse import SpatialCVaRDiagnostics
 
 
 logger = get_logger(__name__)
@@ -34,6 +41,8 @@ class EarthMLLightningModule(L.LightningModule):
         self,
         optimizer_lr: float = 1e-3,
         weight_decay: float = 1e-4,
+        patch_degradation_vmin: float = -1,
+        patch_degradation_vmax: float = 1,
     ) -> None:
         super().__init__()
 
@@ -56,8 +65,34 @@ class EarthMLLightningModule(L.LightningModule):
         self.test_months: torch.Tensor | None = None
         self.test_masks: torch.Tensor | None = None
 
-    def _log_loss_components(self, stage: Stage) -> None:
-        components = getattr(self.loss, "loss_components", None)
+        self.spatial_diagnostics: SpatialCVaRDiagnostics | None = None
+
+        self.train_worst_patch_counts: torch.Tensor | None = None
+        self.val_worst_patch_counts: torch.Tensor | None = None
+        self.test_worst_patch_counts: torch.Tensor | None = None
+
+        self.train_patch_degradation_sum: torch.Tensor | None = None
+        self.val_patch_degradation_sum: torch.Tensor | None = None
+        self.test_patch_degradation_sum: torch.Tensor | None = None
+
+        self.train_patch_degradation_count = 0
+        self.val_patch_degradation_count = 0
+        self.test_patch_degradation_count = 0
+
+        self.patch_degradation_vmin = patch_degradation_vmin
+        self.patch_degradation_vmax = patch_degradation_vmax
+
+    def _log_loss_components(
+        self,
+        stage: Stage,
+        batch_size: int,
+    ) -> None:
+        components = getattr(
+            self.loss,
+            "loss_components",
+            None,
+        )
+
         if not components:
             return
 
@@ -68,6 +103,7 @@ class EarthMLLightningModule(L.LightningModule):
                 on_step=False,
                 on_epoch=True,
                 logger=True,
+                batch_size=batch_size,
             )
 
     def _shared_step(
@@ -201,8 +237,274 @@ class EarthMLLightningModule(L.LightningModule):
                 }
             )
 
-        self._log_loss_components(stage)
+        self._log_loss_components(
+            stage,
+            batch_size=batch_size,
+        )
+
+        self._log_spatial_diagnostics(
+            prediction=mu,
+            target=y,
+            mask=mask,
+            stage=stage,
+        )
+
         return loss
+
+
+    def configure_spatial_diagnostics(
+        self,
+        *,
+        latitudes: torch.Tensor,
+        patch_size: int,
+        cvar_fraction: float = 0.2,
+        eps: float = 1e-8,
+    ) -> None:
+        self.spatial_diagnostics = SpatialCVaRDiagnostics(
+            latitudes=latitudes,
+            patch_size=patch_size,
+            cvar_fraction=cvar_fraction,
+            eps=eps,
+        )
+
+
+    def _update_patch_degradation(
+        self,
+        *,
+        stage: Stage,
+        patch_degradation: torch.Tensor,
+    ) -> None:
+        sum_attr = {
+            "train": "train_patch_degradation_sum",
+            "validation": "val_patch_degradation_sum",
+            "test": "test_patch_degradation_sum",
+        }[stage]
+
+        count_attr = {
+            "train": "train_patch_degradation_count",
+            "validation": "val_patch_degradation_count",
+            "test": "test_patch_degradation_count",
+        }[stage]
+
+        current = getattr(self, sum_attr)
+
+        values = patch_degradation.detach()
+
+        if current is None:
+            current = torch.zeros_like(values)
+
+        current += values
+
+        setattr(self, sum_attr, current)
+        setattr(
+            self,
+            count_attr,
+            getattr(self, count_attr) + 1,
+        )
+
+
+    def _log_patch_degradation_map(
+        self,
+        stage: Stage,
+    ) -> None:
+        sum_attr = {
+            "train": "train_patch_degradation_sum",
+            "validation": "val_patch_degradation_sum",
+            "test": "test_patch_degradation_sum",
+        }[stage]
+
+        count_attr = {
+            "train": "train_patch_degradation_count",
+            "validation": "val_patch_degradation_count",
+            "test": "test_patch_degradation_count",
+        }[stage]
+
+        total = getattr(self, sum_attr)
+        count = getattr(self, count_attr)
+
+        if total is None or count == 0:
+            return
+
+        values = (
+            total / count
+        ).detach().float().cpu().numpy()
+
+        experiment = getattr(
+            self.logger,
+            "experiment",
+            None,
+        )
+
+        if (
+            experiment is None
+            or not hasattr(experiment, "add_figure")
+        ):
+            return
+
+        vmax = max(
+            abs(values.min()),
+            abs(values.max()),
+            1e-8,
+        )
+
+        fig, ax = plt.subplots(figsize=(5, 3))
+
+        image = ax.imshow(
+            values,
+            vmin=self.patch_degradation_vmin,
+            vmax=self.patch_degradation_vmax,
+            cmap="RdBu_r",
+            origin="lower",
+        )
+
+        ax.set_title("Mean patch degradation")
+        ax.set_xlabel("Longitude patch")
+        ax.set_ylabel("Latitude patch")
+
+        fig.colorbar(
+            image,
+            ax=ax,
+            orientation="horizontal",
+            label="Model MSE - baseline MSE",
+            pad=0.12,
+            fraction=0.07,
+        )
+
+        fig.tight_layout()
+
+        experiment.add_figure(
+            f"{stage}_spatial/patch_degradation",
+            fig,
+            global_step=self.current_epoch,
+        )
+
+        plt.close(fig)
+
+
+    def _log_spatial_diagnostics(
+        self,
+        prediction: torch.Tensor,
+        target: torch.Tensor,
+        mask: torch.Tensor,
+        stage: Stage,
+    ) -> None:
+        if self.spatial_diagnostics is None:
+            return
+
+        diagnostics = self.spatial_diagnostics(
+            prediction,
+            target,
+            mask=mask,
+        )
+
+        batch_size = prediction.shape[0]
+
+        for name in (
+            "global_geo_mse",
+            "cvar_mse",
+            "cvar_ratio",
+            "mean_patch_degradation",
+            "mean_degraded_patch_degradation",
+            "mean_positive_patch_degradation",
+            "degraded_patch_fraction",
+            "relative_degraded_patch_fraction_gt_1pct",
+            "relative_degraded_patch_fraction_gt_5pct",
+            "relative_degraded_patch_fraction_gt_10pct",
+            "max_patch_degradation",
+        ):
+            self.log(
+                f"{stage}_spatial_{name}",
+                diagnostics[name],
+                on_step=False,
+                on_epoch=True,
+                logger=True,
+                batch_size=batch_size,
+            )
+
+        self._update_patch_degradation(
+            stage=stage,
+            patch_degradation=diagnostics[
+                "patch_degradation"
+            ],
+        )
+
+        self._update_worst_patch_counts(
+            stage=stage,
+            locations=diagnostics[
+                "worst_patch_locations"
+            ],
+            shape=diagnostics[
+                "spatial_patch_mse"
+            ].shape,
+        )
+
+    def _update_worst_patch_counts(
+        self,
+        *,
+        stage: Stage,
+        locations: torch.Tensor,
+        shape: torch.Size,
+    ) -> None:
+        attr = {
+            "train": "train_worst_patch_counts",
+            "validation": "val_worst_patch_counts",
+            "test": "test_worst_patch_counts",
+        }[stage]
+
+        counts = getattr(self, attr)
+
+        if (
+            counts is None
+            or tuple(counts.shape) != tuple(shape)
+        ):
+            counts = torch.zeros(
+                shape,
+                device=self.device,
+                dtype=torch.float32,
+            )
+
+        counts[
+            locations[:, 0],
+            locations[:, 1],
+        ] += 1.0
+
+        setattr(self, attr, counts)
+
+    def _log_worst_patch_map(
+        self,
+        stage: Stage,
+    ) -> None:
+        attr = {
+            "train": "train_worst_patch_counts",
+            "validation": "val_worst_patch_counts",
+            "test": "test_worst_patch_counts",
+        }[stage]
+
+        counts = getattr(self, attr)
+
+        if counts is None:
+            return
+
+        normalized = (
+            counts
+            / counts.max().clamp_min(1.0)
+        )
+
+        experiment = getattr(
+            self.logger,
+            "experiment",
+            None,
+        )
+
+        if experiment is None:
+            return
+
+        experiment.add_image(
+            f"{stage}_spatial/worst_patch_frequency",
+            normalized.unsqueeze(0),
+            global_step=self.current_epoch,
+        )
+
 
     @staticmethod
     def center_crop_to(
@@ -269,6 +571,10 @@ class EarthMLLightningModule(L.LightningModule):
         self._shared_step(batch, "test")
 
     def on_train_epoch_start(self) -> None:
+        self.train_worst_patch_counts = None
+        self.train_patch_degradation_sum = None
+        self.train_patch_degradation_count = 0
+
         scheduler = self.lr_schedulers()
         current_lr = scheduler.get_last_lr()[0]
 
@@ -285,12 +591,25 @@ class EarthMLLightningModule(L.LightningModule):
             current_lr,
         )
 
+    def on_train_epoch_end(self) -> None:
+        self._log_worst_patch_map("train")
+        self._log_patch_degradation_map("train")
+
+    def on_validation_epoch_end(self) -> None:
+        if self.trainer.sanity_checking:
+            return
+        self._log_worst_patch_map("validation")
+        self._log_patch_degradation_map("validation")
+
     def on_test_epoch_start(self) -> None:
         self.test_step_outputs.clear()
         self.test_preds = None
         self.test_targets = None
         self.test_masks = None
         self.test_months = None
+        self.test_worst_patch_counts = None
+        self.test_patch_degradation_sum = None
+        self.test_patch_degradation_count = 0
 
     def on_test_epoch_end(self) -> None:
         final_test_mae = self.test_mae.compute()
@@ -327,7 +646,15 @@ class EarthMLLightningModule(L.LightningModule):
             dim=0,
         )
 
+        self._log_worst_patch_map("test")
+        self._log_patch_degradation_map("test")
+
         self.test_step_outputs.clear()
+
+    def on_validation_epoch_start(self) -> None:
+        self.val_worst_patch_counts = None
+        self.val_patch_degradation_sum = None
+        self.val_patch_degradation_count = 0
 
     def configure_optimizers(self) -> OptimizerLRScheduler:
         optimizer = torch.optim.AdamW(
@@ -366,6 +693,7 @@ class EarthMLLightningModule(L.LightningModule):
     ) -> torch.Tensor:
         if self.loss_name in {
             "MSELoss",
+            "HuberLoss",
             "GeoMSELoss",
         }:
             return self.loss(prediction, target)
@@ -375,6 +703,8 @@ class EarthMLLightningModule(L.LightningModule):
             "GeoMaskedMSELoss",
             "GaussianNLLFromLogits",
             "EmpiricalCRPSLoss",
+            "SpatialCVaRMSELoss",
+            "SpatialDegradationMSELoss",
         }:
             return self.loss(
                 prediction,
@@ -382,10 +712,13 @@ class EarthMLLightningModule(L.LightningModule):
                 mask=mask,
             )
 
-        if self.loss_name == "GeoMaskedMSELowFreqLoss":
+        if self.loss_name in (
+            "GeoMaskedMSEMultiScaleLoss",
+        ):
             return self.loss(
-                prediction,
-                target,
+                y_pred=prediction,
+                y_true=target,
+                x_input=model_input,
                 mask=mask,
                 months=months,
             )
@@ -432,6 +765,7 @@ class SplitDataModule(L.LightningDataModule):
         pin_memory: bool | None = None,
         persistent_workers: bool | None = None,
         drop_last_train: bool = False,
+        group_batches_by_month: bool = False,
     ) -> None:
         super().__init__()
 
@@ -461,6 +795,7 @@ class SplitDataModule(L.LightningDataModule):
         self.split_strategy = split_strategy
         self.shuffle_train = shuffle_train
         self.drop_last_train = drop_last_train
+        self.group_batches_by_month = group_batches_by_month
 
         self.pin_memory = (
             torch.cuda.is_available()
@@ -606,6 +941,23 @@ class SplitDataModule(L.LightningDataModule):
         )
 
     def train_dataloader(self) -> DataLoader:
+        if self.group_batches_by_month:
+            batch_sampler = SingleMonthBatchSampler(
+                self.train_dataset,
+                batch_size=self.batch_size,
+                shuffle=self.shuffle_train,
+                drop_last=self.drop_last_train,
+                seed=self.seed,
+            )
+
+            return DataLoader(
+                self.train_dataset,
+                batch_sampler=batch_sampler,
+                num_workers=self.num_workers,
+                pin_memory=self.pin_memory,
+                persistent_workers=self.persistent_workers,
+            )
+
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
@@ -617,6 +969,23 @@ class SplitDataModule(L.LightningDataModule):
         )
 
     def val_dataloader(self) -> DataLoader:
+        if self.group_batches_by_month:
+            batch_sampler = SingleMonthBatchSampler(
+                self.val_dataset,
+                batch_size=self.batch_size,
+                shuffle=False,
+                drop_last=False,
+                seed=self.seed,
+            )
+
+            return DataLoader(
+                self.val_dataset,
+                batch_sampler=batch_sampler,
+                num_workers=self.num_workers,
+                pin_memory=self.pin_memory,
+                persistent_workers=self.persistent_workers,
+            )
+
         return DataLoader(
             self.val_dataset,
             batch_size=self.batch_size,
@@ -624,5 +993,155 @@ class SplitDataModule(L.LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
             persistent_workers=self.persistent_workers,
-            drop_last=False,
         )
+
+
+class SingleMonthBatchSampler(BatchSampler):
+    """Yield batches containing samples from exactly one calendar month."""
+
+    def __init__(
+        self,
+        dataset: Dataset,
+        batch_size: int,
+        *,
+        shuffle: bool = True,
+        drop_last: bool = False,
+        seed: int = 42,
+    ) -> None:
+        if batch_size < 1:
+            raise ValueError(
+                f"batch_size must be positive, got {batch_size}"
+            )
+
+        self.dataset = dataset
+        self.batch_size = int(batch_size)
+        self.shuffle = bool(shuffle)
+        self.drop_last = bool(drop_last)
+        self.seed = int(seed)
+        self.epoch = 0
+
+        months = self._extract_months(dataset)
+
+        if len(months) != len(dataset):
+            raise ValueError(
+                f"Month count {len(months)} does not match "
+                f"dataset length {len(dataset)}"
+            )
+
+        self.month_to_indices: dict[int, list[int]] = {}
+
+        for index, month in enumerate(months):
+            month = int(month)
+
+            if not 1 <= month <= 12:
+                raise ValueError(
+                    f"Invalid month {month} at sample {index}"
+                )
+
+            self.month_to_indices.setdefault(month, []).append(index)
+
+        if not self.month_to_indices:
+            raise ValueError("Dataset contains no samples")
+
+    @staticmethod
+    def _extract_months(dataset: Dataset) -> torch.Tensor:
+        """
+        Return months aligned with the indices of `dataset`.
+
+        Supports both an XarrayDataset-like object with `.months`
+        and torch.utils.data.Subset.
+        """
+        if isinstance(dataset, Subset):
+            parent_months = SingleMonthBatchSampler._extract_months(
+                dataset.dataset
+            )
+
+            indices = torch.as_tensor(
+                dataset.indices,
+                dtype=torch.long,
+            )
+
+            return parent_months.index_select(0, indices)
+
+        months = getattr(dataset, "months", None)
+
+        if months is None:
+            raise TypeError(
+                "SingleMonthBatchSampler requires the dataset to expose "
+                "a one-dimensional `months` array."
+            )
+
+        months = torch.as_tensor(
+            months,
+            dtype=torch.long,
+        )
+
+        if months.ndim != 1:
+            raise ValueError(
+                f"Expected months shape (N,), got {tuple(months.shape)}"
+            )
+
+        return months
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def __iter__(self) -> Iterator[list[int]]:
+        generator = torch.Generator()
+        generator.manual_seed(self.seed + self.epoch)
+
+        batches: list[list[int]] = []
+
+        for month in sorted(self.month_to_indices):
+            indices = torch.as_tensor(
+                self.month_to_indices[month],
+                dtype=torch.long,
+            )
+
+            if self.shuffle:
+                permutation = torch.randperm(
+                    len(indices),
+                    generator=generator,
+                )
+                indices = indices[permutation]
+
+            for start in range(0, len(indices), self.batch_size):
+                batch = indices[
+                    start : start + self.batch_size
+                ].tolist()
+
+                if len(batch) < self.batch_size and self.drop_last:
+                    continue
+
+                batches.append(batch)
+
+        # Also mix the order of months/batches. Batch contents remain
+        # month-homogeneous.
+        if self.shuffle and batches:
+            order = torch.randperm(
+                len(batches),
+                generator=generator,
+            ).tolist()
+
+            batches = [batches[index] for index in order]
+
+        # Produce a different deterministic order next epoch even when
+        # Lightning does not explicitly call set_epoch().
+        self.epoch += 1
+
+        yield from batches
+
+    def __len__(self) -> int:
+        total = 0
+
+        for indices in self.month_to_indices.values():
+            count = len(indices)
+
+            if self.drop_last:
+                total += count // self.batch_size
+            else:
+                total += (
+                    count + self.batch_size - 1
+                ) // self.batch_size
+
+        return total
