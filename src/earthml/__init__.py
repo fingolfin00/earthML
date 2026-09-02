@@ -62,6 +62,15 @@ if TYPE_CHECKING:
     from .neural.normalize import Normalize, MonthlyNormalize
     from .neural.module import SplitDataModule
 
+    from .logging import (
+        EarthMLLogger,
+        add_file_handler,
+        configure_logging,
+        get_logger,
+        log_renderable,
+        remove_file_handler,
+    )
+
 __version__ = _version("earthml")
 
 __all__ = [
@@ -112,6 +121,13 @@ __all__ = [
     "calculate_climatology",
     "calculate_save_and_subset_climatologies",
     "select_clim_for_time",
+    # logging
+    "EarthMLLogger",
+    "add_file_handler",
+    "configure_logging",
+    "get_logger",
+    "log_renderable",
+    "remove_file_handler",
 ]
 
 # Lazy dynamical imports
@@ -163,6 +179,13 @@ _EXPORTS = {
     "calculate_climatology": (".metrics", "calculate_climatology"),
     "calculate_save_and_subset_climatologies": (".metrics", "calculate_save_and_subset_climatologies"),
     "select_clim_for_time": (".metrics", "select_clim_for_time"),
+
+    "EarthMLLogger": (".logging", "EarthMLLogger"),
+    "add_file_handler": (".logging", "add_file_handler"),
+    "configure_logging": (".logging", "configure_logging"),
+    "get_logger": (".logging", "get_logger"),
+    "log_renderable": (".logging", "log_renderable"),
+    "remove_file_handler": (".logging", "remove_file_handler"),
 }
 
 
