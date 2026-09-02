@@ -29,7 +29,7 @@ TrainerPrecision = Literal[
     "transformer-engine-bfloat16",
 ]
 
-HASH_IGNORE = {
+CONFIG_COMPARE_IGNORE = {
     "root_dir",
     "data_root_dir",
     "exp_root_dir",
@@ -244,7 +244,8 @@ class Settings:
 
         if self.regional_training:
             parts.append(
-                f"rbox-{self.regional_training_lon_size:g}x{self.regional_training_lat_size:g}"
+                f"rbox-{self.regional_training_lon_size:g}x"
+                f"{self.regional_training_lat_size:g}"
             )
 
         parts += [
@@ -252,12 +253,7 @@ class Settings:
             f"l{self.lead_period_offset:+d}",
             f"{self.normalization}-{self.normalization_mode}",
             self.net_name.lower(),
-            self.net_kwargs_suffix,
             self.loss_name.lower().replace("loss", ""),
-            self.loss_kwargs_suffix,
-            f"bs{self.batch_size}",
-            f"lr{self.init_learning_rate:.0e}",
-            self.training_norm.lower(),
             self.extra_suffix_folder,
         ]
 
@@ -266,7 +262,7 @@ class Settings:
     @property
     def config_hash(self) -> str:
         config = asdict(self)
-        for key in HASH_IGNORE:
+        for key in CONFIG_COMPARE_IGNORE:
             config.pop(key, None)
         payload = json.dumps(config, sort_keys=True, default=str)
         return hashlib.sha1(payload.encode()).hexdigest()[:6]
@@ -286,7 +282,7 @@ class Settings:
     def extra_net_kwargs(self):
         if self.net_name == "SmaAt_UNet":
             return self.smaatunet_kwargs
-        if self.net_name == "ConvNeXt":
+        if self.net_name == "ConvNeXtTransformerUNet":
             return self.convnext_kwargs
         raise ValueError(f"Unknown network {self.net_name}")
 
@@ -349,12 +345,20 @@ class Settings:
             "kernels_per_layer": "k",
             "drop_path_rate": "dp",
             "layer_scale_init_value": "ls",
+
+            "transformer_depth": "td",
+            "transformer_heads": "th",
+            "transformer_mlp_ratio": "tm",
+            "transformer_dropout": "tdp",
+            "refinement_depth": "rd",
         }
+
         excluded = {
             "zero_init_output",
             "longitude_padding",
             "layer_scale_init_value",
         }
+
         key_order = {
             "encoder_depths": 0,
             "decoder_depths": 1,
@@ -364,7 +368,14 @@ class Settings:
             "reduction_ratio": 5,
             "kernels_per_layer": 6,
             "drop_path_rate": 7,
+
+            "transformer_depth": 8,
+            "transformer_heads": 9,
+            "transformer_mlp_ratio": 10,
+            "transformer_dropout": 11,
+            "refinement_depth": 12,
         }
+
         kwargs = self.extra_net_kwargs
         ordered_keys = sorted(
             kwargs,
@@ -450,6 +461,59 @@ class Settings:
         for field_name in ignore:
             config.pop(field_name, None)
         return json.dumps(config, sort_keys=True, default=str)
+
+
+    def config_dict(
+        self,
+        *,
+        ignore: set[str] | None = None,
+    ) -> dict:
+        ignore = ignore or set()
+
+        config = asdict(self)
+
+        for key in ignore:
+            config.pop(key, None)
+
+        return config
+
+
+    def config_differences(
+        self,
+        other: "Settings",
+        *,
+        ignore: set[str] | None = None,
+    ) -> dict[str, tuple[object, object]]:
+        current = self.config_dict(ignore=ignore)
+        previous = other.config_dict(ignore=ignore)
+
+        differences = {}
+
+        for key in sorted(current.keys() | previous.keys()):
+            old_value = previous.get(key)
+            new_value = current.get(key)
+
+            if old_value != new_value:
+                differences[key] = (
+                    old_value,
+                    new_value,
+                )
+
+        return differences
+
+    def check_existing_config(
+        self,
+    ) -> dict[str, tuple[object, object]]:
+        if not self.config_path.exists():
+            return {}
+
+        previous = Settings.from_json(self.config_path)
+
+        return self.config_differences(
+            previous,
+            ignore=CONFIG_COMPARE_IGNORE,
+        )
+
 
     def __post_init__(self) -> None:
         if self.root_dir is None:
