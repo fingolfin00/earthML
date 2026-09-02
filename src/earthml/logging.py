@@ -1,7 +1,7 @@
 import logging
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from rich.console import Console
 from rich.logging import RichHandler
@@ -94,6 +94,22 @@ def _render_to_text(
     return capture.get().rstrip("\n")
 
 
+def _attach_handler(
+    logger: logging.Logger,
+    handler: logging.Handler,
+) -> None:
+    if handler not in logger.handlers:
+        logger.addHandler(handler)
+
+
+def _detach_handler(
+    logger: logging.Logger,
+    handler: logging.Handler,
+) -> None:
+    if handler in logger.handlers:
+        logger.removeHandler(handler)
+
+
 def log_renderable(
     renderable: Any,
     *,
@@ -101,6 +117,7 @@ def log_renderable(
     level: int | str = logging.INFO,
 ) -> None:
     logger = logger or get_logger()
+
     logger.print(
         renderable,
         level=level,
@@ -145,7 +162,7 @@ class EarthMLLogger:
     ) -> None:
         """
         Print values like built-in print(), while also saving plain text
-        to file handlers.
+        to non-Rich handlers such as experiment log files.
         """
         log_level = _coerce_level(level)
 
@@ -329,6 +346,7 @@ def configure_logging(
     )
 
     console_handler.setLevel(console_level)
+
     console_handler.setFormatter(
         logging.Formatter(
             DEFAULT_LOG_FORMAT,
@@ -337,6 +355,7 @@ def configure_logging(
     )
 
     console_handler._earthml_managed = True
+
     logger.addHandler(console_handler)
 
     if capture_warnings:
@@ -364,9 +383,22 @@ def add_file_handler(
     *,
     level: int | str = logging.DEBUG,
     mode: str = "a",
+    external_loggers: Iterable[str] = (),
 ) -> logging.FileHandler:
     """
-    Add a file handler to an experiment logger.
+    Add an experiment file handler.
+
+    The same handler can optionally be attached to external logger
+    hierarchies, for example Lightning:
+
+        add_file_handler(
+            logger,
+            log_file,
+            external_loggers=("lightning.pytorch",),
+        )
+
+    External logger names are stored on the handler so that
+    remove_file_handler() can detach them automatically.
     """
     raw_logger = _unwrap_logger(logger)
 
@@ -385,17 +417,42 @@ def add_file_handler(
             None,
         )
 
-        if existing_path == resolved_path:
-            if not isinstance(
-                existing_handler,
-                logging.FileHandler,
-            ):
-                raise TypeError(
-                    f"Existing handler for {log_path} "
-                    "is not a FileHandler"
-                )
+        if existing_path != resolved_path:
+            continue
 
-            return existing_handler
+        if not isinstance(
+            existing_handler,
+            logging.FileHandler,
+        ):
+            raise TypeError(
+                f"Existing handler for {log_path} "
+                "is not a FileHandler"
+            )
+
+        # Attach any newly requested external loggers as well.
+        attached_loggers = set(
+            getattr(
+                existing_handler,
+                "_earthml_external_loggers",
+                (),
+            )
+        )
+
+        for logger_name in external_loggers:
+            external_logger = logging.getLogger(logger_name)
+
+            _attach_handler(
+                external_logger,
+                existing_handler,
+            )
+
+            attached_loggers.add(logger_name)
+
+        existing_handler._earthml_external_loggers = tuple(
+            sorted(attached_loggers)
+        )
+
+        return existing_handler
 
     file_handler = logging.FileHandler(
         log_path,
@@ -416,10 +473,91 @@ def add_file_handler(
 
     file_handler._earthml_managed = True
     file_handler._earthml_file_path = resolved_path
+    file_handler._earthml_external_loggers = tuple(
+        dict.fromkeys(external_loggers)
+    )
 
     raw_logger.addHandler(file_handler)
 
+    for logger_name in file_handler._earthml_external_loggers:
+        external_logger = logging.getLogger(logger_name)
+
+        _attach_handler(
+            external_logger,
+            file_handler,
+        )
+
     return file_handler
+
+
+def attach_file_handler(
+    handler: logging.FileHandler,
+    *logger_names: str,
+) -> None:
+    """
+    Attach an existing EarthML file handler to additional logger
+    hierarchies.
+
+    Example
+    -------
+    attach_file_handler(
+        file_handler,
+        "lightning.pytorch",
+    )
+    """
+    attached_loggers = set(
+        getattr(
+            handler,
+            "_earthml_external_loggers",
+            (),
+        )
+    )
+
+    for logger_name in logger_names:
+        logger = logging.getLogger(logger_name)
+
+        _attach_handler(
+            logger,
+            handler,
+        )
+
+        attached_loggers.add(logger_name)
+
+    handler._earthml_external_loggers = tuple(
+        sorted(attached_loggers)
+    )
+
+
+def detach_file_handler(
+    handler: logging.FileHandler,
+    *logger_names: str,
+) -> None:
+    """
+    Detach an existing file handler from selected external loggers.
+
+    The handler itself remains open.
+    """
+    attached_loggers = set(
+        getattr(
+            handler,
+            "_earthml_external_loggers",
+            (),
+        )
+    )
+
+    for logger_name in logger_names:
+        logger = logging.getLogger(logger_name)
+
+        _detach_handler(
+            logger,
+            handler,
+        )
+
+        attached_loggers.discard(logger_name)
+
+    handler._earthml_external_loggers = tuple(
+        sorted(attached_loggers)
+    )
 
 
 def remove_file_handler(
@@ -427,11 +565,33 @@ def remove_file_handler(
     handler: logging.FileHandler,
 ) -> None:
     """
-    Remove and close a file handler.
+    Remove and close an experiment file handler.
+
+    Any external logger hierarchies attached through add_file_handler()
+    or attach_file_handler() are detached automatically before the
+    handler is closed.
     """
     raw_logger = _unwrap_logger(logger)
 
-    if handler in raw_logger.handlers:
-        raw_logger.removeHandler(handler)
+    external_loggers = tuple(
+        getattr(
+            handler,
+            "_earthml_external_loggers",
+            (),
+        )
+    )
+
+    for logger_name in external_loggers:
+        external_logger = logging.getLogger(logger_name)
+
+        _detach_handler(
+            external_logger,
+            handler,
+        )
+
+    _detach_handler(
+        raw_logger,
+        handler,
+    )
 
     handler.close()
