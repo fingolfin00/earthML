@@ -542,15 +542,14 @@ def plot_map(
 
     is_skill = is_skill_model(model)
 
+    improvement_unit: Literal["%", "Δ"] | None = None
     if is_skill:
         if model.endswith("_percentage") or da.attrs.get("units") == "%":
-            improvement_unit: Literal["%", "Δ"] = "%"
+            improvement_unit = "%"
         elif model.endswith("_difference"):
             improvement_unit = "Δ"
         else:
             improvement_unit = METRIC_SKILL_UNITS[metric]
-    else:
-        improvement_unit = None
 
     time_dim = da.earthml.guessed_dims.time or clim_period
     lat, lon = da.earthml.guessed_dims.latitude, da.earthml.guessed_dims.longitude
@@ -661,12 +660,6 @@ def plot_map(
     )
 
     if plot_kind == "maps":
-        fig, ax = plt.subplots(
-            figsize=(7, 5),
-            subplot_kw={"projection": ccrs.PlateCarree()},
-        )
-        ax = cast(GeoAxes, ax)
-
         lon_values = np.asarray(da[lon].values, dtype=float)
         lat_values = np.asarray(da[lat].values, dtype=float)
 
@@ -674,17 +667,51 @@ def plot_map(
         finite_lat = lat_values[np.isfinite(lat_values)]
 
         if finite_lon.size == 0 or finite_lat.size == 0:
-            raise ValueError("Latitude or longitude coordinates contain no finite values")
+            raise ValueError(
+                "Latitude or longitude coordinates contain no finite values"
+            )
 
         lon_min = float(finite_lon.min())
         lon_max = float(finite_lon.max())
         lat_min = float(finite_lat.min())
         lat_max = float(finite_lat.max())
 
-        ax.set_extent(
-            [lon_min, lon_max, lat_min, lat_max],
-            crs=ccrs.PlateCarree(),
+        lon_span = lon_max - lon_min
+        lat_span = lat_max - lat_min
+
+        # PlateCarree displayed aspect ratio.
+        map_aspect = lon_span / lat_span
+
+        # Fixed width, automatic height.
+        fig_width = 7.0
+
+        # Height required by the map itself + room for title/colorbar.
+        map_height = fig_width / map_aspect
+        fig_height = map_height + 1.4
+
+        # Avoid pathological figures for unusual regional domains.
+        fig_height = float(np.clip(fig_height, 3.2, 7.0))
+
+        fig, ax = plt.subplots(
+            figsize=(fig_width, fig_height),
+            subplot_kw={"projection": ccrs.PlateCarree()},
         )
+        ax = cast(GeoAxes, ax)
+
+        if lon_span >= 350.0 and lat_span >= 170.0:
+            ax.set_global()
+
+        elif lon_span >= 350.0:
+            ax.set_extent(
+                [-180.0, 180.0, lat_min, lat_max],
+                crs=ccrs.PlateCarree(),
+            )
+
+        else:
+            ax.set_extent(
+                [lon_min, lon_max, lat_min, lat_max],
+                crs=ccrs.PlateCarree(),
+            )
 
         if plot_type == "pcolormesh":
             im = ax.pcolormesh(
@@ -745,7 +772,9 @@ def plot_map(
         gl.ylabel_style = {"size": 8}
 
     else:
-        fig, ax = plt.subplots(figsize=(9, 5.5))
+        fig, ax = plt.subplots(
+            figsize=(9, 5.5),
+        )
 
         if plot_kind == "time_lon":
             x_dim = lon
@@ -849,8 +878,14 @@ def plot_map(
         fig.suptitle(
             title,
             fontsize=10,
-            y=0.97,
+            y=0.98,
             linespacing=1.05,
+        )
+        fig.subplots_adjust(
+            top=0.86,
+            bottom=0.15,
+            left=0.06,
+            right=0.97,
         )
     else:
         ax.set_title(
@@ -862,9 +897,9 @@ def plot_map(
         im,
         ax=ax,
         orientation="horizontal",
-        pad=0.05 if plot_kind == "maps" else 0.13,
-        fraction=0.055 if plot_kind == "maps" else 0.15,
-        aspect=35 if plot_kind == "maps" else 20,
+        pad=0.07 if plot_kind == "maps" else 0.13,
+        fraction=0.045 if plot_kind == "maps" else 0.15,
+        aspect=40 if plot_kind == "maps" else 20,
         ticks=ticks,
         boundaries=ticks,
         spacing="uniform",
@@ -873,32 +908,16 @@ def plot_map(
     cb.set_label(cb_label)
     cb.ax.tick_params(labelsize=7)
 
-    if plot_kind == "maps":
-        fig.subplots_adjust(
-            top=0.86,
-            bottom=0.13,
-            left=0.055,
-            right=0.97,
-        )
-    else:
-        fig.subplots_adjust(
-            top=0.86,
-            bottom=0.18,
-            left=0.10,
-            right=0.96,
-        )
-
     out_file.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    plt.savefig(
+    fig.savefig(
         out_file,
         dpi=200,
-        bbox_inches="tight",
-        pad_inches=0.05,
     )
+
     plt.close(fig)
 
 
