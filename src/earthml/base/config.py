@@ -18,7 +18,10 @@ def get_experiment_configs(
     matching_settings: list[Settings] = []
 
     for config_path in config_paths:
-        s = Settings.from_json(config_path)
+        s = Settings.from_json(
+            config_path,
+            exp_root_dir=config_path.parent.parent,
+        )
 
         for name, expected in filters.items():
             if expected is None:

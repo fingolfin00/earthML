@@ -34,10 +34,7 @@ HASH_IGNORE = {
     "data_root_dir",
     "exp_root_dir",
     "plot_root_dir",
-    # "max_epochs",
-    # "early_stopping_patience",
     "torch_workers",
-    # "trainer_precision",
 }
 
 
@@ -87,7 +84,7 @@ class Settings:
 
     channel_representation: Literal["variable", "realization", "init_period"] = "variable"
     init_period_dim: ClimPeriod = ClimPeriod.MONTH
-    output_realizations: Literal["deterministic", "ensemble"] = "deterministic" # used only if channel_representation=="realization"
+    output_realizations: Literal["deterministic", "ensemble"] = "deterministic"
     split_strategy: SplitStrategy = "time"
     shuffle_train_batch: bool = True
     normalization: Literal["full", "monthly"] = "full"
@@ -96,9 +93,9 @@ class Settings:
     seasonal_encoding: bool = False
     ensemble_encoding: bool = False
 
-    net_name: Literal["SmaAt_UNet", "ConvNeXt"] = "SmaAt_UNet"
+    net_name: Literal["SmaAt_UNet", "ConvNeXtTransformerUNet"] = "SmaAt_UNet"
     loss_name: str = "MSELoss"
-    target_scale_degrees: int | float = 15.0 # only for GeoMaskedMSELowFreqLoss
+    loss_kwargs: dict = field(default_factory=dict)
 
     init_learning_rate: float = 3e-4
     weight_decay: float = 1e-4
@@ -122,8 +119,9 @@ class Settings:
 
     convnext_kwargs: dict = field(
         default_factory=lambda: {
-            "depths": (3, 3, 9, 3),
-            "dims": (96, 192, 384, 768),
+            "dims": (64, 128, 256, 512),
+            "encoder_depths": (3, 3, 9, 3),
+            "decoder_depths": (2, 3, 4),
             "drop_path_rate": 0.0,
             "layer_scale_init_value": 1e-6,
             "head_init_scale": 1.0,
@@ -136,10 +134,6 @@ class Settings:
 
     torch_workers: int = 8
     trainer_precision: TrainerPrecision = "16-mixed"
-
-    # ---------------------------
-    # Derived paths
-    # ---------------------------
 
     @property
     def data_dir(self) -> Path:
@@ -218,11 +212,7 @@ class Settings:
 
     @property
     def input_mlfc_clim(self) -> Path:
-        return self.output_clim_dir / f"train_corrected_clim.zarr"
-
-    # ---------------------------
-    # Derived names
-    # ---------------------------
+        return self.output_clim_dir / "train_corrected_clim.zarr"
 
     @property
     def output_name(self) -> str:
@@ -230,18 +220,9 @@ class Settings:
             self.var_fc,
             self.var_an,
             self.region_name,
-            (
-                f"tr{pd.Timestamp(self.train_start):%Y%m}-"
-                f"{pd.Timestamp(self.train_end):%Y%m}"
-            ),
-            (
-                f"va{pd.Timestamp(self.val_start):%Y%m}-"
-                f"{pd.Timestamp(self.val_end):%Y%m}"
-            ),
-            (
-                f"te{pd.Timestamp(self.test_start):%Y%m}-"
-                f"{pd.Timestamp(self.test_end):%Y%m}"
-            ),
+            f"tr{pd.Timestamp(self.train_start):%Y%m}-{pd.Timestamp(self.train_end):%Y%m}",
+            f"va{pd.Timestamp(self.val_start):%Y%m}-{pd.Timestamp(self.val_end):%Y%m}",
+            f"te{pd.Timestamp(self.test_start):%Y%m}-{pd.Timestamp(self.test_end):%Y%m}",
             str(self.target_mode),
         ]
 
@@ -273,6 +254,7 @@ class Settings:
             self.net_name.lower(),
             self.net_kwargs_suffix,
             self.loss_name.lower().replace("loss", ""),
+            self.loss_kwargs_suffix,
             f"bs{self.batch_size}",
             f"lr{self.init_learning_rate:.0e}",
             self.training_norm.lower(),
@@ -284,27 +266,16 @@ class Settings:
     @property
     def config_hash(self) -> str:
         config = asdict(self)
-
         for key in HASH_IGNORE:
             config.pop(key, None)
-
-        payload = json.dumps(
-            config,
-            sort_keys=True,
-            default=str,
-        )
-
+        payload = json.dumps(config, sort_keys=True, default=str)
         return hashlib.sha1(payload.encode()).hexdigest()[:6]
 
     @property
     def seasonal_leadtime_windows(self) -> dict[str, list[int | float]]:
         n = self.seasonal_window_size
-
         return {
-            "-".join(
-                str(lead + self.lead_period_offset)
-                for lead in window
-            ): list(window)
+            "-".join(str(lead + self.lead_period_offset) for lead in window): list(window)
             for window in (
                 self.leadtimes[i:i + n]
                 for i in range(len(self.leadtimes) - n + 1)
@@ -315,31 +286,50 @@ class Settings:
     def extra_net_kwargs(self):
         if self.net_name == "SmaAt_UNet":
             return self.smaatunet_kwargs
-        elif self.net_name == "ConvNeXt":
+        if self.net_name == "ConvNeXt":
             return self.convnext_kwargs
         raise ValueError(f"Unknown network {self.net_name}")
 
     @property
-    def net_kwargs_suffix(self) -> str:
+    def loss_kwargs_suffix(self) -> str:
+        if not self.loss_kwargs:
+            return ""
+
         abbreviations = {
-            "depth": "d",
-            "depths": "d",
-            "base_channels": "c",
-            "dims": "c",
-            "reduction_ratio": "rr",
-            "kernels_per_layer": "k",
-            "drop_path_rate": "dp",
-            "layer_scale_init_value": "ls",
-            "head_init_scale": "hs",
+            "spatial_patch_size_degrees": "ps",
+            "scales_degrees": "sd",
+            "scale_weights": "sw",
+            "cvar_fraction": "cf",
+            "lambda_cvar": "lc",
+            "lambda_degradation": "ld",
+            "degradation_fraction": "df",
+            "relative_floor_fraction": "rf",
+            "relative_floor_frac": "rf",
+            "lambda_multiscale": "lm",
+            "lambda_batch_mean": "lb",
+            "lambda_identity": "li",
+            "pool_stride": "st",
+            "delta": "d",
+            "variance_type": "vt",
+            "min_valid_count": "mvc",
+            "bias_scale": "bscale",
         }
 
+        excluded = {"eps"}
         parts = []
 
-        for key, value in self.extra_net_kwargs.items():
-            key = abbreviations.get(key, key)
+        for original_key in sorted(self.loss_kwargs):
+            if original_key in excluded:
+                continue
+
+            value = self.loss_kwargs[original_key]
+            key = abbreviations.get(original_key, original_key)
 
             if isinstance(value, (tuple, list)):
-                value = "-".join(map(str, value))
+                value = "-".join(
+                    f"{item:g}" if isinstance(item, float) else str(item)
+                    for item in value
+                )
             elif isinstance(value, float):
                 value = f"{value:g}"
 
@@ -347,9 +337,51 @@ class Settings:
 
         return "_".join(parts)
 
-    # ---------------------------
-    # Helpers
-    # ---------------------------
+    @property
+    def net_kwargs_suffix(self) -> str:
+        abbreviations = {
+            "depth": "d",
+            "encoder_depths": "ed",
+            "decoder_depths": "dd",
+            "base_channels": "c",
+            "dims": "c",
+            "reduction_ratio": "rr",
+            "kernels_per_layer": "k",
+            "drop_path_rate": "dp",
+            "layer_scale_init_value": "ls",
+        }
+        excluded = {
+            "zero_init_output",
+            "longitude_padding",
+            "layer_scale_init_value",
+        }
+        key_order = {
+            "encoder_depths": 0,
+            "decoder_depths": 1,
+            "dims": 2,
+            "depth": 3,
+            "base_channels": 4,
+            "reduction_ratio": 5,
+            "kernels_per_layer": 6,
+            "drop_path_rate": 7,
+        }
+        kwargs = self.extra_net_kwargs
+        ordered_keys = sorted(
+            kwargs,
+            key=lambda key: (key_order.get(key, 100), key),
+        )
+        parts = []
+        for original_key in ordered_keys:
+            if original_key in excluded:
+                continue
+            value = kwargs[original_key]
+            key = abbreviations.get(original_key, original_key)
+            if isinstance(value, (tuple, list)):
+                value = "-".join(map(str, value))
+            elif isinstance(value, float):
+                value = f"{value:g}"
+            parts.append(f"{key}{value}")
+        return "_".join(parts)
 
     def make_dirs(self) -> None:
         for directory in (
@@ -365,433 +397,310 @@ class Settings:
     def save_config(self) -> None:
         config = asdict(self)
         config["config_hash"] = self.config_hash
-
         with open(self.config_path, "w") as f:
-            json.dump(
-                config,
-                f,
-                indent=4,
-                sort_keys=True,
-                default=str,
-            )
+            json.dump(config, f, indent=4, sort_keys=True, default=str)
 
-    def _find_dataset(
-        self,
-        model: str,
-        var: str,
-    ) -> Path:
+    def _find_dataset(self, model: str, var: str) -> Path:
         base = self.input_dir / f"{model}_{var}"
-
         for ext in (".zarr", ".nc"):
             path = base.with_suffix(ext)
             if path.exists():
                 return path
-
         raise FileNotFoundError(f"No dataset found for {base} (.zarr or .nc)")
-
 
     @classmethod
     def from_json(cls, path: Path, **overrides) -> "Settings":
         with open(path) as f:
             config = json.load(f)
-
         config.pop("config_hash", None)
-
         path_fields = {
             "root_dir",
             "data_root_dir",
             "exp_root_dir",
             "plot_root_dir",
         }
-
         for name in path_fields:
             if config.get(name) is not None:
                 config[name] = Path(config[name])
-
         config.update(overrides)
-
         return cls(**config)
 
     @classmethod
     def field_names(cls) -> set[str]:
         return {f.name for f in fields(cls)}
 
-    def equals(
-        self,
-        other: "Settings",
-        *,
-        ignore: set[str] | None = None,
-    ) -> bool:
+    def equals(self, other: "Settings", *, ignore: set[str] | None = None) -> bool:
         ignore = ignore or set()
-
         unknown = ignore - self.field_names()
         if unknown:
             raise ValueError(f"Unknown fields: {unknown}")
-
         a = asdict(self)
         b = asdict(other)
-
-        for field in ignore:
-            a.pop(field, None)
-            b.pop(field, None)
-
+        for field_name in ignore:
+            a.pop(field_name, None)
+            b.pop(field_name, None)
         return a == b
 
-
-    def comparison_key(
-        self,
-        *,
-        ignore: set[str] | None = None,
-    ) -> str:
+    def comparison_key(self, *, ignore: set[str] | None = None) -> str:
         ignore = ignore or set()
-
         unknown = ignore - self.field_names()
         if unknown:
             raise ValueError(f"Unknown fields: {unknown}")
-
         config = asdict(self)
-
-        for field in ignore:
-            config.pop(field, None)
-
+        for field_name in ignore:
+            config.pop(field_name, None)
         return json.dumps(config, sort_keys=True, default=str)
 
-
-def __post_init__(self) -> None:
-    # ---------------------------
-    # Paths
-    # ---------------------------
-
-    if self.root_dir is None:
-        missing = [
-            name
-            for name in (
-                "data_root_dir",
-                "exp_root_dir",
-                "plot_root_dir",
-            )
-            if getattr(self, name) is None
-        ]
-        if missing:
-            raise ValueError(
-                "When root_dir is None, the following must be provided: "
-                + ", ".join(missing)
-            )
-
-    for name in (
-        "root_dir",
-        "data_root_dir",
-        "exp_root_dir",
-        "plot_root_dir",
-    ):
-        value = getattr(self, name)
-        if value is not None and not isinstance(value, Path):
-            raise TypeError(
-                f"{name} must be a pathlib.Path or None, "
-                f"got {type(value).__name__}."
-            )
-
-    # ---------------------------
-    # Strings and identifiers
-    # ---------------------------
-
-    for name in (
-        "var_file_fc",
-        "var_file_an",
-        "var_fc",
-        "var_an",
-        "model_fc",
-        "model_an",
-        "region_name",
-        "net_name",
-        "loss_name",
-        "training_norm",
-    ):
-        value = getattr(self, name)
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"{name} must be a non-empty string.")
-
-    if not isinstance(self.extra_suffix_folder, str):
-        raise TypeError("extra_suffix_folder must be a string.")
-
-    # ---------------------------
-    # Date ranges
-    # ---------------------------
-
-    date_names = (
-        "train_start",
-        "train_end",
-        "val_start",
-        "val_end",
-        "test_start",
-        "test_end",
-    )
-
-    dates: dict[str, pd.Timestamp] = {}
-
-    for name in date_names:
-        value = getattr(self, name)
-
-        try:
-            timestamp = pd.Timestamp(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"{name} must be a valid datetime-like value, got {value!r}."
-            ) from exc
-
-        if pd.isna(timestamp):
-            raise ValueError(f"{name} cannot be NaT.")
-
-        dates[name] = timestamp
-
-    if dates["train_start"] > dates["train_end"]:
-        raise ValueError("train_start must be before or equal to train_end.")
-
-    if dates["val_start"] > dates["val_end"]:
-        raise ValueError("val_start must be before or equal to val_end.")
-
-    if dates["test_start"] > dates["test_end"]:
-        raise ValueError("test_start must be before or equal to test_end.")
-
-    if dates["train_end"] >= dates["val_start"]:
-        raise ValueError(
-            "Training and validation periods overlap: "
-            "train_end must be earlier than val_start."
-        )
-
-    if dates["val_end"] >= dates["test_start"]:
-        raise ValueError(
-            "Validation and test periods overlap: "
-            "val_end must be earlier than test_start."
-        )
-
-    # ---------------------------
-    # Literal and enum settings
-    # ---------------------------
-
-    def check_literal(name: str, literal_type: object) -> None:
-        value = getattr(self, name)
-        allowed = get_args(literal_type)
-
-        if value not in allowed:
-            raise ValueError(
-                f"{name} must be one of {allowed}, got {value!r}."
-            )
-
-    check_literal("target_mode", TargetMode)
-    check_literal("output_realizations", Literal["deterministic", "ensemble"])
-    check_literal("split_strategy", SplitStrategy)
-    check_literal("normalization", Literal["full", "monthly"])
-    check_literal("normalization_mode", NormalizationMode)
-    check_literal("torch_mask", Literal["target", "input", "both"])
-    check_literal("trainer_precision", TrainerPrecision)
-
-    if not isinstance(self.leadtime_unit, LeadtimeUnit):
-        try:
-            LeadtimeUnit(self.leadtime_unit)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"leadtime_unit must be one of "
-                f"{tuple(member.value for member in LeadtimeUnit)}, "
-                f"got {self.leadtime_unit!r}."
-            ) from exc
-
-    if not isinstance(self.clim_period, ClimPeriod):
-        try:
-            ClimPeriod(self.clim_period)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"clim_period must be one of "
-                f"{tuple(member.value for member in ClimPeriod)}, "
-                f"got {self.clim_period!r}."
-            ) from exc
-
-    # ---------------------------
-    # Lead times and region
-    # ---------------------------
-
-    if not isinstance(self.lead_period_offset, int):
-        raise TypeError("lead_period_offset must be an integer.")
-
-    if not isinstance(self.leadtimes, list):
-        raise TypeError("leadtimes must be a list.")
-
-    if not self.leadtimes:
-        raise ValueError("leadtimes cannot be empty.")
-
-    if any(
-        isinstance(value, bool) or not isinstance(value, (int, float))
-        for value in self.leadtimes
-    ):
-        raise TypeError(
-            "Every leadtime must be an int or float, excluding bool."
-        )
-
-    if any(not math.isfinite(float(value)) for value in self.leadtimes):
-        raise ValueError("leadtimes cannot contain NaN values.")
-
-    if len(set(self.leadtimes)) != len(self.leadtimes):
-        raise ValueError("leadtimes cannot contain duplicate values.")
-
-    if not isinstance(self.seasonal_window_size, int):
-        raise TypeError("seasonal_window_size must be an integer.")
-
-    if self.seasonal_window_size < 1:
-        raise ValueError("seasonal_window_size must be at least 1.")
-
-    if self.seasonal_window_size > len(self.leadtimes):
-        raise ValueError(
-            "seasonal_window_size cannot exceed the number of leadtimes."
-        )
-
-    if self.region is not None:
-        if not isinstance(self.region, dict):
-            raise TypeError("region must be a dictionary or None.")
-
-        allowed_region_keys = {"latitude", "longitude"}
-        unknown_keys = set(self.region) - allowed_region_keys
-
-        if unknown_keys:
-            raise ValueError(
-                f"Unknown region coordinates: {sorted(unknown_keys)}. "
-                f"Expected only {sorted(allowed_region_keys)}."
-            )
-
-        for coordinate, bounds in self.region.items():
-            if (
-                not isinstance(bounds, tuple)
-                or len(bounds) != 2
-                or any(
-                    isinstance(value, bool)
-                    or not isinstance(value, (int, float))
-                    for value in bounds
+    def __post_init__(self) -> None:
+        if self.root_dir is None:
+            missing = [
+                name
+                for name in (
+                    "data_root_dir",
+                    "exp_root_dir",
+                    "plot_root_dir",
                 )
-            ):
+                if getattr(self, name) is None
+            ]
+            if missing:
+                raise ValueError(
+                    "When root_dir is None, the following must be provided: "
+                    + ", ".join(missing)
+                )
+
+        for name in (
+            "root_dir",
+            "data_root_dir",
+            "exp_root_dir",
+            "plot_root_dir",
+        ):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, Path):
                 raise TypeError(
-                    f"region[{coordinate!r}] must be a tuple of two numbers."
+                    f"{name} must be a pathlib.Path or None, "
+                    f"got {type(value).__name__}."
                 )
 
-            lower, upper = bounds
+        for name in (
+            "var_file_fc",
+            "var_file_an",
+            "var_fc",
+            "var_an",
+            "model_fc",
+            "model_an",
+            "region_name",
+            "net_name",
+            "loss_name",
+            "training_norm",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string.")
 
-            if lower >= upper:
-                raise ValueError(
-                    f"region[{coordinate!r}] lower bound must be "
-                    f"smaller than its upper bound."
-                )
+        if not isinstance(self.loss_kwargs, dict):
+            raise TypeError("loss_kwargs must be a dictionary.")
 
-            if coordinate == "latitude" and not (
-                -90 <= lower <= 90 and -90 <= upper <= 90
-            ):
-                raise ValueError(
-                    "Latitude bounds must lie within [-90, 90]."
-                )
+        if not isinstance(self.extra_suffix_folder, str):
+            raise TypeError("extra_suffix_folder must be a string.")
 
-            if coordinate == "longitude" and not (
-                -360 <= lower <= 360 and -360 <= upper <= 360
-            ):
-                raise ValueError(
-                    "Longitude bounds must lie within [-360, 360]."
-                )
-
-    # ---------------------------
-    # Boolean options
-    # ---------------------------
-
-    for name in (
-        "seasonal_encoding",
-        "ensemble_encoding",
-        "target_realization_avg",
-    ):
-        if not isinstance(getattr(self, name), bool):
-            raise TypeError(f"{name} must be a bool.")
-
-    if (
-        self.output_realizations == "ensemble"
-        and self.channel_representation=="realization"
-    ):
-        raise ValueError(
-            "output_realizations='ensemble' requires "
-            "channel_representation='realization."
+        date_names = (
+            "train_start",
+            "train_end",
+            "val_start",
+            "val_end",
+            "test_start",
+            "test_end",
         )
+        dates: dict[str, pd.Timestamp] = {}
+        for name in date_names:
+            value = getattr(self, name)
+            try:
+                timestamp = pd.Timestamp(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"{name} must be a valid datetime-like value, got {value!r}."
+                ) from exc
+            if pd.isna(timestamp):
+                raise ValueError(f"{name} cannot be NaT.")
+            dates[name] = timestamp
 
-    # ---------------------------
-    # Numeric training settings
-    # ---------------------------
+        if dates["train_start"] > dates["train_end"]:
+            raise ValueError("train_start must be before or equal to train_end.")
+        if dates["val_start"] > dates["val_end"]:
+            raise ValueError("val_start must be before or equal to val_end.")
+        if dates["test_start"] > dates["test_end"]:
+            raise ValueError("test_start must be before or equal to test_end.")
+        if dates["train_end"] >= dates["val_start"]:
+            raise ValueError(
+                "Training and validation periods overlap: "
+                "train_end must be earlier than val_start."
+            )
+        if dates["val_end"] >= dates["test_start"]:
+            raise ValueError(
+                "Validation and test periods overlap: "
+                "val_end must be earlier than test_start."
+            )
 
-    positive_int_fields = (
-        "seed",
-        "batch_size",
-        "max_epochs",
-        "depth",
-        "reduction_ratio",
-        "kernels_per_layer",
-        "base_channels",
-        "accumulate_grad_batches",
-        "early_stopping_patience",
-    )
+        def check_literal(name: str, literal_type: object) -> None:
+            value = getattr(self, name)
+            allowed = get_args(literal_type)
+            if value not in allowed:
+                raise ValueError(
+                    f"{name} must be one of {allowed}, got {value!r}."
+                )
 
-    for name in positive_int_fields:
-        value = getattr(self, name)
+        check_literal("target_mode", TargetMode)
+        check_literal("output_realizations", Literal["deterministic", "ensemble"])
+        check_literal("split_strategy", SplitStrategy)
+        check_literal("normalization", Literal["full", "monthly"])
+        check_literal("normalization_mode", NormalizationMode)
+        check_literal("torch_mask", Literal["target", "input", "both"])
+        check_literal("trainer_precision", TrainerPrecision)
 
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise TypeError(f"{name} must be an integer.")
+        if not isinstance(self.leadtime_unit, LeadtimeUnit):
+            try:
+                LeadtimeUnit(self.leadtime_unit)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"leadtime_unit must be one of "
+                    f"{tuple(member.value for member in LeadtimeUnit)}, "
+                    f"got {self.leadtime_unit!r}."
+                ) from exc
 
-        if name == "seed":
-            if value < 0:
-                raise ValueError("seed must be non-negative.")
-        elif value <= 0:
-            raise ValueError(f"{name} must be positive.")
+        if not isinstance(self.clim_period, ClimPeriod):
+            try:
+                ClimPeriod(self.clim_period)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"clim_period must be one of "
+                    f"{tuple(member.value for member in ClimPeriod)}, "
+                    f"got {self.clim_period!r}."
+                ) from exc
 
-    if (
-        isinstance(self.torch_workers, bool)
-        or not isinstance(self.torch_workers, int)
-    ):
-        raise TypeError("torch_workers must be an integer.")
+        if not isinstance(self.lead_period_offset, int):
+            raise TypeError("lead_period_offset must be an integer.")
+        if not isinstance(self.leadtimes, list):
+            raise TypeError("leadtimes must be a list.")
+        if not self.leadtimes:
+            raise ValueError("leadtimes cannot be empty.")
+        if any(
+            isinstance(value, bool) or not isinstance(value, (int, float))
+            for value in self.leadtimes
+        ):
+            raise TypeError("Every leadtime must be an int or float, excluding bool.")
+        if any(not math.isfinite(float(value)) for value in self.leadtimes):
+            raise ValueError("leadtimes cannot contain NaN values.")
+        if len(set(self.leadtimes)) != len(self.leadtimes):
+            raise ValueError("leadtimes cannot contain duplicate values.")
 
-    if self.torch_workers < 0:
-        raise ValueError("torch_workers must be non-negative.")
+        if not isinstance(self.seasonal_window_size, int):
+            raise TypeError("seasonal_window_size must be an integer.")
+        if self.seasonal_window_size < 1:
+            raise ValueError("seasonal_window_size must be at least 1.")
+        if self.seasonal_window_size > len(self.leadtimes):
+            raise ValueError(
+                "seasonal_window_size cannot exceed the number of leadtimes."
+            )
 
-    positive_float_fields = (
-        "init_learning_rate",
-        "weight_decay",
-    )
+        if self.region is not None:
+            if not isinstance(self.region, dict):
+                raise TypeError("region must be a dictionary or None.")
+            allowed_region_keys = {"latitude", "longitude"}
+            unknown_keys = set(self.region) - allowed_region_keys
+            if unknown_keys:
+                raise ValueError(
+                    f"Unknown region coordinates: {sorted(unknown_keys)}. "
+                    f"Expected only {sorted(allowed_region_keys)}."
+                )
+            for coordinate, bounds in self.region.items():
+                if (
+                    not isinstance(bounds, tuple)
+                    or len(bounds) != 2
+                    or any(
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        for value in bounds
+                    )
+                ):
+                    raise TypeError(
+                        f"region[{coordinate!r}] must be a tuple of two numbers."
+                    )
+                lower, upper = bounds
+                if lower >= upper:
+                    raise ValueError(
+                        f"region[{coordinate!r}] lower bound must be smaller than its upper bound."
+                    )
+                if coordinate == "latitude" and not (
+                    -90 <= lower <= 90 and -90 <= upper <= 90
+                ):
+                    raise ValueError("Latitude bounds must lie within [-90, 90].")
+                if coordinate == "longitude" and not (
+                    -360 <= lower <= 360 and -360 <= upper <= 360
+                ):
+                    raise ValueError("Longitude bounds must lie within [-360, 360].")
 
-    for name in positive_float_fields:
-        value = getattr(self, name)
+        for name in (
+            "seasonal_encoding",
+            "ensemble_encoding",
+            "target_realization_avg",
+        ):
+            if not isinstance(getattr(self, name), bool):
+                raise TypeError(f"{name} must be a bool.")
 
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise TypeError(f"{name} must be numeric.")
+        if (
+            self.output_realizations == "ensemble"
+            and self.channel_representation == "realization"
+        ):
+            raise ValueError(
+                "output_realizations='ensemble' requires "
+                "channel_representation='realization.'"
+            )
 
-        if not math.isfinite(float(value)):
-            raise ValueError(f"{name} must be finite.")
+        positive_int_fields = (
+            "seed",
+            "batch_size",
+            "max_epochs",
+            "accumulate_grad_batches",
+            "early_stopping_patience",
+        )
+        for name in positive_int_fields:
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{name} must be an integer.")
+            if name == "seed":
+                if value < 0:
+                    raise ValueError("seed must be non-negative.")
+            elif value <= 0:
+                raise ValueError(f"{name} must be positive.")
 
-        if name == "weight_decay":
-            if value < 0:
-                raise ValueError("weight_decay must be non-negative.")
-        elif value <= 0:
-            raise ValueError(f"{name} must be positive.")
+        if isinstance(self.torch_workers, bool) or not isinstance(self.torch_workers, int):
+            raise TypeError("torch_workers must be an integer.")
+        if self.torch_workers < 0:
+            raise ValueError("torch_workers must be non-negative.")
 
-    if (
-        isinstance(self.train_fraction, bool)
-        or not isinstance(self.train_fraction, (int, float))
-    ):
-        raise TypeError("train_fraction must be numeric.")
+        for name in ("init_learning_rate", "weight_decay"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise TypeError(f"{name} must be numeric.")
+            if not math.isfinite(float(value)):
+                raise ValueError(f"{name} must be finite.")
+            if name == "weight_decay":
+                if value < 0:
+                    raise ValueError("weight_decay must be non-negative.")
+            elif value <= 0:
+                raise ValueError(f"{name} must be positive.")
 
-    if not 0 < self.train_fraction <= 1:
-        raise ValueError("train_fraction must be in (0, 1].")
+        if isinstance(self.train_fraction, bool) or not isinstance(self.train_fraction, (int, float)):
+            raise TypeError("train_fraction must be numeric.")
+        if not 0 < self.train_fraction <= 1:
+            raise ValueError("train_fraction must be in (0, 1].")
 
-    if (
-        isinstance(self.fill_nan_value, bool)
-        or not isinstance(self.fill_nan_value, (int, float))
-    ):
-        raise TypeError("fill_nan_value must be numeric.")
+        if isinstance(self.fill_nan_value, bool) or not isinstance(self.fill_nan_value, (int, float)):
+            raise TypeError("fill_nan_value must be numeric.")
+        if not math.isfinite(float(self.fill_nan_value)):
+            raise ValueError("fill_nan_value must be finite.")
 
-    if not math.isfinite(float(self.fill_nan_value)):
-        raise ValueError("fill_nan_value must be finite.")
-
-    # ---------------------------
-    # Network consistency
-    # ---------------------------
-
-    if self.depth < 2:
-        raise ValueError("depth must be at least 2.")
+        if not isinstance(self.smaatunet_kwargs, dict):
+            raise TypeError("smaatunet_kwargs must be a dictionary.")
+        if not isinstance(self.convnext_kwargs, dict):
+            raise TypeError("convnext_kwargs must be a dictionary.")
