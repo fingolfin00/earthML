@@ -3,7 +3,7 @@ from typing import Any, Type
 
 _NETS: dict[str, str] = {
     "SmaAt_UNet": "earthml.neural.nets.smaatunet:SmaAt_UNet",
-    "ConvNeXt": "earthml.neural.nets.convnext:ConvNeXt",
+    "ConvNeXtTransformerUNet": "earthml.neural.nets.convnext:ConvNeXtTransformerUNet",
     "WeatherUNet": "earthml.neural.nets.weatherunet:WeatherUNet",
     "GNN": "earthml.neural.nets.gnn:GNN",
 }
