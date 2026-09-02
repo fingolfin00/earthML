@@ -676,7 +676,7 @@ class Settings:
         if self.region is not None:
             if not isinstance(self.region, dict):
                 raise TypeError("region must be a dictionary or None.")
-            allowed_region_keys = {"latitude", "longitude"}
+            allowed_region_keys = {"latitude", "lat", "longitude", "lon"}
             unknown_keys = set(self.region) - allowed_region_keys
             if unknown_keys:
                 raise ValueError(
@@ -685,7 +685,7 @@ class Settings:
                 )
             for coordinate, bounds in self.region.items():
                 if (
-                    not isinstance(bounds, tuple)
+                    not isinstance(bounds, (tuple, list))
                     or len(bounds) != 2
                     or any(
                         isinstance(value, bool)
@@ -694,21 +694,29 @@ class Settings:
                     )
                 ):
                     raise TypeError(
-                        f"region[{coordinate!r}] must be a tuple of two numbers."
+                        f"region[{coordinate!r}] must be a pair of two numbers."
                     )
-                lower, upper = bounds
-                if lower >= upper:
+
+                start, end = bounds
+
+                if start == end:
                     raise ValueError(
-                        f"region[{coordinate!r}] lower bound must be smaller than its upper bound."
+                        f"region[{coordinate!r}] bounds must be different."
                     )
-                if coordinate == "latitude" and not (
-                    -90 <= lower <= 90 and -90 <= upper <= 90
+
+                if coordinate in {"latitude", "lat"} and not (
+                    -90 <= start <= 90 and -90 <= end <= 90
                 ):
-                    raise ValueError("Latitude bounds must lie within [-90, 90].")
-                if coordinate == "longitude" and not (
-                    -360 <= lower <= 360 and -360 <= upper <= 360
+                    raise ValueError(
+                        "Latitude bounds must lie within [-90, 90]."
+                    )
+
+                if coordinate in {"longitude", "lon"} and not (
+                    -360 <= start <= 360 and -360 <= end <= 360
                 ):
-                    raise ValueError("Longitude bounds must lie within [-360, 360].")
+                    raise ValueError(
+                        "Longitude bounds must lie within [-360, 360]."
+                    )
 
         for name in (
             "seasonal_encoding",
