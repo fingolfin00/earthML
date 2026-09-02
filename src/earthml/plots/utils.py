@@ -667,6 +667,25 @@ def plot_map(
         )
         ax = cast(GeoAxes, ax)
 
+        lon_values = np.asarray(da[lon].values, dtype=float)
+        lat_values = np.asarray(da[lat].values, dtype=float)
+
+        finite_lon = lon_values[np.isfinite(lon_values)]
+        finite_lat = lat_values[np.isfinite(lat_values)]
+
+        if finite_lon.size == 0 or finite_lat.size == 0:
+            raise ValueError("Latitude or longitude coordinates contain no finite values")
+
+        lon_min = float(finite_lon.min())
+        lon_max = float(finite_lon.max())
+        lat_min = float(finite_lat.min())
+        lat_max = float(finite_lat.max())
+
+        ax.set_extent(
+            [lon_min, lon_max, lat_min, lat_max],
+            crs=ccrs.PlateCarree(),
+        )
+
         if plot_type == "pcolormesh":
             im = ax.pcolormesh(
                 da[lon],
@@ -820,11 +839,23 @@ def plot_map(
         "time_lat": "time-latitude",
     }[plot_kind]
 
-    ax.set_title(
+    title = (
         f"{VARIABLE_NAMES[var]} · {model} · {plot_kind_label} · "
         f"{start_time}-{end_time} · {period_dim}={start_period}\n"
         f"leadtime={label_lt} {leadtime_units} · {summary}"
     )
+
+    if plot_kind == "maps":
+        fig.suptitle(
+            title,
+            fontsize=11,
+            y=0.98,
+        )
+    else:
+        ax.set_title(
+            title,
+            pad=10,
+        )
 
     cb = fig.colorbar(
         im,
@@ -839,16 +870,29 @@ def plot_map(
     cb.set_label(cb_label)
     cb.ax.tick_params(labelsize=7)
 
+    if plot_kind == "maps":
+        fig.subplots_adjust(
+            top=0.84,
+            bottom=0.18,
+            left=0.08,
+            right=0.96,
+        )
+    else:
+        fig.subplots_adjust(
+            top=0.86,
+            bottom=0.18,
+            left=0.10,
+            right=0.96,
+        )
+
     out_file.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    plt.tight_layout()
     plt.savefig(
         out_file,
         dpi=200,
-        bbox_inches="tight",
     )
     plt.close(fig)
 
