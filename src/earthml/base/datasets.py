@@ -195,7 +195,7 @@ def get_and_subset_datasets(
         open_engine = open_nc
         open_engine_var = open_nc_var
     else:
-        raise ValueErrot(f"Engine {engine} not supported, choose between [netcdf, zarr]")
+        raise ValueError(f"Engine {engine} not supported, choose between [netcdf, zarr]")
 
     fc_da = open_engine_var(s.input_fc, s.var_fc)
     an_da = open_engine_var(s.input_an, s.var_an)
@@ -223,7 +223,7 @@ def get_and_subset_datasets(
             lead_period_offset=s.lead_period_offset,
         )
     fc = subset_dataset(
-        fc_da.to_dataset(name=s.var_file_an),
+        fc_da.to_dataset(name=s.var_file_fc),
         lat_range=lat_range,
         lon_range=lon_range,
         time_range=time_range,
@@ -231,7 +231,7 @@ def get_and_subset_datasets(
     )
 
     an = subset_dataset(
-        an_da.to_dataset(name=s.var_file_fc),
+        an_da.to_dataset(name=s.var_file_an),
         lat_range=lat_range,
         lon_range=lon_range,
         time_range=time_range,
@@ -291,7 +291,11 @@ def subset_dataset(
     time_start: str | None = None,
     freq: str = "YS",
 ) -> xr.Dataset:
-    time_start = time_range[0] if (time_start is None and time_range is not None) else time_start
+    time_start = (
+        time_range[0]
+        if time_start is None and time_range is not None
+        else time_start
+    )
 
     if time_start is not None:
         ds = ensure_time_coord(ds, start=time_start, freq=freq)
@@ -300,6 +304,7 @@ def subset_dataset(
 
     if lat_range is not None:
         lat_dim = ds.earthml.guessed_dims.latitude
+
         if lat_dim in ds.coords and ds.sizes[lat_dim] > 0:
             lat_coord = ds[lat_dim]
             ascending = bool(lat_coord[0] < lat_coord[-1])
@@ -312,25 +317,36 @@ def subset_dataset(
 
     if lon_range is not None:
         lon_dim = ds.earthml.guessed_dims.longitude
+
         if lon_dim in ds.coords and ds.sizes[lon_dim] > 0:
             lon_coord = ds[lon_dim]
-            (lon0, lon1), wrap = normalize_lon_range(lon_range, lon_coord)
+            (lon0, lon1), wrap = normalize_lon_range(
+                lon_range,
+                lon_coord,
+            )
 
             if wrap:
                 mask = (lon_coord >= lon0) | (lon_coord <= lon1)
             else:
                 mask = (lon_coord >= lon0) & (lon_coord <= lon1)
 
-            # print("lon input:", lon_range)
-            # print("lon coord min/max:", float(lon_coord.min()), float(lon_coord.max()))
-            # print("normalized:", (lon0, lon1), "wrap:", wrap)
-            # print("selected lon count:", int(mask.sum()))
-
             ds = ds.where(mask, drop=True)
 
     time_dim = ds.earthml.guessed_dims.time
+
     if time_range is not None and time_dim in ds.coords:
-        selectors[time_dim] = slice(*time_range)
+        time_coord = ds[time_dim]
+
+        if ds.sizes[time_dim] > 0:
+            ascending = bool(time_coord[0] < time_coord[-1])
+
+            start, end = time_range
+
+            selectors[time_dim] = (
+                slice(min(start, end), max(start, end))
+                if ascending
+                else slice(max(start, end), min(start, end))
+            )
 
     return ds.sel(selectors)
 
