@@ -1,3 +1,5 @@
+from typing import Literal
+
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -491,7 +493,7 @@ METRIC_IMPROVEMENT = {
     "roc_anom_upper": HIGHER_BETTER,
 }
 
-METRIC_SKILL_UNITS = {
+METRIC_SKILL_UNITS: dict[str, Literal["%", "Δ"]] = {
     # Percent improvement
     "bias": "%",
     "bias_anom": "%",
