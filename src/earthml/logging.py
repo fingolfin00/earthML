@@ -1,182 +1,61 @@
 import logging
-import re
 import sys
-from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator, Optional, Tuple, Union
+from typing import Any
 
 from rich.console import Console
 from rich.logging import RichHandler
 
 
-DEFAULT_LOG_FORMAT = "%(message)s"
-DEFAULT_FILE_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
-DEFAULT_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 DEFAULT_LOGGER_NAME = "earthml"
+DEFAULT_LOG_FORMAT = "%(message)s"
+DEFAULT_FILE_FORMAT = (
+    "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+)
+DEFAULT_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
 _SHARED_CONSOLE = Console(stderr=True)
-_TEXT_CONSOLE = Console(file=sys.stderr, force_terminal=False, color_system=None, width=120)
+
+_TEXT_CONSOLE = Console(
+    file=sys.stderr,
+    force_terminal=False,
+    color_system=None,
+    width=120,
+)
 
 
-def _sanitize_path_fragment(value: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip())
-    return cleaned.strip("._") or "experiment"
-
-
-def _next_available_log_path(log_path: Union[str, Path]) -> Path:
-    candidate = Path(log_path)
-    stem = candidate.stem or "experiment"
-    suffix = candidate.suffix
-    counter = 0
-    while True:
-        numbered_candidate = candidate.with_name(f"{stem}_{counter:03d}{suffix}")
-        if not numbered_candidate.exists():
-            return numbered_candidate
-        counter += 1
-
-
-@dataclass(slots=True)
-class LoggingPaths:
-    experiment_dir: Path
-    log_dir: Path
-    log_file: Path
-
-
-@dataclass(slots=True)
-class LoggingConfig:
-    level: Union[int, str] = logging.INFO
-    file_level: Union[int, str] = logging.DEBUG
-    logger_name: str = DEFAULT_LOGGER_NAME
-    console: Optional[Console] = None
-    use_rich_console: bool = True
-    console_markup: bool = True
-    show_time: bool = False
-    show_level: bool = False
-    show_path: bool = False
-    capture_warnings: bool = True
-
-
-def build_experiment_logging_paths(
-    experiment_root: Union[str, Path],
-    experiment_name: str,
-    run_name: Optional[str] = None,
-    *,
-    log_dir_name: str = "logs",
-    filename: Optional[str] = None,
-    timestamp: Optional[str] = None,
-) -> LoggingPaths:
-    experiment_dir = Path(experiment_root) / _sanitize_path_fragment(experiment_name)
-    log_dir = experiment_dir / log_dir_name
-    stamp = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_fragment = _sanitize_path_fragment(run_name) if run_name else stamp
-    log_file = _next_available_log_path(log_dir / (filename or f"{run_fragment}.log"))
-    return LoggingPaths(experiment_dir=experiment_dir, log_dir=log_dir, log_file=log_file)
-
-
-def _coerce_level(level: Union[int, str]) -> int:
+def _coerce_level(level: int | str) -> int:
     if isinstance(level, int):
         return level
-    return logging._nameToLevel.get(level.upper(), logging.INFO)
+
+    return logging._nameToLevel.get(
+        level.upper(),
+        logging.INFO,
+    )
 
 
-def _remove_managed_handlers(logger: logging.Logger) -> None:
-    handlers_to_remove: list[logging.Handler] = []
-    for handler in logger.handlers:
-        if getattr(handler, "_earthml_managed", False):
-            handlers_to_remove.append(handler)
-
-    for handler in handlers_to_remove:
-        logger.removeHandler(handler)
-        handler.close()
-
-
-def configure_logging(config: Optional[LoggingConfig] = None) -> logging.Logger:
-    config = config or LoggingConfig()
-    console_level = _coerce_level(config.level)
-    file_level = _coerce_level(config.file_level)
-
-    logger = logging.getLogger(config.logger_name)
-    logger.setLevel(min(console_level, file_level))
-    logger.propagate = False
-
-    _remove_managed_handlers(logger)
-
-    if config.use_rich_console:
-        console_handler = RichHandler(
-            console=config.console or _SHARED_CONSOLE,
-            markup=config.console_markup,
-            rich_tracebacks=True,
-            show_time=config.show_time,
-            show_level=config.show_level,
-            show_path=config.show_path,
-        )
-    else:
-        console_handler = logging.StreamHandler()
-
-    console_handler.setLevel(console_level)
-    console_handler.setFormatter(logging.Formatter(DEFAULT_LOG_FORMAT, datefmt=DEFAULT_DATE_FORMAT))
-    console_handler._earthml_managed = True
-    logger.addHandler(console_handler)
-
-    if config.capture_warnings:
-        logging.captureWarnings(True)
+def _unwrap_logger(
+    logger: "EarthMLLogger | logging.Logger",
+) -> logging.Logger:
+    if isinstance(logger, EarthMLLogger):
+        return logger.raw
 
     return logger
 
 
-def add_experiment_file_handler(
+def _iter_effective_handlers(
     logger: logging.Logger,
-    log_file: Union[str, Path],
-    *,
-    level: Optional[Union[int, str]] = logging.DEBUG,
-    mode: str = "a",
-) -> Path:
-    log_path = _next_available_log_path(log_file)
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-
-    file_handler = logging.FileHandler(log_path, mode=mode)
-    file_handler.setLevel(_coerce_level(logging.DEBUG if level is None else level))
-    file_handler.setFormatter(logging.Formatter(DEFAULT_FILE_FORMAT, datefmt=DEFAULT_DATE_FORMAT))
-    file_handler._earthml_managed = True
-    file_handler._earthml_file_path = str(log_path)
-    logger.addHandler(file_handler)
-    return log_path
-
-
-def remove_experiment_file_handler(
-    logger: logging.Logger,
-    log_file: Union[str, Path],
-) -> None:
-    log_path = str(Path(log_file))
-    handlers_to_remove = []
-
-    for handler in logger.handlers:
-        if getattr(handler, "_earthml_file_path", None) == log_path:
-            handlers_to_remove.append(handler)
-
-    for handler in handlers_to_remove:
-        logger.removeHandler(handler)
-        handler.close()
-
-
-def get_logger(name: Optional[str] = None) -> logging.Logger:
-    return logging.getLogger(name or DEFAULT_LOGGER_NAME)
-
-
-def get_console() -> Console:
-    return _SHARED_CONSOLE
-
-
-def _iter_effective_handlers(logger: logging.Logger) -> Iterator[logging.Handler]:
+):
     seen: set[int] = set()
-    current: Optional[logging.Logger] = logger
+    current: logging.Logger | None = logger
 
     while current is not None:
         for handler in current.handlers:
             handler_id = id(handler)
+
             if handler_id in seen:
                 continue
+
             seen.add(handler_id)
             yield handler
 
@@ -186,104 +65,373 @@ def _iter_effective_handlers(logger: logging.Logger) -> Iterator[logging.Handler
         current = current.parent
 
 
-def is_console_enabled_for(
+def _remove_managed_handlers(
     logger: logging.Logger,
-    level: Union[int, str],
-) -> bool:
-    target_level = _coerce_level(level)
+) -> None:
+    handlers = [
+        handler
+        for handler in logger.handlers
+        if getattr(handler, "_earthml_managed", False)
+    ]
 
-    for handler in _iter_effective_handlers(logger):
-        if getattr(handler, "_earthml_file_path", None) is not None:
-            continue
-        if handler.level <= target_level:
-            return True
-
-    return False
+    for handler in handlers:
+        logger.removeHandler(handler)
+        handler.close()
 
 
-def _render_to_text(renderable: Any) -> str:
+def _render_to_text(
+    *args: Any,
+    sep: str = " ",
+    end: str = "\n",
+) -> str:
     with _TEXT_CONSOLE.capture() as capture:
-        _TEXT_CONSOLE.print(renderable)
-    return capture.get().rstrip()
+        _TEXT_CONSOLE.print(
+            *args,
+            sep=sep,
+            end=end,
+        )
+
+    return capture.get().rstrip("\n")
 
 
 def log_renderable(
     renderable: Any,
     *,
-    logger: Optional[logging.Logger] = None,
-    level: Union[int, str] = logging.INFO,
+    logger: "EarthMLLogger | logging.Logger | None" = None,
+    level: int | str = logging.INFO,
 ) -> None:
     logger = logger or get_logger()
-    log_level = _coerce_level(level)
-    rendered_text = _render_to_text(renderable)
+    logger.print(
+        renderable,
+        level=level,
+    )
 
-    rich_handlers = []
-    other_handlers = []
-    for handler in _iter_effective_handlers(logger):
-        if handler.level > log_level:
-            continue
-        if isinstance(handler, RichHandler):
-            rich_handlers.append(handler)
+
+class EarthMLLogger:
+    """
+    Small wrapper around logging.Logger with print-like output.
+
+    Examples
+    --------
+    logger.print("Month", month)
+    logger.print("loss:", loss)
+    logger.print(rich_table)
+
+    logger.info("Starting experiment %s", experiment_name)
+    logger.warning("Missing file: %s", path)
+    logger.exception("Training failed")
+    """
+
+    def __init__(
+        self,
+        logger: logging.Logger,
+    ) -> None:
+        self._logger = logger
+
+    @property
+    def raw(self) -> logging.Logger:
+        return self._logger
+
+    @property
+    def name(self) -> str:
+        return self._logger.name
+
+    def print(
+        self,
+        *args: Any,
+        sep: str = " ",
+        end: str = "\n",
+        level: int | str = logging.INFO,
+    ) -> None:
+        """
+        Print values like built-in print(), while also saving plain text
+        to file handlers.
+        """
+        log_level = _coerce_level(level)
+
+        if not self._logger.isEnabledFor(log_level):
+            return
+
+        rendered_text = _render_to_text(
+            *args,
+            sep=sep,
+            end=end,
+        )
+
+        rich_handlers: list[RichHandler] = []
+        other_handlers: list[logging.Handler] = []
+
+        for handler in _iter_effective_handlers(self._logger):
+            if handler.level > log_level:
+                continue
+
+            if isinstance(handler, RichHandler):
+                rich_handlers.append(handler)
+            else:
+                other_handlers.append(handler)
+
+        if rich_handlers:
+            for handler in rich_handlers:
+                handler.console.print(
+                    *args,
+                    sep=sep,
+                    end=end,
+                )
         else:
-            other_handlers.append(handler)
+            _SHARED_CONSOLE.print(
+                *args,
+                sep=sep,
+                end=end,
+            )
 
-    if rich_handlers:
-        for handler in rich_handlers:
-            handler.console.print(renderable)
-    else:
-        _SHARED_CONSOLE.print(renderable)
+        if not rendered_text:
+            return
 
-    if rendered_text:
-        record = logger.makeRecord(
-            logger.name,
-            log_level,
+        record = self._logger.makeRecord(
+            name=self._logger.name,
+            level=log_level,
             fn="",
             lno=0,
-            msg="\n%s",
+            msg="%s",
             args=(rendered_text,),
             exc_info=None,
         )
+
         for handler in other_handlers:
             handler.handle(record)
 
+    def debug(
+        self,
+        message: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        self._logger.debug(
+            message,
+            *args,
+            **kwargs,
+        )
 
-@contextmanager
-def experiment_logging(
-    experiment_root: Union[str, Path],
-    experiment_name: str,
-    run_name: Optional[str] = None,
+    def info(
+        self,
+        message: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        self._logger.info(
+            message,
+            *args,
+            **kwargs,
+        )
+
+    def warning(
+        self,
+        message: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        self._logger.warning(
+            message,
+            *args,
+            **kwargs,
+        )
+
+    def error(
+        self,
+        message: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        self._logger.error(
+            message,
+            *args,
+            **kwargs,
+        )
+
+    def critical(
+        self,
+        message: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        self._logger.critical(
+            message,
+            *args,
+            **kwargs,
+        )
+
+    def exception(
+        self,
+        message: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        self._logger.exception(
+            message,
+            *args,
+            **kwargs,
+        )
+
+    def log(
+        self,
+        level: int | str,
+        message: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        self._logger.log(
+            _coerce_level(level),
+            message,
+            *args,
+            **kwargs,
+        )
+
+    def is_enabled_for(
+        self,
+        level: int | str,
+    ) -> bool:
+        return self._logger.isEnabledFor(
+            _coerce_level(level)
+        )
+
+
+def configure_logging(
     *,
-    config: Optional[LoggingConfig] = None,
-    log_dir_name: str = "logs",
-    filename: Optional[str] = None,
-) -> Iterator[Tuple[logging.Logger, LoggingPaths]]:
+    level: int | str = logging.INFO,
+    logger_name: str = DEFAULT_LOGGER_NAME,
+    console: Console | None = None,
+    show_time: bool = False,
+    show_level: bool = False,
+    show_path: bool = False,
+    console_markup: bool = True,
+    capture_warnings: bool = True,
+) -> EarthMLLogger:
     """
-    Small sketch for experiment-scoped logging.
+    Configure the shared EarthML console logger.
 
-    Best integration points in this codebase:
-    - call `configure_logging(...)` once in `Runtime.start()`
-    - attach the file handler in `MLBCExperimentLauncher.run()` once `run_name` is known
-
-    Example:
-    ```python
-    logger = configure_logging()
-    with experiment_logging(exp_root, experiment_name, run_name) as (logger, paths):
-        logger.info("Starting run")
-    ```
+    Call this once near the start of the application.
     """
-    logger = configure_logging(config)
-    paths = build_experiment_logging_paths(
-        experiment_root=experiment_root,
-        experiment_name=experiment_name,
-        run_name=run_name,
-        log_dir_name=log_dir_name,
-        filename=filename,
+    console_level = _coerce_level(level)
+
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+
+    _remove_managed_handlers(logger)
+
+    console_handler = RichHandler(
+        console=console or _SHARED_CONSOLE,
+        markup=console_markup,
+        rich_tracebacks=True,
+        show_time=show_time,
+        show_level=show_level,
+        show_path=show_path,
     )
 
-    file_path = add_experiment_file_handler(logger, paths.log_file)
-    logger.info("Experiment log file: %s", file_path)
+    console_handler.setLevel(console_level)
+    console_handler.setFormatter(
+        logging.Formatter(
+            DEFAULT_LOG_FORMAT,
+            datefmt=DEFAULT_DATE_FORMAT,
+        )
+    )
 
-    try:
-        yield logger, paths
-    finally:
-        remove_experiment_file_handler(logger, file_path)
+    console_handler._earthml_managed = True
+    logger.addHandler(console_handler)
+
+    if capture_warnings:
+        logging.captureWarnings(True)
+
+    return EarthMLLogger(logger)
+
+
+def get_logger(
+    name: str | None = None,
+) -> EarthMLLogger:
+    """
+    Return an EarthMLLogger.
+
+    configure_logging() should normally be called once before this.
+    """
+    return EarthMLLogger(
+        logging.getLogger(name or DEFAULT_LOGGER_NAME)
+    )
+
+
+def add_file_handler(
+    logger: EarthMLLogger | logging.Logger,
+    log_file: str | Path,
+    *,
+    level: int | str = logging.DEBUG,
+    mode: str = "a",
+) -> logging.FileHandler:
+    """
+    Add a file handler to an experiment logger.
+    """
+    raw_logger = _unwrap_logger(logger)
+
+    log_path = Path(log_file)
+    log_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    resolved_path = str(log_path.resolve())
+
+    for existing_handler in raw_logger.handlers:
+        existing_path = getattr(
+            existing_handler,
+            "_earthml_file_path",
+            None,
+        )
+
+        if existing_path == resolved_path:
+            if not isinstance(
+                existing_handler,
+                logging.FileHandler,
+            ):
+                raise TypeError(
+                    f"Existing handler for {log_path} "
+                    "is not a FileHandler"
+                )
+
+            return existing_handler
+
+    file_handler = logging.FileHandler(
+        log_path,
+        mode=mode,
+        encoding="utf-8",
+    )
+
+    file_handler.setLevel(
+        _coerce_level(level)
+    )
+
+    file_handler.setFormatter(
+        logging.Formatter(
+            DEFAULT_FILE_FORMAT,
+            datefmt=DEFAULT_DATE_FORMAT,
+        )
+    )
+
+    file_handler._earthml_managed = True
+    file_handler._earthml_file_path = resolved_path
+
+    raw_logger.addHandler(file_handler)
+
+    return file_handler
+
+
+def remove_file_handler(
+    logger: EarthMLLogger | logging.Logger,
+    handler: logging.FileHandler,
+) -> None:
+    """
+    Remove and close a file handler.
+    """
+    raw_logger = _unwrap_logger(logger)
+
+    if handler in raw_logger.handlers:
+        raw_logger.removeHandler(handler)
+
+    handler.close()
