@@ -44,6 +44,19 @@ def calculate_climatology(
             }
         )
 
+        if time_dim not in da.dims:
+            raise ValueError(
+                f"Cannot calculate climatology: "
+                f"time dimension {time_dim!r} not found. "
+                f"dims={dict(da.sizes)}"
+            )
+
+        if da.sizes[time_dim] == 0:
+            raise ValueError(
+                f"Cannot calculate climatology: "
+                f"time dimension {time_dim!r} is empty."
+            )
+
         count_summary = None
 
         if check_group_counts:
@@ -233,7 +246,10 @@ def calculate_save_and_subset_climatologies(
     if need_base_clim:
         print("Save original forecast climatology to:", fc_clim_path.name)
 
-        fc_train = fc.sel({fc.earthml.guessed_dims.time: slice(*clim_time_range)})
+        fc_train = subset_dataset(
+            fc,
+            time_range=clim_time_range,
+        )
 
         with ProgressBar():
             print("Calculate original forecast climatology")
@@ -256,7 +272,10 @@ def calculate_save_and_subset_climatologies(
 
         print("Save analysis climatology to:", an_clim_path.name)
 
-        an_train = an.sel({an.earthml.guessed_dims.time: slice(*clim_time_range)})
+        an_train = subset_dataset(
+            an,
+            time_range=clim_time_range,
+        )
 
         with ProgressBar():
             print("Calculate analysis climatology")
