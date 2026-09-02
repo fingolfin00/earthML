@@ -6,6 +6,7 @@ from .colormaps import (
     SeqWRdY,
     SeqPiBRdY,
     SeqBPi,
+    SeqBYRd,
 )
 
 
@@ -576,13 +577,19 @@ VARIABLE_NAMES = {
 
 MODEL_COLORS = {
     "fc": "tab:blue",
+    "clim-fc": "tab:orange",
+
     "global_fc": "tab:blue",
     "time_avg_fc": "tab:purple",
+
     "mlfc": "tab:green",
+
     "ConUS_mlfc": "tab:green",
     "World_mlfc": "tab:orange",
+
     "ConUS_global_mlfc": "tab:green",
     "World_global_mlfc": "tab:orange",
+
     "ConUS_time_avg_mlfc": "tab:red",
     "World_time_avg_mlfc": "tab:brown",
 }
