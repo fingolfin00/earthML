@@ -475,7 +475,14 @@ class Settings:
         for key in ignore:
             config.pop(key, None)
 
-        return config
+        # Round-trip through JSON to normalize tuples, Paths, enums, etc.
+        return json.loads(
+            json.dumps(
+                config,
+                sort_keys=True,
+                default=str,
+            )
+        )
 
 
     def config_differences(
