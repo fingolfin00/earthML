@@ -12,6 +12,380 @@ from .utils import _expand_mask_to, _masked_mean_var
 logger = get_logger(__name__)
 
 
+def _spatial_patch_mse(
+    error: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    patch_size: int,
+    eps: float,
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+]:
+    """
+    Compute geographical patch MSE.
+
+    Returns:
+        spatial_patch_mse:
+            Shape (Hp, Wp).
+
+        valid_spatial_patches:
+            Boolean mask with shape (Hp, Wp).
+    """
+    mask_f = mask.to(
+        device=error.device,
+        dtype=error.dtype,
+    )
+
+    pooled_sq_err = F.avg_pool2d(
+        error.square() * mask_f,
+        kernel_size=patch_size,
+        stride=patch_size,
+        ceil_mode=True,
+        count_include_pad=False,
+    )
+
+    patch_valid_fraction = F.avg_pool2d(
+        mask_f,
+        kernel_size=patch_size,
+        stride=patch_size,
+        ceil_mode=True,
+        count_include_pad=False,
+    )
+
+    patch_mse = (
+        pooled_sq_err
+        / patch_valid_fraction.clamp_min(eps)
+    )
+
+    patch_valid = patch_valid_fraction > 0
+
+    patch_error_sum = (
+        patch_mse * patch_valid
+    ).sum(dim=(0, 1))
+
+    patch_count = patch_valid.sum(dim=(0, 1))
+
+    spatial_patch_mse = (
+        patch_error_sum
+        / patch_count.clamp_min(1)
+    )
+
+    valid_spatial_patches = patch_count > 0
+
+    return (
+        spatial_patch_mse,
+        valid_spatial_patches,
+    )
+
+
+def _spatial_cvar_mse(
+    y_pred: torch.Tensor,
+    y_true: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    patch_size: int,
+    cvar_fraction: float,
+    eps: float,
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
+    spatial_patch_mse, valid_spatial_patches = (
+        _spatial_patch_mse(
+            y_pred - y_true,
+            mask,
+            patch_size=patch_size,
+            eps=eps,
+        )
+    )
+
+    patch_losses = spatial_patch_mse[
+        valid_spatial_patches
+    ]
+
+    if patch_losses.numel() == 0:
+        raise ValueError(
+            "No valid spatial patches"
+        )
+
+    num_worst = max(
+        1,
+        math.ceil(
+            cvar_fraction
+            * patch_losses.numel()
+        ),
+    )
+
+    worst_patch_losses, worst_indices = torch.topk(
+        patch_losses,
+        k=num_worst,
+    )
+
+    valid_locations = torch.nonzero(
+        valid_spatial_patches,
+        as_tuple=False,
+    )
+
+    worst_patch_locations = valid_locations[
+        worst_indices
+    ]
+
+    return (
+        worst_patch_losses.mean(),
+        worst_patch_locations,
+        worst_patch_losses,
+        spatial_patch_mse,
+    )
+
+
+class SpatialCVaRDiagnostics(nn.Module):
+    """
+    Common spatial robustness diagnostics independent of training loss.
+    """
+
+    def __init__(
+        self,
+        latitudes: torch.Tensor,
+        patch_size: int = 10,
+        cvar_fraction: float = 0.2,
+        relative_floor_fraction: float = 0.05,
+        relative_degradation_thresholds: tuple[float, ...] = (
+            0.0,
+            0.01,
+            0.05,
+            0.10,
+        ),
+        eps: float = 1e-8,
+    ) -> None:
+        super().__init__()
+
+        if patch_size < 1:
+            raise ValueError("patch_size must be positive")
+
+        if not 0.0 < cvar_fraction <= 1.0:
+            raise ValueError(
+                "cvar_fraction must be in (0, 1]"
+            )
+
+        if relative_floor_fraction < 0.0:
+            raise ValueError(
+                "relative_floor_fraction must be non-negative"
+            )
+
+        if any(
+            threshold < 0.0
+            for threshold in relative_degradation_thresholds
+        ):
+            raise ValueError(
+                "relative degradation thresholds must be non-negative"
+            )
+
+        self.patch_size = int(patch_size)
+        self.cvar_fraction = float(cvar_fraction)
+        self.relative_floor_fraction = float(
+            relative_floor_fraction
+        )
+        self.relative_degradation_thresholds = tuple(
+            float(threshold)
+            for threshold in relative_degradation_thresholds
+        )
+        self.eps = float(eps)
+
+        self.global_loss = GeoMaskedMSELoss(
+            latitudes=latitudes,
+            eps=eps,
+            persistent=False,
+        )
+
+    @torch.no_grad()
+    def forward(
+        self,
+        y_pred: torch.Tensor,
+        y_true: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> dict[str, torch.Tensor]:
+        mask_b = _expand_mask_to(
+            y_true,
+            mask,
+        ).to(
+            device=y_true.device,
+            dtype=torch.bool,
+        )
+
+        global_geo_mse = self.global_loss(
+            y_pred,
+            y_true,
+            mask=mask_b,
+        )
+
+        (
+            cvar_mse,
+            worst_patch_locations,
+            worst_patch_losses,
+            spatial_patch_mse,
+        ) = _spatial_cvar_mse(
+            y_pred,
+            y_true,
+            mask_b,
+            patch_size=self.patch_size,
+            cvar_fraction=self.cvar_fraction,
+            eps=self.eps,
+        )
+
+        model_patch_mse, model_valid = _spatial_patch_mse(
+            y_pred - y_true,
+            mask_b,
+            patch_size=self.patch_size,
+            eps=self.eps,
+        )
+
+        baseline_patch_mse, baseline_valid = _spatial_patch_mse(
+            -y_true,
+            mask_b,
+            patch_size=self.patch_size,
+            eps=self.eps,
+        )
+
+        valid_patches = model_valid & baseline_valid
+
+        if not valid_patches.any():
+            raise ValueError(
+                "SpatialCVaRDiagnostics: no valid spatial patches"
+            )
+
+        patch_degradation = (
+            model_patch_mse
+            - baseline_patch_mse
+        )
+
+        valid_degradation = patch_degradation[
+            valid_patches
+        ]
+
+        degraded_patches = (
+            (patch_degradation > 0.0)
+            & valid_patches
+        )
+
+        mean_patch_degradation = (
+            valid_degradation.mean()
+        )
+
+        mean_positive_patch_degradation = (
+            valid_degradation
+            .clamp_min(0.0)
+            .mean()
+        )
+
+        if degraded_patches.any():
+            mean_degraded_patch_degradation = (
+                patch_degradation[
+                    degraded_patches
+                ].mean()
+            )
+        else:
+            mean_degraded_patch_degradation = (
+                patch_degradation.sum() * 0.0
+            )
+
+        degraded_patch_fraction = (
+            degraded_patches.sum()
+            / valid_patches.sum().clamp_min(1)
+        )
+
+        max_patch_degradation = (
+            valid_degradation.max()
+        )
+
+        # Relative degradation diagnostics.
+        mean_baseline_patch_mse = (
+            baseline_patch_mse[
+                valid_patches
+            ].mean()
+        )
+
+        baseline_floor = (
+            self.relative_floor_fraction
+            * mean_baseline_patch_mse
+        ).clamp_min(self.eps)
+
+        baseline_scale = (
+            baseline_patch_mse
+            .clamp_min(baseline_floor)
+        )
+
+        relative_patch_degradation = (
+            patch_degradation
+            / baseline_scale
+        )
+
+        result = {
+            "global_geo_mse": global_geo_mse,
+            "cvar_mse": cvar_mse,
+            "cvar_ratio": (
+                cvar_mse
+                / global_geo_mse.clamp_min(self.eps)
+            ),
+            "worst_patch_locations": worst_patch_locations,
+            "worst_patch_losses": worst_patch_losses,
+            "spatial_patch_mse": spatial_patch_mse,
+
+            # Absolute degradation diagnostics.
+            "mean_patch_degradation": (
+                mean_patch_degradation
+            ),
+            "mean_degraded_patch_degradation": (
+                mean_degraded_patch_degradation
+            ),
+            "mean_positive_patch_degradation": (
+                mean_positive_patch_degradation
+            ),
+            "degraded_patch_fraction": (
+                degraded_patch_fraction
+            ),
+            "max_patch_degradation": (
+                max_patch_degradation
+            ),
+            "patch_degradation": patch_degradation,
+            "degraded_patches": degraded_patches,
+
+            # Relative degradation diagnostics.
+            "relative_patch_degradation": (
+                relative_patch_degradation
+            ),
+            "mean_baseline_patch_mse": (
+                mean_baseline_patch_mse
+            ),
+            "baseline_floor": baseline_floor,
+        }
+
+        valid_count = valid_patches.sum().clamp_min(1)
+
+        for threshold in self.relative_degradation_thresholds:
+            degraded = (
+                (relative_patch_degradation > threshold)
+                & valid_patches
+            )
+
+            fraction = (
+                degraded.sum()
+                / valid_count
+            )
+
+            threshold_pct = round(
+                100 * threshold
+            )
+
+            result[
+                f"relative_degraded_patch_fraction_gt_{threshold_pct}pct"
+            ] = fraction
+
+        return result
+
+
 # -------------------------
 # MaskedMSELoss
 # -------------------------
@@ -91,10 +465,24 @@ class GeoMaskedMSELoss(nn.Module):
     Spatially weighted MSE loss that respects a boolean mask.
     latitudes: 1D tensor length H (degrees)
     """
-    def __init__(self, latitudes: torch.Tensor, eps: float = 1e-12):
+    def __init__(
+        self,
+        latitudes: torch.Tensor,
+        eps: float = 1e-12,
+        persistent: bool = True,
+    ):
         super().__init__()
-        weights = torch.cos(torch.deg2rad(latitudes))
-        self.register_buffer("weights", weights)  # 1D tensor length H
+
+        weights = torch.cos(
+            torch.deg2rad(latitudes)
+        )
+
+        self.register_buffer(
+            "weights",
+            weights,
+            persistent=persistent,
+        )
+
         self.eps = float(eps)
 
     def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor, mask: Optional[torch.Tensor] = None):
@@ -124,6 +512,7 @@ class GeoMaskedMSELoss(nn.Module):
         if denom.item() == 0:
             raise ValueError("GeoMaskedMSELoss: mask has zero valid (weighted) elements")
         denom = denom.clamp_min(self.eps)
+
         return numerator / denom
 
 
@@ -409,43 +798,108 @@ class GaussianNLLFromLogits(nn.Module):
         return loss
 
 
-class GeoMaskedMSELowFreqLoss(nn.Module):
+class GeoMaskedMSEMultiScaleLoss(nn.Module):
     """
-    Latitude-weighted masked pixel MSE plus a low-frequency bias penalty.
+    Latitude-weighted masked pixel MSE plus multiscale bias penalties.
 
-    The low-frequency component:
-    1. Computes prediction error.
-    2. Applies mask-aware spatial average pooling.
-    3. Penalizes the pooled signed error.
+    The loss contains:
 
-    This discourages broad coherent regional biases without requiring
-    predefined geographical regions.
+        pixel_loss
+        + lambda_multiscale * sample_multiscale_loss
+        + lambda_batch_mean * batch_mean_multiscale_loss
+
+    sample_multiscale_loss:
+        Penalizes spatially pooled signed errors independently for every sample.
+
+    batch_mean_multiscale_loss:
+        Groups samples by month, computes their mean signed error, and penalizes
+        coherent spatial bias patterns at several spatial scales.
+
+    Args:
+        latitudes:
+            Latitude coordinate with shape (H,).
+
+        pool_kernel_sizes:
+            Spatial pooling window sizes. For example, (5, 11, 21) penalizes
+            increasingly broad error structures.
+
+        scale_weights:
+            Optional weight for each pooling scale. If omitted, all scales
+            receive equal weight.
+
+        lambda_multiscale:
+            Weight applied to the per-sample multiscale loss.
+
+        lambda_batch_mean:
+            Weight applied to the month-grouped batch-mean multiscale loss.
+
+        pool_stride:
+            Pooling stride. If None, each scale uses stride equal to its
+            kernel size. A smaller fixed stride gives overlapping windows.
+
+        eps:
+            Numerical stability constant.
     """
-
     def __init__(
         self,
         latitudes: torch.Tensor,
-        lambda_low_freq: float = 0.1,
-        pool_kernel_size: int = 9,
-        pool_stride: int | None = None,
+        pool_kernel_sizes: tuple[int, ...] = (5, 11, 21),
+        scale_weights: tuple[float, ...] | None = None,
+        lambda_multiscale: float = 0.1,
         lambda_batch_mean: float = 0.1,
+        lambda_identity: float = 0.1,
+        bias_scale: float = 0.5,
+        pool_stride: int | None = None,
         eps: float = 1e-8,
     ) -> None:
         super().__init__()
 
-        if pool_kernel_size < 1:
-            raise ValueError("pool_kernel_size must be positive")
+        if not pool_kernel_sizes:
+            raise ValueError(
+                "pool_kernel_sizes must contain at least one scale"
+            )
 
-        if pool_stride is None:
-            pool_stride = pool_kernel_size
+        if any(kernel_size < 1 for kernel_size in pool_kernel_sizes):
+            raise ValueError(
+                "All pool kernel sizes must be positive"
+            )
 
-        if pool_stride < 1:
-            raise ValueError("pool_stride must be positive")
+        if pool_stride is not None and pool_stride < 1:
+            raise ValueError(
+                "pool_stride must be positive or None"
+            )
 
-        self.lambda_low_freq = float(lambda_low_freq)
+        if scale_weights is None:
+            scale_weights = tuple(
+                1.0 for _ in pool_kernel_sizes
+            )
+
+        if len(scale_weights) != len(pool_kernel_sizes):
+            raise ValueError(
+                "scale_weights and pool_kernel_sizes must have "
+                "the same length"
+            )
+
+        if any(weight < 0 for weight in scale_weights):
+            raise ValueError(
+                "scale_weights must be non-negative"
+            )
+
+        weight_sum = sum(scale_weights)
+
+        if weight_sum <= 0:
+            raise ValueError(
+                "At least one scale weight must be positive"
+            )
+
+        self.pool_kernel_sizes = tuple(
+            int(size) for size in pool_kernel_sizes
+        )
+        self.pool_stride = pool_stride
+        self.lambda_multiscale = float(lambda_multiscale)
         self.lambda_batch_mean = float(lambda_batch_mean)
-        self.pool_kernel_size = int(pool_kernel_size)
-        self.pool_stride = int(pool_stride)
+        self.lambda_identity = float(lambda_identity)
+        self.bias_scale = float(bias_scale)
         self.eps = float(eps)
 
         latitudes = torch.as_tensor(
@@ -458,6 +912,17 @@ class GeoMaskedMSELowFreqLoss(nn.Module):
             torch.cos(torch.deg2rad(latitudes)),
         )
 
+        normalized_scale_weights = torch.tensor(
+            scale_weights,
+            dtype=torch.float32,
+        )
+        normalized_scale_weights /= normalized_scale_weights.sum()
+
+        self.register_buffer(
+            "scale_weights",
+            normalized_scale_weights,
+        )
+
         self.pixel_loss = GeoMaskedMSELoss(
             latitudes=latitudes,
             eps=eps,
@@ -465,49 +930,83 @@ class GeoMaskedMSELowFreqLoss(nn.Module):
 
         self.loss_components: dict[str, torch.Tensor] | None = None
 
-    def batch_mean_low_freq_bias_loss(
+    def _stride_for_scale(
         self,
-        y_pred: torch.Tensor,
-        y_true: torch.Tensor,
+        kernel_size: int,
+    ) -> int:
+        if self.pool_stride is None:
+            return kernel_size
+
+        return self.pool_stride
+
+    def _masked_pool(
+        self,
+        x: torch.Tensor,
         mask: torch.Tensor,
-    ) -> torch.Tensor:
+        *,
+        kernel_size: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Penalize broad spatial patterns in the mean signed batch error.
+        Compute mask-aware spatial mean pooling.
+
+        Returns:
+            pooled_x:
+                Mean value over valid cells in each window.
+
+            pooled_valid_fraction:
+                Fraction of valid cells in each window.
         """
         mask_f = mask.to(
-            device=y_pred.device,
-            dtype=y_pred.dtype,
+            device=x.device,
+            dtype=x.dtype,
         )
 
-        error = y_pred - y_true
+        stride = self._stride_for_scale(kernel_size)
 
-        valid_count = mask_f.sum(dim=0, keepdim=True)  # (1, C, H, W)
-
-        mean_error = (
-            error * mask_f
-        ).sum(
-            dim=0,
-            keepdim=True,
-        ) / valid_count.clamp_min(1.0)
-
-        batch_valid = valid_count > 0
-
-        pooled_error, pooled_valid_fraction = self._masked_pool(
-            mean_error,
-            batch_valid,
+        pooled_sum = F.avg_pool2d(
+            x * mask_f,
+            kernel_size=kernel_size,
+            stride=stride,
+            ceil_mode=True,
+            count_include_pad=False,
         )
 
-        _, _, height, width = mean_error.shape
+        pooled_valid_fraction = F.avg_pool2d(
+            mask_f,
+            kernel_size=kernel_size,
+            stride=stride,
+            ceil_mode=True,
+            count_include_pad=False,
+        )
 
+        pooled_x = (
+            pooled_sum
+            / pooled_valid_fraction.clamp_min(self.eps)
+        )
+
+        return pooled_x, pooled_valid_fraction
+
+    def _pool_geo_weights(
+        self,
+        *,
+        height: int,
+        width: int,
+        device: torch.device,
+        dtype: torch.dtype,
+        kernel_size: int,
+    ) -> torch.Tensor:
+        """
+        Pool latitude-area weights using the same geometry as the error.
+        """
         lat_weights = self.latitude_weights.to(
-            device=y_pred.device,
-            dtype=y_pred.dtype,
+            device=device,
+            dtype=dtype,
         )
 
         if lat_weights.numel() != height:
             raise ValueError(
-                f"Expected {height} latitude weights, "
-                f"got {lat_weights.numel()}"
+                f"Latitude count {lat_weights.numel()} "
+                f"does not match tensor height {height}"
             )
 
         geo_weights = lat_weights.view(
@@ -522,67 +1021,150 @@ class GeoMaskedMSELowFreqLoss(nn.Module):
             width,
         )
 
-        pooled_geo_weights = F.avg_pool2d(
+        stride = self._stride_for_scale(kernel_size)
+
+        return F.avg_pool2d(
             geo_weights,
-            kernel_size=self.pool_kernel_size,
-            stride=self.pool_stride,
+            kernel_size=kernel_size,
+            stride=stride,
             ceil_mode=True,
             count_include_pad=False,
         )
 
-        weights = (
-            pooled_geo_weights
-            * pooled_valid_fraction
+    def _single_scale_loss(
+        self,
+        error: torch.Tensor,
+        mask: torch.Tensor,
+        *,
+        kernel_size: int,
+    ) -> torch.Tensor:
+        """
+        Penalize pooled signed error for one spatial scale.
+        """
+        pooled_error, pooled_valid_fraction = self._masked_pool(
+            error,
+            mask,
+            kernel_size=kernel_size,
         )
 
-        numerator = (
-            pooled_error.square() * weights
-        ).sum()
+        _, _, height, width = error.shape
 
+        pooled_geo_weights = self._pool_geo_weights(
+            height=height,
+            width=width,
+            device=error.device,
+            dtype=error.dtype,
+            kernel_size=kernel_size,
+        )
+
+        weights = pooled_geo_weights * pooled_valid_fraction
+
+        numerator = (pooled_error.square() * weights).sum()
         denominator = weights.sum().clamp_min(self.eps)
 
         return numerator / denominator
 
-    def _masked_pool(
+    def _multiscale_loss(
         self,
-        x: torch.Tensor,
+        error: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        """
+        Compute weighted loss over all configured pooling scales.
+        """
+        scale_losses = [
+            self._single_scale_loss(
+                error,
+                mask,
+                kernel_size=kernel_size,
+            )
+            for kernel_size in self.pool_kernel_sizes
+        ]
+
+        stacked_losses = torch.stack(scale_losses)
+
+        scale_weights = self.scale_weights.to(
+            device=stacked_losses.device,
+            dtype=stacked_losses.dtype,
+        )
+
+        total = (stacked_losses * scale_weights).sum()
+
+        return total, scale_losses
+
+    def _batch_mean_error(
+        self,
+        y_pred: torch.Tensor,
+        y_true: torch.Tensor,
         mask: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Mask-aware spatial average pooling.
-
-        Returns:
-            pooled_x:
-                Mean of valid values within each pooling window.
-            pooled_valid_fraction:
-                Fraction of valid cells within each pooling window.
+        Compute the masked mean signed error across the batch.
         """
-        mask_f = mask.to(dtype=x.dtype)
-
-        pooled_sum = F.avg_pool2d(
-            x * mask_f,
-            kernel_size=self.pool_kernel_size,
-            stride=self.pool_stride,
-            ceil_mode=True,
-            count_include_pad=False,
+        mask_f = mask.to(
+            device=y_pred.device,
+            dtype=y_pred.dtype,
         )
 
-        pooled_valid_fraction = F.avg_pool2d(
-            mask_f,
-            kernel_size=self.pool_kernel_size,
-            stride=self.pool_stride,
-            ceil_mode=True,
-            count_include_pad=False,
+        error = y_pred - y_true
+
+        valid_count = mask_f.sum(
+            dim=0,
+            keepdim=True,
         )
 
-        pooled_x = pooled_sum / pooled_valid_fraction.clamp_min(self.eps)
+        mean_error = (
+            error * mask_f
+        ).sum(
+            dim=0,
+            keepdim=True,
+        ) / valid_count.clamp_min(1.0)
 
-        return pooled_x, pooled_valid_fraction
+        mean_mask = valid_count > 0
+
+        return mean_error, mean_mask
+
+    def _month_grouped_batch_mean_loss(
+        self,
+        y_pred: torch.Tensor,
+        y_true: torch.Tensor,
+        mask: torch.Tensor,
+        months: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Penalize multiscale patterns in the mean error of each month group.
+        """
+        month_losses: list[torch.Tensor] = []
+
+        for month in months.unique():
+            selected = months == month
+
+            if selected.sum().item() < 2:
+                continue
+
+            mean_error, mean_mask = self._batch_mean_error(
+                y_pred=y_pred[selected],
+                y_true=y_true[selected],
+                mask=mask[selected],
+            )
+
+            month_loss, _ = self._multiscale_loss(
+                mean_error,
+                mean_mask,
+            )
+
+            month_losses.append(month_loss)
+
+        if not month_losses:
+            return y_pred.sum() * 0.0
+
+        return torch.stack(month_losses).mean()
 
     def forward(
         self,
         y_pred: torch.Tensor,
         y_true: torch.Tensor,
+        x_input: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
         months: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
@@ -604,119 +1186,503 @@ class GeoMaskedMSELowFreqLoss(nn.Module):
             dtype=torch.bool,
         )
 
+        try:
+            _ = y_true - x_input
+        except RuntimeError as e:
+            raise ValueError(
+                "x_input must be broadcastable to y_true"
+            ) from e
+
         pixel_loss = self.pixel_loss(
             y_pred,
             y_true,
             mask=mask_b,
         )
 
-        # Signed error is important: broad positive and negative biases
-        # should remain visible before squaring.
         error = y_pred - y_true
 
-        pooled_error, pooled_valid_fraction = self._masked_pool(
-            error,
-            mask_b,
+        multiscale_loss, sample_scale_losses = (
+            self._multiscale_loss(
+                error,
+                mask_b,
+            )
         )
 
-        # Pool latitude weights using the same spatial geometry.
-        _, _, height, width = y_true.shape
+        if months is None:
+            batch_mean_loss = y_pred.sum() * 0.0
+        else:
+            months = months.to(
+                device=y_pred.device,
+                dtype=torch.long,
+            )
+
+            if months.ndim != 1:
+                raise ValueError(
+                    "months must be a 1D tensor"
+                )
+
+            if months.shape[0] != y_pred.shape[0]:
+                raise ValueError(
+                    "months length must match batch size"
+                )
+
+            batch_mean_loss = (
+                self._month_grouped_batch_mean_loss(
+                    y_pred=y_pred,
+                    y_true=y_true,
+                    mask=mask_b,
+                    months=months,
+                )
+            )
+
+        weighted_multiscale_loss = self.lambda_multiscale * multiscale_loss
+
+        weighted_batch_mean_loss = self.lambda_batch_mean * batch_mean_loss
+
+        # Identity-preserving bias-correction term
+        true_bias = y_true - x_input
+        bias_mag = true_bias.abs()
+
+        # High weight where the true correction is small
+        w_identity = torch.exp(
+            -bias_mag / self.bias_scale
+        )
+
+        # Apply validity mask
+        w_identity = (
+            w_identity
+            * mask_b.to(
+                dtype=w_identity.dtype,
+                device=w_identity.device,
+            )
+        )
+
+        _, _, height, _ = y_true.shape
 
         lat_weights = self.latitude_weights.to(
             device=y_true.device,
             dtype=y_true.dtype,
+        ).view(1, 1, height, 1)
+
+        w_identity = (
+            torch.exp(-bias_mag / self.bias_scale)
+            * lat_weights
+            * mask_b.to(dtype=y_true.dtype)
         )
 
-        if lat_weights.numel() != height:
-            raise ValueError(
-                f"Latitude count {lat_weights.numel()} "
-                f"does not match tensor height {height}"
-            )
+        identity_loss = (
+            w_identity * (y_pred - x_input).square()
+        ).sum() / w_identity.sum().clamp_min(self.eps)
 
-        geo_weights = lat_weights.view(
-            1,
-            1,
-            height,
-            1,
-        ).expand(
-            1,
-            1,
-            height,
-            width,
-        )
-
-        pooled_geo_weights = F.avg_pool2d(
-            geo_weights,
-            kernel_size=self.pool_kernel_size,
-            stride=self.pool_stride,
-            ceil_mode=True,
-            count_include_pad=False,
-        )
-
-        # A pooled cell is usable if it contains at least one valid cell.
-        pooled_mask = pooled_valid_fraction > 0
-
-        weights = (
-            pooled_geo_weights
-            * pooled_valid_fraction
-            * pooled_mask.to(dtype=y_true.dtype)
-        )
-
-        numerator = (pooled_error.square() * weights).sum()
-        denominator = weights.sum().clamp_min(self.eps)
-
-        low_freq_loss = numerator / denominator
-
-        # Monthly mean batched bias loss component
-        if months is None:
-            raise ValueError(
-                "months must be provided for month-grouped batch bias loss"
-            )
-
-        months = months.to(
-            device=y_pred.device,
-            dtype=torch.long,
-        )
-
-        month_losses: list[torch.Tensor] = []
-
-        for month in months.unique():
-            selected = months == month
-
-            if selected.sum().item() < 2:
-                continue
-
-            month_losses.append(
-                self.batch_mean_low_freq_bias_loss(
-                    y_pred=y_pred[selected],
-                    y_true=y_true[selected],
-                    mask=mask_b[selected],
-                )
-            )
-
-        if month_losses:
-            batch_mean_loss = torch.stack(month_losses).mean()
-        else:
-            # Differentiable zero attached to the prediction graph.
-            batch_mean_loss = y_pred.sum() * 0.0
+        weighted_identity_loss = self.lambda_identity * identity_loss
 
         total_loss = (
             pixel_loss
-            + self.lambda_low_freq * low_freq_loss
-            + self.lambda_batch_mean * batch_mean_loss
+            + weighted_multiscale_loss
+            + weighted_batch_mean_loss
+            + weighted_identity_loss
+        )
+
+        components: dict[str, torch.Tensor] = {
+            "pixel_loss": pixel_loss.detach(),
+            "multiscale_loss": multiscale_loss.detach(),
+            "batch_mean_loss": batch_mean_loss.detach(),
+            "identity_loss": identity_loss.detach(),
+            "weighted_multiscale_loss": (
+                weighted_multiscale_loss.detach()
+            ),
+            "weighted_batch_mean_loss": (
+                weighted_batch_mean_loss.detach()
+            ),
+            "weighted_identity_loss": (
+                weighted_identity_loss.detach()
+            ),
+        }
+
+        for kernel_size, scale_loss in zip(
+            self.pool_kernel_sizes,
+            sample_scale_losses,
+        ):
+            components[
+                f"scale_{kernel_size}_loss"
+            ] = scale_loss.detach()
+
+        self.loss_components = components
+
+        return total_loss
+
+
+class SpatialCVaRMSELoss(nn.Module):
+    """
+    Latitude-weighted global MSE plus a spatial CVaR penalty.
+
+    The spatial field is divided into non-overlapping patches.
+    MSE is computed independently for each patch, and the mean
+    of the worst fraction of patch losses is added to the global loss.
+
+    This reduces compensation between well-performing and poorly-performing
+    geographical regions.
+
+    Loss:
+
+        global_geo_mse + lambda_cvar * spatial_cvar_mse
+
+    Args:
+        latitudes:
+            Latitude coordinate with shape (H,).
+
+        patch_size:
+            Spatial patch size in grid cells.
+
+        cvar_fraction:
+            Fraction of worst patches included in the CVaR term.
+            For example, 0.2 means the worst 20% of patches.
+
+        lambda_cvar:
+            Weight applied to the spatial CVaR term.
+
+        eps:
+            Numerical stability constant.
+    """
+    def __init__(
+        self,
+        latitudes: torch.Tensor,
+        patch_size: int = 10,
+        cvar_fraction: float = 0.2,
+        lambda_cvar: float = 0.5,
+        eps: float = 1e-8,
+    ) -> None:
+        super().__init__()
+
+        if patch_size < 1:
+            raise ValueError("patch_size must be positive")
+
+        if not 0.0 < cvar_fraction <= 1.0:
+            raise ValueError(
+                "cvar_fraction must be in (0, 1]"
+            )
+
+        self.patch_size = int(patch_size)
+        self.cvar_fraction = float(cvar_fraction)
+        self.lambda_cvar = float(lambda_cvar)
+        self.eps = float(eps)
+
+        self.global_loss = GeoMaskedMSELoss(
+            latitudes=latitudes,
+            eps=eps,
+            persistent=False,
+        )
+
+        self.loss_components = None
+
+    def forward(
+        self,
+        y_pred: torch.Tensor,
+        y_true: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        mask_b = _expand_mask_to(
+            y_true,
+            mask,
+        ).to(
+            device=y_true.device,
+            dtype=torch.bool,
+        )
+
+        global_loss = self.global_loss(
+            y_pred,
+            y_true,
+            mask=mask_b,
+        )
+
+        cvar_loss, _, _, _ = _spatial_cvar_mse(
+            y_pred,
+            y_true,
+            mask_b,
+            patch_size=self.patch_size,
+            cvar_fraction=self.cvar_fraction,
+            eps=self.eps,
+        )
+
+        weighted_cvar_loss = (
+            self.lambda_cvar * cvar_loss
+        )
+
+        total_loss = (
+            global_loss
+            + weighted_cvar_loss
         )
 
         self.loss_components = {
-            "pixel_loss": pixel_loss.detach(),
-            "low_freq_loss": low_freq_loss.detach(),
-            "batch_mean_loss": batch_mean_loss.detach(),
-            "weighted_low_freq_loss": (
-                self.lambda_low_freq * low_freq_loss
-            ).detach(),
-            "weighted_batch_mean_loss": (
-                self.lambda_batch_mean * batch_mean_loss
-            ).detach(),
+            "global_loss": global_loss.detach(),
+            "cvar_loss": cvar_loss.detach(),
+            "weighted_cvar_loss": (
+                weighted_cvar_loss.detach()
+            ),
         }
 
         return total_loss
-    
+
+
+class SpatialDegradationMSELoss(nn.Module):
+    """
+    Latitude-weighted global MSE plus a penalty on the worst
+    relative spatial degradations with respect to a zero-residual baseline.
+
+    The spatial field is divided into non-overlapping patches.
+
+    This loss assumes that predicting zero corresponds to applying
+    no correction to the baseline forecast. It is therefore intended
+    for residual correction targets.
+
+    For each geographical patch:
+
+        relative_degradation =
+            (model_patch_mse - baseline_patch_mse)
+            / baseline_scale
+
+    The worst fraction of patches according to relative degradation
+    is selected, and only positive degradation within that tail is penalized.
+
+    Final loss:
+
+        global_geo_mse
+            + lambda_degradation
+            * worst_relative_degradation_loss
+
+    Args:
+        latitudes:
+            Latitude coordinate with shape (H,).
+
+        patch_size:
+            Spatial patch size in grid cells.
+
+        lambda_degradation:
+            Weight applied to the relative degradation penalty.
+
+        degradation_fraction:
+            Fraction of spatial patches included in the worst-degradation tail.
+            For example, 0.2 means the worst 20% of patches.
+
+        relative_floor_fraction:
+            Minimum denominator used for relative degradation,
+            expressed as a fraction of mean baseline patch MSE.
+
+        eps:
+            Numerical stability constant.
+    """
+
+    def __init__(
+        self,
+        latitudes: torch.Tensor,
+        patch_size: int = 10,
+        lambda_degradation: float = 0.5,
+        degradation_fraction: float = 0.2,
+        relative_floor_fraction: float = 0.05,
+        eps: float = 1e-8,
+    ) -> None:
+        super().__init__()
+
+        if patch_size < 1:
+            raise ValueError(
+                "patch_size must be positive"
+            )
+
+        if lambda_degradation < 0:
+            raise ValueError(
+                "lambda_degradation must be non-negative"
+            )
+
+        if not 0.0 < degradation_fraction <= 1.0:
+            raise ValueError(
+                "degradation_fraction must be in (0, 1]"
+            )
+
+        if relative_floor_fraction < 0:
+            raise ValueError(
+                "relative_floor_fraction must be non-negative"
+            )
+
+        self.patch_size = int(patch_size)
+        self.lambda_degradation = float(
+            lambda_degradation
+        )
+        self.degradation_fraction = float(
+            degradation_fraction
+        )
+        self.relative_floor_fraction = float(
+            relative_floor_fraction
+        )
+        self.eps = float(eps)
+
+        self.global_loss = GeoMaskedMSELoss(
+            latitudes=latitudes,
+            eps=eps,
+        )
+
+        self.loss_components: (
+            dict[str, torch.Tensor] | None
+        ) = None
+
+    def forward(
+        self,
+        y_pred: torch.Tensor,
+        y_true: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if y_pred.shape != y_true.shape:
+            raise ValueError(
+                "y_pred and y_true must have the same shape"
+            )
+
+        if y_pred.ndim != 4:
+            raise ValueError(
+                "Expected tensors with shape (N, C, H, W)"
+            )
+
+        mask_b = _expand_mask_to(
+            y_true,
+            mask,
+        ).to(
+            device=y_true.device,
+            dtype=torch.bool,
+        )
+
+        global_loss = self.global_loss(
+            y_pred,
+            y_true,
+            mask=mask_b,
+        )
+
+        model_patch_mse, model_valid = (
+            _spatial_patch_mse(
+                y_pred - y_true,
+                mask_b,
+                patch_size=self.patch_size,
+                eps=self.eps,
+            )
+        )
+
+        baseline_patch_mse, baseline_valid = (
+            _spatial_patch_mse(
+                -y_true,
+                mask_b,
+                patch_size=self.patch_size,
+                eps=self.eps,
+            )
+        )
+
+        valid_patches = (
+            model_valid
+            & baseline_valid
+        )
+
+        if not valid_patches.any():
+            raise ValueError(
+                "SpatialDegradationMSELoss: "
+                "no valid spatial patches"
+            )
+
+        mean_baseline_patch_mse = (
+            baseline_patch_mse[
+                valid_patches
+            ].mean()
+        )
+
+        baseline_floor = (
+            self.relative_floor_fraction
+            * mean_baseline_patch_mse
+        ).clamp_min(self.eps)
+
+        baseline_scale = (
+            baseline_patch_mse
+            .clamp_min(baseline_floor)
+        )
+
+        relative_patch_degradation = (
+            model_patch_mse
+            - baseline_patch_mse
+        ) / baseline_scale
+
+        valid_relative_degradation = (
+            relative_patch_degradation[
+                valid_patches
+            ]
+        )
+
+        num_worst = max(
+            1,
+            math.ceil(
+                self.degradation_fraction
+                * valid_relative_degradation.numel()
+            ),
+        )
+
+        worst_relative_degradation = torch.topk(
+            valid_relative_degradation,
+            k=num_worst,
+        ).values
+
+        worst_positive_degradation = (
+            worst_relative_degradation
+            .clamp_min(0.0)
+        )
+
+        mean_worst_relative_degradation = (
+            worst_positive_degradation.mean()
+        )
+
+        weighted_degradation_loss = (
+            self.lambda_degradation
+            * mean_worst_relative_degradation
+        )
+
+        total_loss = (
+            global_loss
+            + weighted_degradation_loss
+        )
+
+        degraded_patches = (
+            (relative_patch_degradation > 0)
+            & valid_patches
+        )
+
+        degraded_patch_fraction = (
+            degraded_patches.sum()
+            / valid_patches.sum().clamp_min(1)
+        )
+
+        loss_ratio = (
+            weighted_degradation_loss
+            / global_loss.detach().clamp_min(self.eps)
+        )
+
+        self.loss_components = {
+            "global_loss": global_loss.detach(),
+
+            "mean_worst_relative_degradation": (
+                mean_worst_relative_degradation.detach()
+            ),
+
+            "weighted_degradation_loss": (
+                weighted_degradation_loss.detach()
+            ),
+
+            "loss_ratio": (
+                loss_ratio.detach()
+            ),
+
+            "degraded_patch_fraction": (
+                degraded_patch_fraction.detach()
+            ),
+
+            "mean_baseline_patch_mse": (
+                mean_baseline_patch_mse.detach()
+            ),
+
+            "baseline_floor": (
+                baseline_floor.detach()
+            ),
+        }
+
+        return total_loss
