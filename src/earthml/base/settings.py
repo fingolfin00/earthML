@@ -92,6 +92,7 @@ class Settings:
 
     seasonal_encoding: bool = False
     ensemble_encoding: bool = False
+    input_realization_avg: bool = False
 
     net_name: Literal["SmaAt_UNet", "ConvNeXtTransformerUNet"] = "SmaAt_UNet"
     loss_name: str = "MSELoss"
@@ -238,6 +239,9 @@ class Settings:
 
         if self.ensemble_encoding:
             parts.append("ee")
+
+        if self.input_realization_avg:
+            parts.append("ensmean")
 
         if self.separate_training_by_init_period is not None:
             parts.append(f"init-{self.separate_training_by_init_period}")
@@ -721,6 +725,7 @@ class Settings:
         for name in (
             "seasonal_encoding",
             "ensemble_encoding",
+            "input_realization_avg",
             "target_realization_avg",
         ):
             if not isinstance(getattr(self, name), bool):
@@ -728,11 +733,11 @@ class Settings:
 
         if (
             self.output_realizations == "ensemble"
-            and self.channel_representation == "realization"
+            and self.channel_representation != "realization"
         ):
             raise ValueError(
                 "output_realizations='ensemble' requires "
-                "channel_representation='realization.'"
+                "channel_representation='realization'."
             )
 
         positive_int_fields = (
@@ -783,3 +788,31 @@ class Settings:
             raise TypeError("smaatunet_kwargs must be a dictionary.")
         if not isinstance(self.convnext_kwargs, dict):
             raise TypeError("convnext_kwargs must be a dictionary.")
+
+        if self.input_realization_avg and self.ensemble_encoding:
+            raise ValueError(
+                "input_realization_avg and ensemble_encoding are mutually exclusive."
+            )
+
+        if (
+            self.input_realization_avg
+            and self.target_mode in {
+                "residual_realization",
+                "anomaly_residual_realization",
+            }
+        ):
+            raise ValueError(
+                "input_realization_avg requires a deterministic target mode. "
+                "Use 'residual' or 'anomaly_residual' instead of its "
+                "'*_realization' variant."
+            )
+
+        if (
+            self.input_realization_avg
+            and self.channel_representation == "realization"
+        ):
+            raise ValueError(
+                "input_realization_avg removes the realization dimension, so "
+                "channel_representation='realization' is not applicable. "
+                "Use channel_representation='variable'."
+            )
