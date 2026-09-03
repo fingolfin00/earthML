@@ -683,7 +683,7 @@ def plot_map(
         map_aspect = lon_span / lat_span
 
         # Fixed width, automatic height.
-        fig_width = 7.0
+        fig_width = 10.0
 
         # Height required by the map itself + room for title/colorbar.
         map_height = fig_width / map_aspect
@@ -905,8 +905,8 @@ def plot_map(
         spacing="uniform",
     )
 
-    cb.set_label(cb_label)
-    cb.ax.tick_params(labelsize=7)
+    cb.set_label(cb_label, fontsize=9)
+    cb.ax.tick_params(labelsize=5)
 
     out_file.parent.mkdir(
         parents=True,
@@ -915,7 +915,7 @@ def plot_map(
 
     fig.savefig(
         out_file,
-        dpi=200,
+        dpi=300,
     )
 
     plt.close(fig)
