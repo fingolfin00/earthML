@@ -442,17 +442,18 @@ class SmaAt_UNet(EarthMLLightningModule):
                         f"Model parameter {name!r} contains NaN/Inf values"
                     )
 
+        # Raw encoder representation
         x = self.inc(x)
-        x = self.encoder_cbam[0](x)
 
-        skips = [x]
+        # Attention is used for the skip, but not for the next down block
+        skips = [self.encoder_cbam[0](x)]
 
         for level, down in enumerate(self.downs, start=1):
             x = down(x)
-            x = self.encoder_cbam[level](x)
-            skips.append(x)
+            skips.append(self.encoder_cbam[level](x))
 
-        x = skips.pop() # bottleneck
+        # The deepest attention output becomes the decoder input
+        x = skips.pop()
 
         for up in self.ups:
             x = up(x, skips.pop())
