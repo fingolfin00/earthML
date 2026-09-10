@@ -1427,7 +1427,13 @@ class SpatialCVaRMSELoss(nn.Module):
 class SpatialDegradationMSELoss(nn.Module):
     """
     Latitude-weighted global MSE plus a penalty on the worst
-    relative spatial degradations with respect to a zero-residual baseline.
+    relative spatial degradations with respect to a configurable baseline prediction.
+
+    When baseline_pred is omitted, a zero-output baseline is used.
+    For an anomaly-residual target, this represents the deterministic
+    climatological correction. For a full residual target, it represents
+    the original raw forecast, provided physical zero maps to zero in the
+    normalized target space.
 
     The spatial field is divided into non-overlapping patches.
 
@@ -1443,6 +1449,21 @@ class SpatialDegradationMSELoss(nn.Module):
 
     The worst fraction of patches according to relative degradation
     is selected, and only positive degradation within that tail is penalized.
+
+    Baseline_pred must represent the baseline prediction in exactly
+    the same target space as y_pred and y_true.
+
+    Examples in physical target space:
+
+        residual target:
+            raw-forecast baseline_pred = 0
+
+        anomaly-residual target:
+            climatology baseline_pred = 0
+            raw-forecast baseline_pred = -residual_climatology
+
+    If the target is normalized, baseline_pred must be normalized
+    using the same target normalizer.
 
     Final loss:
 
@@ -1529,16 +1550,40 @@ class SpatialDegradationMSELoss(nn.Module):
         y_pred: torch.Tensor,
         y_true: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
+        baseline_pred: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if y_pred.shape != y_true.shape:
             raise ValueError(
-                "y_pred and y_true must have the same shape"
+                "Prediction/target shape mismatch: "
+                f"{y_pred.shape} != {y_true.shape}"
             )
 
         if y_pred.ndim != 4:
             raise ValueError(
-                "Expected tensors with shape (N, C, H, W)"
+                "Expected tensors with shape "
+                "(batch, channel, latitude, longitude)"
             )
+
+        if baseline_pred is None:
+            baseline_pred = torch.zeros_like(y_true)
+        else:
+            baseline_pred = baseline_pred.to(
+                device=y_true.device,
+                dtype=y_true.dtype,
+            )
+
+            try:
+                baseline_pred = torch.broadcast_to(
+                    baseline_pred,
+                    y_true.shape,
+                )
+            except RuntimeError as exc:
+                raise ValueError(
+                    "baseline_pred must be broadcastable to y_true: "
+                    f"{baseline_pred.shape} versus {y_true.shape}"
+                ) from exc
+
+            baseline_pred = baseline_pred.detach()
 
         mask_b = _expand_mask_to(
             y_true,
@@ -1548,141 +1593,121 @@ class SpatialDegradationMSELoss(nn.Module):
             dtype=torch.bool,
         )
 
+        valid_values = (
+            torch.isfinite(y_true)
+            & torch.isfinite(baseline_pred)
+        )
+        mask_b = mask_b & valid_values
+
         global_loss = self.global_loss(
             y_pred,
             y_true,
             mask=mask_b,
         )
 
-        model_patch_mse, model_valid = (
-            _spatial_patch_mse(
-                y_pred - y_true,
-                mask_b,
-                patch_size=self.patch_size,
-                eps=self.eps,
-            )
+        model_error = y_pred - y_true
+        baseline_error = baseline_pred - y_true
+
+        model_patch_mse, model_valid = _spatial_patch_mse(
+            model_error,
+            mask_b,
+            patch_size=self.patch_size,
+            eps=self.eps,
         )
 
-        baseline_patch_mse, baseline_valid = (
-            _spatial_patch_mse(
-                -y_true,
-                mask_b,
-                patch_size=self.patch_size,
-                eps=self.eps,
-            )
+        baseline_patch_mse, baseline_valid = _spatial_patch_mse(
+            baseline_error,
+            mask_b,
+            patch_size=self.patch_size,
+            eps=self.eps,
         )
 
-        valid_patches = (
-            model_valid
-            & baseline_valid
-        )
+        valid_patches = model_valid & baseline_valid
 
-        if not valid_patches.any():
+        if not torch.any(valid_patches):
             raise ValueError(
-                "SpatialDegradationMSELoss: "
-                "no valid spatial patches"
+                "SpatialDegradationMSELoss found no valid patches"
             )
 
-        mean_baseline_patch_mse = (
-            baseline_patch_mse[
-                valid_patches
-            ].mean()
-        )
+        valid_model_mse = model_patch_mse[valid_patches]
+        valid_baseline_mse = baseline_patch_mse[valid_patches]
+
+        mean_baseline_patch_mse = valid_baseline_mse.mean()
 
         baseline_floor = (
             self.relative_floor_fraction
             * mean_baseline_patch_mse
         ).clamp_min(self.eps)
 
-        baseline_scale = (
-            baseline_patch_mse
-            .clamp_min(baseline_floor)
+        baseline_scale = torch.clamp(
+            baseline_patch_mse,
+            min=baseline_floor,
         )
 
-        relative_patch_degradation = (
-            model_patch_mse
-            - baseline_patch_mse
+        relative_degradation = (
+            model_patch_mse - baseline_patch_mse
         ) / baseline_scale
 
-        valid_relative_degradation = (
-            relative_patch_degradation[
-                valid_patches
-            ]
-        )
+        valid_degradation = relative_degradation[
+            valid_patches
+        ]
 
-        num_worst = max(
+        number_of_tail_patches = max(
             1,
             math.ceil(
                 self.degradation_fraction
-                * valid_relative_degradation.numel()
+                * valid_degradation.numel()
             ),
         )
 
-        worst_relative_degradation = torch.topk(
-            valid_relative_degradation,
-            k=num_worst,
+        degradation_tail = torch.topk(
+            valid_degradation,
+            k=number_of_tail_patches,
         ).values
 
-        worst_positive_degradation = (
-            worst_relative_degradation
-            .clamp_min(0.0)
+        positive_degradation_tail = torch.clamp(
+            degradation_tail,
+            min=0.0,
         )
 
-        mean_worst_relative_degradation = (
-            worst_positive_degradation.mean()
-        )
+        degradation_loss = positive_degradation_tail.mean()
 
         weighted_degradation_loss = (
             self.lambda_degradation
-            * mean_worst_relative_degradation
+            * degradation_loss
         )
 
-        total_loss = (
-            global_loss
-            + weighted_degradation_loss
-        )
+        total_loss = global_loss + weighted_degradation_loss
 
         degraded_patches = (
-            (relative_patch_degradation > 0)
-            & valid_patches
-        )
+            relative_degradation > 0
+        ) & valid_patches
 
         degraded_patch_fraction = (
             degraded_patches.sum()
             / valid_patches.sum().clamp_min(1)
         )
 
-        loss_ratio = (
-            weighted_degradation_loss
-            / global_loss.detach().clamp_min(self.eps)
-        )
-
         self.loss_components = {
             "global_loss": global_loss.detach(),
-
-            "mean_worst_relative_degradation": (
-                mean_worst_relative_degradation.detach()
-            ),
-
+            "degradation_loss": degradation_loss.detach(),
             "weighted_degradation_loss": (
                 weighted_degradation_loss.detach()
             ),
-
             "loss_ratio": (
-                loss_ratio.detach()
+                weighted_degradation_loss.detach()
+                / global_loss.detach().clamp_min(self.eps)
             ),
-
             "degraded_patch_fraction": (
                 degraded_patch_fraction.detach()
             ),
-
+            "mean_model_patch_mse": (
+                valid_model_mse.mean().detach()
+            ),
             "mean_baseline_patch_mse": (
                 mean_baseline_patch_mse.detach()
             ),
-
-            "baseline_floor": (
-                baseline_floor.detach()
-            ),
+            "baseline_floor": baseline_floor.detach(),
         }
 
         return total_loss
