@@ -666,9 +666,10 @@ class EarthMLLightningModule(L.LightningModule):
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
             mode="min",
-            factor=0.5,
-            patience=5,
-            min_lr=1e-6,
+            # mode="max", # in original NOAA implemenetation: probably a bug, definetely a bug
+            factor=0.1,
+            patience=4,
+            min_lr=1e-8,
         )
 
         return {
