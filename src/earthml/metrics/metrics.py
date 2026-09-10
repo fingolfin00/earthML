@@ -676,13 +676,36 @@ def calculate_metrics(
         fc_p = _select_period(fc, period, clim_period, time_dim)
         an_p = _select_period(an, period, clim_period, time_dim)
 
+        if fc_p.sizes.get(time_dim, 0) == 0:
+            print(
+                f"Skipping {period_dim}={_format_period(period, clim_period)}: "
+                "forecast subset is empty."
+            )
+            continue
+
+        if an_p.sizes.get(time_dim, 0) == 0:
+            print(
+                f"Skipping {period_dim}={_format_period(period, clim_period)}: "
+                "analysis subset is empty."
+            )
+            continue
+
+        if fc_p.sizes.get(time_dim, 0) == 0:
+            continue
+
+        if an_p.sizes.get(time_dim, 0) == 0:
+            continue
+
         fc_clim_p = (
             _select_climatology_period(fc_clim, period, clim_period)
-            if fc_clim is not None else None
+            if fc_clim is not None
+            else None
         )
+
         an_clim_p = (
             _select_climatology_period(an_clim, period, clim_period)
-            if an_clim is not None else None
+            if an_clim is not None
+            else None
         )
 
         results.append(
@@ -695,7 +718,9 @@ def calculate_metrics(
                 an_clim=an_clim_p,
                 clim_period=clim_period,
                 fair_correction=fair_correction,
-            ).expand_dims({period_dim: [_format_period(period, clim_period)]})
+            ).expand_dims(
+                {period_dim: [_format_period(period, clim_period)]}
+            )
         )
 
     return xr.concat(
