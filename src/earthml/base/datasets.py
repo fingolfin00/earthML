@@ -187,6 +187,7 @@ def get_and_subset_datasets(
     build_analysis: bool = True,
     coord_rename_fc: Sequence[Sequence[str]] | None = None,
     coord_rename_an: Sequence[Sequence[str]] | None = None,
+    mlfc_path: str | Path | None = None,
 ) -> tuple[xr.Dataset, xr.Dataset, xr.Dataset | None]:
     if engine == "zarr":
         open_engine = open_zarr
@@ -247,30 +248,39 @@ def get_and_subset_datasets(
             }
         )
 
-    ds_list: list[xr.Dataset] = []
-    if s.input_mlfc_train.exists():
-        ds = open_engine(s.input_mlfc_train)
-        if ds is not None:
-            ds_list.append(ds)
-    if s.input_mlfc_val.exists():
-        ds = open_engine(s.input_mlfc_val)
-        if ds is not None:
-            ds_list.append(ds)
-    if s.input_mlfc_test.exists():
-        ds = open_engine(s.input_mlfc_test)
-        if ds is not None:
-            ds_list.append(ds)
+    if mlfc_path is not None:
+        mlfc = open_engine(mlfc_path)
 
-    mlfc = None
-    if ds_list:
-        mlfc = xr.concat(
-            ds_list,
-            dim=time_dim,
-            coords="minimal",
-            compat="equals",
-            join="exact",
-        )
+    else:
+        ds_list: list[xr.Dataset] = []
 
+        if s.input_mlfc_train.exists():
+            ds = open_engine(s.input_mlfc_train)
+            if ds is not None:
+                ds_list.append(ds)
+
+        if s.input_mlfc_val.exists():
+            ds = open_engine(s.input_mlfc_val)
+            if ds is not None:
+                ds_list.append(ds)
+
+        if s.input_mlfc_test.exists():
+            ds = open_engine(s.input_mlfc_test)
+            if ds is not None:
+                ds_list.append(ds)
+
+        mlfc = None
+
+        if ds_list:
+            mlfc = xr.concat(
+                ds_list,
+                dim=time_dim,
+                coords="minimal",
+                compat="equals",
+                join="exact",
+            )
+
+    if mlfc is not None:
         mlfc = subset_dataset(
             mlfc,
             lat_range=lat_range,
