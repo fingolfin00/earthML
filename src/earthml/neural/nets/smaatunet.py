@@ -232,6 +232,11 @@ class UpDS(nn.Module):
 
         if bilinear:
             self.up = None
+            # self.up = nn.Upsample(
+            #     scale_factor=2,
+            #     mode="bilinear",
+            #     align_corners=True,
+            # )
             self.conv = DoubleConvDS(
                 in_channels,
                 out_channels,
@@ -280,6 +285,23 @@ class UpDS(nn.Module):
 
         x = torch.cat([x2, x1], dim=1)
         return self.conv(x)
+
+        # x1 = self.up(x1)
+
+        # diff_y = x2.size(2) - x1.size(2)
+        # diff_x = x2.size(3) - x1.size(3)
+
+        # x1 = F.pad(
+        #     x1,
+        #     [
+        #         diff_x // 2,
+        #         diff_x - diff_x // 2,
+        #         diff_y // 2,
+        #         diff_y - diff_y // 2,
+        #     ],
+        # )
+
+        # return self.conv(torch.cat([x2, x1], dim=1))
 
 
 class OutConv(nn.Module):
