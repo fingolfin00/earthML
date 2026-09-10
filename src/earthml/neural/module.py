@@ -766,6 +766,7 @@ class SplitDataModule(L.LightningDataModule):
         persistent_workers: bool | None = None,
         drop_last_train: bool = False,
         group_batches_by_month: bool = False,
+        num_samples: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -817,6 +818,16 @@ class SplitDataModule(L.LightningDataModule):
         self.val_dataset: Dataset
         self.train_indices: list[int] | None = None
         self.val_indices: list[int] | None = None
+
+        self.num_samples = num_samples
+
+        if (
+            self.num_samples is not None
+            and self.num_samples <= 1
+        ):
+            raise ValueError(
+                "num_samples must be > 1."
+            )
 
     def _samples_per_initialization(self) -> tuple[int, int]:
         """
@@ -874,32 +885,57 @@ class SplitDataModule(L.LightningDataModule):
             )
 
         n_times, samples_per_time = self._samples_per_initialization()
-        n_train_times = int(n_times * self.train_fraction)
 
-        if not 0 < n_train_times < n_times:
+        time_indices = list(range(n_times))
+
+        # Optional random subsampling of the full period
+        if self.num_samples is not None:
+            if self.num_samples > n_times:
+                raise ValueError(
+                    "num_samples cannot exceed the available "
+                    f"initialization times: requested={self.num_samples}, "
+                    f"available={n_times}."
+                )
+
+            generator = torch.Generator().manual_seed(self.seed)
+
+            selected = torch.randperm(
+                n_times,
+                generator=generator,
+            )[:self.num_samples].tolist()
+
+            time_indices = sorted(selected)
+
+        n_selected_times = len(time_indices)
+        n_train_times = int(n_selected_times * self.train_fraction)
+
+        if not 0 < n_train_times < n_selected_times:
             raise ValueError(
                 "The requested split produces an empty partition: "
-                f"n_times={n_times}, "
+                f"n_times={n_selected_times}, "
                 f"train_fraction={self.train_fraction}, "
                 f"n_train_times={n_train_times}."
             )
 
         if self.split_strategy == "time":
-            train_time_indices = list(range(n_train_times))
-            val_time_indices = list(range(n_train_times, n_times))
+            train_time_indices = time_indices[:n_train_times]
+            val_time_indices = time_indices[n_train_times:]
 
         elif self.split_strategy == "random":
             generator = torch.Generator().manual_seed(self.seed)
-            shuffled_times = torch.randperm(
-                n_times,
+
+            shuffled = torch.randperm(
+                n_selected_times,
                 generator=generator,
             ).tolist()
 
             train_time_indices = sorted(
-                shuffled_times[:n_train_times]
+                time_indices[i]
+                for i in shuffled[:n_train_times]
             )
             val_time_indices = sorted(
-                shuffled_times[n_train_times:]
+                time_indices[i]
+                for i in shuffled[n_train_times:]
             )
 
         else:
