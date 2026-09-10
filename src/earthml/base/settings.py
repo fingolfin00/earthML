@@ -92,6 +92,7 @@ class Settings:
 
     seasonal_encoding: bool = False
     ensemble_encoding: bool = False
+    spatial_encoding: bool = False
     input_realization_avg: bool = False
 
     net_name: Literal["SmaAt_UNet", "ConvNeXtTransformerUNet"] = "SmaAt_UNet"
@@ -239,6 +240,9 @@ class Settings:
 
         if self.ensemble_encoding:
             parts.append("ee")
+
+        if self.spatial_encoding:
+            parts.append("spe")
 
         if self.input_realization_avg:
             parts.append("ensmean")
@@ -725,6 +729,7 @@ class Settings:
         for name in (
             "seasonal_encoding",
             "ensemble_encoding",
+            "spatial_encoding",
             "input_realization_avg",
             "target_realization_avg",
         ):
