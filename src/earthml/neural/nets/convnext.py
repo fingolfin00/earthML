@@ -270,6 +270,7 @@ class ConvNeXtTransformerUNet(EarthMLLightningModule):
         encoder_depths: tuple[int, ...] = (3, 3, 9, 3),
         decoder_depths: tuple[int, ...] = (3, 3, 3),
         dims: tuple[int, ...] = (64, 128, 256, 512),
+        stem_stride: Literal[1, 2] = 1,
         drop_path_rate: float = 0.0,
         layer_scale_init_value: float = 1e-6,
         transformer_heads: int = 8,
@@ -328,6 +329,11 @@ class ConvNeXtTransformerUNet(EarthMLLightningModule):
                 "All dimensions must be positive"
             )
 
+        if stem_stride not in (1, 2):
+            raise ValueError(
+                f"stem_stride must be 1 or 2, got {stem_stride}"
+            )
+
         if transformer_depth < 0:
             raise ValueError(
                 "transformer_depth must be >= 0"
@@ -353,7 +359,7 @@ class ConvNeXtTransformerUNet(EarthMLLightningModule):
         self.n_channels = n_channels
         self.n_classes = n_classes
 
-        self.total_downsampling_factor = 2 ** num_stages
+        self.total_downsampling_factor = stem_stride * 2 ** (num_stages - 1)
 
         needs_var = loss == "GaussianNLLFromLogits"
         out_channels = (
@@ -374,7 +380,7 @@ class ConvNeXtTransformerUNet(EarthMLLightningModule):
                     n_channels,
                     dims[0],
                     kernel_size=3,
-                    stride=2,
+                    stride=stem_stride,
                     longitude_padding=longitude_padding,
                 ),
                 LayerNorm(
