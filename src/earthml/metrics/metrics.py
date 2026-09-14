@@ -923,6 +923,30 @@ def get_metrics(
                         f"'{reference_name}' and '{name}'"
                     )
 
+    def _subset_clim_to_required_periods(
+        fc: xr.Dataset,
+        fc_clim: xr.Dataset,
+        an_clim: xr.Dataset,
+        clim_period: ClimPeriod,
+    ) -> tuple[xr.Dataset, xr.Dataset]:
+        time_dim = fc.earthml.guessed_dims.time
+
+        if clim_period == ClimPeriod.MONTH:
+            required = np.unique(fc[time_dim].dt.month.values)
+            available = fc_clim["month"].values
+
+            missing = np.setdiff1d(required, available)
+
+            if len(missing):
+                raise ValueError(
+                    f"Forecast requires climatology months {missing.tolist()}, "
+                    f"but forecast climatology contains only {available.tolist()}."
+                )
+
+            an_clim = an_clim.sel(month=available)
+
+        return fc_clim, an_clim
+
     _check_datasets(
         datasets={
             "an": an,
@@ -957,6 +981,13 @@ def get_metrics(
         )
 
     if an_clim is not None and fc_clim is not None:
+        fc_clim, an_clim = _subset_clim_to_required_periods(
+            fc,
+            fc_clim,
+            an_clim,
+            clim_period,
+        )
+
         _check_datasets(
             datasets={
                 "fc_clim": fc_clim,
