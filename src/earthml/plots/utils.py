@@ -191,78 +191,205 @@ def plot_profile(
     models: str | Sequence[str],
     out_file: Path,
     time_range: tuple[str, str],
-    das_member: xr.DataArray | Sequence[xr.DataArray] | xr.Dataset | Sequence[xr.Dataset] | Sequence[None] | None = None,
+    das_member: (
+        xr.DataArray
+        | Sequence[xr.DataArray]
+        | xr.Dataset
+        | Sequence[xr.Dataset]
+        | Sequence[None]
+        | None
+    ) = None,
     leadtime_dim: str = "leadtime",
     leadtime_unit: str = "months",
     period_dim: str = "start_date",
     realization_dim: str = "realization",
     spread: str = "std",
     plot_single_members: bool = False,
+    model_colors: dict[str, object] | None = None,
+    model_linestyles: dict[str, str] | None = None,
+    difference_reference: str | None = None,
+    difference_mode: str = "model_minus_reference",
 ) -> None:
     if isinstance(models, str):
         models = [models]
+
     if len(models) != len(das):
-        raise ValueError("Select same number of models and DataArrays")
-    
+        raise ValueError(
+            "Select same number of models and DataArrays"
+        )
+
     if das_member is not None and len(das) != len(das_member):
-        raise ValueError("Select same number of DataArrays")
+        raise ValueError(
+            "Select same number of DataArrays"
+        )
 
-    plot_das = convert_to_da_list(das, var)
+    plot_das = convert_to_da_list(
+        das,
+        var,
+    )
+
     if das_member is None:
-        das_member = [None]*len(plot_das)
-    plot_das_member = convert_to_da_list(das_member, var)
+        das_member = [None] * len(plot_das)
 
-    fig, ax = plt.subplots(figsize=(12, 8))
+    plot_das_member = convert_to_da_list(
+        das_member,
+        var,
+    )
 
-    for model, da, da_member in zip(models, plot_das, plot_das_member, strict=True):
-        color = MODEL_COLORS.get(model, None)
+    fig, ax = plt.subplots(
+        figsize=(12, 8)
+    )
+
+    for model, da, da_member in zip(
+        models,
+        plot_das,
+        plot_das_member,
+        strict=True,
+    ):
+        # Explicit colors take precedence.
+        #
+        # This is useful for combined-experiment plots where model
+        # names are experiment-specific and therefore are not
+        # necessarily present in MODEL_COLORS.
+        if (
+            model_colors is not None
+            and model in model_colors
+        ):
+            color = model_colors[model]
+        else:
+            color = MODEL_COLORS.get(
+                model,
+                None,
+            )
+
+        # ----------------------------------------------------------
+        # Deterministic / ensemble-mean profile
+        # ----------------------------------------------------------
 
         if da is not None:
-            da = da.reset_coords(drop=True)
+            da = da.reset_coords(
+                drop=True
+            )
 
             with ProgressBar():
-                da = da.sel({period_dim: start_period}).compute()
+                da = (
+                    da
+                    .sel({
+                        period_dim: start_period
+                    })
+                    .compute()
+                )
 
-            x = da[leadtime_dim].values
+            x = da[
+                leadtime_dim
+            ].values
+
+            linestyle = (
+                model_linestyles.get(model, "-")
+                if model_linestyles is not None
+                else "-"
+            )
 
             ax.plot(
                 x,
                 da.values,
-                linestyle="-",
+                linestyle=linestyle,
                 linewidth=1.4,
-                label=f"{model} ensemble mean",
+                label=model,
                 color=color,
-            )
+)
+
+        # ----------------------------------------------------------
+        # Individual ensemble-member metrics
+        # ----------------------------------------------------------
 
         if da_member is not None:
             if realization_dim in da_member.dims:
                 with ProgressBar():
-                    da_member = da_member.sel({period_dim: start_period}).compute()
+                    da_member = (
+                        da_member
+                        .sel({
+                            period_dim:
+                                start_period
+                        })
+                        .compute()
+                    )
 
-                da_member = da_member.reset_coords(drop=True)
-                x = da_member[leadtime_dim].values
+                da_member = (
+                    da_member.reset_coords(
+                        drop=True
+                    )
+                )
+
+                x = da_member[
+                    leadtime_dim
+                ].values
+
+                # --------------------------------------------------
+                # Individual members
+                # --------------------------------------------------
 
                 if plot_single_members:
-                    for i in range(da_member.sizes[realization_dim]):
+                    for i in range(
+                        da_member.sizes[
+                            realization_dim
+                        ]
+                    ):
                         ax.plot(
                             x,
-                            da_member.isel({realization_dim: i}).values,
+                            da_member
+                            .isel({
+                                realization_dim: i
+                            })
+                            .values,
                             linewidth=0.6,
                             alpha=0.25,
                             color=color,
                         )
 
-                member_mean = da_member.mean(realization_dim, skipna=True)
+                # --------------------------------------------------
+                # Member mean + spread
+                # --------------------------------------------------
+
+                member_mean = da_member.mean(
+                    realization_dim,
+                    skipna=True,
+                )
 
                 if spread == "std":
-                    member_std = da_member.std(realization_dim, skipna=True)
-                    lower = member_mean - member_std
-                    upper = member_mean + member_std
+                    member_std = (
+                        da_member.std(
+                            realization_dim,
+                            skipna=True,
+                        )
+                    )
+
+                    lower = (
+                        member_mean
+                        - member_std
+                    )
+
+                    upper = (
+                        member_mean
+                        + member_std
+                    )
+
                 elif spread == "minmax":
-                    lower = da_member.min(realization_dim, skipna=True)
-                    upper = da_member.max(realization_dim, skipna=True)
+                    lower = da_member.min(
+                        realization_dim,
+                        skipna=True,
+                    )
+
+                    upper = da_member.max(
+                        realization_dim,
+                        skipna=True,
+                    )
+
                 else:
-                    raise ValueError("spread must be 'std' or 'minmax'")
+                    raise ValueError(
+                        "spread must be "
+                        "'std' or 'minmax'"
+                    )
 
                 ax.fill_between(
                     x,
@@ -277,41 +404,138 @@ def plot_profile(
                     member_mean.values,
                     linewidth=1.4,
                     linestyle="--",
-                    label=f"{model} member mean",
+                    label=(
+                        f"{model} member mean"
+                    ),
                     color=color,
                 )
 
-    if metric in {"bias", "acc", "clim_acc", "spatial_acc"}:
-        ax.axhline(0, linewidth=0.8)
+    # --------------------------------------------------------------
+    # Reference lines / limits
+    # --------------------------------------------------------------
 
-    if metric in {"acc", "clim_acc", "spatial_acc"}:
-        ax.set_ylim(-1, 1)
+    if metric in {
+        "bias",
+        "acc",
+        "clim_acc",
+        "spatial_acc",
+    }:
+        ax.axhline(
+            0,
+            linewidth=0.8,
+        )
 
-    start_period_str = "" if start_period=="all" else f" · start_period={start_period}"
-    ax.set_title(f"{VARIABLE_NAMES[var]} · {METRIC_NAMES[metric]} · {safe_label(time_range)}{start_period_str}")
+    if metric in {
+        "acc",
+        "clim_acc",
+        "spatial_acc",
+    }:
+        ax.set_ylim(
+            -1,
+            1,
+        )
 
-    ax.set_xlabel(f"{leadtime_dim} {leadtime_unit}")
+    # --------------------------------------------------------------
+    # Labels
+    # --------------------------------------------------------------
 
-    unit = VARIABLE_UNITS[var]
-    unit_conversion = UNIT_CONVERSIONS.get(unit, (unit, 1.0))
-
-    if isinstance(unit_conversion, dict):
-        plot_unit, _ = unit_conversion[var]
-    else:
-        plot_unit, _ = unit_conversion
-
-    ax.set_ylabel(
-        f"{METRIC_NAMES[metric]} [{METRIC_UNITS[metric].format(unit=plot_unit)}]"
-        if METRIC_UNITS[metric]
-        else METRIC_NAMES[metric]
+    start_period_str = (
+        ""
+        if start_period == "all"
+        else f" · start_period={start_period}"
     )
 
-    ax.grid(True, alpha=0.3)
+    if difference_reference is None:
+        title_metric = METRIC_NAMES[metric]
+    else:
+        if difference_mode == "model_minus_reference":
+            diff_label = f"model - {difference_reference}"
+        else:
+            diff_label = f"{difference_reference} - model"
+
+        title_metric = (
+            f"{METRIC_NAMES[metric]} difference "
+            f"({diff_label})"
+        )
+
+    ax.set_title(
+        f"{VARIABLE_NAMES[var]} · "
+        f"{title_metric} · "
+        f"{safe_label(time_range)}"
+        f"{start_period_str}"
+    )
+
+    ax.set_xlabel(
+        f"{leadtime_dim} "
+        f"{leadtime_unit}"
+    )
+
+    unit = VARIABLE_UNITS[var]
+
+    unit_conversion = (
+        UNIT_CONVERSIONS.get(
+            unit,
+            (unit, 1.0),
+        )
+    )
+
+    if isinstance(
+        unit_conversion,
+        dict,
+    ):
+        plot_unit, _ = (
+            unit_conversion[var]
+        )
+    else:
+        plot_unit, _ = (
+            unit_conversion
+        )
+
+    metric_unit = (
+        METRIC_UNITS[metric].format(unit=plot_unit)
+        if METRIC_UNITS[metric]
+        else ""
+    )
+
+    if difference_reference is None:
+        ylabel = (
+            f"{METRIC_NAMES[metric]} [{metric_unit}]"
+            if metric_unit
+            else METRIC_NAMES[metric]
+        )
+    else:
+        ylabel = (
+            f"Δ {METRIC_NAMES[metric]} [{metric_unit}]"
+            if metric_unit
+            else f"Δ {METRIC_NAMES[metric]}"
+        )
+
+    ax.set_ylabel(ylabel)
+
+    # --------------------------------------------------------------
+    # Layout
+    # --------------------------------------------------------------
+
+    ax.grid(
+        True,
+        alpha=0.3,
+    )
+
     ax.legend()
 
-    out_file.parent.mkdir(parents=True, exist_ok=True)
+    out_file.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
     plt.tight_layout()
-    plt.savefig(out_file, dpi=200, bbox_inches="tight")
+
+    plt.savefig(
+        out_file,
+        dpi=200,
+        bbox_inches="tight",
+    )
+
     plt.close(fig)
 
 
@@ -407,11 +631,27 @@ def plot_timeseries(
             da.values,
             linewidth=1.8,
             color=color,
-            label=f"{model} ensemble mean",
+            label=f"{model}",
+            # label=f"{model} ensemble mean",
         )
 
-    if metric in {"bias", "acc", "clim_acc", "spatial_acc"}:
-        ax.axhline(0, linewidth=0.8)
+    if difference_reference is not None:
+        ax.axhline(
+            0,
+            linewidth=0.8,
+            color="black",
+            alpha=0.6,
+        )
+    elif metric in {
+        "bias",
+        "acc",
+        "clim_acc",
+        "spatial_acc",
+    }:
+        ax.axhline(
+            0,
+            linewidth=0.8,
+        )
 
     if metric in {"acc", "clim_acc", "spatial_acc"}:
         ax.set_ylim(-1, 1)
