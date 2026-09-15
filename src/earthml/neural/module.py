@@ -960,14 +960,47 @@ class SplitDataModule(L.LightningDataModule):
             return
 
         if self.split_strategy == "explicit":
-            self.train_dataset = self.source_dataset
             assert self.explicit_val_dataset is not None
+
             self.val_dataset = self.explicit_val_dataset
-            self.train_indices = None
             self.val_indices = None
+
+            if self.num_samples is None:
+                self.train_dataset = self.source_dataset
+                self.train_indices = None
+            else:
+                n_times, samples_per_time = self._samples_per_initialization()
+
+                if self.num_samples > n_times:
+                    raise ValueError(
+                        "num_samples cannot exceed the available "
+                        f"initialization times: requested={self.num_samples}, "
+                        f"available={n_times}."
+                    )
+
+                generator = torch.Generator().manual_seed(self.seed)
+
+                selected_times = torch.randperm(
+                    n_times,
+                    generator=generator,
+                )[:self.num_samples].tolist()
+
+                selected_times = sorted(selected_times)
+
+                self.train_indices = self._expand_time_indices(
+                    selected_times,
+                    samples_per_time,
+                )
+
+                self.train_dataset = Subset(
+                    self.source_dataset,
+                    self.train_indices,
+                )
+
             return
 
         self.train_indices, self.val_indices = self._get_indices()
+
         self.train_dataset = Subset(
             self.source_dataset,
             self.train_indices,
