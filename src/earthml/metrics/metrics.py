@@ -923,27 +923,24 @@ def get_metrics(
                         f"'{reference_name}' and '{name}'"
                     )
 
-    def _subset_clim_to_required_periods(
-        fc: xr.Dataset,
+    def _subset_clims_to_common_periods(
         fc_clim: xr.Dataset,
         an_clim: xr.Dataset,
         clim_period: ClimPeriod,
     ) -> tuple[xr.Dataset, xr.Dataset]:
-        time_dim = fc.earthml.guessed_dims.time
+        for dim in _clim_group_dims(clim_period):
+            common = np.intersect1d(
+                fc_clim[dim].values,
+                an_clim[dim].values,
+            )
 
-        if clim_period == ClimPeriod.MONTH:
-            required = np.unique(fc[time_dim].dt.month.values)
-            available = fc_clim["month"].values
-
-            missing = np.setdiff1d(required, available)
-
-            if len(missing):
+            if len(common) == 0:
                 raise ValueError(
-                    f"Forecast requires climatology months {missing.tolist()}, "
-                    f"but forecast climatology contains only {available.tolist()}."
+                    f"No common climatology values for dimension '{dim}'."
                 )
 
-            an_clim = an_clim.sel(month=available)
+            fc_clim = fc_clim.sel({dim: common})
+            an_clim = an_clim.sel({dim: common})
 
         return fc_clim, an_clim
 
@@ -981,8 +978,7 @@ def get_metrics(
         )
 
     if an_clim is not None and fc_clim is not None:
-        fc_clim, an_clim = _subset_clim_to_required_periods(
-            fc,
+        fc_clim, an_clim = _subset_clims_to_common_periods(
             fc_clim,
             an_clim,
             clim_period,
