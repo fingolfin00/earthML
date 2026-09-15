@@ -13,7 +13,7 @@ def get_experiment_configs(
     if unknown:
         raise ValueError(f"Unknown Settings fields: {unknown}")
 
-    config_paths = list(Path(experiments_root).rglob("config.json"))
+    config_paths = sorted(list(Path(experiments_root).rglob("config.json")))
 
     matching_settings: list[Settings] = []
 
