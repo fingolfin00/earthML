@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 
 from ..metrics import safe_percent
 from .colormaps import (
+    PiBRdY,
     SeqWRdY,
     SeqPiBRdY,
     SeqBPi,
@@ -151,7 +152,7 @@ DEFAULT_PLOT_CONFIG = {
         "vmin": 0.5,
         "vmax": 2.0,
         "ticks": [0.5, 0.6, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0],
-        "cmap": SeqPiBRdY,
+        "cmap": PiBRdY,
         "scale_units": False,
     },
     "fc_anom_std": {
@@ -172,7 +173,7 @@ DEFAULT_PLOT_CONFIG = {
         "vmin": 0.5,
         "vmax": 2.0,
         "ticks": [0.5, 0.6, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0],
-        "cmap": SeqPiBRdY,
+        "cmap": PiBRdY,
         "scale_units": False,
     },
 
@@ -209,7 +210,7 @@ DEFAULT_PLOT_CONFIG = {
         "vmin": 0.0,
         "vmax": 2.0,
         "ticks": [0.0, 0.25, 0.5, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0],
-        "cmap": SeqPiBRdY,
+        "cmap": PiBRdY,
         "scale_units": False,
     },
 
@@ -291,7 +292,7 @@ DEFAULT_PLOT_CONFIG = {
         "vmin": 0.0,
         "vmax": 2.0,
         "ticks": [0.0, 0.25, 0.5, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0],
-        "cmap": SeqPiBRdY,
+        "cmap": PiBRdY,
         "scale_units": False,
     },
 
