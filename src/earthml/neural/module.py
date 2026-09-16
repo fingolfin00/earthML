@@ -767,7 +767,8 @@ class SplitDataModule(L.LightningDataModule):
         persistent_workers: bool | None = None,
         drop_last_train: bool = False,
         group_batches_by_month: bool = False,
-        num_samples: int | None = None,
+        train_subsamples: int | None = None,
+        val_subsamples: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -820,24 +821,25 @@ class SplitDataModule(L.LightningDataModule):
         self.train_indices: list[int] | None = None
         self.val_indices: list[int] | None = None
 
-        self.num_samples = num_samples
+        self.train_subsamples = train_subsamples
+        self.val_subsamples = val_subsamples
 
-        if (
-            self.num_samples is not None
-            and self.num_samples <= 1
+        for name, value in (
+            ("train_subsamples", self.train_subsamples),
+            ("val_subsamples", self.val_subsamples),
         ):
-            raise ValueError(
-                "num_samples must be > 1."
-            )
+            if value is not None and value <= 0:
+                raise ValueError(f"{name} must be > 0.")
 
-    def _samples_per_initialization(self) -> tuple[int, int]:
+    def _samples_per_initialization(
+        self,
+        dataset: Dataset,
+    ) -> tuple[int, int]:
         """
         Return the number of initialization times and samples per time.
 
         Samples are assumed to be flattened in time-major order.
         """
-        dataset = self.source_dataset
-
         if not hasattr(dataset, "input_ds"):
             raise TypeError(
                 f"split_strategy={self.split_strategy!r} requires a dataset "
@@ -863,6 +865,55 @@ class SplitDataModule(L.LightningDataModule):
 
         return n_times, n_samples // n_times
 
+    def _subsample_time_indices(
+        self,
+        time_indices: list[int],
+        num_subsamples: int | None,
+        *,
+        partition: str,
+    ) -> list[int]:
+        if num_subsamples is None:
+            return time_indices
+
+        if num_subsamples > len(time_indices):
+            raise ValueError(
+                f"{partition}_subsamples cannot exceed the available "
+                "initialization times in the partition: "
+                f"requested={num_subsamples}, "
+                f"available={len(time_indices)}."
+            )
+
+        generator = torch.Generator().manual_seed(self.seed)
+        selected = torch.randperm(
+            len(time_indices),
+            generator=generator,
+        )[:num_subsamples].tolist()
+
+        return sorted(time_indices[i] for i in selected)
+
+    def _subsample_dataset(
+        self,
+        dataset: Dataset,
+        num_subsamples: int | None,
+        *,
+        partition: str,
+    ) -> tuple[Dataset, list[int] | None]:
+        if num_subsamples is None:
+            return dataset, None
+
+        n_times, samples_per_time = self._samples_per_initialization(dataset)
+        selected_times = self._subsample_time_indices(
+            list(range(n_times)),
+            num_subsamples,
+            partition=partition,
+        )
+        indices = self._expand_time_indices(
+            selected_times,
+            samples_per_time,
+        )
+
+        return Subset(dataset, indices), indices
+
     @staticmethod
     def _expand_time_indices(
         time_indices: list[int],
@@ -885,27 +936,11 @@ class SplitDataModule(L.LightningDataModule):
                 "split_strategy='explicit'."
             )
 
-        n_times, samples_per_time = self._samples_per_initialization()
+        n_times, samples_per_time = self._samples_per_initialization(
+            self.source_dataset
+        )
 
         time_indices = list(range(n_times))
-
-        # Optional random subsampling of the full period
-        if self.num_samples is not None:
-            if self.num_samples > n_times:
-                raise ValueError(
-                    "num_samples cannot exceed the available "
-                    f"initialization times: requested={self.num_samples}, "
-                    f"available={n_times}."
-                )
-
-            generator = torch.Generator().manual_seed(self.seed)
-
-            selected = torch.randperm(
-                n_times,
-                generator=generator,
-            )[:self.num_samples].tolist()
-
-            time_indices = sorted(selected)
 
         n_selected_times = len(time_indices)
         n_train_times = int(n_selected_times * self.train_fraction)
@@ -944,6 +979,17 @@ class SplitDataModule(L.LightningDataModule):
                 f"Unknown split_strategy={self.split_strategy!r}"
             )
 
+        train_time_indices = self._subsample_time_indices(
+            train_time_indices,
+            self.train_subsamples,
+            partition="train",
+        )
+        val_time_indices = self._subsample_time_indices(
+            val_time_indices,
+            self.val_subsamples,
+            partition="val",
+        )
+
         return (
             self._expand_time_indices(
                 train_time_indices,
@@ -962,40 +1008,16 @@ class SplitDataModule(L.LightningDataModule):
         if self.split_strategy == "explicit":
             assert self.explicit_val_dataset is not None
 
-            self.val_dataset = self.explicit_val_dataset
-            self.val_indices = None
-
-            if self.num_samples is None:
-                self.train_dataset = self.source_dataset
-                self.train_indices = None
-            else:
-                n_times, samples_per_time = self._samples_per_initialization()
-
-                if self.num_samples > n_times:
-                    raise ValueError(
-                        "num_samples cannot exceed the available "
-                        f"initialization times: requested={self.num_samples}, "
-                        f"available={n_times}."
-                    )
-
-                generator = torch.Generator().manual_seed(self.seed)
-
-                selected_times = torch.randperm(
-                    n_times,
-                    generator=generator,
-                )[:self.num_samples].tolist()
-
-                selected_times = sorted(selected_times)
-
-                self.train_indices = self._expand_time_indices(
-                    selected_times,
-                    samples_per_time,
-                )
-
-                self.train_dataset = Subset(
-                    self.source_dataset,
-                    self.train_indices,
-                )
+            self.train_dataset, self.train_indices = self._subsample_dataset(
+                self.source_dataset,
+                self.train_subsamples,
+                partition="train",
+            )
+            self.val_dataset, self.val_indices = self._subsample_dataset(
+                self.explicit_val_dataset,
+                self.val_subsamples,
+                partition="val",
+            )
 
             return
 
