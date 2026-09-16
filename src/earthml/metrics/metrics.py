@@ -1,6 +1,8 @@
 from typing import cast
 from collections.abc import Sequence
 
+from pathlib import Path
+
 import numpy as np
 import xarray as xr
 import xskillscore as xs
@@ -41,6 +43,103 @@ def is_probabilistic(metric: str | Metric) -> bool:
     return as_metric(metric) in PROBABILISTIC_METRICS
 
 
+EARTH_RADIUS_M = 6_371_000.0
+
+def horizontal_gradient(
+    da: xr.DataArray,
+    lat_dim: str,
+    lon_dim: str,
+    periodic_longitude: bool | None = None,
+) -> tuple[xr.DataArray, xr.DataArray, xr.DataArray]:
+    """Horizontal gradient on a regular latitude/longitude grid."""
+    lat = da[lat_dim]
+    lon = da[lon_dim]
+
+    if lat.size < 3 or lon.size < 3:
+        raise ValueError(
+            "horizontal_gradient requires at least 3 latitude and "
+            "3 longitude points."
+        )
+
+    lon_spacing = abs(lon.diff(lon_dim))
+    dlon = float(lon_spacing.median())
+
+    if not np.allclose(
+        lon_spacing,
+        dlon,
+        rtol=1e-5,
+        atol=1e-8,
+    ):
+        raise ValueError(
+            "Horizontal gradient requires regular longitude spacing."
+        )
+
+    if periodic_longitude is None:
+        lon_coverage = float(lon.max() - lon.min()) + dlon
+        periodic_longitude = np.isclose(
+            lon_coverage,
+            360.0,
+            rtol=0,
+            atol=dlon * 0.1,
+        )
+
+    lat_rad = np.deg2rad(lat)
+
+    meters_per_degree_lat = (
+        EARTH_RADIUS_M * np.pi / 180.0
+    )
+
+    grad_y = (
+        da.differentiate(
+            lat_dim,
+            edge_order=2,
+        )
+        / meters_per_degree_lat
+    )
+
+    if periodic_longitude:
+        forward = da.roll(
+            {lon_dim: -1},
+            roll_coords=False,
+        )
+        backward = da.roll(
+            {lon_dim: 1},
+            roll_coords=False,
+        )
+
+        grad_x_per_degree = (
+            forward - backward
+        ) / (2.0 * dlon)
+
+    else:
+        grad_x_per_degree = da.differentiate(
+            lon_dim,
+            edge_order=2,
+        )
+
+    cos_lat = np.cos(lat_rad)
+
+    meters_per_degree_lon = (
+        EARTH_RADIUS_M
+        * cos_lat
+        * np.pi
+        / 180.0
+    )
+
+    grad_x = xr.where(
+        abs(cos_lat) > 1e-6,
+        grad_x_per_degree / meters_per_degree_lon,
+        np.nan,
+    )
+
+    grad_mag = np.sqrt(
+        grad_x ** 2
+        + grad_y ** 2
+    )
+
+    return grad_x, grad_y, grad_mag
+
+
 def core_metrics(
     fc: xr.DataArray,
     an: xr.DataArray,
@@ -49,11 +148,13 @@ def core_metrics(
     *,
     fc_clim: xr.DataArray | None = None,
     an_clim: xr.DataArray | None = None,
+    orography: xr.DataArray | None = None,
     clim_period: ClimPeriod = ClimPeriod.MONTH,
     fair_correction: bool = False,
-) -> xr.Dataset:    
+) -> xr.Dataset:  
     time_dim = fc.earthml.guessed_dims.time
     lat_dim = fc.earthml.guessed_dims.latitude
+    lon_dim = fc.earthml.guessed_dims.longitude
     realization_dim = fc.earthml.guessed_dims.realization
     # leadtime_dim = fc.earthml.guessed_dims.leadtime
 
@@ -68,7 +169,6 @@ def core_metrics(
 
     weights = cast(xr.DataArray, np.cos(np.deg2rad(fc[lat_dim])))
     error = fc - an
-    metric_dims_no_time = tuple(d for d in dims if d != time_dim)
 
     # fairness correction for MSSS
     if fair_correction:
@@ -81,6 +181,47 @@ def core_metrics(
         return metric.value in metrics
 
     out = xr.Dataset()
+
+    static_orography_metrics = (
+        Metric.OROGRAPHY,
+        Metric.OROGRAPHY_GRAD_MAG,
+    )
+
+    if any(want(metric) for metric in static_orography_metrics):
+        if orography is None:
+            raise ValueError(
+                "Orography is required for orography metrics."
+            )
+
+        # Only reduce dimensions that actually exist in the static field.
+        oro_dims = tuple(
+            d for d in dims
+            if d in orography.dims
+        )
+
+        def reduce_orography(
+            da: xr.DataArray,
+        ) -> xr.DataArray:
+            if not oro_dims:
+                return da
+
+            return da.weighted(weights).mean(oro_dims)
+
+        if want(Metric.OROGRAPHY):
+            out[Metric.OROGRAPHY.value] = reduce_orography(
+                orography
+            )
+
+        if want(Metric.OROGRAPHY_GRAD_MAG):
+            _, _, orography_grad_mag = horizontal_gradient(
+                orography,
+                lat_dim=lat_dim,
+                lon_dim=lon_dim,
+            )
+
+            out[Metric.OROGRAPHY_GRAD_MAG.value] = (
+                reduce_orography(orography_grad_mag)
+            )
 
     if want(Metric.BIAS):
         out[Metric.BIAS.value] = error.weighted(weights).mean(dims)
@@ -117,19 +258,198 @@ def core_metrics(
         sst = ((an - an.weighted(weights).mean(dims)) ** 2).weighted(weights).sum(dims)
         out[Metric.R2.value] = 1 - sse / sst
 
-    if want(Metric.CORR):
-        out[Metric.CORR.value] = xr.corr(fc, an, dim=time_dim).weighted(weights).mean(metric_dims_no_time)
+    temporal_diagnostic_metrics = (
+        Metric.CORR,
+        Metric.FC_STD,
+        Metric.AN_STD,
+        Metric.STD_RATIO,
+        Metric.MSE_BIAS_COMPONENT,
+        Metric.MSE_STD_COMPONENT,
+        Metric.MSE_CORR_COMPONENT,
+        Metric.CRMSE,
+        Metric.REGRESSION_SLOPE,
+    )
 
-    if want(Metric.FC_STD) or want(Metric.STD_RATIO):
-        fc_std = fc.std(time_dim).weighted(weights).mean(metric_dims_no_time)
-        out[Metric.FC_STD.value] = fc_std
+    if any(want(metric) for metric in temporal_diagnostic_metrics):
+        if time_dim not in dims:
+            raise ValueError(
+                "Temporal diagnostic metrics require the time dimension "
+                "to be included in dims."
+            )
 
-    if want(Metric.AN_STD) or want(Metric.STD_RATIO):
-        an_std = an.std(time_dim).weighted(weights).mean(metric_dims_no_time)
-        out[Metric.AN_STD.value] = an_std
+        # Work in float64 for numerically stable temporal diagnostics.
+        fc_diag = fc.astype("float64")
+        an_diag = an.astype("float64")
 
-    if want(Metric.STD_RATIO):
-        out[Metric.STD_RATIO.value] = fc_std / an_std
+        # Use exactly the same valid samples for forecast and analysis.
+        valid = fc_diag.notnull() & an_diag.notnull()
+        fc_diag = fc_diag.where(valid)
+        an_diag = an_diag.where(valid)
+
+        error_diag = fc_diag - an_diag
+
+        # Temporal means.
+        fc_mean_t = fc_diag.mean(time_dim)
+        an_mean_t = an_diag.mean(time_dim)
+
+        # Centered fields.
+        fc_centered = fc_diag - fc_mean_t
+        an_centered = an_diag - an_mean_t
+
+        # Temporal bias.
+        bias_t = error_diag.mean(time_dim)
+
+        # Population variance and covariance over time.
+        fc_var_t = (fc_centered ** 2).mean(time_dim)
+        an_var_t = (an_centered ** 2).mean(time_dim)
+        cov_t = (fc_centered * an_centered).mean(time_dim)
+
+        fc_std_t = np.sqrt(fc_var_t)
+        an_std_t = np.sqrt(an_var_t)
+
+        # Correlation.
+        corr_t = safe_div(
+            cov_t,
+            fc_std_t * an_std_t,
+        )
+
+        # --------------------------------------------------------------
+        # MSE decomposition
+        #
+        # MSE = bias_component
+        #     + std_component
+        #     + corr_component
+        #
+        # where
+        #
+        # bias_component = bias²
+        # std_component  = (sigma_fc - sigma_an)²
+        # corr_component = 2 (sigma_fc sigma_an - cov)
+        # --------------------------------------------------------------
+
+        mse_bias_component_t = bias_t ** 2
+
+        mse_std_component_t = (
+            fc_std_t - an_std_t
+        ) ** 2
+
+        mse_corr_component_t = (
+            2.0 * (fc_std_t * an_std_t - cov_t)
+        )
+
+        spatial_dims = tuple(
+            d for d in dims if d != time_dim
+        )
+
+        def spatial_mean(
+            da: xr.DataArray,
+        ) -> xr.DataArray:
+            if not spatial_dims:
+                return da
+
+            return da.weighted(weights).mean(spatial_dims)
+
+        # Standard diagnostics.
+        if want(Metric.CORR):
+            out[Metric.CORR.value] = spatial_mean(corr_t)
+
+        if want(Metric.FC_STD):
+            out[Metric.FC_STD.value] = spatial_mean(fc_std_t)
+
+        if want(Metric.AN_STD):
+            out[Metric.AN_STD.value] = spatial_mean(an_std_t)
+
+        if want(Metric.STD_RATIO):
+            out[Metric.STD_RATIO.value] = spatial_mean(
+                safe_div(fc_std_t, an_std_t)
+            )
+
+        # MSE decomposition diagnostics.
+        mse_bias_component = spatial_mean(
+            mse_bias_component_t
+        )
+        mse_std_component = spatial_mean(
+            mse_std_component_t
+        )
+        mse_corr_component = spatial_mean(
+            mse_corr_component_t
+        )
+
+        if want(Metric.MSE_BIAS_COMPONENT):
+            out[Metric.MSE_BIAS_COMPONENT.value] = (
+                mse_bias_component
+            )
+
+        if want(Metric.MSE_STD_COMPONENT):
+            out[Metric.MSE_STD_COMPONENT.value] = (
+                mse_std_component
+            )
+
+        if want(Metric.MSE_CORR_COMPONENT):
+            out[Metric.MSE_CORR_COMPONENT.value] = (
+                mse_corr_component
+            )
+
+        if want(Metric.CRMSE):
+            out[Metric.CRMSE.value] = np.sqrt(
+                mse_std_component
+                + mse_corr_component
+            )
+
+        if want(Metric.REGRESSION_SLOPE):
+            regression_slope_t = safe_div(
+                cov_t,
+                an_var_t,
+            )
+
+            out[Metric.REGRESSION_SLOPE.value] = (
+                spatial_mean(regression_slope_t)
+            )
+
+    spatial_gradient_metrics = (
+        Metric.FC_GRAD_MAG,
+        Metric.AN_GRAD_MAG,
+        Metric.GRAD_RMSE,
+    )
+
+    if any(want(metric) for metric in spatial_gradient_metrics):
+        fc_grad_x, fc_grad_y, fc_grad_mag = horizontal_gradient(
+            fc,
+            lat_dim=lat_dim,
+            lon_dim=lon_dim,
+        )
+
+        an_grad_x, an_grad_y, an_grad_mag = horizontal_gradient(
+            an,
+            lat_dim=lat_dim,
+            lon_dim=lon_dim,
+        )
+
+        if want(Metric.FC_GRAD_MAG):
+            out[Metric.FC_GRAD_MAG.value] = (
+                fc_grad_mag
+                .weighted(weights)
+                .mean(dims)
+            )
+
+        if want(Metric.AN_GRAD_MAG):
+            out[Metric.AN_GRAD_MAG.value] = (
+                an_grad_mag
+                .weighted(weights)
+                .mean(dims)
+            )
+
+        if want(Metric.GRAD_RMSE):
+            gradient_squared_error = (
+                (fc_grad_x - an_grad_x) ** 2
+                + (fc_grad_y - an_grad_y) ** 2
+            )
+
+            out[Metric.GRAD_RMSE.value] = np.sqrt(
+                gradient_squared_error
+                .weighted(weights)
+                .mean(dims)
+            )
 
     # Probabilistic and ensemble metrics
     if realization_dim in fc.dims:
@@ -201,24 +521,270 @@ def core_metrics(
         if want(Metric.RMSE_ANOM):
             out[Metric.RMSE_ANOM.value] = np.sqrt((error_anom ** 2).weighted(weights).mean(dims))
 
-        if want(Metric.ACC):
-            out[Metric.ACC.value] = xr.corr(fc_anom, an_anom, dim=time_dim).weighted(weights).mean(metric_dims_no_time)
-
         if want(Metric.R2_ANOM):
             sse_anom = ((error_anom) ** 2).weighted(weights).sum(dims)
             sst_anom = ((an_anom - an_anom.weighted(weights).mean(dims)) ** 2).weighted(weights).sum(dims)
             out[Metric.R2_ANOM.value] = 1 - sse_anom / sst_anom
 
-        if want(Metric.FC_ANOM_STD) or want(Metric.STD_RATIO_ANOM):
-            fc_anom_std = fc_anom.std(time_dim).weighted(weights).mean(metric_dims_no_time)
-            out[Metric.FC_ANOM_STD.value] = fc_anom_std
+        anomaly_temporal_diagnostic_metrics = (
+            Metric.ACC,
+            Metric.FC_ANOM_STD,
+            Metric.AN_ANOM_STD,
+            Metric.STD_RATIO_ANOM,
+            Metric.MSE_BIAS_COMPONENT_ANOM,
+            Metric.MSE_STD_COMPONENT_ANOM,
+            Metric.MSE_CORR_COMPONENT_ANOM,
+            Metric.CRMSE_ANOM,
+            Metric.REGRESSION_SLOPE_ANOM,
+        )
 
-        if want(Metric.AN_ANOM_STD) or want(Metric.STD_RATIO_ANOM):
-            an_anom_std = an_anom.std(time_dim).weighted(weights).mean(metric_dims_no_time)
-            out[Metric.AN_ANOM_STD.value] = an_anom_std
+        if any(
+            want(metric)
+            for metric in anomaly_temporal_diagnostic_metrics
+        ):
+            if time_dim not in dims:
+                raise ValueError(
+                    "Anomaly temporal diagnostic metrics require the "
+                    "time dimension to be included in dims."
+                )
 
-        if want(Metric.STD_RATIO_ANOM):
-            out[Metric.STD_RATIO_ANOM.value] = fc_anom_std / an_anom_std
+            # Work in float64 for numerically stable diagnostics.
+            fc_anom_diag = fc_anom.astype("float64")
+            an_anom_diag = an_anom.astype("float64")
+
+            # Use exactly the same valid samples.
+            valid_anom = (
+                fc_anom_diag.notnull()
+                & an_anom_diag.notnull()
+            )
+
+            fc_anom_diag = fc_anom_diag.where(valid_anom)
+            an_anom_diag = an_anom_diag.where(valid_anom)
+
+            error_anom_diag = (
+                fc_anom_diag - an_anom_diag
+            )
+
+            # Temporal means.
+            fc_anom_mean_t = fc_anom_diag.mean(time_dim)
+            an_anom_mean_t = an_anom_diag.mean(time_dim)
+
+            # Centered anomaly fields.
+            fc_anom_centered = (
+                fc_anom_diag - fc_anom_mean_t
+            )
+            an_anom_centered = (
+                an_anom_diag - an_anom_mean_t
+            )
+
+            # Temporal anomaly bias.
+            bias_anom_t = error_anom_diag.mean(time_dim)
+
+            # Population variance and covariance.
+            fc_anom_var_t = (
+                fc_anom_centered ** 2
+            ).mean(time_dim)
+
+            an_anom_var_t = (
+                an_anom_centered ** 2
+            ).mean(time_dim)
+
+            cov_anom_t = (
+                fc_anom_centered
+                * an_anom_centered
+            ).mean(time_dim)
+
+            fc_anom_std_t = np.sqrt(fc_anom_var_t)
+            an_anom_std_t = np.sqrt(an_anom_var_t)
+
+            # Anomaly correlation coefficient.
+            acc_t = safe_div(
+                cov_anom_t,
+                fc_anom_std_t * an_anom_std_t,
+            )
+
+            # ----------------------------------------------------------
+            # Anomaly MSE decomposition
+            #
+            # MSE_anom = bias_component_anom
+            #          + std_component_anom
+            #          + corr_component_anom
+            # ----------------------------------------------------------
+
+            mse_bias_component_anom_t = (
+                bias_anom_t ** 2
+            )
+
+            mse_std_component_anom_t = (
+                fc_anom_std_t - an_anom_std_t
+            ) ** 2
+
+            mse_corr_component_anom_t = (
+                2.0
+                * (
+                    fc_anom_std_t
+                    * an_anom_std_t
+                    - cov_anom_t
+                )
+            )
+
+            spatial_dims = tuple(
+                d for d in dims if d != time_dim
+            )
+
+            def anomaly_spatial_mean(
+                da: xr.DataArray,
+            ) -> xr.DataArray:
+                if not spatial_dims:
+                    return da
+
+                return da.weighted(weights).mean(
+                    spatial_dims
+                )
+
+            # Standard anomaly diagnostics.
+            if want(Metric.ACC):
+                out[Metric.ACC.value] = (
+                    anomaly_spatial_mean(acc_t)
+                )
+
+            if want(Metric.FC_ANOM_STD):
+                out[Metric.FC_ANOM_STD.value] = (
+                    anomaly_spatial_mean(
+                        fc_anom_std_t
+                    )
+                )
+
+            if want(Metric.AN_ANOM_STD):
+                out[Metric.AN_ANOM_STD.value] = (
+                    anomaly_spatial_mean(
+                        an_anom_std_t
+                    )
+                )
+
+            if want(Metric.STD_RATIO_ANOM):
+                out[Metric.STD_RATIO_ANOM.value] = (
+                    anomaly_spatial_mean(
+                        safe_div(
+                            fc_anom_std_t,
+                            an_anom_std_t,
+                        )
+                    )
+                )
+
+            # MSE decomposition diagnostics.
+            mse_bias_component_anom = (
+                anomaly_spatial_mean(
+                    mse_bias_component_anom_t
+                )
+            )
+
+            mse_std_component_anom = (
+                anomaly_spatial_mean(
+                    mse_std_component_anom_t
+                )
+            )
+
+            mse_corr_component_anom = (
+                anomaly_spatial_mean(
+                    mse_corr_component_anom_t
+                )
+            )
+
+            if want(Metric.MSE_BIAS_COMPONENT_ANOM):
+                out[
+                    Metric.MSE_BIAS_COMPONENT_ANOM.value
+                ] = mse_bias_component_anom
+
+            if want(Metric.MSE_STD_COMPONENT_ANOM):
+                out[
+                    Metric.MSE_STD_COMPONENT_ANOM.value
+                ] = mse_std_component_anom
+
+            if want(Metric.MSE_CORR_COMPONENT_ANOM):
+                out[
+                    Metric.MSE_CORR_COMPONENT_ANOM.value
+                ] = mse_corr_component_anom
+
+            if want(Metric.CRMSE_ANOM):
+                out[Metric.CRMSE_ANOM.value] = np.sqrt(
+                    mse_std_component_anom
+                    + mse_corr_component_anom
+                )
+
+            if want(Metric.REGRESSION_SLOPE_ANOM):
+                regression_slope_anom_t = safe_div(
+                    cov_anom_t,
+                    an_anom_var_t,
+                )
+
+                out[
+                    Metric.REGRESSION_SLOPE_ANOM.value
+                ] = anomaly_spatial_mean(
+                    regression_slope_anom_t
+                )
+
+        anomaly_spatial_gradient_metrics = (
+            Metric.FC_ANOM_GRAD_MAG,
+            Metric.AN_ANOM_GRAD_MAG,
+            Metric.GRAD_RMSE_ANOM,
+        )
+
+        if any(
+            want(metric)
+            for metric in anomaly_spatial_gradient_metrics
+        ):
+            (
+                fc_anom_grad_x,
+                fc_anom_grad_y,
+                fc_anom_grad_mag,
+            ) = horizontal_gradient(
+                fc_anom,
+                lat_dim=lat_dim,
+                lon_dim=lon_dim,
+            )
+
+            (
+                an_anom_grad_x,
+                an_anom_grad_y,
+                an_anom_grad_mag,
+            ) = horizontal_gradient(
+                an_anom,
+                lat_dim=lat_dim,
+                lon_dim=lon_dim,
+            )
+
+            if want(Metric.FC_ANOM_GRAD_MAG):
+                out[Metric.FC_ANOM_GRAD_MAG.value] = (
+                    fc_anom_grad_mag
+                    .weighted(weights)
+                    .mean(dims)
+                )
+
+            if want(Metric.AN_ANOM_GRAD_MAG):
+                out[Metric.AN_ANOM_GRAD_MAG.value] = (
+                    an_anom_grad_mag
+                    .weighted(weights)
+                    .mean(dims)
+                )
+
+            if want(Metric.GRAD_RMSE_ANOM):
+                gradient_anom_squared_error = (
+                    (
+                        fc_anom_grad_x
+                        - an_anom_grad_x
+                    ) ** 2
+                    + (
+                        fc_anom_grad_y
+                        - an_anom_grad_y
+                    ) ** 2
+                )
+
+                out[Metric.GRAD_RMSE_ANOM.value] = np.sqrt(
+                    gradient_anom_squared_error
+                    .weighted(weights)
+                    .mean(dims)
+                )
 
         if want(Metric.NMSE_ANOM):
             nmse_anom = (error_anom ** 2).weighted(weights).mean(dims)
@@ -465,6 +1031,7 @@ def calculate_metrics(
     metrics: str | Sequence[str] | None = None,
     fc_clim: xr.DataArray | None = None,
     an_clim: xr.DataArray | None = None,
+    orography: xr.DataArray | None = None,
     clim_period: ClimPeriod = ClimPeriod.MONTH,
     period_dim: str = "start_date",
     periods_requested: str | Sequence[str] | None = None,
@@ -663,6 +1230,7 @@ def calculate_metrics(
             metrics=valid_metrics,
             fc_clim=fc_clim,
             an_clim=an_clim,
+            orography=orography,
             clim_period=clim_period,
             fair_correction=fair_correction,
         ).expand_dims({period_dim: ["all"]})
@@ -716,6 +1284,7 @@ def calculate_metrics(
                 metrics=valid_metrics,
                 fc_clim=fc_clim_p,
                 an_clim=an_clim_p,
+                orography=orography,
                 clim_period=clim_period,
                 fair_correction=fair_correction,
             ).expand_dims(
@@ -742,6 +1311,7 @@ def metrics_by_lead_window(
     metrics: str | Sequence[str] | None = None,
     fc_clim: xr.DataArray | None = None,
     an_clim: xr.DataArray | None = None,
+    orography: xr.DataArray | None = None,
     leadtime_agg_coord: str = "leadtime_seasonal",
     clim_period: ClimPeriod = ClimPeriod.MONTH,
     period_dim: str = "start_date",
@@ -785,6 +1355,7 @@ def metrics_by_lead_window(
             metrics=metrics,
             fc_clim=fc_clim_w,
             an_clim=an_clim_w,
+            orography=orography,
             clim_period=clim_period,
             period_dim=period_dim,
             periods_requested=periods_requested,
@@ -821,6 +1392,7 @@ def metrics_by_lead(
     metrics: str | Sequence[str] | None = None,
     fc_clim: xr.DataArray | None = None,
     an_clim: xr.DataArray | None = None,
+    orography: xr.DataArray | None = None,
     clim_period: ClimPeriod = ClimPeriod.MONTH,
     period_dim: str = "start_date",
     periods_requested: str | Sequence[str] | None = None,
@@ -849,6 +1421,7 @@ def metrics_by_lead(
             metrics=metrics,
             fc_clim=fc_clim_l,
             an_clim=an_clim_l,
+            orography=orography,
             clim_period=clim_period,
             period_dim=period_dim,
             periods_requested=periods_requested,
@@ -878,6 +1451,7 @@ def get_metrics(
     realization_agg: bool,
     fc_clim: xr.Dataset | None = None,
     an_clim: xr.Dataset | None = None,
+    orography_path: str | Path | None = None,
     metrics: str | Sequence[str] | None = None,
     leadtime_windows: dict[str, Sequence[int]] | None = None,
     leadtime_agg_coord: str = "leadtime_seasonal",
@@ -1010,6 +1584,53 @@ def get_metrics(
 
     leadtime_dim = fc_da.earthml.guessed_dims.leadtime
 
+    requested_metrics = (
+        [metrics]
+        if isinstance(metrics, str)
+        else list(metrics)
+        if metrics is not None
+        else [m.value for m in Metric]
+    )
+
+    # Orography
+    needs_orography = any(
+        metric in {
+            Metric.OROGRAPHY.value,
+            Metric.OROGRAPHY_GRAD_MAG.value,
+        }
+        for metric in requested_metrics
+    )
+
+    orography = None
+
+    if needs_orography:
+        if orography_path is None:
+            raise ValueError(
+                "orography_path must be provided when requesting "
+                "'orography' or 'orography_grad_mag'."
+            )
+
+        with xr.open_zarr(
+            orography_path,
+            consolidated=True,
+        ) as oro_ds:
+            if "orography" not in oro_ds:
+                raise KeyError(
+                    f"'orography' not found in {orography_path}. "
+                    f"Available variables: {list(oro_ds.data_vars)}"
+                )
+
+            orography = oro_ds["orography"].load()
+
+        orography = orography.interp(
+            {
+                fc_da.earthml.guessed_dims.latitude:
+                    fc_da[fc_da.earthml.guessed_dims.latitude],
+                fc_da.earthml.guessed_dims.longitude:
+                    fc_da[fc_da.earthml.guessed_dims.longitude],
+            }
+        )
+
     # Aggregate if requested
     if leadtime_agg == "aggregated" and leadtime_windows is not None:
         leadtime_dim = leadtime_agg_coord
@@ -1074,6 +1695,7 @@ def get_metrics(
             an=an_da,
             fc_clim=fc_clim_da,
             an_clim=an_clim_da,
+            orography=orography,
             dims=metric_dims,
             leadtime_dim=fc_da.earthml.guessed_dims.leadtime,
             leadtime_windows=leadtime_windows,
@@ -1091,6 +1713,7 @@ def get_metrics(
         an=an_da,
         fc_clim=fc_clim_da,
         an_clim=an_clim_da,
+        orography=orography,
         dims=metric_dims,
         leadtime_dim=leadtime_dim,
         metrics=metrics,

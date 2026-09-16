@@ -13,6 +13,10 @@ MetricAgg = Literal[
 
 
 class Metric(StrEnum):
+    # Orography
+    OROGRAPHY = "orography"
+    OROGRAPHY_GRAD_MAG = "orography_grad_mag"
+
     # Deterministic
     BIAS = "bias"
     MAE = "mae"
@@ -27,6 +31,16 @@ class Metric(StrEnum):
     AN_STD = "an_std"
     STD_RATIO = "std_ratio"
 
+    MSE_BIAS_COMPONENT = "mse_bias_component"
+    MSE_STD_COMPONENT = "mse_std_component"
+    MSE_CORR_COMPONENT = "mse_corr_component"
+    CRMSE = "crmse"
+    REGRESSION_SLOPE = "regression_slope"
+
+    FC_GRAD_MAG = "fc_grad_mag"
+    AN_GRAD_MAG = "an_grad_mag"
+    GRAD_RMSE = "grad_rmse"
+
     BIAS_ANOM = "bias_anom"
     MAE_ANOM = "mae_anom"
     RMSE_ANOM = "rmse_anom"
@@ -38,6 +52,16 @@ class Metric(StrEnum):
     FC_ANOM_STD = "fc_anom_std"
     AN_ANOM_STD = "an_anom_std"
     STD_RATIO_ANOM = "std_ratio_anom"
+
+    MSE_BIAS_COMPONENT_ANOM = "mse_bias_component_anom"
+    MSE_STD_COMPONENT_ANOM = "mse_std_component_anom"
+    MSE_CORR_COMPONENT_ANOM = "mse_corr_component_anom"
+    CRMSE_ANOM = "crmse_anom"
+    REGRESSION_SLOPE_ANOM = "regression_slope_anom"
+
+    FC_ANOM_GRAD_MAG = "fc_anom_grad_mag"
+    AN_ANOM_GRAD_MAG = "an_anom_grad_mag"
+    GRAD_RMSE_ANOM = "grad_rmse_anom"
 
     MAE_ANOM_SKILL_CLIM = "mae_anom_skill_clim"
     MSE_ANOM_SKILL_CLIM = "mse_anom_skill_clim"
@@ -64,6 +88,9 @@ class Metric(StrEnum):
     ROC_ANOM_LOWER = "roc_anom_lower"
 
 DETERMINISTIC_METRICS: set[Metric] = {
+    Metric.OROGRAPHY,
+    Metric.OROGRAPHY_GRAD_MAG,
+
     Metric.BIAS,
     Metric.MAE,
     Metric.MSE,
@@ -77,6 +104,16 @@ DETERMINISTIC_METRICS: set[Metric] = {
     Metric.AN_STD,
     Metric.STD_RATIO,
 
+    Metric.MSE_BIAS_COMPONENT,
+    Metric.MSE_STD_COMPONENT,
+    Metric.MSE_CORR_COMPONENT,
+    Metric.CRMSE,
+    Metric.REGRESSION_SLOPE,
+
+    Metric.FC_GRAD_MAG,
+    Metric.AN_GRAD_MAG,
+    Metric.GRAD_RMSE,
+
     Metric.BIAS_ANOM,
     Metric.MAE_ANOM,
     Metric.MSE_ANOM,
@@ -88,6 +125,16 @@ DETERMINISTIC_METRICS: set[Metric] = {
     Metric.FC_ANOM_STD,
     Metric.AN_ANOM_STD,
     Metric.STD_RATIO_ANOM,
+
+    Metric.MSE_BIAS_COMPONENT_ANOM,
+    Metric.MSE_STD_COMPONENT_ANOM,
+    Metric.MSE_CORR_COMPONENT_ANOM,
+    Metric.CRMSE_ANOM,
+    Metric.REGRESSION_SLOPE_ANOM,
+
+    Metric.FC_ANOM_GRAD_MAG,
+    Metric.AN_ANOM_GRAD_MAG,
+    Metric.GRAD_RMSE_ANOM,
 
     Metric.MAE_ANOM_SKILL_CLIM,
     Metric.MSE_ANOM_SKILL_CLIM,
