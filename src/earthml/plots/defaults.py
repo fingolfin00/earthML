@@ -13,6 +13,21 @@ from .colormaps import (
 
 
 DEFAULT_PLOT_CONFIG = {
+    # Orography diagnostics
+    "orography": {
+        "vmin": 0,
+        "vmax": 4000,
+        "ticks": [0, 250, 500, 1000, 1500, 2000, 2500, 3000, 3500, 4000],
+        "cmap": SeqWRdY,
+        "scale_units": False,
+    },
+    "orography_grad_mag": {
+        "vmin": 0,
+        "vmax": 0.1,
+        "ticks": [0, 0.005, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.1],
+        "cmap": SeqWRdY,
+        "scale_units": False,
+    },
     # Bias-like
     "bias": {
         "vmin": -12,
@@ -103,7 +118,7 @@ DEFAULT_PLOT_CONFIG = {
         "scale_units": False,
     },
     "r2": {
-        "vmin": -10,
+        "vmin": -20,
         "vmax": 1,
         "ticks": [-20, -10, -5, -2, -1, -0.5, -0.4, -0.2, -0.1, 0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
         "cmap": SeqPiBRdY,
@@ -133,9 +148,9 @@ DEFAULT_PLOT_CONFIG = {
         "scale_units": True,
     },
     "std_ratio": {
-        "vmin": 0.1,
-        "vmax": 1.9,
-        "ticks": [0.1, 0.3, 0.5, 0.7, 0.9, 1.1, 1.3, 1.5, 1.7, 1.9],
+        "vmin": 0.5,
+        "vmax": 2.0,
+        "ticks": [0.5, 0.6, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0],
         "cmap": SeqPiBRdY,
         "scale_units": False,
     },
@@ -154,9 +169,128 @@ DEFAULT_PLOT_CONFIG = {
         "scale_units": True,
     },
     "std_ratio_anom": {
-        "vmin": 0.1,
-        "vmax": 1.9,
-        "ticks": [0.1, 0.3, 0.5, 0.7, 0.9, 1.1, 1.3, 1.5, 1.7, 1.9],
+        "vmin": 0.5,
+        "vmax": 2.0,
+        "ticks": [0.5, 0.6, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0],
+        "cmap": SeqPiBRdY,
+        "scale_units": False,
+    },
+
+    # MSE decomposition / calibration diagnostics
+    "mse_bias_component": {
+        "vmin": 0,
+        "vmax": 81,
+        "ticks": [0, 1, 4, 9, 16, 25, 36, 49, 64, 81],
+        "cmap": SeqWRdY,
+        "scale_units": True,
+    },
+    "mse_std_component": {
+        "vmin": 0,
+        "vmax": 81,
+        "ticks": [0, 1, 4, 9, 16, 25, 36, 49, 64, 81],
+        "cmap": SeqWRdY,
+        "scale_units": True,
+    },
+    "mse_corr_component": {
+        "vmin": 0,
+        "vmax": 81,
+        "ticks": [0, 1, 4, 9, 16, 25, 36, 49, 64, 81],
+        "cmap": SeqWRdY,
+        "scale_units": True,
+    },
+    "crmse": {
+        "vmin": 0,
+        "vmax": 9,
+        "ticks": [0, 0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "cmap": SeqWRdY,
+        "scale_units": True,
+    },
+    "regression_slope": {
+        "vmin": 0.0,
+        "vmax": 2.0,
+        "ticks": [0.0, 0.25, 0.5, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0],
+        "cmap": SeqPiBRdY,
+        "scale_units": False,
+    },
+
+    # Spatial-gradient diagnostics
+    "fc_grad_mag": {
+        "vmin": 0,
+        "vmax": 1e-4,
+        "ticks": [0, 1e-5, 2e-5, 4e-5, 6e-5, 8e-5, 1e-4],
+        "cmap": SeqWRdY,
+        "scale_units": False,
+    },
+    "an_grad_mag": {
+        "vmin": 0,
+        "vmax": 1e-4,
+        "ticks": [0, 1e-5, 2e-5, 4e-5, 6e-5, 8e-5, 1e-4],
+        "cmap": SeqWRdY,
+        "scale_units": False,
+    },
+    "grad_rmse": {
+        "vmin": 0,
+        "vmax": 1e-4,
+        "ticks": [0, 1e-5, 2e-5, 4e-5, 6e-5, 8e-5, 1e-4],
+        "cmap": SeqWRdY,
+        "scale_units": False,
+    },
+
+    "fc_anom_grad_mag": {
+        "vmin": 0,
+        "vmax": 1e-4,
+        "ticks": [0, 1e-5, 2e-5, 4e-5, 6e-5, 8e-5, 1e-4],
+        "cmap": SeqWRdY,
+        "scale_units": False,
+    },
+    "an_anom_grad_mag": {
+        "vmin": 0,
+        "vmax": 1e-4,
+        "ticks": [0, 1e-5, 2e-5, 4e-5, 6e-5, 8e-5, 1e-4],
+        "cmap": SeqWRdY,
+        "scale_units": False,
+    },
+    "grad_rmse_anom": {
+        "vmin": 0,
+        "vmax": 1e-4,
+        "ticks": [0, 1e-5, 2e-5, 4e-5, 6e-5, 8e-5, 1e-4],
+        "cmap": SeqWRdY,
+        "scale_units": False,
+    },
+
+    # Anomaly MSE decomposition / calibration diagnostics
+    "mse_bias_component_anom": {
+        "vmin": 0,
+        "vmax": 81,
+        "ticks": [0, 1, 4, 9, 16, 25, 36, 49, 64, 81],
+        "cmap": SeqWRdY,
+        "scale_units": True,
+    },
+    "mse_std_component_anom": {
+        "vmin": 0,
+        "vmax": 81,
+        "ticks": [0, 1, 4, 9, 16, 25, 36, 49, 64, 81],
+        "cmap": SeqWRdY,
+        "scale_units": True,
+    },
+    "mse_corr_component_anom": {
+        "vmin": 0,
+        "vmax": 81,
+        "ticks": [0, 1, 4, 9, 16, 25, 36, 49, 64, 81],
+        "cmap": SeqWRdY,
+        "scale_units": True,
+    },
+    "crmse_anom": {
+        "vmin": 0,
+        "vmax": 9,
+        "ticks": [0, 0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "cmap": SeqWRdY,
+        "scale_units": True,
+    },
+    "regression_slope_anom": {
+        "vmin": 0.0,
+        "vmax": 2.0,
+        "ticks": [0.0, 0.25, 0.5, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0],
         "cmap": SeqPiBRdY,
         "scale_units": False,
     },
@@ -320,7 +454,22 @@ DEFAULT_IMPROVEMENT_PLOT_CONFIG = {
 }
 
 
+SQUARED_METRICS = {
+    "mse",
+    "mse_anom",
+    "mse_bias_component",
+    "mse_std_component",
+    "mse_corr_component",
+    "mse_bias_component_anom",
+    "mse_std_component_anom",
+    "mse_corr_component_anom",
+}
+
+
 METRIC_NAMES = {
+    # Orography diagnostics
+    "orography": "Orography",
+    "orography_grad_mag": "Orography Gradient Magnitude",
     # Deterministic
     "bias": "Bias",
     "mae": "MAE",
@@ -345,6 +494,29 @@ METRIC_NAMES = {
     "fc_anom_std": "Forecast Anomaly STD",
     "an_anom_std": "Analysis Anomaly STD",
     "std_ratio_anom": "Anomaly STD Ratio",
+
+    # Spatial-gradient diagnostics
+    "fc_grad_mag": "Forecast Gradient Magnitude",
+    "an_grad_mag": "Analysis Gradient Magnitude",
+    "grad_rmse": "Gradient RMSE",
+
+    "fc_anom_grad_mag": "Forecast Anomaly Gradient Magnitude",
+    "an_anom_grad_mag": "Analysis Anomaly Gradient Magnitude",
+    "grad_rmse_anom": "Anomaly Gradient RMSE",
+
+    # MSE decomposition / calibration
+    "mse_bias_component": "MSE Bias Component",
+    "mse_std_component": "MSE STD Component",
+    "mse_corr_component": "MSE Correlation Component",
+    "crmse": "Centered RMSE",
+    "regression_slope": "Regression Slope",
+
+    # Anomaly MSE decomposition / calibration
+    "mse_bias_component_anom": "Anomaly MSE Bias Component",
+    "mse_std_component_anom": "Anomaly MSE STD Component",
+    "mse_corr_component_anom": "Anomaly MSE Correlation Component",
+    "crmse_anom": "Anomaly Centered RMSE",
+    "regression_slope_anom": "Anomaly Regression Slope",
 
     # Anomaly skill vs climatology
     "mae_anom_skill_clim": "Anomaly MAE Skill vs Climatology",
@@ -374,6 +546,10 @@ METRIC_NAMES = {
 }
 
 METRIC_UNITS = {
+    # Orography diagnostics
+    "orography": "m",
+    "orography_grad_mag": "",
+
     # Error metrics
     "bias": "{unit}",
     "mae": "{unit}",
@@ -401,6 +577,29 @@ METRIC_UNITS = {
     "fc_anom_std": "{unit}",
     "an_anom_std": "{unit}",
     "std_ratio_anom": "",
+
+    # Spatial-gradient diagnostics
+    "fc_grad_mag": "{unit} m$^{-1}$",
+    "an_grad_mag": "{unit} m$^{-1}$",
+    "grad_rmse": "{unit} m$^{-1}$",
+
+    "fc_anom_grad_mag": "{unit} m$^{-1}$",
+    "an_anom_grad_mag": "{unit} m$^{-1}$",
+    "grad_rmse_anom": "{unit} m$^{-1}$",
+
+    # MSE decomposition / calibration
+    "mse_bias_component": "{unit}",
+    "mse_std_component": "{unit}",
+    "mse_corr_component": "{unit}",
+    "crmse": "{unit}",
+    "regression_slope": "",
+
+    # Anomaly MSE decomposition / calibration
+    "mse_bias_component_anom": "{unit}",
+    "mse_std_component_anom": "{unit}",
+    "mse_corr_component_anom": "{unit}",
+    "crmse_anom": "{unit}",
+    "regression_slope_anom": "",
 
     # Skill scores
     "mse_skill_clim": "%",
@@ -460,6 +659,25 @@ METRIC_IMPROVEMENT = {
     "acc": HIGHER_BETTER,
     "r2": HIGHER_BETTER,
     "r2_anom": HIGHER_BETTER,
+
+    # Spatial-gradient errors
+    "grad_rmse": LOWER_BETTER,
+    "grad_rmse_anom": LOWER_BETTER,
+
+    # MSE decomposition: lower is better
+    "mse_bias_component": LOWER_BETTER,
+    "mse_std_component": LOWER_BETTER,
+    "mse_corr_component": LOWER_BETTER,
+    "crmse": LOWER_BETTER,
+
+    "mse_bias_component_anom": LOWER_BETTER,
+    "mse_std_component_anom": LOWER_BETTER,
+    "mse_corr_component_anom": LOWER_BETTER,
+    "crmse_anom": LOWER_BETTER,
+
+    # Calibration: target = 1
+    "regression_slope": TARGET_ONE,
+    "regression_slope_anom": TARGET_ONE,
 
     # Skill scores
     "mse_skill_clim": HIGHER_BETTER,
@@ -530,6 +748,25 @@ METRIC_SKILL_UNITS: dict[str, Literal["%", "Δ"]] = {
     "roc_anom_lower": "Δ",
     "roc_anom_middle": "Δ",
     "roc_anom_upper": "Δ",
+
+    # Spatial-gradient errors
+    "grad_rmse": "%",
+    "grad_rmse_anom": "%",
+
+    # MSE decomposition / centered RMSE
+    "mse_bias_component": "%",
+    "mse_std_component": "%",
+    "mse_corr_component": "%",
+    "crmse": "%",
+
+    "mse_bias_component_anom": "%",
+    "mse_std_component_anom": "%",
+    "mse_corr_component_anom": "%",
+    "crmse_anom": "%",
+
+    # Distance from ideal slope = 1
+    "regression_slope": "%",
+    "regression_slope_anom": "%",
 
     # Climatology skill scores
     "mse_skill_clim": "%",

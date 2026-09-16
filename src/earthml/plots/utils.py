@@ -40,7 +40,8 @@ from .defaults import (
     VARIABLE_NAMES,
     VARIABLE_UNITS,
     UNIT_CONVERSIONS,
-    METRIC_IMPROVEMENT,
+    SQUARED_METRICS,
+    # METRIC_IMPROVEMENT,
     METRIC_NAMES,
     METRIC_SKILL_UNITS,
     METRIC_UNITS,
@@ -694,6 +695,7 @@ def metric_style(
             )
         else:
             cfg = get_plot_config(var, metric, var_plot_config)
+
     except KeyError:
         if da is None:
             raise
@@ -702,22 +704,48 @@ def metric_style(
         vmax = float(da.quantile(0.98, skipna=True))
         ticks = np.linspace(vmin, vmax, 11)
         cmap = plt.get_cmap("viridis")
-        norm = BoundaryNorm(boundaries=ticks, ncolors=cmap.N, clip=False)
+        norm = BoundaryNorm(
+            boundaries=ticks,
+            ncolors=cmap.N,
+            clip=False,
+        )
         return cmap, norm, ticks
 
     tick_cfg = cfg["ticks"]
 
     if isinstance(tick_cfg, int):
-        ticks = np.linspace(cfg["vmin"], cfg["vmax"], tick_cfg)
+        ticks = np.linspace(
+            cfg["vmin"],
+            cfg["vmax"],
+            tick_cfg,
+        )
     else:
-        ticks = np.asarray(tick_cfg, dtype=float)
+        ticks = np.asarray(
+            tick_cfg,
+            dtype=float,
+        )
 
     if is_skill:
         norm = TwoSlopeNorm(
             vmin=cfg["vmin"],
-            vcenter=0,
+            vcenter=0.0,
             vmax=cfg["vmax"],
         )
+
+    elif metric in {
+        "std_ratio",
+        "std_ratio_anom",
+        "regression_slope",
+        "regression_slope_anom",
+        "spread_skill_ratio",
+        "spread_anom_skill_ratio",
+    }:
+        norm = TwoSlopeNorm(
+            vmin=cfg["vmin"],
+            vcenter=1.0,
+            vmax=cfg["vmax"],
+        )
+
     else:
         norm = BoundaryNorm(
             boundaries=ticks,
@@ -727,8 +755,6 @@ def metric_style(
 
     return cfg["cmap"], norm, ticks
 
-
-SQUARED_METRICS = {"mse", "mse_anom"}
 
 def get_plot_metric_unit_and_scale(
     da: xr.DataArray,
@@ -1141,8 +1167,6 @@ def plot_map(
         fraction=0.045 if plot_kind == "maps" else 0.15,
         aspect=40 if plot_kind == "maps" else 20,
         ticks=ticks,
-        boundaries=ticks,
-        spacing="uniform",
     )
 
     cb.set_label(cb_label, fontsize=9)
