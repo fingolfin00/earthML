@@ -24,7 +24,6 @@ from matplotlib.colors import (
 from matplotlib.cm import ScalarMappable
 
 from ..base import Settings, ClimPeriod
-from ..metrics import safe_percent
 
 
 PlotMode = Literal["scalar_diff_scatter"]
@@ -41,14 +40,13 @@ from .defaults import (
     VARIABLE_UNITS,
     UNIT_CONVERSIONS,
     SQUARED_METRICS,
-    # METRIC_IMPROVEMENT,
     METRIC_NAMES,
-    METRIC_SKILL_UNITS,
     METRIC_UNITS,
     MODEL_COLORS,
     SERIES_COLORS,
     TRANSLATION_TABLE,
 )
+from ..metrics.defaults import ImprovementUnit
 
 
 def safe_label(x: object) -> str:
@@ -92,22 +90,34 @@ def get_skill_plot_config(
     metric: str,
     var_plot_config: dict,
     impro_plot_config: dict,
-    improvement_unit: Literal["%", "Δ"] | None = None,
+    improvement_unit: ImprovementUnit | None = None,
 ) -> dict:
-    if metric.endswith("_skill_clim"):
-        cfg = DEFAULT_PLOT_CONFIG[metric].copy()
-        cfg.update(var_plot_config.get(var, {}).get(metric, {}))
-        return cfg
+    if improvement_unit is None:
+        raise ValueError(
+            f"improvement_unit must be explicitly provided "
+            f"for metric {metric!r}"
+        )
 
-    unit = improvement_unit or METRIC_SKILL_UNITS[metric]
-    cfg = DEFAULT_IMPROVEMENT_PLOT_CONFIG[unit].copy()
+    cfg = DEFAULT_IMPROVEMENT_PLOT_CONFIG[
+        improvement_unit
+    ].copy()
 
-    custom_cfg = impro_plot_config.get(var, {}).get(metric, {})
+    custom_cfg = (
+        impro_plot_config
+        .get(var, {})
+        .get(metric, {})
+    )
 
-    # Preferred format: {var: {metric: {"%": {...}, "Δ": {...}}}}.
-    # Keep accepting the former flat per-metric format for compatibility.
-    if "%" in custom_cfg or "Δ" in custom_cfg:
-        cfg.update(custom_cfg.get(unit, {}))
+    if any(
+        unit in custom_cfg
+        for unit in ("%", "Δ", "normalized")
+    ):
+        cfg.update(
+            custom_cfg.get(
+                improvement_unit,
+                {},
+            )
+        )
     else:
         cfg.update(custom_cfg)
 
@@ -150,7 +160,6 @@ def select_metric(
         da = da.sel(start_period=start_period)
 
     return da
-
 
 def convert_to_da_list(
     ds: xr.DataArray | xr.Dataset | Sequence[xr.DataArray | xr.Dataset | None] | None,
@@ -555,6 +564,7 @@ def plot_timeseries(
     time_dim: str = "time",
     realization_dim: str = "realization",
     spread: str = "std",
+    difference_reference: str | None = None,
 ) -> None:
     if isinstance(models, str):
         models = [models]
@@ -681,7 +691,7 @@ def metric_style(
     var_plot_config: dict = {},
     impro_plot_config: dict = {},
     is_skill: bool = False,
-    improvement_unit: Literal["%", "Δ"] | None = None,
+    improvement_unit: ImprovementUnit | None = None,
 ) -> tuple[Colormap, BoundaryNorm | TwoSlopeNorm, np.ndarray]:
 
     try:
@@ -726,6 +736,13 @@ def metric_style(
         )
 
     if is_skill:
+        if not cfg["vmin"] < 0 < cfg["vmax"]:
+            raise ValueError(
+                f"Skill/improvement plot for {metric!r} requires "
+                f"vmin < 0 < vmax, got "
+                f"vmin={cfg['vmin']}, vmax={cfg['vmax']}"
+            )
+
         norm = TwoSlopeNorm(
             vmin=cfg["vmin"],
             vcenter=0.0,
@@ -802,20 +819,33 @@ def plot_map(
     impro_plot_config: dict | None = None,
     force_scale: int | float | None = None,
     title_strftime: str = "%Y",
+    significance: xr.DataArray | None = None,
+    significance_stride: int = 3,
+    significance_size: float = 2.0,
+    significance_alpha: float = 0.6,
 ) -> None:
     var_plot_config = var_plot_config or {}
     impro_plot_config = impro_plot_config or {}
 
     is_skill = is_skill_model(model)
 
-    improvement_unit: Literal["%", "Δ"] | None = None
+    improvement_unit: ImprovementUnit | None = None
+
     if is_skill:
-        if model.endswith("_percentage") or da.attrs.get("units") == "%":
+        if model.endswith("_percentage"):
             improvement_unit = "%"
+
         elif model.endswith("_difference"):
             improvement_unit = "Δ"
+
+        elif model.endswith("_normalized"):
+            improvement_unit = "normalized"
+
         else:
-            improvement_unit = METRIC_SKILL_UNITS[metric]
+            raise ValueError(
+                f"Cannot determine improvement representation "
+                f"from model {model!r}"
+            )
 
     time_dim = da.earthml.guessed_dims.time or clim_period
     lat, lon = da.earthml.guessed_dims.latitude, da.earthml.guessed_dims.longitude
@@ -826,6 +856,28 @@ def plot_map(
             period_dim: start_period,
         }
     ).squeeze(drop=True)
+
+    if significance is not None:
+        if plot_kind != "maps":
+            raise ValueError(
+                "Significance stippling is currently supported only "
+                "for plot_kind='maps'."
+            )
+
+        selectors = {}
+
+        if leadtime_dim in significance.dims:
+            selectors[leadtime_dim] = lead_value
+
+        if period_dim in significance.dims:
+            selectors[period_dim] = start_period
+
+        if selectors:
+            significance = significance.sel(
+                selectors
+            )
+
+        significance = significance.squeeze(drop=True)
 
     if plot_kind == "maps":
         required_dims = (lat, lon)
@@ -861,13 +913,43 @@ def plot_map(
             f"Expected only {required_dims}, got {da.dims}."
         )
 
-    with ProgressBar():
-        da = da.transpose(*required_dims).compute()
+    if significance is not None:
+        missing_sig_dims = [
+            dim
+            for dim in required_dims
+            if dim not in significance.dims
+        ]
+
+        if missing_sig_dims:
+            raise ValueError(
+                f"Significance field is missing dimensions "
+                f"{missing_sig_dims}. "
+                f"Available dimensions: {significance.dims}"
+            )
+
+        significance = significance.transpose(
+            *required_dims
+        )
+
+        da, significance = xr.align(
+            da,
+            significance,
+            join="exact",
+        )
+
+        with ProgressBar():
+            da = da.transpose(*required_dims).compute()
+            significance = significance.compute()
+
+    else:
+        with ProgressBar():
+            da = da.transpose(*required_dims).compute()
 
     if is_skill:
-        if improvement_unit == "%":
-            plot_unit = "%"
+        if improvement_unit in {"%", "normalized"}:
+            plot_unit = "%" if improvement_unit == "%" else ""
             scale = 1.0
+
         else:
             plot_unit, scale = get_plot_metric_unit_and_scale(
                 da,
@@ -875,6 +957,7 @@ def plot_map(
                 metric=metric,
                 var_plot_config=var_plot_config,
             )
+
     else:
         plot_unit, scale = get_plot_metric_unit_and_scale(
             da,
@@ -888,17 +971,27 @@ def plot_map(
 
     da = da / scale
 
-    if is_skill_metric(metric):
+    if is_skill_metric(metric) and not is_skill:
         unit_label = ""
         cb_label = METRIC_NAMES[metric]
 
-    elif is_skill_model(model):
-        unit_label = f"({plot_unit})" if plot_unit else ""
-        cb_label = (
-            f"{METRIC_NAMES[metric]} improvement {unit_label}"
-            if improvement_unit == "%"
-            else f"{METRIC_NAMES[metric]} improvement difference {unit_label}"
-        )
+    elif is_skill:
+        if improvement_unit == "%":
+            unit_label = "(%)"
+            cb_label = f"{METRIC_NAMES[metric]} improvement"
+
+        elif improvement_unit == "Δ":
+            unit_label = f"({plot_unit})" if plot_unit else ""
+            cb_label = (
+                f"{METRIC_NAMES[metric]} improvement difference "
+                f"{unit_label}"
+            )
+
+        elif improvement_unit == "normalized":
+            unit_label = ""
+            cb_label = (
+                f"{METRIC_NAMES[metric]} normalized improvement"
+            )
 
     else:
         unit_label = f"({plot_unit})" if plot_unit else ""
@@ -1016,6 +1109,55 @@ def plot_map(
             raise ValueError(
                 f"Unsupported plot_type={plot_type!r}. "
                 "Choose one of: 'pcolormesh', 'contourf'."
+            )
+
+        # ----------------------------------------------------------
+        # Statistical significance stippling
+        # ----------------------------------------------------------
+
+        if significance is not None:
+            if significance_stride < 1:
+                raise ValueError(
+                    "significance_stride must be >= 1."
+                )
+
+            sig = significance.astype(bool)
+
+            # Downsample the stippling only, not the significance test.
+            sig = sig.isel(
+                {
+                    lat: slice(None, None, significance_stride),
+                    lon: slice(None, None, significance_stride),
+                }
+            )
+
+            lon_sig, lat_sig = np.meshgrid(
+                sig[lon].values,
+                sig[lat].values,
+            )
+
+            mask = np.asarray(
+                sig.values,
+                dtype=bool,
+            )
+
+            finite = (
+                np.isfinite(lon_sig)
+                & np.isfinite(lat_sig)
+            )
+
+            mask &= finite
+
+            ax.scatter(
+                lon_sig[mask],
+                lat_sig[mask],
+                s=significance_size,
+                marker=".",
+                color="black",
+                alpha=significance_alpha,
+                linewidths=0,
+                transform=ccrs.PlateCarree(),
+                zorder=4,
             )
 
         ax.coastlines(linewidth=0.7)
@@ -1225,7 +1367,7 @@ def plot_rank_histogram(
         )
 
     start_time = datetime.strptime(time_range[0], "%Y-%m-%d").strftime("%Y")
-    end_time = datetime.strptime(time_range[1], "%Y.%m-%d").strftime("%Y")
+    end_time = datetime.strptime(time_range[1], "%Y-%m-%d").strftime("%Y")
     ax.set_title(f"{VARIABLE_NAMES[var]} · {METRIC_NAMES[metric]} · {start_time}-{end_time} · start month={start_period}")
     ax.set_xlabel(rank_dim)
     ax.set_ylabel("count")
@@ -1236,48 +1378,6 @@ def plot_rank_histogram(
     plt.tight_layout()
     plt.savefig(out_file, dpi=200, bbox_inches="tight")
     plt.close(fig)
-
-
-LOWER_IS_BETTER = {
-    "mae",
-    "rmse",
-    "rmse_anom",
-    "nrmse_anom",
-    "rmse_an_anom",
-    "ens_member_rmse",
-    "ens_member_rmse_anom",
-    "mean_member_rmse_anom",
-    "crps",
-}
-
-HIGHER_IS_BETTER = {
-    "acc",
-    "r2",
-    "r2_anom",
-}
-
-
-def metric_improvement(
-    fc: xr.DataArray,
-    mlfc: xr.DataArray,
-    metric: str,
-) -> xr.DataArray:
-    """
-    Positive means ML forecast improved over FC.
-    """
-    if metric == "bias":
-        return safe_percent(abs(fc) - abs(mlfc), abs(fc))
-
-    if metric == "std_ratio":
-        return safe_percent(abs(fc - 1) - abs(mlfc - 1), abs(fc - 1))
-
-    if metric in LOWER_IS_BETTER:
-        return safe_percent(fc - mlfc, fc)
-
-    if metric in HIGHER_IS_BETTER:
-        return mlfc - fc
-
-    raise ValueError(f"No improvement rule for metric {metric!r}")
 
 
 @dataclass(frozen=True)

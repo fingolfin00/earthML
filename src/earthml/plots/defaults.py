@@ -1,9 +1,5 @@
-from typing import Literal
-
-import numpy as np
 import matplotlib.pyplot as plt
 
-from ..metrics import safe_percent
 from .colormaps import (
     PiBRdY,
     SeqWRdY,
@@ -11,7 +7,6 @@ from .colormaps import (
     SeqBPi,
     SeqBYRd,
 )
-
 
 DEFAULT_PLOT_CONFIG = {
     # Orography diagnostics
@@ -441,15 +436,21 @@ DEFAULT_PLOT_CONFIG = {
 
 DEFAULT_IMPROVEMENT_PLOT_CONFIG = {
     "%": {
-        "vmin": -400,
+        "vmin": -100,
         "vmax": 100,
-        "ticks": [-400, -300, -200, -100, 0, 25, 50, 75, 100],
+        "ticks": [-100, -75, -50, -25, 0, 25, 50, 75, 100],
         "cmap": plt.get_cmap("RdBu"),
     },
     "Δ": {
         "vmin": -0.5,
         "vmax": 0.5,
-        "ticks": np.linspace(-0.5, 0.5, 11),
+        "ticks": 11,
+        "cmap": plt.get_cmap("RdBu"),
+    },
+    "normalized": {
+        "vmin": -0.5,
+        "vmax": 0.5,
+        "ticks": 11,
         "cmap": plt.get_cmap("RdBu"),
     },
 }
@@ -630,152 +631,6 @@ METRIC_UNITS = {
     "roc_anom_lower": "",
     "roc_anom_middle": "",
     "roc_anom_upper": "",
-}
-
-LOWER_BETTER = lambda o, c: safe_percent(o - c, o)
-HIGHER_BETTER = lambda o, c: c - o
-TARGET_ONE = lambda o, c: safe_percent(
-    abs(o - 1.0) - abs(c - 1.0),
-    abs(o - 1.0),
-)
-
-METRIC_IMPROVEMENT = {
-    # Bias
-    "bias": lambda o, c: safe_percent(abs(o) - abs(c), abs(o)),
-    "bias_anom": lambda o, c: safe_percent(abs(o) - abs(c), abs(o)),
-
-    # Lower-is-better deterministic
-    "mae": LOWER_BETTER,
-    "mse": LOWER_BETTER,
-    "rmse": LOWER_BETTER,
-    "nrmse": LOWER_BETTER,
-
-    "mae_anom": LOWER_BETTER,
-    "mse_anom": LOWER_BETTER,
-    "rmse_anom": LOWER_BETTER,
-    "nrmse_anom": LOWER_BETTER,
-
-    # Higher-is-better correlations
-    "corr": HIGHER_BETTER,
-    "acc": HIGHER_BETTER,
-    "r2": HIGHER_BETTER,
-    "r2_anom": HIGHER_BETTER,
-
-    # Spatial-gradient errors
-    "grad_rmse": LOWER_BETTER,
-    "grad_rmse_anom": LOWER_BETTER,
-
-    # MSE decomposition: lower is better
-    "mse_bias_component": LOWER_BETTER,
-    "mse_std_component": LOWER_BETTER,
-    "mse_corr_component": LOWER_BETTER,
-    "crmse": LOWER_BETTER,
-
-    "mse_bias_component_anom": LOWER_BETTER,
-    "mse_std_component_anom": LOWER_BETTER,
-    "mse_corr_component_anom": LOWER_BETTER,
-    "crmse_anom": LOWER_BETTER,
-
-    # Calibration: target = 1
-    "regression_slope": TARGET_ONE,
-    "regression_slope_anom": TARGET_ONE,
-
-    # Skill scores
-    "mse_skill_clim": HIGHER_BETTER,
-    "mae_anom_skill_clim": HIGHER_BETTER,
-    "mse_anom_skill_clim": HIGHER_BETTER,
-    "rmse_anom_skill_clim": HIGHER_BETTER,
-    "ens_member_mse_anom_skill_clim": HIGHER_BETTER,
-    "mean_member_rmse_anom_skill_clim": HIGHER_BETTER,
-
-    # Variance metrics: target ratio = 1
-    "std_ratio": TARGET_ONE,
-    "std_ratio_anom": TARGET_ONE,
-
-    # Ensemble error metrics
-    "ens_member_rmse": LOWER_BETTER,
-    "mean_member_rmse": LOWER_BETTER,
-    "ens_member_rmse_anom": LOWER_BETTER,
-    "mean_member_rmse_anom": LOWER_BETTER,
-
-    # Probabilistic scores
-    "crps": LOWER_BETTER,
-    "crps_anom": LOWER_BETTER,
-
-    # Reliability metrics: target = 1
-    "spread_skill_ratio": TARGET_ONE,
-    "spread_anom_skill_ratio": TARGET_ONE,
-
-    # ROC AUC: higher is better
-    "roc_anom_lower": HIGHER_BETTER,
-    "roc_anom_middle": HIGHER_BETTER,
-    "roc_anom_upper": HIGHER_BETTER,
-}
-
-METRIC_SKILL_UNITS: dict[str, Literal["%", "Δ"]] = {
-    # Percent improvement
-    "bias": "%",
-    "bias_anom": "%",
-
-    "mae": "%",
-    "mse": "%",
-    "rmse": "%",
-    "nrmse": "%",
-
-    "mae_anom": "%",
-    "mse_anom": "%",
-    "rmse_anom": "%",
-    "nrmse_anom": "%",
-
-    "ens_member_rmse": "%",
-    "mean_member_rmse": "%",
-    "ens_member_rmse_anom": "%",
-    "mean_member_rmse_anom": "%",
-
-    "crps": "%",
-    "crps_anom": "%",
-
-    "std_ratio": "%",
-    "std_ratio_anom": "%",
-    "spread_skill_ratio": "%",
-    "spread_anom_skill_ratio": "%",
-
-    # Absolute differences
-    "corr": "Δ",
-    "acc": "Δ",
-    "r2": "Δ",
-    "r2_anom": "Δ",
-
-    "roc_anom_lower": "Δ",
-    "roc_anom_middle": "Δ",
-    "roc_anom_upper": "Δ",
-
-    # Spatial-gradient errors
-    "grad_rmse": "%",
-    "grad_rmse_anom": "%",
-
-    # MSE decomposition / centered RMSE
-    "mse_bias_component": "%",
-    "mse_std_component": "%",
-    "mse_corr_component": "%",
-    "crmse": "%",
-
-    "mse_bias_component_anom": "%",
-    "mse_std_component_anom": "%",
-    "mse_corr_component_anom": "%",
-    "crmse_anom": "%",
-
-    # Distance from ideal slope = 1
-    "regression_slope": "%",
-    "regression_slope_anom": "%",
-
-    # Climatology skill scores
-    "mse_skill_clim": "%",
-    "mae_anom_skill_clim": "%",
-    "mse_anom_skill_clim": "%",
-    "rmse_anom_skill_clim": "%",
-    "ens_member_mse_anom_skill_clim": "%",
-    "mean_member_mse_anom_skill_clim": "%",
 }
 
 
