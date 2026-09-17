@@ -1,8 +1,7 @@
 from typing import Literal
 
 from .metrics import safe_percent
-
-ImprovementUnit = Literal["%", "Δ", "normalized"]
+from .definitions import ImprovementUnit
 
 
 # Absolute difference improvement.

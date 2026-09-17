@@ -233,15 +233,30 @@ def build_metric_improvement(
 
 def build_metric_improvements(
     baseline_ds: xr.Dataset,
-    corrected_ds: xr.Dataset,
+    target_ds: xr.Dataset,
     *,
     metric: str,
-    baseline_model: str = "fc",
+    baseline_model: str,
+    target_model: str,
 ) -> dict[str, xr.DataArray]:
     """
     Build all configured improvement representations for one metric.
 
     Representations are taken from METRIC_IMPROVEMENT_UNITS.
+
+    Parameters
+    ----------
+    baseline_ds : xr.Dataset
+        Dataset containing metrics for the reference model.
+    target_ds : xr.Dataset
+        Dataset containing metrics for the model being compared
+        against the baseline.
+    metric : str
+        Metric to compare.
+    baseline_model : str
+        Name of the reference model.
+    target_model : str
+        Name of the target model.
 
     Returns
     -------
@@ -252,22 +267,22 @@ def build_metric_improvements(
             mlfc_vs_fc_percentage
             mlfc_vs_fc_difference
             mlfc_vs_fc_normalized
+
+            clim-fc_vs_fc_percentage
+            clim-fc_vs_fc_difference
+            clim-fc_vs_fc_normalized
     """
     if metric not in baseline_ds:
         raise KeyError(
-            f"Metric {metric!r} is missing from baseline dataset."
+            f"Metric {metric!r} is missing from baseline model "
+            f"{baseline_model!r}."
         )
 
-    if metric not in corrected_ds:
+    if metric not in target_ds:
         raise KeyError(
-            f"Metric {metric!r} is missing from corrected dataset."
+            f"Metric {metric!r} is missing from target model "
+            f"{target_model!r}."
         )
-
-    baseline, corrected = xr.align(
-        baseline_ds[metric],
-        corrected_ds[metric],
-        join="exact",
-    )
 
     if metric not in METRIC_IMPROVEMENT_UNITS:
         raise KeyError(
@@ -275,12 +290,21 @@ def build_metric_improvements(
             f"for metric {metric!r}."
         )
 
+    baseline, target = xr.align(
+        baseline_ds[metric],
+        target_ds[metric],
+        join="exact",
+    )
+
+    improvement_suffix = {
+        "%": "percentage",
+        "Δ": "difference",
+        "normalized": "normalized",
+    }
+
     result: dict[str, xr.DataArray] = {}
 
-    for improvement_unit in METRIC_IMPROVEMENT_UNITS.get(
-        metric,
-        (),
-    ):
+    for improvement_unit in METRIC_IMPROVEMENT_UNITS[metric]:
         reference = None
         reference_power = 1
 
@@ -298,30 +322,26 @@ def build_metric_improvements(
             if reference_metric not in baseline_ds:
                 raise KeyError(
                     f"Normalized improvement for {metric!r} "
-                    f"requires {reference_metric!r}, but it "
-                    f"is missing from the baseline dataset."
+                    f"requires baseline reference metric "
+                    f"{reference_metric!r}, but it is missing "
+                    f"from model {baseline_model!r}."
                 )
 
             reference = baseline_ds[reference_metric]
 
         improvement = build_metric_improvement(
             baseline,
-            corrected,
+            target,
             metric=metric,
             improvement_unit=improvement_unit,
             reference=reference,
             reference_power=reference_power,
         )
 
-        IMPROVEMENT_SUFFIX = {
-            "%": "percentage",
-            "Δ": "difference",
-            "normalized": "normalized",
-        }
-        suffix = IMPROVEMENT_SUFFIX[improvement_unit]
+        suffix = improvement_suffix[improvement_unit]
 
         model_name = (
-            f"mlfc_vs_{baseline_model}_{suffix}"
+            f"{target_model}_vs_{baseline_model}_{suffix}"
         )
 
         result[model_name] = improvement

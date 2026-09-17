@@ -10,6 +10,7 @@ MetricAgg = Literal[
     "spatial_avg",  # mean(point-wise RMSE)
     "spatial_rmse", # sqrt(mean(point-wise MSE))
 ]
+ImprovementUnit = Literal["%", "Δ", "normalized"]
 
 
 class Metric(StrEnum):

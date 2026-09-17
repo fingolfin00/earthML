@@ -3,6 +3,7 @@ from .definitions import (
     LeadtimeAgg,
     RealizationAgg,
     MetricAgg,
+    ImprovementUnit,
 )
 
 from .metrics import (
@@ -18,6 +19,7 @@ from .metrics import (
 )
 
 from .improvement import (
+    build_metric_improvement,
     build_metric_improvements,
     get_required_improvement_metrics,
 )
@@ -39,6 +41,7 @@ __all__ = [
     "RealizationAgg",
     "MetricAgg",
     "Metric",
+    "ImprovementUnit",
     # utils
     "is_deterministic",
     "is_probabilistic",
@@ -50,6 +53,7 @@ __all__ = [
     "get_metrics",
     "get_scalar_metrics",
     # improvement
+    "build_metric_improvement",
     "build_metric_improvements",
     "get_required_improvement_metrics",
     # significance
