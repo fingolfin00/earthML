@@ -17,6 +17,15 @@ from .metrics import (
     stack_hour_clim,
 )
 
+from .improvement import (
+    build_metric_improvements,
+    get_required_improvement_metrics,
+)
+
+from .significance import (
+    get_metric_improvement_significance,
+)
+
 from .climatology import (
     calculate_climatology,
     calculate_save_and_subset_climatologies,
@@ -40,6 +49,11 @@ __all__ = [
     # metrics
     "get_metrics",
     "get_scalar_metrics",
+    # improvement
+    "build_metric_improvements",
+    "get_required_improvement_metrics",
+    # significance
+    "get_metric_improvement_significance",
     # climatology
     "calculate_climatology",
     "calculate_save_and_subset_climatologies",
