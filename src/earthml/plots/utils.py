@@ -30,7 +30,7 @@ from cartopy.mpl.geoaxes import GeoAxes
 from cartopy.mpl.gridliner import LONGITUDE_FORMATTER, LATITUDE_FORMATTER
 
 from ..base import Settings, ClimPeriod
-from ..metrics.defaults import ImprovementUnit
+from ..metrics.definitions import ImprovementUnit
 
 from .defaults import (
     DEFAULT_IMPROVEMENT_PLOT_CONFIG,
@@ -45,15 +45,10 @@ from .defaults import (
     SERIES_COLORS,
     TRANSLATION_TABLE,
 )
-
-
-PlotMode = Literal[
-    "maps",
-    "profiles",
-    "timeseries",
-    "scalar_diff_scatter",
-    "all",
-]
+from .definitions import (
+    PlotMode,
+    FieldModel,
+)
 
 
 def safe_label(x: object) -> str:
@@ -1657,32 +1652,98 @@ def plot_field_map(
     out_file: Path,
     cmap="viridis",
     centered: bool = False,
+    vmin: float | None = None,
+    vmax: float | None = None,
     spatial_dims: tuple[str, str] = ("latitude", "longitude"),
+    plot_type: Literal["pcolormesh", "contourf"] = "pcolormesh",
+    levels: int = 21,
+    figsize: tuple[float, float] = (7, 5),
 ) -> None:
     plot_unit, scale = get_plot_unit_and_scale(da, var)
     da = prepare_map_da(da / scale)
 
-    lat, lon = spatial_dims[0], spatial_dims[1]
+    lat, lon = spatial_dims
 
     fig, ax = plt.subplots(
-        figsize=(7, 5),
+        figsize=figsize,
         subplot_kw={"projection": ccrs.PlateCarree()},
     )
 
-    norm = None
-    if centered:
-        vmax = float(np.nanmax(np.abs(da.values)))
-        norm = TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax)
 
-    im = ax.pcolormesh(
-        da[lon],
-        da[lat],
-        da,
-        transform=ccrs.PlateCarree(),
-        shading="auto",
-        cmap=cmap,
-        norm=norm,
-    )
+    # Convert manually supplied limits to plotting units.
+    if vmin is not None:
+        vmin /= scale
+
+    if vmax is not None:
+        vmax /= scale
+
+    norm = None
+
+    if centered:
+        if vmin is None or vmax is None:
+            abs_max = float(np.nanmax(np.abs(da.values)))
+        else:
+            abs_max = max(abs(vmin), abs(vmax))
+
+        vmin = -abs_max
+        vmax = abs_max
+
+        norm = TwoSlopeNorm(
+            vmin=vmin,
+            vcenter=0.0,
+            vmax=vmax,
+        )
+
+    if plot_type == "pcolormesh":
+        im = ax.pcolormesh(
+            da[lon],
+            da[lat],
+            da,
+            transform=ccrs.PlateCarree(),
+            shading="auto",
+            cmap=cmap,
+            norm=norm,
+            vmin=None if norm is not None else vmin,
+            vmax=None if norm is not None else vmax,
+        )
+
+    elif plot_type == "contourf":
+        from cartopy.util import add_cyclic_point
+
+        data, lon_values = add_cyclic_point(
+            da.values,
+            coord=da[lon].values,
+            axis=da.get_axis_num(lon),
+        )
+
+        if vmin is None:
+            vmin = float(np.nanmin(data))
+
+        if vmax is None:
+            vmax = float(np.nanmax(data))
+
+        contour_levels = np.linspace(
+            vmin,
+            vmax,
+            levels,
+        )
+
+        im = ax.contourf(
+            lon_values,
+            da[lat].values,
+            data,
+            levels=contour_levels,
+            transform=ccrs.PlateCarree(),
+            cmap=cmap,
+            norm=norm,
+            extend="both",
+        )
+
+    else:
+        raise ValueError(
+            f"Unsupported plot_type={plot_type!r}. "
+            "Choose 'pcolormesh' or 'contourf'."
+        )
 
     ax.coastlines(linewidth=0.7)
     ax.add_feature(cfeature.BORDERS, linewidth=0.3)
@@ -1690,14 +1751,36 @@ def plot_field_map(
     if title is not None:
         ax.set_title(title)
 
-    cb = plt.colorbar(im, ax=ax, orientation="horizontal", pad=0.07)
-    cb.set_label(f"{VARIABLE_NAMES.get(var, var.upper())} ({plot_unit})" if plot_unit else VARIABLE_NAMES.get(var, var.upper()))
+    cb = plt.colorbar(
+        im,
+        ax=ax,
+        orientation="horizontal",
+        pad=0.07,
+    )
 
-    out_file.parent.mkdir(parents=True, exist_ok=True)
+    cb.set_label(
+        f"{VARIABLE_NAMES.get(var, var.upper())} ({plot_unit})"
+        if plot_unit
+        else VARIABLE_NAMES.get(var, var.upper())
+    )
+
+    out_file.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
     plt.tight_layout()
-    plt.savefig(out_file, dpi=200, bbox_inches="tight")
+
+    plt.savefig(
+        out_file,
+        dpi=200,
+        bbox_inches="tight",
+    )
+
     print(f"Saved map: {out_file}")
+
     plt.close(fig)
+
 
 def plot_field_timeseries(
     *,

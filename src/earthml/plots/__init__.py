@@ -34,16 +34,20 @@ from .defaults import (
     TRANSLATION_TABLE,
 )
 
-from .definitions import PlotMode
-
+from .definitions import (
+    PlotMode,
+    FieldModel,
+)
 
 __all__ = [
     # utils
     "safe_label",
     "lead_label",
     "get_total_months",
-    # plotting
+    # types
     "PlotMode",
+    "FieldModel",
+    # plotting
     "plot_map",
     "plot_profile",
     "plot_rank_histogram",
