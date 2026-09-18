@@ -22,7 +22,7 @@ from matplotlib.colors import (
     Colormap,
     to_rgb,
 )
-from matplotlib.cm import ScalarMappable
+from cmap import Colormap as CmapColormap
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -1650,7 +1650,7 @@ def plot_field_map(
     var: str,
     title: str | None = None,
     out_file: Path,
-    cmap="viridis",
+    cmap: str | Colormap | CmapColormap = "viridis",
     centered: bool = False,
     vmin: float | None = None,
     vmax: float | None = None,
@@ -1659,6 +1659,12 @@ def plot_field_map(
     levels: int = 21,
     figsize: tuple[float, float] = (7, 5),
 ) -> None:
+
+    if isinstance(cmap, CmapColormap):
+        cmap = cmap.to_mpl()
+    elif isinstance(cmap, str):
+        cmap = CmapColormap(cmap).to_mpl()
+
     plot_unit, scale = get_plot_unit_and_scale(da, var)
     da = prepare_map_da(da / scale)
 
