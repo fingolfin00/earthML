@@ -22,6 +22,8 @@ from matplotlib.colors import (
     Colormap,
     to_rgb,
 )
+from matplotlib.patches import Rectangle
+
 from cmap import Colormap as CmapColormap
 
 import cartopy.crs as ccrs
@@ -814,6 +816,7 @@ def plot_map(
     var_plot_config: dict | None = None,
     impro_plot_config: dict | None = None,
     force_scale: int | float | None = None,
+    rectangle: dict | None = None,
     plot_title: bool = True,
     title_strftime: str = "%Y",
     significance: xr.DataArray | None = None,
@@ -1139,6 +1142,24 @@ def plot_map(
                 transform=ccrs.PlateCarree(),
                 zorder=4,
             )
+
+            if rectangle is not None:
+                lon_min, lon_max = rectangle["lon_range"]
+                lat_max, lat_min = rectangle["lat_range"]
+
+                ax.add_patch(
+                    Rectangle(
+                        (lon_min, lat_min),
+                        lon_max - lon_min,
+                        lat_max - lat_min,
+                        edgecolor=rectangle.get("edgecolor", "black"),
+                        facecolor=rectangle.get("facecolor", "none"),
+                        linewidth=rectangle.get("linewidth", 2),
+                        linestyle=rectangle.get("linestyle", "-"),
+                        transform=ccrs.PlateCarree(),
+                        zorder=10,
+                    )
+                )
 
         ax.coastlines(linewidth=0.7)
         ax.add_feature(cfeature.BORDERS, linewidth=0.3)
@@ -1658,6 +1679,7 @@ def plot_field_map(
     plot_type: Literal["pcolormesh", "contourf"] = "pcolormesh",
     levels: int = 21,
     figsize: tuple[float, float] = (7, 5),
+    rectangle: dict | None = None,
 ) -> None:
 
     if isinstance(cmap, CmapColormap):
@@ -1749,6 +1771,24 @@ def plot_field_map(
         raise ValueError(
             f"Unsupported plot_type={plot_type!r}. "
             "Choose 'pcolormesh' or 'contourf'."
+        )
+
+    if rectangle is not None:
+        lon_min, lon_max = rectangle["lon_range"]
+        lat_max, lat_min = rectangle["lat_range"]
+
+        ax.add_patch(
+            Rectangle(
+                (lon_min, lat_min),
+                lon_max - lon_min,
+                lat_max - lat_min,
+                edgecolor=rectangle.get("edgecolor", "black"),
+                facecolor=rectangle.get("facecolor", "none"),
+                linewidth=rectangle.get("linewidth", 2),
+                linestyle=rectangle.get("linestyle", "-"),
+                transform=ccrs.PlateCarree(),
+                zorder=10,
+            )
         )
 
     ax.coastlines(linewidth=0.7)
