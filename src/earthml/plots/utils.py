@@ -242,6 +242,7 @@ def plot_profile(
     plot_single_members: bool = False,
     ylim: tuple[float, float] | None = None,
     plot_title: bool = True,
+    plot_labels: bool = True,
     title_strftime: str = "%Y",
     plot_legend: bool = True,
     improvement_unit: ImprovementUnit | None = None,
@@ -249,6 +250,10 @@ def plot_profile(
     force_scale: int | float | None = None,
     model_colors: dict[str, object] | None = None,
     model_linestyles: dict[str, str] | None = None,
+    title_size: float | None = None,
+    label_size: float | None = None,
+    tick_size: float | None = None,
+    dpi: int = 200,
 ) -> None:
     """Plot one or more 1-D metric profiles.
 
@@ -856,7 +861,8 @@ def plot_profile(
             f"{VARIABLE_NAMES[var]} · "
             f"{title_metric} · "
             f"{start_time}-{end_time}"
-            f"{selection_label}"
+            f"{selection_label}",
+            fontsize=title_size,
         )
 
     # ----------------------------------------------------------
@@ -892,9 +898,11 @@ def plot_profile(
             month_labels
         )
 
-        ax.set_xlabel(
-            "Month"
-        )
+        if plot_labels:
+            ax.set_xlabel(
+                "Month",
+                fontsize=label_size,
+            )
 
     elif profile_dim.endswith(
         "dayofyear"
@@ -915,9 +923,11 @@ def plot_profile(
             month_labels
         )
 
-        ax.set_xlabel(
-            "Month"
-        )
+        if plot_labels:
+            ax.set_xlabel(
+                "Month",
+                fontsize=label_size,
+            )
 
     else:
         xlabel = (
@@ -933,9 +943,11 @@ def plot_profile(
                 f"{profile_unit}"
             )
 
-        ax.set_xlabel(
-            xlabel
-        )
+        if plot_labels:
+            ax.set_xlabel(
+                xlabel,
+                fontsize=label_size,
+            )
 
     # ----------------------------------------------------------
     # Y axis / legend
@@ -944,11 +956,21 @@ def plot_profile(
     if ylim is not None:
         ax.set_ylim(*ylim)
 
-    ax.set_ylabel(ylabel)
+    if plot_labels:
+        ax.set_ylabel(
+            ylabel,
+            fontsize=label_size,
+        )
+
+    ax.tick_params(
+        axis="both",
+        labelsize=tick_size,
+    )
 
     ax.grid(True, alpha=0.3)
 
-    ax.legend()
+    if plot_legend:
+        ax.legend()
 
     # ----------------------------------------------------------
     # Save
@@ -963,7 +985,7 @@ def plot_profile(
 
     fig.savefig(
         out_file,
-        dpi=200,
+        dpi=dpi,
         bbox_inches="tight",
     )
 
@@ -1109,11 +1131,16 @@ def plot_map(
     force_scale: int | float | None = None,
     rectangles: Sequence[dict] | None = None,
     plot_title: bool = True,
+    plot_labels: bool = True,
     title_strftime: str = "%Y",
     significance: xr.DataArray | None = None,
     significance_stride: int = 3,
     significance_size: float = 2.0,
     significance_alpha: float = 0.6,
+    title_size: float | None = None,
+    label_size: float | None = None,
+    tick_size: float | None = None,
+    dpi: int = 300,
 ) -> None:
     var_plot_config = var_plot_config or {}
     impro_plot_config = impro_plot_config or {}
@@ -1469,8 +1496,9 @@ def plot_map(
         gl.right_labels = False
         gl.xformatter = LONGITUDE_FORMATTER
         gl.yformatter = LATITUDE_FORMATTER
-        gl.xlabel_style = {"size": 8}
-        gl.ylabel_style = {"size": 8}
+        if tick_size is not None:
+            gl.xlabel_style = {"size": tick_size}
+            gl.ylabel_style = {"size": tick_size}
 
     else:
         fig, ax = plt.subplots(
@@ -1513,18 +1541,22 @@ def plot_map(
                 "Choose one of: 'pcolormesh', 'contourf'."
             )
 
-        ax.set_xlabel(x_label)
+        if plot_labels:
+            ax.set_xlabel(x_label, fontsize=label_size)
 
         if clim_period == ClimPeriod.MONTH:
-            ax.set_ylabel("Month")
+            if plot_labels:
+                ax.set_ylabel("Month", fontsize=label_size)
             ax.set_yticks(np.arange(1, 13))
             ax.set_yticklabels(
                 ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
             )
         else:
-            ax.set_ylabel("Time")
+            if plot_labels:
+                ax.set_ylabel("Time", fontsize=label_size)
 
+        ax.tick_params(axis="both", labelsize=tick_size)
         ax.grid(True, alpha=0.2)
 
         if plot_kind == "time_lon":
@@ -1579,7 +1611,7 @@ def plot_map(
         if plot_kind == "maps":
             fig.suptitle(
                 title,
-                fontsize=10,
+                fontsize=title_size,
                 y=0.98,
                 linespacing=1.05,
             )
@@ -1593,6 +1625,7 @@ def plot_map(
             ax.set_title(
                 title,
                 pad=10,
+                fontsize=title_size,
             )
     else:
         if plot_kind == "maps":
@@ -1613,8 +1646,9 @@ def plot_map(
         ticks=ticks,
     )
 
-    cb.set_label(cb_label, fontsize=9)
-    cb.ax.tick_params(labelsize=5)
+    if plot_labels:
+        cb.set_label(cb_label, fontsize=label_size)
+    cb.ax.tick_params(labelsize=tick_size)
 
     out_file.parent.mkdir(
         parents=True,
@@ -1623,7 +1657,7 @@ def plot_map(
 
     fig.savefig(
         out_file,
-        dpi=300,
+        dpi=dpi,
     )
 
     plt.close(fig)
@@ -1639,6 +1673,12 @@ def plot_rank_histogram(
     out_file: Path,
     time_range: tuple[str, str],
     rank_dim: str = "rank",
+    plot_title: bool = True,
+    plot_labels: bool = True,
+    title_size: float | None = None,
+    label_size: float | None = None,
+    tick_size: float | None = None,
+    dpi: int = 200,
 ) -> None:
     if isinstance(models, str):
         models = [models]
@@ -1670,15 +1710,23 @@ def plot_rank_histogram(
 
     start_time = datetime.strptime(time_range[0], "%Y-%m-%d").strftime("%Y")
     end_time = datetime.strptime(time_range[1], "%Y-%m-%d").strftime("%Y")
-    ax.set_title(f"{VARIABLE_NAMES[var]} · {METRIC_NAMES[metric]} · {start_time}-{end_time} · start month={start_period}")
-    ax.set_xlabel(rank_dim)
-    ax.set_ylabel("count")
+    if plot_title:
+        ax.set_title(
+            f"{VARIABLE_NAMES[var]} · {METRIC_NAMES[metric]} · "
+            f"{start_time}-{end_time} · start month={start_period}",
+            fontsize=title_size,
+        )
+
+    if plot_labels:
+        ax.set_xlabel(rank_dim, fontsize=label_size)
+        ax.set_ylabel("count", fontsize=label_size)
+    ax.tick_params(axis="both", labelsize=tick_size)
     ax.grid(True, alpha=0.3)
     ax.legend()
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
     plt.tight_layout()
-    plt.savefig(out_file, dpi=200, bbox_inches="tight")
+    plt.savefig(out_file, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -1736,16 +1784,32 @@ def plot_metric_diff_scatter(
     fit_lines: bool = True,
     fit_min_points: int = 3,
     shade_improvement_region: bool = True,
+    plot_title: bool = True,
+    plot_labels: bool = True,
+    title_size: float | None = None,
+    label_size: float | None = None,
+    tick_size: float | None = None,
+    dpi: int = 200,
 ) -> None:
     fig, ax = plt.subplots(figsize=figsize)
 
     if not points:
-        ax.set_title(title or "No data")
-        ax.set_xlabel(xlabel or f"{diff_metric} improvement")
-        ax.set_ylabel(ylabel or forecast_metric)
+        if plot_title:
+            ax.set_title(title or "No data", fontsize=title_size)
+
+        if plot_labels:
+            ax.set_xlabel(
+                xlabel or f"{diff_metric} improvement",
+                fontsize=label_size,
+            )
+            ax.set_ylabel(
+                ylabel or forecast_metric,
+                fontsize=label_size,
+            )
+        ax.tick_params(axis="both", labelsize=tick_size)
         ax.grid(alpha=0.3)
         out_file.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(out_file, dpi=200, bbox_inches="tight")
+        plt.savefig(out_file, dpi=dpi, bbox_inches="tight")
         plt.close(fig)
         return
 
@@ -1826,11 +1890,18 @@ def plot_metric_diff_scatter(
 
     ax.axvline(0, color="black", alpha=0.5, linewidth=0.8)
 
-    ax.set_xlabel(xlabel or f"{METRIC_NAMES.get(diff_metric, diff_metric)} improvement")
-    ax.set_ylabel(ylabel or METRIC_NAMES.get(forecast_metric, forecast_metric))
+    ax.set_xlabel(
+        xlabel or f"{METRIC_NAMES.get(diff_metric, diff_metric)} improvement",
+        fontsize=label_size,
+    )
+    ax.set_ylabel(
+        ylabel or METRIC_NAMES.get(forecast_metric, forecast_metric),
+        fontsize=label_size,
+    )
+    ax.tick_params(axis="both", labelsize=tick_size)
 
     if title is not None:
-        ax.set_title(title)
+        ax.set_title(title, fontsize=title_size)
 
     ax.grid(alpha=0.3)
 
@@ -1910,7 +1981,7 @@ def plot_metric_diff_scatter(
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
     plt.tight_layout()
-    plt.savefig(out_file, dpi=200, bbox_inches="tight")
+    plt.savefig(out_file, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -1972,6 +2043,12 @@ def plot_field_map(
     levels: int = 21,
     figsize: tuple[float, float] = (7, 5),
     rectangles: Sequence[dict] | None = None,
+    plot_title: bool = True,
+    plot_labels: bool = True,
+    title_size: float | None = None,
+    label_size: float | None = None,
+    tick_size: float | None = None,
+    dpi: int = 200,
 ) -> None:
 
     if isinstance(cmap, CmapColormap):
@@ -2087,8 +2164,15 @@ def plot_field_map(
     ax.coastlines(linewidth=0.7)
     ax.add_feature(cfeature.BORDERS, linewidth=0.3)
 
-    if title is not None:
-        ax.set_title(title)
+    if plot_title and title is not None:
+        ax.set_title(title, fontsize=title_size)
+
+    gl = ax.gridlines(draw_labels=True, linewidth=0)
+    gl.top_labels = False
+    gl.right_labels = False
+    if tick_size is not None:
+        gl.xlabel_style = {"size": tick_size}
+        gl.ylabel_style = {"size": tick_size}
 
     cb = plt.colorbar(
         im,
@@ -2097,11 +2181,14 @@ def plot_field_map(
         pad=0.07,
     )
 
-    cb.set_label(
-        f"{VARIABLE_NAMES.get(var, var.upper())} ({plot_unit})"
-        if plot_unit
-        else VARIABLE_NAMES.get(var, var.upper())
-    )
+    if plot_labels:
+        cb.set_label(
+            f"{VARIABLE_NAMES.get(var, var.upper())} ({plot_unit})"
+            if plot_unit
+            else VARIABLE_NAMES.get(var, var.upper()),
+            fontsize=label_size,
+        )
+    cb.ax.tick_params(labelsize=tick_size)
 
     out_file.parent.mkdir(
         parents=True,
@@ -2112,7 +2199,7 @@ def plot_field_map(
 
     plt.savefig(
         out_file,
-        dpi=200,
+        dpi=dpi,
         bbox_inches="tight",
     )
 
@@ -2138,6 +2225,12 @@ def plot_field_timeseries(
     member_linestyle: str = "-",
     series_linestyle: str = "--",
     series_offsets: dict[str, float] | None = None,
+    plot_title: bool = True,
+    plot_labels: bool = True,
+    title_size: float | None = None,
+    label_size: float | None = None,
+    tick_size: float | None = None,
+    dpi: int = 200,
 ) -> None:
     valid = {name: da for name, da in series.items() if da is not None}
 
@@ -2315,11 +2408,13 @@ def plot_field_timeseries(
             label="Val end",
         )
 
-    if title is not None:
-        ax.set_title(title)
+    if plot_title and title is not None:
+        ax.set_title(title, fontsize=title_size)
 
-    ax.set_xlabel(time_dim)
-    ax.set_ylabel(ylabel)
+    if plot_labels:
+        ax.set_xlabel(time_dim, fontsize=label_size)
+        ax.set_ylabel(ylabel, fontsize=label_size)
+    ax.tick_params(axis="both", labelsize=tick_size)
     ax.grid(True, alpha=0.3)
     ax.legend()
 
@@ -2332,12 +2427,13 @@ def plot_field_timeseries(
         tick_zeros = ["0" for n in plot_names if n in series_offsets]
 
         ax2.set_yticklabels(tick_zeros)
+        ax2.tick_params(axis="y", labelsize=tick_size)
 
         for label, name in zip(ax2.get_yticklabels(), tick_names):
             label.set_color(SERIES_COLORS.get(name))
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
     plt.tight_layout()
-    plt.savefig(out_file, dpi=200, bbox_inches="tight")
+    plt.savefig(out_file, dpi=dpi, bbox_inches="tight")
     print(f"Saved timeseries: {out_file}")
     plt.close(fig)
