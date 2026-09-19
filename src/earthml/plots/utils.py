@@ -232,7 +232,7 @@ def plot_profile(
     out_file: Path,
     time_range: tuple[str, str],
     profile_dim: str = "leadtime",
-    profile_unit: str | None = "months",
+    profile_label: str,
     select_dim: str | None = "start_date",
     select_value: str | int | float | Sequence[str | int | float] = "all",
     select_unit: str | None = "months",
@@ -259,6 +259,7 @@ def plot_profile(
     """Plot one or more 1-D metric profiles.
 
     ``profile_dim`` is the dimension shown on the x axis.
+    ``profile_label`` explicitly defines the x-axis label.
 
     Examples
     --------
@@ -934,7 +935,7 @@ def plot_profile(
 
         if plot_labels:
             ax.set_xlabel(
-                "Month",
+                profile_label,
                 fontsize=label_size,
             )
 
@@ -959,23 +960,12 @@ def plot_profile(
 
         if plot_labels:
             ax.set_xlabel(
-                "Month",
+                profile_label,
                 fontsize=label_size,
             )
 
     else:
-        xlabel = (
-            profile_dim.replace(
-                "_",
-                " ",
-            )
-        )
-
-        if profile_unit:
-            xlabel = (
-                f"{xlabel} "
-                f"{profile_unit}"
-            )
+        xlabel = profile_label
 
         if plot_labels:
             ax.set_xlabel(
