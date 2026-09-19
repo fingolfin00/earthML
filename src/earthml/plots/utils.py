@@ -236,6 +236,7 @@ def plot_profile(
     select_dim: str | None = "start_date",
     select_value: str | int | float | Sequence[str | int | float] = "all",
     select_unit: str | None = "months",
+    select_colors: Literal["shades", "colors"] = "shades",
     das_member: xr.DataArray | xr.Dataset | Sequence[xr.DataArray | xr.Dataset | None] | None = None,
     realization_dim: str = "realization",
     spread: Literal["std", "minmax"] = "std",
@@ -417,6 +418,8 @@ def plot_profile(
 
     n_select = len(select_values)
 
+    color_cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+
     fig, ax = plt.subplots(
         figsize=(12, 8)
     )
@@ -525,6 +528,29 @@ def plot_profile(
                 # Short lead times lighter,
                 # long lead times darker.
                 color = base_color
+
+                if n_select > 1:
+                    if select_colors == "shades":
+                        if base_color is not None:
+                            shade_amount = (
+                                0.65
+                                * (n_select - 1 - i)
+                                / max(1, n_select - 1)
+                            )
+
+                            color = lighten(
+                                base_color,
+                                shade_amount,
+                            )
+
+                    elif select_colors == "colors":
+                        color = color_cycle[i % len(color_cycle)]
+
+                    else:
+                        raise ValueError(
+                            f"Unsupported select_colors={select_colors!r}. "
+                            "Choose 'shades' or 'colors'."
+                        )
 
                 if (
                     n_select > 1
@@ -649,20 +675,28 @@ def plot_profile(
 
             color = base_color
 
-            if (
-                n_select > 1
-                and base_color is not None
-            ):
-                shade_amount = (
-                    0.65
-                    * (n_select - 1 - i)
-                    / max(1, n_select - 1)
-                )
+            if n_select > 1:
+                if select_colors == "shades":
+                    if base_color is not None:
+                        shade_amount = (
+                            0.65
+                            * (n_select - 1 - i)
+                            / max(1, n_select - 1)
+                        )
 
-                color = lighten(
-                    base_color,
-                    shade_amount,
-                )
+                        color = lighten(
+                            base_color,
+                            shade_amount,
+                        )
+
+                elif select_colors == "colors":
+                    color = color_cycle[i % len(color_cycle)]
+
+                else:
+                    raise ValueError(
+                        f"Unsupported select_colors={select_colors!r}. "
+                        "Choose 'shades' or 'colors'."
+                    )
 
             if plot_single_members:
                 for j in range(
