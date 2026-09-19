@@ -1281,6 +1281,7 @@ class EarthMLRegrid:
                             ds_out_grid=ds_out_grid,
                             weights_path=weights_path,
                             method="bilinear",
+                            ignore_degenerate=True,
                         )
 
                     try:
