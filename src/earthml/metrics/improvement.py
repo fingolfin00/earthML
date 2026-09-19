@@ -9,6 +9,12 @@ from .defaults import (
 )
 
 
+STD_REFERENCE_METRICS = {
+    "fc_std": "an_std",
+    "fc_anom_std": "an_anom_std",
+}
+
+
 def get_required_improvement_metrics(
     metrics: list[str],
 ) -> list[str]:
@@ -16,20 +22,42 @@ def get_required_improvement_metrics(
     Return requested metrics plus any auxiliary metrics required to
     calculate configured improvement representations.
 
-    Example:
-        rmse + normalized improvement -> also requires an_std
+    Examples
+    --------
+    rmse + normalized improvement:
+        -> also requires an_std
+
+    fc_std improvement:
+        -> also requires an_std
+
+    fc_anom_std improvement:
+        -> also requires an_anom_std
     """
 
     required = list(metrics)
 
     for metric in metrics:
-        if metric not in METRIC_IMPROVEMENT_UNITS:
-            raise KeyError(
-                f"No improvement representations configured "
-                f"for metric {metric!r}."
-            )
 
-        units = METRIC_IMPROVEMENT_UNITS.get(metric, ())
+        # Not every plotted metric needs to support model improvement.
+        # Examples: an_std, an_anom_std.
+        units = METRIC_IMPROVEMENT_UNITS.get(metric)
+
+        if units is None:
+            continue
+
+        # ----------------------------------------------------------
+        # Standard-deviation improvement reference
+        # ----------------------------------------------------------
+
+        if metric in STD_REFERENCE_METRICS:
+            reference_metric = STD_REFERENCE_METRICS[metric]
+
+            if reference_metric not in required:
+                required.append(reference_metric)
+
+        # ----------------------------------------------------------
+        # Normalized improvement reference
+        # ----------------------------------------------------------
 
         if "normalized" not in units:
             continue
@@ -54,47 +82,116 @@ def metric_difference_improvement(
     original: xr.DataArray,
     corrected: xr.DataArray,
     metric: str,
+    *,
+    reference: xr.DataArray | None = None,
 ) -> xr.DataArray:
     """
     Absolute metric improvement.
 
     Positive values always mean that the corrected forecast is better.
+
+    For forecast-standard-deviation metrics, improvement means reduction
+    in absolute deviation from the corresponding analysis standard
+    deviation.
     """
+
+    if metric in STD_REFERENCE_METRICS:
+        if reference is None:
+            raise ValueError(
+                f"Improvement for {metric!r} requires "
+                f"{STD_REFERENCE_METRICS[metric]!r}."
+            )
+
+        original, corrected, reference = xr.align(
+            original,
+            corrected,
+            reference,
+            join="exact",
+        )
+
+        return (
+            abs(original - reference)
+            - abs(corrected - reference)
+        )
 
     try:
         func = METRIC_DIFFERENCE_IMPROVEMENT[metric]
+
     except KeyError as exc:
         raise KeyError(
             f"No difference-improvement rule configured "
             f"for metric {metric!r}."
         ) from exc
 
-    return func(original, corrected)
+    return func(
+        original,
+        corrected,
+    )
 
 
 def metric_percentage_improvement(
     original: xr.DataArray,
     corrected: xr.DataArray,
     metric: str,
+    *,
+    reference: xr.DataArray | None = None,
 ) -> xr.DataArray:
     """
     Percentage metric improvement.
 
     Positive values always mean that the corrected forecast is better.
 
-    Percentage improvement is only defined for metrics explicitly
-    configured in METRIC_PERCENTAGE_IMPROVEMENT.
+    For forecast-standard-deviation metrics:
+
+        100 * (
+            |std_original - std_analysis|
+            - |std_corrected - std_analysis|
+        ) / |std_original - std_analysis|
     """
+
+    if metric in STD_REFERENCE_METRICS:
+        if reference is None:
+            raise ValueError(
+                f"Improvement for {metric!r} requires "
+                f"{STD_REFERENCE_METRICS[metric]!r}."
+            )
+
+        original, corrected, reference = xr.align(
+            original,
+            corrected,
+            reference,
+            join="exact",
+        )
+
+        original_error = abs(
+            original - reference
+        )
+
+        corrected_error = abs(
+            corrected - reference
+        )
+
+        return (
+            100
+            * (original_error - corrected_error)
+            / original_error
+        ).where(
+            original_error > 0
+        )
 
     try:
         func = METRIC_PERCENTAGE_IMPROVEMENT[metric]
+
     except KeyError as exc:
         raise KeyError(
             f"No percentage-improvement rule configured "
             f"for metric {metric!r}."
         ) from exc
 
-    return func(original, corrected)
+    return func(
+        original,
+        corrected,
+    )
 
 
 def normalized_metric_improvement(
@@ -117,6 +214,12 @@ def normalized_metric_improvement(
     MSE:
         (MSE_original - MSE_corrected) / analysis_std**2
 
+    Forecast std:
+        (
+            |std_original - std_analysis|
+            - |std_corrected - std_analysis|
+        ) / std_analysis
+
     Positive values always mean improvement.
     """
 
@@ -124,11 +227,20 @@ def normalized_metric_improvement(
         original,
         corrected,
         metric,
+        reference=(
+            reference
+            if metric in STD_REFERENCE_METRICS
+            else None
+        ),
     )
 
-    denominator = reference ** reference_power
+    denominator = (
+        reference ** reference_power
+    )
 
-    return (improvement / denominator).where(
+    return (
+        improvement / denominator
+    ).where(
         denominator > 0
     )
 
@@ -144,27 +256,6 @@ def build_metric_improvement(
 ) -> xr.DataArray:
     """
     Build one improvement representation for two metric DataArrays.
-
-    Parameters
-    ----------
-    original
-        Metric from the baseline/original forecast.
-    corrected
-        Metric from the corrected forecast.
-    metric
-        Metric name.
-    improvement_unit
-        One of "%", "Δ", or "normalized".
-    reference
-        Reference variability field required for normalized
-        improvement.
-    reference_power
-        Power applied to the reference field.
-
-    Returns
-    -------
-    xr.DataArray
-        Improvement field.
     """
 
     original, corrected = xr.align(
@@ -173,37 +264,46 @@ def build_metric_improvement(
         join="exact",
     )
 
-    if improvement_unit == "%":
-        improvement = metric_percentage_improvement(
-            original,
-            corrected,
-            metric,
-        )
-
-        units = "%"
-
-    elif improvement_unit == "Δ":
-        improvement = metric_difference_improvement(
-            original,
-            corrected,
-            metric,
-        )
-
-        units = original.attrs.get("units", "")
-
-    elif improvement_unit == "normalized":
-        if reference is None:
-            raise ValueError(
-                f"Normalized improvement for {metric!r} "
-                f"requires a reference DataArray."
-            )
-
+    if reference is not None:
         original, corrected, reference = xr.align(
             original,
             corrected,
             reference,
             join="exact",
         )
+
+    if improvement_unit == "%":
+
+        improvement = metric_percentage_improvement(
+            original,
+            corrected,
+            metric,
+            reference=reference,
+        )
+
+        units = "%"
+
+    elif improvement_unit == "Δ":
+
+        improvement = metric_difference_improvement(
+            original,
+            corrected,
+            metric,
+            reference=reference,
+        )
+
+        units = original.attrs.get(
+            "units",
+            "",
+        )
+
+    elif improvement_unit == "normalized":
+
+        if reference is None:
+            raise ValueError(
+                f"Normalized improvement for {metric!r} "
+                f"requires a reference DataArray."
+            )
 
         improvement = normalized_metric_improvement(
             original,
@@ -222,10 +322,15 @@ def build_metric_improvement(
             f"Expected one of '%', 'Δ', or 'normalized'."
         )
 
-    improvement.attrs = original.attrs.copy()
+    improvement.attrs = (
+        original.attrs.copy()
+    )
+
     improvement.attrs["units"] = units
+
     improvement.attrs["long_name"] = (
-        f"{metric} improvement ({improvement_unit})"
+        f"{metric} improvement "
+        f"({improvement_unit})"
     )
 
     return improvement
@@ -241,37 +346,8 @@ def build_metric_improvements(
 ) -> dict[str, xr.DataArray]:
     """
     Build all configured improvement representations for one metric.
-
-    Representations are taken from METRIC_IMPROVEMENT_UNITS.
-
-    Parameters
-    ----------
-    baseline_ds : xr.Dataset
-        Dataset containing metrics for the reference model.
-    target_ds : xr.Dataset
-        Dataset containing metrics for the model being compared
-        against the baseline.
-    metric : str
-        Metric to compare.
-    baseline_model : str
-        Name of the reference model.
-    target_model : str
-        Name of the target model.
-
-    Returns
-    -------
-    dict[str, xr.DataArray]
-        Mapping from plotting model name to improvement DataArray.
-
-        Examples:
-            mlfc_vs_fc_percentage
-            mlfc_vs_fc_difference
-            mlfc_vs_fc_normalized
-
-            clim-fc_vs_fc_percentage
-            clim-fc_vs_fc_difference
-            clim-fc_vs_fc_normalized
     """
+
     if metric not in baseline_ds:
         raise KeyError(
             f"Metric {metric!r} is missing from baseline model "
@@ -285,10 +361,7 @@ def build_metric_improvements(
         )
 
     if metric not in METRIC_IMPROVEMENT_UNITS:
-        raise KeyError(
-            f"No improvement representations configured "
-            f"for metric {metric!r}."
-        )
+        return {}
 
     baseline, target = xr.align(
         baseline_ds[metric],
@@ -302,22 +375,58 @@ def build_metric_improvements(
         "normalized": "normalized",
     }
 
-    result: dict[str, xr.DataArray] = {}
+    result: dict[
+        str,
+        xr.DataArray,
+    ] = {}
 
-    for improvement_unit in METRIC_IMPROVEMENT_UNITS[metric]:
+    for improvement_unit in (
+        METRIC_IMPROVEMENT_UNITS[metric]
+    ):
+
         reference = None
         reference_power = 1
 
+        # ----------------------------------------------------------
+        # Standard deviation reference
+        # ----------------------------------------------------------
+
+        if metric in STD_REFERENCE_METRICS:
+
+            reference_metric = (
+                STD_REFERENCE_METRICS[metric]
+            )
+
+            if reference_metric not in baseline_ds:
+                raise KeyError(
+                    f"Improvement for {metric!r} requires "
+                    f"baseline reference metric "
+                    f"{reference_metric!r}, but it is missing "
+                    f"from model {baseline_model!r}."
+                )
+
+            reference = (
+                baseline_ds[reference_metric]
+            )
+
+        # ----------------------------------------------------------
+        # Normalized reference
+        # ----------------------------------------------------------
+
         if improvement_unit == "normalized":
+
             if metric not in NORMALIZED_IMPROVEMENT_REFERENCE:
                 raise KeyError(
                     f"No normalized-improvement reference "
                     f"configured for metric {metric!r}."
                 )
 
-            reference_metric, reference_power = (
-                NORMALIZED_IMPROVEMENT_REFERENCE[metric]
-            )
+            (
+                reference_metric,
+                reference_power,
+            ) = NORMALIZED_IMPROVEMENT_REFERENCE[
+                metric
+            ]
 
             if reference_metric not in baseline_ds:
                 raise KeyError(
@@ -327,21 +436,31 @@ def build_metric_improvements(
                     f"from model {baseline_model!r}."
                 )
 
-            reference = baseline_ds[reference_metric]
+            reference = (
+                baseline_ds[reference_metric]
+            )
 
-        improvement = build_metric_improvement(
-            baseline,
-            target,
-            metric=metric,
-            improvement_unit=improvement_unit,
-            reference=reference,
-            reference_power=reference_power,
+        improvement = (
+            build_metric_improvement(
+                baseline,
+                target,
+                metric=metric,
+                improvement_unit=improvement_unit,
+                reference=reference,
+                reference_power=reference_power,
+            )
         )
 
-        suffix = improvement_suffix[improvement_unit]
+        suffix = (
+            improvement_suffix[
+                improvement_unit
+            ]
+        )
 
         model_name = (
-            f"{target_model}_vs_{baseline_model}_{suffix}"
+            f"{target_model}_vs_"
+            f"{baseline_model}_"
+            f"{suffix}"
         )
 
         result[model_name] = improvement

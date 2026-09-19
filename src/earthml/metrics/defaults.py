@@ -184,8 +184,19 @@ METRIC_IMPROVEMENT_UNITS: dict[
     "nrmse_anom": ("%", "Δ"),
 
     # -------------------------------------------------------------
+    # Standard deviation
+    #
+    # Target is the corresponding analysis standard deviation:
+    #
+    #   |std_fc - std_an| - |std_mlfc - std_an|
+    #
+    # Positive = corrected forecast is closer to analysis variability.
+    # -------------------------------------------------------------
+    "fc_std": ("%", "Δ", "normalized"),
+    "fc_anom_std": ("%", "Δ", "normalized"),
+
+    # -------------------------------------------------------------
     # Correlation / explained variance
-    # Already dimensionless: difference is the useful representation.
     # -------------------------------------------------------------
     "corr": ("Δ",),
     "acc": ("Δ",),
@@ -194,7 +205,6 @@ METRIC_IMPROVEMENT_UNITS: dict[
 
     # -------------------------------------------------------------
     # Calibration / ratios
-    # Already dimensionless and have special target=1 semantics.
     # -------------------------------------------------------------
     "std_ratio": ("%", "Δ"),
     "std_ratio_anom": ("%", "Δ"),
@@ -220,10 +230,6 @@ METRIC_IMPROVEMENT_UNITS: dict[
 
     # -------------------------------------------------------------
     # Spatial gradients
-    #
-    # Leaving normalized disabled for now. Normalizing by analysis
-    # gradient magnitude could introduce essentially the same
-    # near-zero-denominator problem we are trying to avoid.
     # -------------------------------------------------------------
     "grad_rmse": ("%", "Δ"),
     "grad_rmse_anom": ("%", "Δ"),
@@ -241,14 +247,14 @@ METRIC_IMPROVEMENT_UNITS: dict[
     "crps_anom": ("%", "Δ", "normalized"),
 
     # -------------------------------------------------------------
-    # Skill scores are already dimensionless relative measures
+    # Skill scores
     # -------------------------------------------------------------
     "mse_skill_clim": ("Δ",),
     "mae_anom_skill_clim": ("Δ",),
     "mse_anom_skill_clim": ("Δ",),
     "rmse_anom_skill_clim": ("Δ",),
     "ens_member_mse_anom_skill_clim": ("Δ",),
-    "mean_member_rmse_anom_skill_clim": ("Δ",),
+    "mean_member_mse_anom_skill_clim": ("Δ",),
 
     # -------------------------------------------------------------
     # ROC
@@ -266,6 +272,9 @@ NORMALIZED_IMPROVEMENT_REFERENCE: dict[str, tuple[str, int]] = {
     "rmse": ("an_std", 1),
     "crmse": ("an_std", 1),
 
+    # Forecast variability: target and normalization reference = analysis std.
+    "fc_std": ("an_std", 1),
+
     # Squared metrics: normalize by analysis variance.
     "mse": ("an_std", 2),
     "mse_bias_component": ("an_std", 2),
@@ -277,6 +286,9 @@ NORMALIZED_IMPROVEMENT_REFERENCE: dict[str, tuple[str, int]] = {
     "mae_anom": ("an_anom_std", 1),
     "rmse_anom": ("an_anom_std", 1),
     "crmse_anom": ("an_anom_std", 1),
+
+    # Forecast anomaly variability.
+    "fc_anom_std": ("an_anom_std", 1),
 
     "mse_anom": ("an_anom_std", 2),
     "mse_bias_component_anom": ("an_anom_std", 2),
