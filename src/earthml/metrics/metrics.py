@@ -1,9 +1,10 @@
-from typing import cast
+from typing import cast, Literal
 from collections.abc import Sequence
 
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 import xskillscore as xs
 
@@ -1023,6 +1024,105 @@ def groupby_period(
     return da.groupby(f"{time_dim}.{clim_period}")
 
 
+PeriodReference = Literal["init", "valid"]
+
+
+def _default_period_dim(
+    period_reference: PeriodReference,
+    clim_period: ClimPeriod,
+) -> str:
+    return f"{period_reference}_{clim_period}"
+
+
+def _leadtime_offset(
+    leadtime_value: int | float,
+    leadtime_unit: LeadtimeUnit,
+):
+    """Convert a numeric leadtime to a calendar/time offset."""
+    if leadtime_unit in {LeadtimeUnit.MONTHS, LeadtimeUnit.YEARS}:
+        if not float(leadtime_value).is_integer():
+            raise ValueError(
+                f"{leadtime_unit.value} leadtime must be an integer, "
+                f"got {leadtime_value}."
+            )
+
+    if leadtime_unit == LeadtimeUnit.YEARS:
+        return pd.DateOffset(years=int(leadtime_value))
+    if leadtime_unit == LeadtimeUnit.MONTHS:
+        return pd.DateOffset(months=int(leadtime_value))
+    if leadtime_unit == LeadtimeUnit.DAYS:
+        return pd.Timedelta(days=leadtime_value)
+    if leadtime_unit == LeadtimeUnit.HOURS:
+        return pd.Timedelta(hours=leadtime_value)
+
+    raise ValueError(f"Unsupported leadtime_unit={leadtime_unit!r}")
+
+
+def _valid_time_coord(
+    da: xr.DataArray,
+    *,
+    leadtime_dim: str,
+    leadtime_unit: LeadtimeUnit,
+) -> xr.DataArray:
+    """Return valid time with dimensions (init_time, leadtime)."""
+    time_dim = da.earthml.guessed_dims.time
+
+    if time_dim is None or time_dim not in da.dims:
+        raise ValueError("Could not determine forecast initialization-time dimension.")
+
+    if leadtime_dim not in da.dims:
+        raise ValueError(
+            f"Leadtime dimension {leadtime_dim!r} is required to build valid time."
+        )
+
+    init_times = pd.DatetimeIndex(da[time_dim].values)
+    leadtimes = da[leadtime_dim].values
+
+    valid_times = np.empty(
+        (len(init_times), len(leadtimes)),
+        dtype="datetime64[ns]",
+    )
+
+    for i, lead in enumerate(leadtimes):
+        valid_times[:, i] = (
+            init_times + _leadtime_offset(lead, leadtime_unit)
+        ).values
+
+    return xr.DataArray(
+        valid_times,
+        dims=(time_dim, leadtime_dim),
+        coords={
+            time_dim: da[time_dim],
+            leadtime_dim: da[leadtime_dim],
+        },
+        name="valid_time",
+    )
+
+
+def _assign_valid_time(
+    fc: xr.DataArray,
+    an: xr.DataArray,
+    *,
+    leadtime_dim: str,
+    leadtime_unit: LeadtimeUnit | None,
+) -> tuple[xr.DataArray, xr.DataArray]:
+    if leadtime_unit is None:
+        raise ValueError(
+            "leadtime_unit must be provided when period_reference='valid'."
+        )
+
+    valid_time = _valid_time_coord(
+        fc,
+        leadtime_dim=leadtime_dim,
+        leadtime_unit=leadtime_unit,
+    )
+
+    return (
+        fc.assign_coords(valid_time=valid_time),
+        an.assign_coords(valid_time=valid_time),
+    )
+
+
 def calculate_metrics(
     fc: xr.DataArray,
     an: xr.DataArray,
@@ -1033,7 +1133,8 @@ def calculate_metrics(
     an_clim: xr.DataArray | None = None,
     orography: xr.DataArray | None = None,
     clim_period: ClimPeriod = ClimPeriod.MONTH,
-    period_dim: str = "start_date",
+    period_reference: PeriodReference = "init",
+    period_dim: str | None = None,
     periods_requested: str | Sequence[str] | None = None,
     fair_correction: bool = False,
 ) -> xr.Dataset:
@@ -1046,8 +1147,11 @@ def calculate_metrics(
         elif isinstance(dims, Sequence):
             return list(dims)
         else:
-            raise TypeError(f"Parameter {name} should be of type str or Sequence[str], not {type(dims).__name__}")
-        
+            raise TypeError(
+                f"Parameter {name} should be of type str or Sequence[str], "
+                f"not {type(dims).__name__}"
+            )
+
     def _validate_metrics(
         metrics: Metric | str | Sequence[Metric | str] | None,
     ) -> list[str]:
@@ -1070,50 +1174,44 @@ def calculate_metrics(
     ) -> tuple[list[str], range | list[tuple[int, int]]]:
         if clim_period == ClimPeriod.MONTH:
             values = range(1, 13)
-
         elif clim_period == ClimPeriod.DAYOFYEAR:
             values = range(1, 367)
-
         elif clim_period == ClimPeriod.DAY:
             values = range(1, 32)
-
         elif clim_period == ClimPeriod.YEAR:
             raise ValueError(
                 "'year' climatology has no predefined period list. "
                 "Specify periods explicitly or use 'all'."
             )
-
-        elif clim_period == "dayofyear_hour":
+        elif clim_period == ClimPeriod.DAYOFYEAR_HOUR:
             values = [(d, h) for d in range(1, 367) for h in range(24)]
-
-        elif clim_period == "day_hour":
+        elif clim_period == ClimPeriod.DAY_HOUR:
             values = [(d, h) for d in range(1, 32) for h in range(24)]
-
-        elif clim_period == "month_hour":
+        elif clim_period == ClimPeriod.MONTH_HOUR:
             values = [(m, h) for m in range(1, 13) for h in range(24)]
-
         else:
             raise NotImplementedError(f"Unsupported clim_period={clim_period!r}")
 
-        if clim_period.endswith("_hour"):
-            periods = [f"{p0:03d}_{p1:02d}" for p0, p1 in values]
+        if clim_period == ClimPeriod.DAYOFYEAR_HOUR:
+            periods = [f"{d:03d}_{h:02d}" for d, h in values]
+        elif clim_period in {ClimPeriod.DAY_HOUR, ClimPeriod.MONTH_HOUR}:
+            periods = [f"{d:02d}_{h:02d}" for d, h in values]
         else:
             periods = [f"{p:{_gen_period_format(clim_period)}}" for p in values]
 
         return periods + ["all"], values
 
     def _format_period(period, clim_period):
-        if clim_period == "dayofyear_hour":
-            d, h = period
-            return f"{d:03d}_{h:02d}"
-        elif clim_period == "day_hour":
-            d, h = period
-            return f"{d:02d}_{h:02d}"
-        elif clim_period == "month_hour":
-            m, h = period
-            return f"{m:02d}_{h:02d}"
-        else:
-            return f"{period:{_gen_period_format(clim_period)}}"
+        if clim_period == ClimPeriod.DAYOFYEAR_HOUR:
+            day, hour = period
+            return f"{day:03d}_{hour:02d}"
+        if clim_period == ClimPeriod.DAY_HOUR:
+            day, hour = period
+            return f"{day:02d}_{hour:02d}"
+        if clim_period == ClimPeriod.MONTH_HOUR:
+            month, hour = period
+            return f"{month:02d}_{hour:02d}"
+        return f"{period:{_gen_period_format(clim_period)}}"
 
     def _validate_periods(
         clim_period: ClimPeriod = ClimPeriod.MONTH,
@@ -1130,7 +1228,7 @@ def calculate_metrics(
             periods = list(periods)
         else:
             raise TypeError(
-                f"Parameter periods should be of type str, Sequence[str], or None, "
+                "Parameter periods should be of type str, Sequence[str], or None, "
                 f"not {type(periods).__name__}"
             )
 
@@ -1144,41 +1242,42 @@ def calculate_metrics(
                 f"Choose one of {possible_periods}"
             )
 
-        filtered_period_range = [p for p in clim_period_range if _format_period(p, clim_period) in periods]
+        filtered_period_range = [
+            p
+            for p in clim_period_range
+            if _format_period(p, clim_period) in periods
+        ]
 
         return periods, filtered_period_range
 
     def _select_period(
         da: xr.DataArray,
         period,
+        period_time: xr.DataArray,
         clim_period: ClimPeriod = ClimPeriod.MONTH,
-        time_dim: str = "time",
     ) -> xr.DataArray:
         if clim_period == ClimPeriod.DAYOFYEAR_HOUR:
             day, hour = period
-            return da.where(
-                (da[time_dim].dt.dayofyear == day)
-                & (da[time_dim].dt.hour == hour),
-                drop=True,
+            mask = (
+                (period_time.dt.dayofyear == day)
+                & (period_time.dt.hour == hour)
             )
-
-        if clim_period == ClimPeriod.DAY_HOUR:
+        elif clim_period == ClimPeriod.DAY_HOUR:
             day, hour = period
-            return da.where(
-                (da[time_dim].dt.day == day)
-                & (da[time_dim].dt.hour == hour),
-                drop=True,
+            mask = (
+                (period_time.dt.day == day)
+                & (period_time.dt.hour == hour)
             )
-
-        if clim_period == ClimPeriod.DAY_HOUR:
+        elif clim_period == ClimPeriod.MONTH_HOUR:
             month, hour = period
-            return da.where(
-                (da[time_dim].dt.month == month)
-                & (da[time_dim].dt.hour == hour),
-                drop=True,
+            mask = (
+                (period_time.dt.month == month)
+                & (period_time.dt.hour == hour)
             )
+        else:
+            mask = getattr(period_time.dt, clim_period) == period
 
-        return da.where(getattr(da[time_dim].dt, clim_period) == period, drop=True)
+        return da.where(mask, drop=True)
 
     def _select_climatology_period(
         da: xr.DataArray,
@@ -1188,37 +1287,55 @@ def calculate_metrics(
         if clim_period == ClimPeriod.DAYOFYEAR_HOUR:
             day, hour = period
             return da.where(
-                (da.dayofyear == day)
-                & (da.hour == hour),
+                (da.dayofyear == day) & (da.hour == hour),
                 drop=True,
             )
-
         if clim_period == ClimPeriod.DAY_HOUR:
             day, hour = period
             return da.where(
-                (da.day == day)
-                & (da.hour == hour),
+                (da.day == day) & (da.hour == hour),
                 drop=True,
             )
-
-        if clim_period == ClimPeriod.DAY_HOUR:
+        if clim_period == ClimPeriod.MONTH_HOUR:
             month, hour = period
             return da.where(
-                (da.month == month)
-                & (da.hour == hour),
+                (da.month == month) & (da.hour == hour),
                 drop=True,
             )
-
         return da.where(da[clim_period] == period, drop=True)
+
+    if period_reference not in {"init", "valid"}:
+        raise ValueError(
+            "period_reference must be either 'init' or 'valid', "
+            f"got {period_reference!r}."
+        )
+
+    if period_dim is None:
+        period_dim = _default_period_dim(period_reference, clim_period)
 
     valid_dims = _validate_dims(dims, "dims")
     valid_metrics = _validate_metrics(metrics)
-    valid_periods, clim_period_range = _validate_periods(clim_period, periods_requested)
-
-    an = an.reset_coords(drop=True)
-    fc = fc.reset_coords(drop=True)
+    valid_periods, clim_period_range = _validate_periods(
+        clim_period,
+        periods_requested,
+    )
 
     time_dim = fc.earthml.guessed_dims.time
+
+    if period_reference == "init":
+        period_time = fc[time_dim]
+    else:
+        if "valid_time" not in fc.coords:
+            raise ValueError(
+                "A 'valid_time' coordinate is required when "
+                "period_reference='valid'."
+            )
+        period_time = fc["valid_time"]
+
+    # Keep the grouping coordinate separately, then remove auxiliary coordinates
+    # exactly as before before metric calculation.
+    an = an.reset_coords(drop=True)
+    fc = fc.reset_coords(drop=True)
 
     results: list[xr.Dataset] = []
 
@@ -1241,8 +1358,8 @@ def calculate_metrics(
         results.append(all_dims_metrics)
 
     for period in clim_period_range:
-        fc_p = _select_period(fc, period, clim_period, time_dim)
-        an_p = _select_period(an, period, clim_period, time_dim)
+        fc_p = _select_period(fc, period, period_time, clim_period)
+        an_p = _select_period(an, period, period_time, clim_period)
 
         if fc_p.sizes.get(time_dim, 0) == 0:
             print(
@@ -1258,23 +1375,23 @@ def calculate_metrics(
             )
             continue
 
-        if fc_p.sizes.get(time_dim, 0) == 0:
-            continue
-
-        if an_p.sizes.get(time_dim, 0) == 0:
-            continue
-
-        fc_clim_p = (
-            _select_climatology_period(fc_clim, period, clim_period)
-            if fc_clim is not None
-            else None
-        )
-
-        an_clim_p = (
-            _select_climatology_period(an_clim, period, clim_period)
-            if an_clim is not None
-            else None
-        )
+        # Existing anomaly/climatology semantics are intentionally preserved.
+        # Climatologies are indexed by initialization period in core_metrics.
+        # Therefore valid-time metric grouping must keep the full climatology.
+        if period_reference == "init":
+            fc_clim_p = (
+                _select_climatology_period(fc_clim, period, clim_period)
+                if fc_clim is not None
+                else None
+            )
+            an_clim_p = (
+                _select_climatology_period(an_clim, period, clim_period)
+                if an_clim is not None
+                else None
+            )
+        else:
+            fc_clim_p = fc_clim
+            an_clim_p = an_clim
 
         results.append(
             core_metrics(
@@ -1300,7 +1417,6 @@ def calculate_metrics(
         combine_attrs="override",
     )
 
-
 def metrics_by_lead_window(
     fc: xr.DataArray,
     an: xr.DataArray,
@@ -1314,8 +1430,10 @@ def metrics_by_lead_window(
     orography: xr.DataArray | None = None,
     leadtime_agg_coord: str = "leadtime_seasonal",
     clim_period: ClimPeriod = ClimPeriod.MONTH,
-    period_dim: str = "start_date",
+    period_reference: PeriodReference = "init",
+    period_dim: str | None = None,
     periods_requested: str | Sequence[str] | None = None,
+    leadtime_unit: LeadtimeUnit | None = None,
     align: bool = True,
     fair_correction: bool = False,
 ) -> xr.Dataset:
@@ -1326,6 +1444,14 @@ def metrics_by_lead_window(
         if fc_clim is not None and an_clim is not None:
             fc_clim, an_clim = xr.unify_chunks(fc_clim, an_clim)
             fc_clim, an_clim = xr.align(fc_clim, an_clim, join="inner")
+
+    if period_reference == "valid":
+        fc, an = _assign_valid_time(
+            fc,
+            an,
+            leadtime_dim=leadtime_dim,
+            leadtime_unit=leadtime_unit,
+        )
 
     results: list[xr.Dataset] = []
 
@@ -1357,12 +1483,12 @@ def metrics_by_lead_window(
             an_clim=an_clim_w,
             orography=orography,
             clim_period=clim_period,
+            period_reference=period_reference,
             period_dim=period_dim,
             periods_requested=periods_requested,
             fair_correction=fair_correction,
         )
 
-        # Force every metric, including CRPS, to carry the seasonal-window coordinate
         fixed_vars = {}
         for name, da in ds.data_vars.items():
             if leadtime_agg_coord not in da.dims:
@@ -1382,7 +1508,6 @@ def metrics_by_lead_window(
         combine_attrs="override",
     )
 
-
 def metrics_by_lead(
     fc: xr.DataArray,
     an: xr.DataArray,
@@ -1394,8 +1519,10 @@ def metrics_by_lead(
     an_clim: xr.DataArray | None = None,
     orography: xr.DataArray | None = None,
     clim_period: ClimPeriod = ClimPeriod.MONTH,
-    period_dim: str = "start_date",
+    period_reference: PeriodReference = "init",
+    period_dim: str | None = None,
     periods_requested: str | Sequence[str] | None = None,
+    leadtime_unit: LeadtimeUnit | None = None,
     align: bool = True,
     fair_correction: bool = False,
 ) -> xr.Dataset:
@@ -1407,12 +1534,29 @@ def metrics_by_lead(
             fc_clim, an_clim = xr.unify_chunks(fc_clim, an_clim)
             fc_clim, an_clim = xr.align(fc_clim, an_clim, join="inner")
 
+    if period_reference == "valid":
+        fc, an = _assign_valid_time(
+            fc,
+            an,
+            leadtime_dim=leadtime_dim,
+            leadtime_unit=leadtime_unit,
+        )
+
     results: list[xr.Dataset] = []
+
     for lead in fc[leadtime_dim].values:
         fc_l = fc.sel({leadtime_dim: lead}, drop=True)
         an_l = an.sel({leadtime_dim: lead}, drop=True)
-        fc_clim_l = fc_clim.sel({leadtime_dim: lead}, drop=True) if fc_clim is not None else None
-        an_clim_l = an_clim.sel({leadtime_dim: lead}, drop=True) if an_clim is not None else None
+        fc_clim_l = (
+            fc_clim.sel({leadtime_dim: lead}, drop=True)
+            if fc_clim is not None
+            else None
+        )
+        an_clim_l = (
+            an_clim.sel({leadtime_dim: lead}, drop=True)
+            if an_clim is not None
+            else None
+        )
 
         ds = calculate_metrics(
             fc=fc_l,
@@ -1423,6 +1567,7 @@ def metrics_by_lead(
             an_clim=an_clim_l,
             orography=orography,
             clim_period=clim_period,
+            period_reference=period_reference,
             period_dim=period_dim,
             periods_requested=periods_requested,
             fair_correction=fair_correction,
@@ -1431,16 +1576,13 @@ def metrics_by_lead(
         ds = ds.expand_dims({leadtime_dim: [lead]})
         results.append(ds)
 
-    out = xr.concat(
+    return xr.concat(
         results,
         dim=leadtime_dim,
         coords="different",
         compat="no_conflicts",
         combine_attrs="override",
     )
-
-    return out
-
 
 def get_metrics(
     an: xr.Dataset,
@@ -1456,8 +1598,10 @@ def get_metrics(
     leadtime_windows: dict[str, Sequence[int]] | None = None,
     leadtime_agg_coord: str = "leadtime_seasonal",
     clim_period: ClimPeriod = ClimPeriod.MONTH,
-    period_dim: str = "start_date",
+    period_reference: PeriodReference = "init",
+    period_dim: str | None = None,
     periods_requested: str | Sequence[str] | None = None,
+    leadtime_unit: LeadtimeUnit | None = None,
     align: bool = True,
     fair_correction: bool = False,
 ) -> xr.Dataset:
@@ -1631,6 +1775,15 @@ def get_metrics(
             }
         )
 
+    # Valid-time grouping must happen before collapsing individual leadtimes.
+    if period_reference == "valid" and leadtime_agg == "aggregated":
+        raise ValueError(
+            "period_reference='valid' is not supported with "
+            "leadtime_agg='aggregated' because the individual leadtimes have "
+            "already been collapsed. Use individual leadtimes or "
+            "leadtime_agg='seasonal_window' instead."
+        )
+
     # Aggregate if requested
     if leadtime_agg == "aggregated" and leadtime_windows is not None:
         leadtime_dim = leadtime_agg_coord
@@ -1702,8 +1855,10 @@ def get_metrics(
             leadtime_agg_coord=leadtime_agg_coord,
             metrics=metrics,
             clim_period=clim_period,
+            period_reference=period_reference,
             period_dim=period_dim,
             periods_requested=periods_requested,
+            leadtime_unit=leadtime_unit,
             align=align,
             fair_correction=fair_correction,
         )
@@ -1718,8 +1873,10 @@ def get_metrics(
         leadtime_dim=leadtime_dim,
         metrics=metrics,
         clim_period=clim_period,
+        period_reference=period_reference,
         period_dim=period_dim,
         periods_requested=periods_requested,
+        leadtime_unit=leadtime_unit,
         align=align,
         fair_correction=fair_correction,
     )
@@ -1742,11 +1899,22 @@ def get_scalar_metrics(
     leadtime_units: LeadtimeUnit = LeadtimeUnit.MONTHS,
     leadtime_agg_coord: str = "leadtime",
     force_clim_recalc: bool = False,
-    period_dim: str = "start_months",
+    period_reference: PeriodReference = "init",
+    period_dim: str | None = None,
+    periods_requested: Sequence[str] | None = None,
     wanted_start_periods: Sequence[str] | None = None,
     interpolate: bool = False,
     build_analysis: bool = True,
 ) -> tuple[xr.Dataset, xr.Dataset]:
+    # Backward-compatible alias. New code should use periods_requested.
+    if wanted_start_periods is not None:
+        if periods_requested is not None:
+            raise ValueError(
+                "Use only one of periods_requested or legacy "
+                "wanted_start_periods."
+            )
+        periods_requested = wanted_start_periods
+
     valid_time_range = (s.train_start, s.test_end) if time_range is None else time_range
     fc, an, mlfc = get_and_subset_datasets(
         s,
@@ -1822,8 +1990,10 @@ def get_scalar_metrics(
         leadtime_windows=s.seasonal_leadtime_windows,
         leadtime_agg_coord=leadtime_agg_coord,
         clim_period=clim_period,
+        period_reference=period_reference,
         period_dim=period_dim,
-        periods_requested=wanted_start_periods,
+        periods_requested=periods_requested,
+        leadtime_unit=leadtime_units,
     )
 
     metric_scalar_mlfc = get_metrics(
@@ -1839,8 +2009,10 @@ def get_scalar_metrics(
         leadtime_windows=s.seasonal_leadtime_windows,
         leadtime_agg_coord=leadtime_agg_coord,
         clim_period=clim_period,
+        period_reference=period_reference,
         period_dim=period_dim,
-        periods_requested=wanted_start_periods,
+        periods_requested=periods_requested,
+        leadtime_unit=leadtime_units,
     )
 
     fc_metrics_list = [fc_metrics] if isinstance(fc_metrics, str) else list(fc_metrics)
