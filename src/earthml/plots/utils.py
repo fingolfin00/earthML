@@ -47,10 +47,6 @@ from .defaults import (
     SERIES_COLORS,
     TRANSLATION_TABLE,
 )
-from .definitions import (
-    PlotMode,
-    FieldModel,
-)
 
 
 def safe_label(x: object) -> str:
@@ -220,6 +216,54 @@ def convert_to_da_list(
         return result
 
     raise TypeError(f"Type {type(ds)} not supported.")
+
+
+def add_max_size_colorbar(
+    fig,
+    ax,
+    im,
+    *,
+    ticks=None,
+    pad: float = 0.055,
+    size: float = 0.018,
+):
+    """Add a colorbar matching the longest dimension of the plotted axes."""
+
+    fig.canvas.draw()
+
+    pos = ax.get_position()
+
+    if pos.width >= pos.height:
+        cax = fig.add_axes([
+            pos.x0,
+            pos.y0 - pad - size,
+            pos.width,
+            size,
+        ])
+
+        cb = fig.colorbar(
+            im,
+            cax=cax,
+            orientation="horizontal",
+            ticks=ticks,
+        )
+
+    else:
+        cax = fig.add_axes([
+            pos.x1 + pad,
+            pos.y0,
+            size,
+            pos.height,
+        ])
+
+        cb = fig.colorbar(
+            im,
+            cax=cax,
+            orientation="vertical",
+            ticks=ticks,
+        )
+
+    return cb
 
 
 def plot_profile(
@@ -1381,6 +1425,7 @@ def plot_map(
             subplot_kw={"projection": ccrs.PlateCarree()},
         )
         ax = cast(GeoAxes, ax)
+        ax.set_anchor("N")
 
         if lon_span >= 350.0 and lat_span >= 170.0:
             ax.set_global()
@@ -1640,8 +1685,8 @@ def plot_map(
                 linespacing=1.05,
             )
             fig.subplots_adjust(
-                top=0.86,
-                bottom=0.15,
+                top=0.91,
+                bottom=0.20,
                 left=0.06,
                 right=0.97,
             )
@@ -1660,15 +1705,23 @@ def plot_map(
                 right=0.97,
             )
 
-    cb = fig.colorbar(
-        im,
-        ax=ax,
-        orientation="horizontal",
-        pad=0.07 if plot_kind == "maps" else 0.13,
-        fraction=0.045 if plot_kind == "maps" else 0.15,
-        aspect=40 if plot_kind == "maps" else 20,
-        ticks=ticks,
-    )
+    if plot_kind == "maps":
+        cb = add_max_size_colorbar(
+            fig,
+            ax,
+            im,
+            ticks=ticks,
+        )
+    else:
+        cb = fig.colorbar(
+            im,
+            ax=ax,
+            orientation="horizontal",
+            pad=0.13,
+            fraction=0.15,
+            aspect=20,
+            ticks=ticks,
+        )
 
     if plot_labels:
         cb.set_label(cb_label, fontsize=label_size)
@@ -2198,11 +2251,12 @@ def plot_field_map(
         gl.xlabel_style = {"size": tick_size}
         gl.ylabel_style = {"size": tick_size}
 
-    cb = plt.colorbar(
+    plt.tight_layout()
+
+    cb = add_max_size_colorbar(
+        fig,
+        ax,
         im,
-        ax=ax,
-        orientation="horizontal",
-        pad=0.07,
     )
 
     if plot_labels:
@@ -2218,8 +2272,6 @@ def plot_field_map(
         parents=True,
         exist_ok=True,
     )
-
-    plt.tight_layout()
 
     plt.savefig(
         out_file,
