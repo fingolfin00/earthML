@@ -1,8 +1,19 @@
-from matplotlib.colors import ListedColormap
-
+import numpy as np
 
 from matplotlib import colormaps
-from matplotlib.colors import LinearSegmentedColormap, ListedColormap
+from matplotlib.colors import LinearSegmentedColormap, ListedColormap, to_hex
+
+def make_smooth_colormap(name, colors, n=48):
+    """
+    Interpolate smoothly through the provided anchor colors
+    and return a ListedColormap with n discrete levels.
+    """
+    cmap = LinearSegmentedColormap.from_list(name, colors, N=n)
+
+    return ListedColormap(
+        [to_hex(cmap(x)) for x in np.linspace(0, 1, n)],
+        name=name,
+    )
 
 
 PiBRdY = LinearSegmentedColormap.from_list(
@@ -34,54 +45,96 @@ WRdY = LinearSegmentedColormap.from_list(
 )
 
 
-SeqWRdY = ListedColormap(
+SeqWRdY = make_smooth_colormap(
+    "SeqWRdY",
     [
-        "#FFFFFF", "#F8B4B4", "#F08080", "#E85D5D", "#D73027",
-        "#C81D25", "#E66101", "#F18F01", "#FDB863", "#F6EC01",
-    ],
-    name="SeqWRdY",
-)
-
-SeqPiBRdY = ListedColormap(
-    [
-        "#F707D3", "#AF30E1", "#4B08F4", "#3A0EEC", "#3164EF",
-        "#546FC0", "#6AABF5", "#7BD0F7", "#ADDAF0",
-        "#E0FAF7", "#FCEBEB",
-        "#F8B4B4", "#F08080", "#E85D5D", "#D73027", "#C81D25",
-        "#E66101", "#F18F01", "#FDB863", "#F6EC01",
-    ],
-    name="SeqPiBRdY",
-)
-
-SeqBPi = ListedColormap(
-    [
-        "#08306B", "#08519C", "#2171B5", "#4292C6", "#6BAED6",
-        "#9ECAE1", "#D6EFFA",
         "#FFFFFF",
-        "#F7EB08", "#EDB61F", "#FA8900", "#F32B2B",
-        "#972312", "#580000", "#EB09E8",
+        "#F8B4B4",
+        "#F08080",
+        "#E85D5D",
+        "#D73027",
+        "#C81D25",
+        "#E66101",
+        "#F18F01",
+        "#FDB863",
+        "#F6EC01",
     ],
-    name="SeqBPi",
+    n=48,
 )
 
-SeqBYRd = ListedColormap(
+
+SeqPiBRdY = make_smooth_colormap(
+    "SeqPiBRdY",
     [
-        # negative side (blue → lightblue)
+        "#F707D3",
+        "#AF30E1",
+        "#4B08F4",
+        "#3A0EEC",
+        "#3164EF",
+        "#546FC0",
+        "#6AABF5",
+        "#7BD0F7",
+        "#ADDAF0",
+        "#E0FAF7",
+        "#FCEBEB",
+        "#F8B4B4",
+        "#F08080",
+        "#E85D5D",
+        "#D73027",
+        "#C81D25",
+        "#E66101",
+        "#F18F01",
+        "#FDB863",
+        "#F6EC01",
+    ],
+    n=64,
+)
+
+
+SeqBPi = make_smooth_colormap(
+    "SeqBPi",
+    [
+        "#08306B",
+        "#08519C",
+        "#2171B5",
+        "#4292C6",
+        "#6BAED6",
+        "#9ECAE1",
+        "#D6EFFA",
+        "#FFFFFF",
+        "#F7EB08",
+        "#EDB61F",
+        "#FA8900",
+        "#F32B2B",
+        "#972312",
+        "#580000",
+        "#EB09E8",
+    ],
+    n=64,
+)
+
+
+SeqBYRd = make_smooth_colormap(
+    "SeqBYRd",
+    [
+        # negative side
         "#08306B",
         "#2171B5",
         "#53ACEB",
         "#7CDAFC",
         "#7DF5DB",
-        # white
+
+        # center
         "#FFFFFF",
-        # positive side (yellow → orange → red → purple)
+
+        # positive side
         "#F0FA7D",
         "#EDB61F",
         "#FA8900",
         "#F32B2B",
         "#972312",
     ],
-    name="SeqBYRd"
+    n=48,
 )
 
 def register_colormaps() -> None:
