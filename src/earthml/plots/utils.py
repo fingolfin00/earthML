@@ -220,55 +220,65 @@ def convert_to_da_list(
     raise TypeError(f"Type {type(ds)} not supported.")
 
 
+
 def adapt_colorbar_tick_sizes(
     fig,
     cb,
     *,
     tick_size: float | None = None,
-    small_scale: float = 0.70,
-    spacing: float = 1.05,
+    min_scale: float = 0.55,
+    shrink_step: float = 0.95,
+    spacing_px: float = 2.0,
 ) -> None:
-    """Keep all colorbar ticks and shrink alternating labels if crowded."""
+    """Uniformly shrink colorbar tick labels until adjacent labels do not overlap."""
 
     if tick_size is None:
         tick_size = FontProperties(
             size=plt.rcParams["xtick.labelsize"]
         ).get_size_in_points()
 
-    cb.ax.tick_params(labelsize=tick_size)
-    fig.canvas.draw()
+    labels = (
+        cb.ax.get_xticklabels()
+        if cb.orientation == "horizontal"
+        else cb.ax.get_yticklabels()
+    )
 
-    renderer = fig.canvas.get_renderer()
+    min_size = tick_size * min_scale
+    current_size = tick_size
 
-    if cb.orientation == "horizontal":
-        labels = cb.ax.get_xticklabels()
-        available = cb.ax.get_window_extent(renderer).width
+    while current_size >= min_size:
 
-        required = sum(
-            label.get_window_extent(renderer).width
+        for label in labels:
+            label.set_fontsize(current_size)
+
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+
+        bboxes = [
+            label.get_window_extent(renderer)
             for label in labels
             if label.get_visible()
-        ) * spacing
+        ]
 
-    else:
-        labels = cb.ax.get_yticklabels()
-        available = cb.ax.get_window_extent(renderer).height
+        if cb.orientation == "horizontal":
+            overlaps = any(
+                bboxes[i].x1 + spacing_px > bboxes[i + 1].x0
+                for i in range(len(bboxes) - 1)
+            )
+        else:
+            overlaps = any(
+                bboxes[i].y1 + spacing_px > bboxes[i + 1].y0
+                for i in range(len(bboxes) - 1)
+            )
 
-        required = sum(
-            label.get_window_extent(renderer).height
-            for label in labels
-            if label.get_visible()
-        ) * spacing
+        if not overlaps:
+            return
 
-    if required <= available:
-        return
+        current_size *= shrink_step
 
-    for i, label in enumerate(labels):
-        label.set_fontsize(
-            tick_size
-            if i % 2 == 0
-            else tick_size * small_scale
-        )
+    # Enforce minimum size if overlap cannot be completely removed.
+    for label in labels:
+        label.set_fontsize(min_size)
 
 
 def smart_tick_formatter(x, _):
