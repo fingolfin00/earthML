@@ -1024,14 +1024,10 @@ def plot_profile(
         "Dec",
     ]
 
-    if profile_dim.endswith(
-        "month"
-    ):
+    if profile_dim.endswith("month"):
+
         ax.set_xticks(
-            np.arange(
-                1,
-                13,
-            )
+            np.arange(1, 13)
         )
 
         ax.set_xticklabels(
@@ -1044,14 +1040,16 @@ def plot_profile(
                 fontsize=label_size,
             )
 
-    elif profile_dim.endswith(
-        "dayofyear"
-    ):
+    elif profile_dim.endswith("dayofyear"):
+
         month_ticks = np.array(
             [
-                pd.Timestamp(2001, month, 15).dayofyear
-                for month
-                in range(1, 13)
+                pd.Timestamp(
+                    2001,
+                    month,
+                    15,
+                ).dayofyear
+                for month in range(1, 13)
             ]
         )
 
@@ -1069,12 +1067,40 @@ def plot_profile(
                 fontsize=label_size,
             )
 
-    else:
-        xlabel = profile_label
+    elif profile_dim in {
+        "leadtime",
+        "leadtime_seasonal",
+    }:
+
+        leadtime_values = np.asarray(
+            sample_da[profile_dim].values
+        )
+
+        ax.set_xticks(
+            leadtime_values
+        )
+
+        ax.set_xticklabels(
+            [
+                smart_tick_formatter(
+                    float(value),
+                    None,
+                )
+                for value in leadtime_values
+            ]
+        )
 
         if plot_labels:
             ax.set_xlabel(
-                xlabel,
+                profile_label,
+                fontsize=label_size,
+            )
+
+    else:
+
+        if plot_labels:
+            ax.set_xlabel(
+                profile_label,
                 fontsize=label_size,
             )
 
