@@ -272,19 +272,10 @@ def adapt_colorbar_tick_sizes(
 
 
 def smart_tick_formatter(x, _):
-    if x == 0:
+    if np.isclose(x, 0):
         return "0"
 
-    if abs(x) >= 1:
-        return f"{x:.1f}"
-
-    if abs(x) >= 0.1:
-        return f"{x:.2f}"
-
-    if abs(x) >= 0.01:
-        return f"{x:.2f}"
-
-    return f"{x:.3f}"
+    return f"{x:.10f}".rstrip("0").rstrip(".")
 
 
 def add_max_size_colorbar(
