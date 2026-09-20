@@ -23,6 +23,8 @@ from matplotlib.colors import (
     to_rgb,
 )
 from matplotlib.patches import Rectangle
+from matplotlib.ticker import FuncFormatter
+from matplotlib.font_manager import FontProperties
 
 from cmap import Colormap as CmapColormap
 
@@ -218,6 +220,73 @@ def convert_to_da_list(
     raise TypeError(f"Type {type(ds)} not supported.")
 
 
+def adapt_colorbar_tick_sizes(
+    fig,
+    cb,
+    *,
+    tick_size: float | None = None,
+    small_scale: float = 0.70,
+    spacing: float = 1.05,
+) -> None:
+    """Keep all colorbar ticks and shrink alternating labels if crowded."""
+
+    if tick_size is None:
+        tick_size = FontProperties(
+            size=plt.rcParams["xtick.labelsize"]
+        ).get_size_in_points()
+
+    cb.ax.tick_params(labelsize=tick_size)
+    fig.canvas.draw()
+
+    renderer = fig.canvas.get_renderer()
+
+    if cb.orientation == "horizontal":
+        labels = cb.ax.get_xticklabels()
+        available = cb.ax.get_window_extent(renderer).width
+
+        required = sum(
+            label.get_window_extent(renderer).width
+            for label in labels
+            if label.get_visible()
+        ) * spacing
+
+    else:
+        labels = cb.ax.get_yticklabels()
+        available = cb.ax.get_window_extent(renderer).height
+
+        required = sum(
+            label.get_window_extent(renderer).height
+            for label in labels
+            if label.get_visible()
+        ) * spacing
+
+    if required <= available:
+        return
+
+    for i, label in enumerate(labels):
+        label.set_fontsize(
+            tick_size
+            if i % 2 == 0
+            else tick_size * small_scale
+        )
+
+
+def smart_tick_formatter(x, _):
+    if x == 0:
+        return "0"
+
+    if abs(x) >= 1:
+        return f"{x:.1f}"
+
+    if abs(x) >= 0.1:
+        return f"{x:.2f}"
+
+    if abs(x) >= 0.01:
+        return f"{x:.2f}"
+
+    return f"{x:.3f}"
+
+
 def add_max_size_colorbar(
     fig,
     ax,
@@ -227,8 +296,6 @@ def add_max_size_colorbar(
     pad: float = 0.055,
     size: float = 0.018,
 ):
-    """Add a colorbar matching the longest dimension of the plotted axes."""
-
     fig.canvas.draw()
 
     pos = ax.get_position()
@@ -240,13 +307,7 @@ def add_max_size_colorbar(
             pos.width,
             size,
         ])
-
-        cb = fig.colorbar(
-            im,
-            cax=cax,
-            orientation="horizontal",
-            ticks=ticks,
-        )
+        orientation = "horizontal"
 
     else:
         cax = fig.add_axes([
@@ -255,15 +316,14 @@ def add_max_size_colorbar(
             size,
             pos.height,
         ])
+        orientation = "vertical"
 
-        cb = fig.colorbar(
-            im,
-            cax=cax,
-            orientation="vertical",
-            ticks=ticks,
-        )
-
-    return cb
+    return fig.colorbar(
+        im,
+        cax=cax,
+        orientation=orientation,
+        ticks=ticks,
+    )
 
 
 def plot_profile(
@@ -1712,6 +1772,9 @@ def plot_map(
             im,
             ticks=ticks,
         )
+        cb.ax.xaxis.set_major_formatter(
+            FuncFormatter(smart_tick_formatter)
+        )
     else:
         cb = fig.colorbar(
             im,
@@ -1724,8 +1787,16 @@ def plot_map(
         )
 
     if plot_labels:
-        cb.set_label(cb_label, fontsize=label_size)
-    cb.ax.tick_params(labelsize=tick_size)
+        cb.set_label(
+            cb_label,
+            fontsize=label_size,
+        )
+
+    adapt_colorbar_tick_sizes(
+        fig,
+        cb,
+        tick_size=tick_size,
+    )
 
     out_file.parent.mkdir(
         parents=True,
@@ -2257,6 +2328,9 @@ def plot_field_map(
         fig,
         ax,
         im,
+    )
+    cb.ax.xaxis.set_major_formatter(
+        FuncFormatter(smart_tick_formatter)
     )
 
     if plot_labels:
