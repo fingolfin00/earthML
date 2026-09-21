@@ -2,6 +2,7 @@ from typing import Sequence, Literal, TypeVar, cast
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import xarray as xr
 
@@ -11,7 +12,7 @@ from dask.diagnostics.progress import ProgressBar
 
 from .settings import Settings
 from .coords import ensure_time_coord, normalize_lon_range
-from. definitions import LeadtimeUnit
+from. definitions import LeadtimeUnit, Region
 
 
 T_Xarray = TypeVar("T_Xarray", xr.DataArray, xr.Dataset)
@@ -241,12 +242,46 @@ def get_and_subset_datasets(
 
     # Regrid analysis into forecast
     if interpolate:
-        an = an.interp(
-            {
-                lat_dim: fc[lat_dim],
-                lon_dim: fc[lon_dim],
-            }
-        )
+        an_lat_coord = an.earthml.guessed_coords.latitude
+        an_lon_coord = an.earthml.guessed_coords.longitude
+
+        if (
+            an[an_lat_coord].ndim == 2
+            and an[an_lon_coord].ndim == 2
+        ):
+            lat = fc[lat_dim].values
+            lon = fc[lon_dim].values
+
+            dlat = abs(float(lat[1] - lat[0]))
+            dlon = abs(float(lon[1] - lon[0]))
+
+            lat_sign = np.sign(float(lat[-1] - lat[0]))
+            lon_sign = np.sign(float(lon[-1] - lon[0]))
+
+            an = an.earthml.regrid_to_rectilinear(
+                region=Region(
+                    name="forecast_grid",
+                    lat=(
+                        float(lat[0] - lat_sign * dlat / 2),
+                        float(lat[-1] + lat_sign * dlat / 2),
+                    ),
+                    lon=(
+                        float(lon[0] - lon_sign * dlon / 2),
+                        float(lon[-1] + lon_sign * dlon / 2),
+                    ),
+                ),
+                resolution=(dlat, dlon),
+                vars_to_regrid=list(an.data_vars),
+                backend="xesmf",
+            )
+
+        else:
+            an = an.interp(
+                {
+                    lat_dim: fc[lat_dim],
+                    lon_dim: fc[lon_dim],
+                }
+            )
 
     if mlfc_path is not None:
         mlfc = open_engine(mlfc_path)
