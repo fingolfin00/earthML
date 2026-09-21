@@ -196,7 +196,7 @@ def calculate_save_and_subset_climatologies(
     need_input_data = need_base_clim or need_mlfc_clim
 
     if need_input_data:
-        fc, an, mlfc = get_and_subset_datasets(
+        fc, an, _ = get_and_subset_datasets(
             s,
             leadtime_units=leadtime_units,
             lat_range=lat_range,
@@ -211,7 +211,6 @@ def calculate_save_and_subset_climatologies(
         )
         fc = fc[s.var_file_fc]
         an = an[s.var_file_an]
-        mlfc = mlfc[s.var_file_fc] if mlfc is not None else None
 
     mlfc_clim = None
     if train_pred_path.exists():
@@ -242,7 +241,6 @@ def calculate_save_and_subset_climatologies(
     else:
         print(f"Skipping ML-corrected forecast climatology")
 
-    should_compute = force or not fc_clim_path.exists() or not an_clim_path.exists()
     if need_base_clim:
         print("Save original forecast climatology to:", fc_clim_path.name)
 
@@ -299,18 +297,6 @@ def calculate_save_and_subset_climatologies(
     else:
         fc_clim = open_zarr_var(fc_clim_path, s.var_file_fc)
         an_clim = open_zarr_var(an_clim_path, s.var_file_an)
-
-
-    lon_dim = fc_clim.earthml.guessed_dims.longitude
-    lat_dim = fc_clim.earthml.guessed_dims.latitude
-
-    if interpolate:
-        an_clim = an_clim.interp(
-            {
-                lat_dim: fc_clim[lat_dim],
-                lon_dim: fc_clim[lon_dim],
-            }
-        )
 
     return (
         subset_dataset(
