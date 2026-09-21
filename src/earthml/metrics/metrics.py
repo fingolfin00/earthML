@@ -169,6 +169,13 @@ def core_metrics(
         an = an.chunk({time_dim: -1})
 
     weights = cast(xr.DataArray, np.cos(np.deg2rad(fc[lat_dim])))
+
+    # Use the common forecast-analysis valid domain.
+    valid = fc.notnull() & an.notnull()
+
+    fc = fc.where(valid)
+    an = an.where(valid)
+
     error = fc - an
 
     # fairness correction for MSSS
@@ -501,6 +508,11 @@ def core_metrics(
             )
 
     if fc_clim is not None and an_clim is not None:
+        valid_clim = fc_clim.notnull() & an_clim.notnull()
+
+        fc_clim = fc_clim.where(valid_clim)
+        an_clim = an_clim.where(valid_clim)
+
         fc_anom = groupby_period(fc, time_dim, clim_period) - fc_clim
         an_anom = groupby_period(an, time_dim, clim_period) - an_clim
 
@@ -1661,6 +1673,42 @@ def get_metrics(
             an_clim = an_clim.sel({dim: common})
 
         return fc_clim, an_clim
+
+    def _rename_fc_dims_like_an(
+        fc: xr.Dataset,
+        an: xr.Dataset,
+    ) -> xr.Dataset:
+        rename = {}
+
+        fc_lat = fc.earthml.guessed_dims.latitude
+        fc_lon = fc.earthml.guessed_dims.longitude
+
+        an_lat = an.earthml.guessed_dims.latitude
+        an_lon = an.earthml.guessed_dims.longitude
+
+        if (
+            fc_lat in fc.dims
+            and an_lat in an.dims
+            and fc_lat != an_lat
+        ):
+            rename[fc_lat] = an_lat
+
+        if (
+            fc_lon in fc.dims
+            and an_lon in an.dims
+            and fc_lon != an_lon
+        ):
+            rename[fc_lon] = an_lon
+
+        if rename:
+            fc = fc.rename(rename)
+
+        return fc
+
+    fc = _rename_fc_dims_like_an(fc, an)
+
+    if fc_clim is not None and an_clim is not None:
+        fc_clim = _rename_fc_dims_like_an(fc_clim, an_clim)
 
     _check_datasets(
         datasets={
