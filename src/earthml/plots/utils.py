@@ -2179,9 +2179,12 @@ def normalize_longitudes(da: xr.DataArray, lon_name: str) -> xr.DataArray:
     return da.assign_coords({lon_name: new_lon}).sortby(lon_name)
 
 
-def prepare_map_da(da: xr.DataArray) -> xr.DataArray:
+def prepare_map_da(
+    da: xr.DataArray,
+    spatial_dims: tuple[str, str] = ("latitude", "longitude"),
+) -> xr.DataArray:
     da = da.squeeze(drop=True)
-    lat, lon = "latitude", "longitude"
+    lat, lon = spatial_dims
     da = normalize_longitudes(da, lon)
     return da.transpose(lat, lon)
 
@@ -2232,7 +2235,10 @@ def plot_field_map(
         cmap = CmapColormap(cmap).to_mpl()
 
     plot_unit, scale = get_plot_unit_and_scale(da, var)
-    da = prepare_map_da(da / scale)
+    da = prepare_map_da(
+        da / scale,
+        spatial_dims=spatial_dims,
+    )
 
     lat, lon = spatial_dims
 
