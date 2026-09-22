@@ -23,7 +23,7 @@ from matplotlib.colors import (
     Colormap,
     to_rgb,
 )
-from matplotlib.patches import Rectangle
+from matplotlib.patches import Rectangle, Polygon
 from matplotlib.ticker import FuncFormatter
 from matplotlib.font_manager import FontProperties
 
@@ -382,6 +382,87 @@ def add_max_size_colorbar(
         orientation=orientation,
         ticks=ticks,
     )
+
+
+def add_spatial_regions(
+    ax,
+    regions: Sequence[dict] | None,
+) -> None:
+    if not regions:
+        return
+
+    for region in regions:
+        region_type = region.get("type", "rectangle")
+
+        common_kwargs = {
+            "edgecolor": region.get("edgecolor", "black"),
+            "facecolor": region.get("facecolor", "none"),
+            "linewidth": region.get("linewidth", 2),
+            "linestyle": region.get("linestyle", "-"),
+            "transform": ccrs.PlateCarree(),
+            "zorder": region.get("zorder", 10),
+        }
+
+        if region_type == "rectangle":
+            lon_min, lon_max = region["lon_range"]
+            lat_max, lat_min = region["lat_range"]
+
+            patch = Rectangle(
+                (lon_min, lat_min),
+                lon_max - lon_min,
+                lat_max - lat_min,
+                **common_kwargs,
+            )
+
+            default_label_position = (
+                (lon_min + lon_max) / 2,
+                lat_max,
+            )
+
+        elif region_type == "polygon":
+            coordinates = region["coordinates"]
+
+            patch = Polygon(
+                coordinates,
+                closed=True,
+                **common_kwargs,
+            )
+
+            coords = np.asarray(coordinates)
+
+            default_label_position = (
+                float(coords[:, 0].mean()),
+                float(coords[:, 1].max()),
+            )
+
+        else:
+            raise ValueError(
+                f"Unsupported region type {region_type!r}. "
+                "Choose 'rectangle' or 'polygon'."
+            )
+
+        ax.add_patch(patch)
+
+        # Optional region name
+        name = region.get("name")
+
+        if name is not None:
+            label_lon, label_lat = region.get(
+                "label_position",
+                default_label_position,
+            )
+
+            ax.text(
+                label_lon,
+                label_lat,
+                name,
+                transform=ccrs.PlateCarree(),
+                ha=region.get("label_ha", "center"),
+                va=region.get("label_va", "bottom"),
+                fontsize=region.get("label_size", 10),
+                color=region.get("label_color", "black"),
+                zorder=region.get("label_zorder", 11),
+            )
 
 
 def plot_profile(
@@ -1340,7 +1421,7 @@ def plot_map(
     var_plot_config: dict | None = None,
     impro_plot_config: dict | None = None,
     force_scale: int | float | None = None,
-    rectangles: Sequence[dict] | None = None,
+    regions: Sequence[dict] | None = None,
     plot_title: bool = True,
     plot_labels: bool = True,
     title_strftime: str = "%Y",
@@ -1673,24 +1754,10 @@ def plot_map(
                 zorder=4,
             )
 
-        if rectangles is not None:
-            for rectangle in rectangles:
-                lon_min, lon_max = rectangle["lon_range"]
-                lat_max, lat_min = rectangle["lat_range"]
-
-                ax.add_patch(
-                    Rectangle(
-                        (lon_min, lat_min),
-                        lon_max - lon_min,
-                        lat_max - lat_min,
-                        edgecolor=rectangle.get("edgecolor", "black"),
-                        facecolor=rectangle.get("facecolor", "none"),
-                        linewidth=rectangle.get("linewidth", 2),
-                        linestyle=rectangle.get("linestyle", "-"),
-                        transform=ccrs.PlateCarree(),
-                        zorder=10,
-                    )
-                )
+        add_spatial_regions(
+            ax,
+            regions,
+        )
 
         ax.coastlines(linewidth=0.7)
         ax.add_feature(cfeature.BORDERS, linewidth=0.3)
@@ -2280,7 +2347,7 @@ def plot_field_map(
     plot_type: Literal["pcolormesh", "contourf"] = "pcolormesh",
     levels: int = 21,
     figsize: tuple[float, float] = (7, 5),
-    rectangles: Sequence[dict] | None = None,
+    regions: Sequence[dict] | None = None,
     plot_title: bool = True,
     plot_labels: bool = True,
     title_size: float | None = None,
@@ -2383,24 +2450,10 @@ def plot_field_map(
             "Choose 'pcolormesh' or 'contourf'."
         )
 
-    if rectangles is not None:
-        for rectangle in rectangles:
-            lon_min, lon_max = rectangle["lon_range"]
-            lat_max, lat_min = rectangle["lat_range"]
-
-            ax.add_patch(
-                Rectangle(
-                    (lon_min, lat_min),
-                    lon_max - lon_min,
-                    lat_max - lat_min,
-                    edgecolor=rectangle.get("edgecolor", "black"),
-                    facecolor=rectangle.get("facecolor", "none"),
-                    linewidth=rectangle.get("linewidth", 2),
-                    linestyle=rectangle.get("linestyle", "-"),
-                    transform=ccrs.PlateCarree(),
-                    zorder=10,
-                )
-            )
+    add_spatial_regions(
+        ax,
+        regions,
+    )
 
     ax.coastlines(linewidth=0.7)
     ax.add_feature(cfeature.BORDERS, linewidth=0.3)
