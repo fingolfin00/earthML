@@ -639,6 +639,7 @@ VARIABLE_UNITS = {
     "t2m": "K",
     "d2m": "K",
     "sst": "K",
+    "ssh": "m",
     "tcc": "fraction",
     "u10": "m s-1",
     "v10": "m s-1",
@@ -667,6 +668,7 @@ VARIABLE_NAMES = {
     "u10": "10m Zonal Wind",
     "v10": "10m Meridional Wind",
     "tprate": "Precipitation Rate",
+    "ssh": "Sea Surface Height",
 }
 
 
