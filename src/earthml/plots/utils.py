@@ -494,6 +494,16 @@ def plot_profile(
     force_scale: int | float | None = None,
     model_colors: dict[str, object] | None = None,
     model_linestyles: dict[str, str] | None = None,
+
+    # Categorical/profile-axis styling
+    profile_point_colors: dict[str, object] | None = None,
+    profile_markers: bool = False,
+    profile_marker_size: float = 50,
+    profile_connect: bool = True,
+    profile_tick_rotation: float = 0,
+    profile_zero_line: bool = False,
+
+    figsize: tuple[float, float] = (12.0, 8.0),
     title_size: float | None = None,
     label_size: float | None = None,
     tick_size: float | None = None,
@@ -665,8 +675,25 @@ def plot_profile(
     color_cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
     fig, ax = plt.subplots(
-        figsize=(12, 8)
+        figsize=figsize,
     )
+
+    def _get_profile_x(
+        profile: xr.DataArray,
+    ) -> tuple[np.ndarray, np.ndarray | None]:
+        """Return plottable x values and optional categorical labels."""
+
+        values = np.asarray(
+            profile[profile_dim].values
+        )
+
+        if values.dtype.kind in {"U", "S", "O"}:
+            return (
+                np.arange(values.size),
+                values,
+            )
+
+        return values, None
 
     # ----------------------------------------------------------
     # Models
@@ -763,10 +790,8 @@ def plot_profile(
                         / scale
                     )
 
-                x = (
-                    profile[
-                        profile_dim
-                    ].values
+                x, categorical_labels = _get_profile_x(
+                    profile
                 )
 
                 # Short lead times lighter,
@@ -813,26 +838,46 @@ def plot_profile(
 
                 curve_label = label
 
-                if n_select > 1:
-                    unit = (
-                        select_unit[:1].upper()
-                        if select_unit
-                        else ""
+                if profile_connect:
+                    ax.plot(
+                        x,
+                        profile.values,
+                        linestyle=linestyle,
+                        linewidth=1.4,
+                        label=curve_label,
+                        color=color,
                     )
 
-                    curve_label = (
-                        f"{curve_label} · "
-                        f"{value}{unit}"
-                    )
+                if profile_markers:
+                    for j, (xpos, coord_value, yvalue) in enumerate(
+                        zip(
+                            x,
+                            profile[profile_dim].values,
+                            profile.values,
+                            strict=True,
+                        )
+                    ):
+                        point_color = (
+                            profile_point_colors.get(
+                                str(coord_value),
+                                color,
+                            )
+                            if profile_point_colors is not None
+                            else color
+                        )
 
-                ax.plot(
-                    x,
-                    profile.values,
-                    linestyle=linestyle,
-                    linewidth=1.4,
-                    label=curve_label,
-                    color=color,
-                )
+                        ax.scatter(
+                            xpos,
+                            yvalue,
+                            s=profile_marker_size,
+                            color=point_color,
+                            zorder=3,
+                            label=(
+                                curve_label
+                                if not profile_connect and j == 0
+                                else None
+                            ),
+                        )
 
         # ------------------------------------------------------
         # Ensemble/member profiles
@@ -911,10 +956,8 @@ def plot_profile(
                     / scale
                 )
 
-            x = (
-                member_profile[
-                    profile_dim
-                ].values
+            x, _ = _get_profile_x(
+                member_profile
             )
 
             color = base_color
@@ -1234,6 +1277,34 @@ def plot_profile(
                 fontsize=label_size,
             )
 
+    elif np.asarray(
+        sample_da[profile_dim].values
+    ).dtype.kind in {"U", "S", "O"}:
+
+        categorical_values = np.asarray(
+            sample_da[profile_dim].values
+        )
+
+        ax.set_xticks(
+            np.arange(categorical_values.size)
+        )
+
+        ax.set_xticklabels(
+            categorical_values,
+            rotation=profile_tick_rotation,
+            ha=(
+                "right"
+                if profile_tick_rotation
+                else "center"
+            ),
+        )
+
+        if plot_labels:
+            ax.set_xlabel(
+                profile_label,
+                fontsize=label_size,
+            )
+
     else:
 
         if plot_labels:
@@ -1259,6 +1330,14 @@ def plot_profile(
         axis="both",
         labelsize=tick_size,
     )
+
+    if profile_zero_line:
+        ax.axhline(
+            0.0,
+            linewidth=1.0,
+            linestyle="--",
+            alpha=0.6,
+        )
 
     ax.grid(True, alpha=0.3)
 
