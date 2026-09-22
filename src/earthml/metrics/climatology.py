@@ -298,6 +298,10 @@ def calculate_save_and_subset_climatologies(
         fc_clim = open_zarr_var(fc_clim_path, s.var_file_fc)
         an_clim = open_zarr_var(an_clim_path, s.var_file_an)
 
+    fc_clim = fc_clim.earthml.normalize_dims_and_coords()
+    an_clim = an_clim.earthml.normalize_dims_and_coords()
+    mlfc_clim = mlfc_clim.earthml.normalize_dims_and_coords() if mlfc_clim is not None else None
+
     return (
         subset_dataset(
             fc_clim.to_dataset(name=s.var_file_fc),

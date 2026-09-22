@@ -324,6 +324,11 @@ def get_and_subset_datasets(
             time_start=time_start,
         )
 
+    # Normalize coords names
+    fc = fc.earthml.normalize_dims_and_coords()
+    an = an.earthml.normalize_dims_and_coords()
+    mlfc = mlfc.earthml.normalize_dims_and_coords() if mlfc is not None else None
+
     return (fc, an, mlfc)
 
 
