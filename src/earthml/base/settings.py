@@ -40,8 +40,9 @@ CONFIG_COMPARE_IGNORE = {
 
 @dataclass(frozen=True)
 class Settings:
-    root_dir: Path | None = Path.home() / "ML" / "seasonal"
+    root_dir: Path | None = Path.home() / "ML" / "training"
 
+    # if root_dir=None, provide the following
     data_root_dir: Path | None = None
     exp_root_dir: Path | None = None
     plot_root_dir: Path | None = None
