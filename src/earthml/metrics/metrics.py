@@ -493,7 +493,7 @@ def core_metrics(
 
         if want(Metric.CRPS):
             out[Metric.CRPS.value] = xs.crps_ensemble(
-                observations=an,
+                observations=an.mean(dim=realization_dim),
                 forecasts=fc,
                 member_dim=realization_dim,
                 dim=list(dims),
@@ -502,7 +502,7 @@ def core_metrics(
 
         if want(Metric.RANK_HISTOGRAM):
             out[Metric.RANK_HISTOGRAM.value] = xs.rank_histogram(
-                observations=an,
+                observations=an.mean(dim=realization_dim),
                 forecasts=fc,
                 member_dim=realization_dim,
             )
@@ -897,7 +897,7 @@ def core_metrics(
 
             if want(Metric.CRPS_ANOM):
                 out[Metric.CRPS_ANOM.value] = xs.crps_ensemble(
-                    observations=an_anom,
+                    observations=an_anom.mean(dim=realization_dim),
                     forecasts=fc_anom,
                     member_dim=realization_dim,
                     dim=list(dims),
@@ -906,7 +906,7 @@ def core_metrics(
 
             if want(Metric.RANK_HISTOGRAM_ANOM):
                 out[Metric.RANK_HISTOGRAM_ANOM.value] = xs.rank_histogram(
-                    observations=an_anom,
+                    observations=an_anom.mean(dim=realization_dim),
                     forecasts=fc_anom,
                     member_dim=realization_dim,
                 )
