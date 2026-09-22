@@ -19,6 +19,7 @@ from matplotlib.lines import Line2D
 from matplotlib.colors import (
     BoundaryNorm,
     TwoSlopeNorm,
+    LogNorm,
     Colormap,
     to_rgb,
 )
@@ -226,16 +227,19 @@ def adapt_colorbar_tick_sizes(
     cb,
     *,
     tick_size: float | None = None,
-    min_scale: float = 0.55,
+    min_scale: float = 0.50,
     shrink_step: float = 0.95,
-    spacing_px: float = 2.0,
+    spacing_px: float = 3.0,
 ) -> None:
-    """Uniformly shrink colorbar tick labels until adjacent labels do not overlap."""
+    """Shrink colorbar labels, then alternate top/bottom if still crowded."""
 
     if tick_size is None:
         tick_size = FontProperties(
             size=plt.rcParams["xtick.labelsize"]
         ).get_size_in_points()
+
+    min_size = tick_size * min_scale
+    current_size = tick_size
 
     labels = (
         cb.ax.get_xticklabels()
@@ -243,9 +247,9 @@ def adapt_colorbar_tick_sizes(
         else cb.ax.get_yticklabels()
     )
 
-    min_size = tick_size * min_scale
-    current_size = tick_size
-
+    # ------------------------------------------------------------------
+    # First try uniform shrinking.
+    # ------------------------------------------------------------------
     while current_size >= min_size:
 
         for label in labels:
@@ -257,18 +261,22 @@ def adapt_colorbar_tick_sizes(
         bboxes = [
             label.get_window_extent(renderer)
             for label in labels
-            if label.get_visible()
+            if label.get_visible() and label.get_text()
         ]
 
         if cb.orientation == "horizontal":
+            bboxes.sort(key=lambda bbox: bbox.x0)
+
             overlaps = any(
-                bboxes[i].x1 + spacing_px > bboxes[i + 1].x0
-                for i in range(len(bboxes) - 1)
+                a.x1 + spacing_px > b.x0
+                for a, b in zip(bboxes[:-1], bboxes[1:])
             )
         else:
+            bboxes.sort(key=lambda bbox: bbox.y0)
+
             overlaps = any(
-                bboxes[i].y1 + spacing_px > bboxes[i + 1].y0
-                for i in range(len(bboxes) - 1)
+                a.y1 + spacing_px > b.y0
+                for a, b in zip(bboxes[:-1], bboxes[1:])
             )
 
         if not overlaps:
@@ -276,16 +284,65 @@ def adapt_colorbar_tick_sizes(
 
         current_size *= shrink_step
 
-    # Enforce minimum size if overlap cannot be completely removed.
-    for label in labels:
-        label.set_fontsize(min_size)
+    # ------------------------------------------------------------------
+    # Still crowded: alternate horizontal labels bottom / top.
+    # ------------------------------------------------------------------
+    if cb.orientation == "horizontal":
+
+        cb.ax.xaxis.set_ticks_position("both")
+
+        cb.ax.tick_params(
+            axis="x",
+            which="major",
+            top=True,
+            bottom=True,
+            labeltop=True,
+            labelbottom=True,
+            labelsize=min_size,
+            pad=2,
+        )
+
+        fig.canvas.draw()
+
+        ticks = cb.ax.xaxis.get_major_ticks()
+
+        for i, tick in enumerate(ticks):
+
+            # Both labels initially contain the same formatted value.
+            tick.label1.set_fontsize(min_size)
+            tick.label2.set_fontsize(min_size)
+
+            if i % 2 == 0:
+                # Bottom
+                tick.label1.set_visible(True)
+                tick.label2.set_visible(False)
+            else:
+                # Top
+                tick.label1.set_visible(False)
+                tick.label2.set_visible(True)
+
+        # Some extra space from cobar and plot above
+        pos = cb.ax.get_position()
+        cb.ax.set_position([
+            pos.x0,
+            pos.y0 - 0.02,
+            pos.width,
+            pos.height,
+        ])
+
+    else:
+        # Vertical colorbar: just enforce minimum size.
+        for label in labels:
+            label.set_fontsize(min_size)
+
+    fig.canvas.draw()
 
 
 def smart_tick_formatter(x, _):
     if np.isclose(x, 0):
         return "0"
 
-    return f"{x:.10f}".rstrip("0").rstrip(".")
+    return f"{x:.2f}".rstrip("0").rstrip(".")
 
 
 def add_max_size_colorbar(
@@ -1156,7 +1213,7 @@ def metric_style(
     impro_plot_config: dict | None = None,
     is_skill: bool = False,
     improvement_unit: ImprovementUnit | None = None,
-) -> tuple[Colormap, BoundaryNorm | TwoSlopeNorm, np.ndarray]:
+) -> tuple[Colormap, BoundaryNorm | TwoSlopeNorm | LogNorm, np.ndarray]:
     var_plot_config = var_plot_config or {}
     impro_plot_config = impro_plot_config or {}
 
@@ -1223,9 +1280,8 @@ def metric_style(
         "spread_skill_ratio",
         "spread_anom_skill_ratio",
     }:
-        norm = TwoSlopeNorm(
+        norm = LogNorm(
             vmin=cfg["vmin"],
-            vcenter=1.0,
             vmax=cfg["vmax"],
         )
 
@@ -1818,6 +1874,10 @@ def plot_map(
             cb_label,
             fontsize=label_size,
         )
+
+    cb.ax.xaxis.set_major_formatter(
+        FuncFormatter(smart_tick_formatter)
+    )
 
     adapt_colorbar_tick_sizes(
         fig,
