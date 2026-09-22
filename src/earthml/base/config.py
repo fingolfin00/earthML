@@ -20,6 +20,7 @@ def get_experiment_configs(
     for config_path in config_paths:
         s = Settings.from_json(
             config_path,
+            root_dir=config_path.parent.parent.parent,
             exp_root_dir=config_path.parent.parent,
         )
 
