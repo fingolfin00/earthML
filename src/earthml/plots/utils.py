@@ -338,11 +338,111 @@ def adapt_colorbar_tick_sizes(
     fig.canvas.draw()
 
 
-def smart_tick_formatter(x, _):
-    if np.isclose(x, 0):
-        return "0"
+def smart_tick_formatter(ticks):
+    ticks = np.asarray(ticks, dtype=float)
 
-    return f"{x:.2f}".rstrip("0").rstrip(".")
+    finite_ticks = np.sort(
+        np.unique(ticks[np.isfinite(ticks)])
+    )
+
+    if finite_ticks.size == 0:
+        return lambda x, _: str(x)
+
+    # ----------------------------------------------------------
+    # Fixed-point representation
+    # ----------------------------------------------------------
+
+    fixed_precision = 0
+
+    while (
+        np.unique(
+            np.round(finite_ticks, fixed_precision)
+        ).size
+        < finite_ticks.size
+    ):
+        fixed_precision += 1
+
+    def fixed_format(x):
+        if np.isclose(x, 0):
+            return "0"
+
+        return (
+            f"{x:.{fixed_precision}f}"
+            .rstrip("0")
+            .rstrip(".")
+        )
+
+    # ----------------------------------------------------------
+    # Scientific representation
+    # ----------------------------------------------------------
+
+    def scientific_format(x, precision):
+        if np.isclose(x, 0):
+            return "0"
+
+        return (
+            f"{x:.{precision}e}"
+            .replace("e+0", "e+")
+            .replace("e-0", "e-")
+            .replace("e+", "e")
+        )
+
+    sci_precision = 0
+
+    while (
+        len(
+            {
+                scientific_format(
+                    x,
+                    sci_precision,
+                )
+                for x in finite_ticks
+            }
+        )
+        < finite_ticks.size
+    ):
+        sci_precision += 1
+
+    # ----------------------------------------------------------
+    # Choose shortest representation
+    # ----------------------------------------------------------
+
+    fixed_labels = [
+        fixed_format(x)
+        for x in finite_ticks
+    ]
+
+    scientific_labels = [
+        scientific_format(
+            x,
+            sci_precision,
+        )
+        for x in finite_ticks
+    ]
+
+    fixed_length = max(
+        map(len, fixed_labels)
+    )
+
+    scientific_length = max(
+        map(len, scientific_labels)
+    )
+
+    use_scientific = (
+        scientific_length
+        < fixed_length
+    )
+
+    def formatter(x, _):
+        if use_scientific:
+            return scientific_format(
+                x,
+                sci_precision,
+            )
+
+        return fixed_format(x)
+
+    return formatter
 
 
 def add_max_size_colorbar(
@@ -1261,12 +1361,10 @@ def plot_profile(
             leadtime_values
         )
 
+        formatter = smart_tick_formatter(leadtime_values)
         ax.set_xticklabels(
             [
-                smart_tick_formatter(
-                    float(value),
-                    None,
-                )
+                formatter(float(value), None)
                 for value in leadtime_values
             ]
         )
@@ -2001,9 +2099,6 @@ def plot_map(
             im,
             ticks=ticks,
         )
-        cb.ax.xaxis.set_major_formatter(
-            FuncFormatter(smart_tick_formatter)
-        )
     else:
         cb = fig.colorbar(
             im,
@@ -2022,7 +2117,7 @@ def plot_map(
         )
 
     cb.ax.xaxis.set_major_formatter(
-        FuncFormatter(smart_tick_formatter)
+        FuncFormatter(smart_tick_formatter(ticks))
     )
 
     adapt_colorbar_tick_sizes(
@@ -2555,7 +2650,7 @@ def plot_field_map(
         im,
     )
     cb.ax.xaxis.set_major_formatter(
-        FuncFormatter(smart_tick_formatter)
+        FuncFormatter(smart_tick_formatter(ticks))
     )
 
     if plot_labels:
