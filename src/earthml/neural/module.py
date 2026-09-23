@@ -7,13 +7,14 @@ import torch
 import torch.nn.functional as F
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch import nn
-from torch.utils.data import DataLoader, Dataset, Subset, BatchSampler
+from torch.utils.data import DataLoader, BatchSampler
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from ..logging import get_logger
+from .dataset import XarrayDataset, XarraySubset
 from .metrics import MaskedMAE, MaskedRMSE, MaskedSpatialCorr
 from .losses.mse import SpatialCVaRDiagnostics
 
@@ -754,8 +755,8 @@ class EarthMLLightningModule(L.LightningModule):
 class SplitDataModule(L.LightningDataModule):
     def __init__(
         self,
-        train_dataset: Dataset,
-        val_dataset: Dataset | None = None,
+        train_dataset: XarrayDataset,
+        val_dataset: XarrayDataset | None = None,
         *,
         train_fraction: float = 0.9,
         batch_size: int = 32,
@@ -772,7 +773,7 @@ class SplitDataModule(L.LightningDataModule):
     ) -> None:
         super().__init__()
 
-        if not 0.0 < train_fraction < 1.0:
+        if split_strategy != "explicit" and not 0.0 < train_fraction < 1.0:
             raise ValueError(
                 "train_fraction must be between 0 and 1, "
                 f"got {train_fraction}"
@@ -790,6 +791,9 @@ class SplitDataModule(L.LightningDataModule):
 
         self.source_dataset = train_dataset
         self.explicit_val_dataset = val_dataset
+
+        self._train_dataset: XarrayDataset | XarraySubset | None = None
+        self._val_dataset: XarrayDataset | XarraySubset | None = None
 
         self.train_fraction = train_fraction
         self.batch_size = batch_size
@@ -816,8 +820,6 @@ class SplitDataModule(L.LightningDataModule):
                 "persistent_workers=True requires num_workers > 0."
             )
 
-        self.train_dataset: Dataset
-        self.val_dataset: Dataset
         self.train_indices: list[int] | None = None
         self.val_indices: list[int] | None = None
 
@@ -831,39 +833,65 @@ class SplitDataModule(L.LightningDataModule):
             if value is not None and value <= 0:
                 raise ValueError(f"{name} must be > 0.")
 
+
+    def setup(
+        self,
+        stage: str | None = None,
+    ) -> None:
+        """Create the train/validation datasets.
+
+        ``stage`` is ignored because the split is stage-independent.
+        """
+
+        if self._train_dataset is not None and self._val_dataset is not None:
+            return
+
+        if self.split_strategy == "explicit":
+            assert self.explicit_val_dataset is not None
+
+            self._train_dataset, self.train_indices = (
+                self._subsample_explicit_dataset(
+                    self.source_dataset,
+                    self.train_subsamples,
+                    partition="train",
+                )
+            )
+
+            self._val_dataset, self.val_indices = (
+                self._subsample_explicit_dataset(
+                    self.explicit_val_dataset,
+                    self.val_subsamples,
+                    partition="val",
+                )
+            )
+
+            return
+
+        (
+            self.train_indices,
+            self.val_indices,
+            train_time_indices,
+            val_time_indices,
+        ) = self._get_indices()
+
+        self._train_dataset = XarraySubset(
+            self.source_dataset,
+            sample_indices=self.train_indices,
+            time_indices=train_time_indices,
+        )
+
+        self._val_dataset = XarraySubset(
+            self.source_dataset,
+            sample_indices=self.val_indices,
+            time_indices=val_time_indices,
+        )
+
+
     def _samples_per_initialization(
         self,
-        dataset: Dataset,
+        dataset: XarrayDataset,
     ) -> tuple[int, int]:
-        """
-        Return the number of initialization times and samples per time.
-
-        Samples are assumed to be flattened in time-major order.
-        """
-        if not hasattr(dataset, "input_ds"):
-            raise TypeError(
-                f"split_strategy={self.split_strategy!r} requires a dataset "
-                "with an input_ds time dimension."
-            )
-
-        input_ds = dataset.input_ds
-        time_dim = input_ds.earthml.guessed_dims.time
-
-        if time_dim is None or time_dim not in input_ds.dims:
-            raise ValueError(
-                "Could not determine the initialization-time dimension."
-            )
-
-        n_times = int(input_ds.sizes[time_dim])
-        n_samples = len(dataset)
-
-        if n_samples % n_times != 0:
-            raise ValueError(
-                "Cannot group samples by initialization time: "
-                f"n_samples={n_samples}, n_times={n_times}."
-            )
-
-        return n_times, n_samples // n_times
+        return dataset.n_init_times, dataset.samples_per_init
 
     def _subsample_time_indices(
         self,
@@ -891,28 +919,37 @@ class SplitDataModule(L.LightningDataModule):
 
         return sorted(time_indices[i] for i in selected)
 
-    def _subsample_dataset(
+    def _subsample_explicit_dataset(
         self,
-        dataset: Dataset,
+        dataset: XarrayDataset,
         num_subsamples: int | None,
         *,
         partition: str,
-    ) -> tuple[Dataset, list[int] | None]:
+    ) -> tuple[XarrayDataset | XarraySubset, list[int] | None]:
         if num_subsamples is None:
             return dataset, None
 
         n_times, samples_per_time = self._samples_per_initialization(dataset)
+
         selected_times = self._subsample_time_indices(
             list(range(n_times)),
             num_subsamples,
             partition=partition,
         )
-        indices = self._expand_time_indices(
+
+        sample_indices = self._expand_time_indices(
             selected_times,
             samples_per_time,
         )
 
-        return Subset(dataset, indices), indices
+        return (
+            XarraySubset(
+                dataset,
+                sample_indices=sample_indices,
+                time_indices=selected_times,
+            ),
+            sample_indices,
+        )
 
     @staticmethod
     def _expand_time_indices(
@@ -929,7 +966,14 @@ class SplitDataModule(L.LightningDataModule):
 
         return sample_indices
 
-    def _get_indices(self) -> tuple[list[int], list[int]]:
+    def _get_indices(
+        self,
+    ) -> tuple[
+        list[int], # train_sample_indices
+        list[int], # val_sample_indices
+        list[int], # train_time_indices
+        list[int], # val_time_indices
+    ]:
         if self.split_strategy == "explicit":
             raise RuntimeError(
                 "_get_indices() is not used for "
@@ -990,52 +1034,29 @@ class SplitDataModule(L.LightningDataModule):
             partition="val",
         )
 
+        train_sample_indices = self._expand_time_indices(
+            train_time_indices,
+            samples_per_time,
+        )
+
+        val_sample_indices = self._expand_time_indices(
+            val_time_indices,
+            samples_per_time,
+        )
+
         return (
-            self._expand_time_indices(
-                train_time_indices,
-                samples_per_time,
-            ),
-            self._expand_time_indices(
-                val_time_indices,
-                samples_per_time,
-            ),
-        )
-
-    def setup(self, stage: str | None = None) -> None:
-        if hasattr(self, "train_dataset") and hasattr(self, "val_dataset"):
-            return
-
-        if self.split_strategy == "explicit":
-            assert self.explicit_val_dataset is not None
-
-            self.train_dataset, self.train_indices = self._subsample_dataset(
-                self.source_dataset,
-                self.train_subsamples,
-                partition="train",
-            )
-            self.val_dataset, self.val_indices = self._subsample_dataset(
-                self.explicit_val_dataset,
-                self.val_subsamples,
-                partition="val",
-            )
-
-            return
-
-        self.train_indices, self.val_indices = self._get_indices()
-
-        self.train_dataset = Subset(
-            self.source_dataset,
-            self.train_indices,
-        )
-        self.val_dataset = Subset(
-            self.source_dataset,
-            self.val_indices,
+            train_sample_indices,
+            val_sample_indices,
+            train_time_indices,
+            val_time_indices,
         )
 
     def train_dataloader(self) -> DataLoader:
+        dataset = self.train_dataset
+
         if self.group_batches_by_month:
             batch_sampler = SingleMonthBatchSampler(
-                self.train_dataset,
+                dataset,
                 batch_size=self.batch_size,
                 shuffle=self.shuffle_train,
                 drop_last=self.drop_last_train,
@@ -1043,7 +1064,7 @@ class SplitDataModule(L.LightningDataModule):
             )
 
             return DataLoader(
-                self.train_dataset,
+                dataset,
                 batch_sampler=batch_sampler,
                 num_workers=self.num_workers,
                 pin_memory=self.pin_memory,
@@ -1051,7 +1072,7 @@ class SplitDataModule(L.LightningDataModule):
             )
 
         return DataLoader(
-            self.train_dataset,
+            dataset,
             batch_size=self.batch_size,
             shuffle=self.shuffle_train,
             num_workers=self.num_workers,
@@ -1061,9 +1082,11 @@ class SplitDataModule(L.LightningDataModule):
         )
 
     def val_dataloader(self) -> DataLoader:
+        dataset = self.val_dataset
+
         if self.group_batches_by_month:
             batch_sampler = SingleMonthBatchSampler(
-                self.val_dataset,
+                dataset,
                 batch_size=self.batch_size,
                 shuffle=False,
                 drop_last=False,
@@ -1071,7 +1094,7 @@ class SplitDataModule(L.LightningDataModule):
             )
 
             return DataLoader(
-                self.val_dataset,
+                dataset,
                 batch_sampler=batch_sampler,
                 num_workers=self.num_workers,
                 pin_memory=self.pin_memory,
@@ -1079,7 +1102,7 @@ class SplitDataModule(L.LightningDataModule):
             )
 
         return DataLoader(
-            self.val_dataset,
+            dataset,
             batch_size=self.batch_size,
             shuffle=False,
             num_workers=self.num_workers,
@@ -1087,13 +1110,25 @@ class SplitDataModule(L.LightningDataModule):
             persistent_workers=self.persistent_workers,
         )
 
+    @property
+    def train_dataset(self) -> XarrayDataset | XarraySubset:
+        if self._train_dataset is None:
+            raise RuntimeError("setup() must be called before accessing train_dataset.")
+        return self._train_dataset
+
+    @property
+    def val_dataset(self) -> XarrayDataset | XarraySubset:
+        if self._val_dataset is None:
+            raise RuntimeError("setup() must be called before accessing val_dataset.")
+        return self._val_dataset
+
 
 class SingleMonthBatchSampler(BatchSampler):
     """Yield batches containing samples from exactly one calendar month."""
 
     def __init__(
         self,
-        dataset: Dataset,
+        dataset: XarrayDataset | XarraySubset,
         batch_size: int,
         *,
         shuffle: bool = True,
@@ -1136,35 +1171,11 @@ class SingleMonthBatchSampler(BatchSampler):
             raise ValueError("Dataset contains no samples")
 
     @staticmethod
-    def _extract_months(dataset: Dataset) -> torch.Tensor:
-        """
-        Return months aligned with the indices of `dataset`.
-
-        Supports both an XarrayDataset-like object with `.months`
-        and torch.utils.data.Subset.
-        """
-        if isinstance(dataset, Subset):
-            parent_months = SingleMonthBatchSampler._extract_months(
-                dataset.dataset
-            )
-
-            indices = torch.as_tensor(
-                dataset.indices,
-                dtype=torch.long,
-            )
-
-            return parent_months.index_select(0, indices)
-
-        months = getattr(dataset, "months", None)
-
-        if months is None:
-            raise TypeError(
-                "SingleMonthBatchSampler requires the dataset to expose "
-                "a one-dimensional `months` array."
-            )
-
+    def _extract_months(
+        dataset: XarrayDataset | XarraySubset,
+    ) -> torch.Tensor:
         months = torch.as_tensor(
-            months,
+            dataset.months,
             dtype=torch.long,
         )
 
