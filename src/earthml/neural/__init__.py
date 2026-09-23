@@ -1,5 +1,5 @@
 from .module import EarthMLLightningModule, SplitDataModule, SingleMonthBatchSampler, SplitStrategy
-from .dataset import XarrayDataset
+from .dataset import XarrayDataset, XarraySubset
 from .metrics import MaskedMAE, MaskedRMSE, MaskedSpatialCorr
 from .normalize import Normalize, MonthlyNormalize, NormalizationMode
 from .utils import call_loss, resolve_loss
@@ -10,6 +10,7 @@ __all__ = [
     "SingleMonthBatchSampler",
     "SplitStrategy",
     "XarrayDataset",
+    "XarraySubset",
     "MaskedMAE",
     "MaskedRMSE",
     "MaskedSpatialCorr",

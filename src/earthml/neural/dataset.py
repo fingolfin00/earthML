@@ -399,3 +399,131 @@ class XarrayDataset(Dataset):
             x = torch.cat([x, mask_channel], dim=0)
 
         return x, y, mask, self.months[idx]
+
+
+class XarraySubset(Dataset):
+    def __init__(
+        self,
+        dataset: XarrayDataset,
+        sample_indices: Sequence[int],
+        time_indices: Sequence[int],
+    ) -> None:
+        self.dataset = dataset
+        self.indices = list(sample_indices)
+        self.time_indices = list(time_indices)
+
+        # Validation
+        expected_samples = (
+            len(self.time_indices) * dataset.samples_per_init
+        )
+
+        if len(self.indices) != expected_samples:
+            raise ValueError(
+                "XarraySubset must contain complete initialization groups: "
+                f"got {len(self.indices)} sample indices for "
+                f"{len(self.time_indices)} initialization times with "
+                f"{dataset.samples_per_init} samples per initialization "
+                f"(expected {expected_samples})."
+            )
+
+        if not self.indices:
+            raise ValueError("XarraySubset cannot be empty.")
+
+        if not self.time_indices:
+            raise ValueError("XarraySubset cannot contain zero initialization times.")
+
+        input_time_dim = dataset.input_ds.earthml.guessed_dims.time
+        target_time_dim = dataset.target_ds.earthml.guessed_dims.time
+
+        if input_time_dim is None or target_time_dim is None:
+            raise ValueError("Could not determine input/target time dimension.")
+
+        # Subsample selection
+        self.input_ds = dataset.input_ds.isel({
+            input_time_dim: self.time_indices,
+        })
+
+        self.target_ds = dataset.target_ds.isel({
+            target_time_dim: self.time_indices,
+        })
+
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+    def __getitem__(self, idx: int):
+        return self.dataset[self.indices[idx]]
+
+
+    # Expose parent XarrayDataset properties
+    @property
+    def x(self) -> torch.Tensor:
+        return self.dataset.x[self.indices]
+
+    @property
+    def y(self) -> torch.Tensor:
+        return self.dataset.y[self.indices]
+
+    @property
+    def x_mask(self) -> torch.Tensor:
+        return self.dataset.x_mask[self.indices]
+
+    @property
+    def y_mask(self) -> torch.Tensor:
+        return self.dataset.y_mask[self.indices]
+
+    @property
+    def months(self) -> torch.Tensor:
+        return self.dataset.months[self.indices]
+
+    @property
+    def channel_representation(self):
+        return self.dataset.channel_representation
+
+    @property
+    def samples_per_init(self):
+        return self.dataset.samples_per_init
+
+    @property
+    def n_init_times(self):
+        return len(self.time_indices)
+
+    @property
+    def target_realization_avg(self):
+        return self.dataset.target_realization_avg
+
+    @property
+    def output_realizations(self):
+        return self.dataset.output_realizations
+
+    @property
+    def torch_mask(self):
+        return self.dataset.torch_mask
+
+    @property
+    def fill_nan_value(self):
+        return self.dataset.fill_nan_value
+
+    @property
+    def transform_x(self):
+        return self.dataset.transform_x
+
+    @transform_x.setter
+    def transform_x(self, value):
+        self.dataset.transform_x = value
+
+    @property
+    def transform_y(self):
+        return self.dataset.transform_y
+
+    @transform_y.setter
+    def transform_y(self, value):
+        self.dataset.transform_y = value
+
+    @property
+    def transform_x_args(self):
+        return self.dataset.transform_x_args
+
+    @property
+    def transform_y_args(self):
+        return self.dataset.transform_y_args
