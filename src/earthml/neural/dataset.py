@@ -151,6 +151,20 @@ class XarrayDataset(Dataset):
             else:
                 raise ValueError(f"Unsupported output_realizations={output_realizations}")
 
+            self.n_init_times = int(
+                self.input_ds.sizes[
+                    self.input_ds.earthml.guessed_dims.time
+                ]
+            )
+
+            if len(self.x) % self.n_init_times != 0:
+                raise ValueError(
+                    f"Dataset length {len(self.x)} is not divisible by "
+                    f"number of initialization times {self.n_init_times}."
+                )
+
+            self.samples_per_init = len(self.x) // self.n_init_times
+
             self.y      = torch.from_numpy(y_np_filled_).float().permute(1, 0, 2, 3)  # (T,Cout,H,W)
             self.y_mask = torch.from_numpy(mask_y_np_).bool().permute(1, 0, 2, 3)     # (T,Cout,H,W)
 
@@ -225,13 +239,18 @@ class XarrayDataset(Dataset):
                     self.y_mask = torch.from_numpy(self.mask_y_np).bool().permute(1, 0, 2, 3)
 
             # Expose samples per init time
-            self.n_init_times = int(self.input_ds.sizes["time"])
+            self.n_init_times = int(
+                self.input_ds.sizes[
+                    self.input_ds.earthml.guessed_dims.time
+                ]
+            )
+
             n_samples_x, n_channels_x, height_x, width_x = self.x.shape
 
             if n_samples_x % self.n_init_times != 0:
                 raise ValueError(
                     f"Dataset length {n_samples_x} is not divisible by "
-                    f"number of initialization times {self.n_init_times}"
+                    f"number of initialization times {self.n_init_times}."
                 )
 
             self.samples_per_init = n_samples_x // self.n_init_times
