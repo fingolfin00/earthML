@@ -78,6 +78,9 @@ class Settings:
     test_start: str = "2021-01-01"
     test_end: str = "2022-12-01"
 
+    train_subsamples: int | None = None
+    val_subsamples: int | None = None
+
     target_mode: TargetMode = "analysis"
     clim_period: ClimPeriod = ClimPeriod.MONTH
 
@@ -228,6 +231,12 @@ class Settings:
             f"te{pd.Timestamp(self.test_start):%Y%m}-{pd.Timestamp(self.test_end):%Y%m}",
             str(self.target_mode),
         ]
+
+        if self.train_subsamples is not None:
+            parts.append(f"{self.train_subsamples}s")
+
+        if self.val_subsamples is not None:
+            parts.append(f"{self.val_subsamples}s")
 
         if self.target_mode in (
             "anomaly",
@@ -746,15 +755,19 @@ class Settings:
                 "channel_representation='realization'."
             )
 
-        positive_int_fields = (
+        int_fields = (
+            "train_subsamples",
+            "val_subsamples",
             "seed",
             "batch_size",
             "max_epochs",
             "accumulate_grad_batches",
             "early_stopping_patience",
         )
-        for name in positive_int_fields:
+        for name in int_fields:
             value = getattr(self, name)
+            if name in ("train_subsamples", "val_subsamples") and value is None:
+                continue
             if isinstance(value, bool) or not isinstance(value, int):
                 raise TypeError(f"{name} must be an integer.")
             if name == "seed":
