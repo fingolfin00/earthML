@@ -7,27 +7,16 @@ import hashlib, json
 import math
 import pandas as pd
 
+from lightning.fabric.plugins.precision.precision import (
+    _PRECISION_INPUT as TrainerPrecision, # private define, may change in the future
+)
+
 from .definitions import LeadtimeUnit, ClimPeriod, TargetMode
 from ..neural import (
     SplitStrategy,
     NormalizationMode,
 )
 
-
-TrainerPrecision = Literal[
-    64,
-    32,
-    16,
-    "64-true",
-    "32-true",
-    "16-true",
-    "bf16-true",
-    "16-mixed",
-    "bf16-mixed",
-    "transformer-engine",
-    "transformer-engine-float16",
-    "transformer-engine-bfloat16",
-]
 
 CONFIG_COMPARE_IGNORE = {
     "root_dir",
@@ -631,8 +620,21 @@ class Settings:
             )
 
         def check_literal(name: str, literal_type: object) -> None:
+            def literal_values(tp: object) -> tuple[object, ...]:
+                args = get_args(tp)
+
+                if not args:
+                    return (tp,)
+
+                values = []
+                for arg in args:
+                    values.extend(literal_values(arg))
+
+                return tuple(values)
+
             value = getattr(self, name)
-            allowed = get_args(literal_type)
+            allowed = literal_values(literal_type)
+
             if value not in allowed:
                 raise ValueError(
                     f"{name} must be one of {allowed}, got {value!r}."
