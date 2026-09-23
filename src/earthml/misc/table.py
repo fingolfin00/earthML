@@ -2,6 +2,9 @@ from typing import Any
 from dataclasses import is_dataclass, fields as dc_fields
 from pathlib import Path
 
+import numpy as np
+import torch
+
 from rich.table import Table as RichTable
 from rich.highlighter import ReprHighlighter
 
@@ -17,11 +20,16 @@ class Table:
         twocols: bool = False,
         max_depth: int = 4,
     ) -> RichTable | None:
-        # Accept ExperimentConfig (dataclass) or dict; coerce as needed.
-        if is_dataclass(data):
-            data = self._to_pretty(data, max_depth=max_depth)
-        elif not isinstance(data, dict):
-            raise TypeError(f"Table expects dict or dataclass; got {type(data).__name__}")
+        # Accept ExperimentConfig (dataclass) or dict
+        if not isinstance(data, dict) and not is_dataclass(data):
+            raise TypeError(
+                f"Table expects dict or dataclass; got {type(data).__name__}"
+            )
+
+        data = self._to_pretty(
+            data,
+            max_depth=max_depth,
+        )
 
         if len(data.keys()) == 1:
             assert isinstance(next(iter(data.values())), dict)  # there must be data
@@ -74,37 +82,88 @@ class Table:
             return repr(fn)
 
     @classmethod
-    def _to_pretty(cls, obj: Any, *, max_depth: int, _depth: int = 0) -> Any:
-        """Convert arbitrary objects (incl. ExperimentConfig dataclass) into a dict/list structure."""
-        if _depth >= max_depth:
-            return repr(obj)
-
+    def _to_pretty(
+        cls,
+        obj: Any,
+        *,
+        max_depth: int,
+        _depth: int = 0,
+    ) -> Any:
+        """Convert arbitrary objects into a compact display-friendly structure."""
         if obj is None or isinstance(obj, (str, int, float, bool)):
             return obj
 
         if isinstance(obj, Path):
             return str(obj)
 
+        if isinstance(obj, torch.Tensor):
+            if obj.numel() <= 10:
+                return obj.detach().cpu().tolist()
+
+            obj_cpu = obj.detach().cpu()
+
+            return {
+                "shape": tuple(obj.shape),
+                "dtype": str(obj.dtype),
+                "min": obj_cpu.min().item(),
+                "max": obj_cpu.max().item(),
+            }
+
+        if isinstance(obj, np.ndarray):
+            if obj.size <= 10:
+                return obj.tolist()
+
+            return {
+                "shape": obj.shape,
+                "dtype": str(obj.dtype),
+                "min": obj.min().item(),
+                "max": obj.max().item(),
+            }
+
+        if _depth >= max_depth:
+            return repr(obj)
+
         if is_dataclass(obj):
-            out = {}
-            for f in dc_fields(obj):
-                out[f.name] = cls._to_pretty(getattr(obj, f.name), max_depth=max_depth, _depth=_depth + 1)
-            return out
+            return {
+                f.name: cls._to_pretty(
+                    getattr(obj, f.name),
+                    max_depth=max_depth,
+                    _depth=_depth + 1,
+                )
+                for f in dc_fields(obj)
+            }
 
         if isinstance(obj, dict):
-            return {str(k): cls._to_pretty(v, max_depth=max_depth, _depth=_depth + 1) for k, v in obj.items()}
+            return {
+                str(k): cls._to_pretty(
+                    v,
+                    max_depth=max_depth,
+                    _depth=_depth + 1,
+                )
+                for k, v in obj.items()
+            }
 
         if isinstance(obj, (list, tuple, set)):
-            return [cls._to_pretty(v, max_depth=max_depth, _depth=_depth + 1) for v in obj]
+            return [
+                cls._to_pretty(
+                    v,
+                    max_depth=max_depth,
+                    _depth=_depth + 1,
+                )
+                for v in obj
+            ]
 
         if callable(obj):
             return cls._callable_label(obj)
 
-        # pydantic-like configs
         for attr in ("model_dump", "dict"):
             if hasattr(obj, attr) and callable(getattr(obj, attr)):
                 try:
-                    return cls._to_pretty(getattr(obj, attr)(), max_depth=max_depth, _depth=_depth + 1)
+                    return cls._to_pretty(
+                        getattr(obj, attr)(),
+                        max_depth=max_depth,
+                        _depth=_depth + 1,
+                    )
                 except Exception:
                     pass
 
