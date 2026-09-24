@@ -1,4 +1,4 @@
-from typing import Literal, Optional, Tuple
+from typing import Literal, Optional
 import math
 
 import torch
@@ -6,384 +6,15 @@ from torch import nn
 import torch.nn.functional as F
 
 from ...logging import get_logger
-from .utils import _expand_mask_to, _masked_mean_var
+from .utils import masked_mean_var
+from ..metrics import (
+    expand_mask_to,
+    spatial_cvar_mse,
+    spatial_patch_mse,
+)
 
 
 logger = get_logger(__name__)
-
-
-def _spatial_patch_mse(
-    error: torch.Tensor,
-    mask: torch.Tensor,
-    *,
-    patch_size: int,
-    eps: float,
-) -> tuple[
-    torch.Tensor,
-    torch.Tensor,
-]:
-    """
-    Compute geographical patch MSE.
-
-    Returns:
-        spatial_patch_mse:
-            Shape (Hp, Wp).
-
-        valid_spatial_patches:
-            Boolean mask with shape (Hp, Wp).
-    """
-    mask_f = mask.to(
-        device=error.device,
-        dtype=error.dtype,
-    )
-
-    pooled_sq_err = F.avg_pool2d(
-        error.square() * mask_f,
-        kernel_size=patch_size,
-        stride=patch_size,
-        ceil_mode=True,
-        count_include_pad=False,
-    )
-
-    patch_valid_fraction = F.avg_pool2d(
-        mask_f,
-        kernel_size=patch_size,
-        stride=patch_size,
-        ceil_mode=True,
-        count_include_pad=False,
-    )
-
-    patch_mse = (
-        pooled_sq_err
-        / patch_valid_fraction.clamp_min(eps)
-    )
-
-    patch_valid = patch_valid_fraction > 0
-
-    patch_error_sum = (
-        patch_mse * patch_valid
-    ).sum(dim=(0, 1))
-
-    patch_count = patch_valid.sum(dim=(0, 1))
-
-    spatial_patch_mse = (
-        patch_error_sum
-        / patch_count.clamp_min(1)
-    )
-
-    valid_spatial_patches = patch_count > 0
-
-    return (
-        spatial_patch_mse,
-        valid_spatial_patches,
-    )
-
-
-def _spatial_cvar_mse(
-    y_pred: torch.Tensor,
-    y_true: torch.Tensor,
-    mask: torch.Tensor,
-    *,
-    patch_size: int,
-    cvar_fraction: float,
-    eps: float,
-) -> tuple[
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-]:
-    spatial_patch_mse, valid_spatial_patches = (
-        _spatial_patch_mse(
-            y_pred - y_true,
-            mask,
-            patch_size=patch_size,
-            eps=eps,
-        )
-    )
-
-    patch_losses = spatial_patch_mse[
-        valid_spatial_patches
-    ]
-
-    if patch_losses.numel() == 0:
-        raise ValueError(
-            "No valid spatial patches"
-        )
-
-    num_worst = max(
-        1,
-        math.ceil(
-            cvar_fraction
-            * patch_losses.numel()
-        ),
-    )
-
-    worst_patch_losses, worst_indices = torch.topk(
-        patch_losses,
-        k=num_worst,
-    )
-
-    valid_locations = torch.nonzero(
-        valid_spatial_patches,
-        as_tuple=False,
-    )
-
-    worst_patch_locations = valid_locations[
-        worst_indices
-    ]
-
-    return (
-        worst_patch_losses.mean(),
-        worst_patch_locations,
-        worst_patch_losses,
-        spatial_patch_mse,
-    )
-
-
-class SpatialCVaRDiagnostics(nn.Module):
-    """
-    Common spatial robustness diagnostics independent of training loss.
-    """
-
-    def __init__(
-        self,
-        latitudes: torch.Tensor,
-        patch_size: int = 10,
-        cvar_fraction: float = 0.2,
-        relative_floor_fraction: float = 0.05,
-        relative_degradation_thresholds: tuple[float, ...] = (
-            0.0,
-            0.01,
-            0.05,
-            0.10,
-        ),
-        eps: float = 1e-8,
-    ) -> None:
-        super().__init__()
-
-        if patch_size < 1:
-            raise ValueError("patch_size must be positive")
-
-        if not 0.0 < cvar_fraction <= 1.0:
-            raise ValueError(
-                "cvar_fraction must be in (0, 1]"
-            )
-
-        if relative_floor_fraction < 0.0:
-            raise ValueError(
-                "relative_floor_fraction must be non-negative"
-            )
-
-        if any(
-            threshold < 0.0
-            for threshold in relative_degradation_thresholds
-        ):
-            raise ValueError(
-                "relative degradation thresholds must be non-negative"
-            )
-
-        self.patch_size = int(patch_size)
-        self.cvar_fraction = float(cvar_fraction)
-        self.relative_floor_fraction = float(
-            relative_floor_fraction
-        )
-        self.relative_degradation_thresholds = tuple(
-            float(threshold)
-            for threshold in relative_degradation_thresholds
-        )
-        self.eps = float(eps)
-
-        self.global_loss = GeoMaskedMSELoss(
-            latitudes=latitudes,
-            eps=eps,
-            persistent=False,
-        )
-
-    @torch.no_grad()
-    def forward(
-        self,
-        y_pred: torch.Tensor,
-        y_true: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
-    ) -> dict[str, torch.Tensor]:
-        mask_b = _expand_mask_to(
-            y_true,
-            mask,
-        ).to(
-            device=y_true.device,
-            dtype=torch.bool,
-        )
-
-        global_geo_mse = self.global_loss(
-            y_pred,
-            y_true,
-            mask=mask_b,
-        )
-
-        (
-            cvar_mse,
-            worst_patch_locations,
-            worst_patch_losses,
-            spatial_patch_mse,
-        ) = _spatial_cvar_mse(
-            y_pred,
-            y_true,
-            mask_b,
-            patch_size=self.patch_size,
-            cvar_fraction=self.cvar_fraction,
-            eps=self.eps,
-        )
-
-        model_patch_mse, model_valid = _spatial_patch_mse(
-            y_pred - y_true,
-            mask_b,
-            patch_size=self.patch_size,
-            eps=self.eps,
-        )
-
-        baseline_patch_mse, baseline_valid = _spatial_patch_mse(
-            -y_true,
-            mask_b,
-            patch_size=self.patch_size,
-            eps=self.eps,
-        )
-
-        valid_patches = model_valid & baseline_valid
-
-        if not valid_patches.any():
-            raise ValueError(
-                "SpatialCVaRDiagnostics: no valid spatial patches"
-            )
-
-        patch_degradation = (
-            model_patch_mse
-            - baseline_patch_mse
-        )
-
-        valid_degradation = patch_degradation[
-            valid_patches
-        ]
-
-        degraded_patches = (
-            (patch_degradation > 0.0)
-            & valid_patches
-        )
-
-        mean_patch_degradation = (
-            valid_degradation.mean()
-        )
-
-        mean_positive_patch_degradation = (
-            valid_degradation
-            .clamp_min(0.0)
-            .mean()
-        )
-
-        if degraded_patches.any():
-            mean_degraded_patch_degradation = (
-                patch_degradation[
-                    degraded_patches
-                ].mean()
-            )
-        else:
-            mean_degraded_patch_degradation = (
-                patch_degradation.sum() * 0.0
-            )
-
-        degraded_patch_fraction = (
-            degraded_patches.sum()
-            / valid_patches.sum().clamp_min(1)
-        )
-
-        max_patch_degradation = (
-            valid_degradation.max()
-        )
-
-        # Relative degradation diagnostics.
-        mean_baseline_patch_mse = (
-            baseline_patch_mse[
-                valid_patches
-            ].mean()
-        )
-
-        baseline_floor = (
-            self.relative_floor_fraction
-            * mean_baseline_patch_mse
-        ).clamp_min(self.eps)
-
-        baseline_scale = (
-            baseline_patch_mse
-            .clamp_min(baseline_floor)
-        )
-
-        relative_patch_degradation = (
-            patch_degradation
-            / baseline_scale
-        )
-
-        result = {
-            "global_geo_mse": global_geo_mse,
-            "cvar_mse": cvar_mse,
-            "cvar_ratio": (
-                cvar_mse
-                / global_geo_mse.clamp_min(self.eps)
-            ),
-            "worst_patch_locations": worst_patch_locations,
-            "worst_patch_losses": worst_patch_losses,
-            "spatial_patch_mse": spatial_patch_mse,
-
-            # Absolute degradation diagnostics.
-            "mean_patch_degradation": (
-                mean_patch_degradation
-            ),
-            "mean_degraded_patch_degradation": (
-                mean_degraded_patch_degradation
-            ),
-            "mean_positive_patch_degradation": (
-                mean_positive_patch_degradation
-            ),
-            "degraded_patch_fraction": (
-                degraded_patch_fraction
-            ),
-            "max_patch_degradation": (
-                max_patch_degradation
-            ),
-            "patch_degradation": patch_degradation,
-            "degraded_patches": degraded_patches,
-
-            # Relative degradation diagnostics.
-            "relative_patch_degradation": (
-                relative_patch_degradation
-            ),
-            "mean_baseline_patch_mse": (
-                mean_baseline_patch_mse
-            ),
-            "baseline_floor": baseline_floor,
-        }
-
-        valid_count = valid_patches.sum().clamp_min(1)
-
-        for threshold in self.relative_degradation_thresholds:
-            degraded = (
-                (relative_patch_degradation > threshold)
-                & valid_patches
-            )
-
-            fraction = (
-                degraded.sum()
-                / valid_count
-            )
-
-            threshold_pct = round(
-                100 * threshold
-            )
-
-            result[
-                f"relative_degraded_patch_fraction_gt_{threshold_pct}pct"
-            ] = fraction
-
-        return result
 
 
 # -------------------------
@@ -402,7 +33,7 @@ class MaskedMSELoss(nn.Module):
             raise ValueError(f"y_pred ({y_pred.shape}) and y_true ({y_true.shape}) must have the same shape")
 
         # Broadcast mask to y_true shape; ensure boolean on same device
-        mask_b = _expand_mask_to(y_true, mask).to(device=y_true.device, dtype=torch.bool)
+        mask_b = expand_mask_to(y_true, mask).to(device=y_true.device, dtype=torch.bool)
 
         sq_err = (y_pred - y_true) ** 2
         sq_err = sq_err * mask_b.to(dtype=sq_err.dtype, device=sq_err.device)  # zero invalid
@@ -493,7 +124,7 @@ class GeoMaskedMSELoss(nn.Module):
         if y_pred.shape != y_true.shape:
             raise ValueError("y_pred and y_true must have the same shape")
 
-        mask_b = _expand_mask_to(y_true, mask).to(device=y_true.device, dtype=torch.bool)  # boolean same shape as y_true
+        mask_b = expand_mask_to(y_true, mask).to(device=y_true.device, dtype=torch.bool)  # boolean same shape as y_true
         sq_err = (y_pred - y_true) ** 2
         # sq_err = sq_err * mask_b.to(dtype=sq_err.dtype, device=sq_err.device)  # redundant
 
@@ -560,7 +191,7 @@ class VarNormMaskMSELoss(nn.Module):
             raise ValueError("y_pred and y_true must have the same shape")
 
         # mask expanded to full shape
-        mask_b = _expand_mask_to(y_true, mask).to(device=y_true.device, dtype=torch.bool)
+        mask_b = expand_mask_to(y_true, mask).to(device=y_true.device, dtype=torch.bool)
 
         sq_err = (y_pred - y_true) ** 2
         sq_err = sq_err * mask_b.to(dtype=sq_err.dtype, device=sq_err.device)  # zero invalid
@@ -584,7 +215,7 @@ class VarNormMaskMSELoss(nn.Module):
             # For "spatial" we reduce over (0,1) to keep spatial dims
             if self.variance_type == "channel":
                 reduce_dims = tuple(d for d in range(x.ndim) if d != 1)
-                _, var, count = _masked_mean_var(x, mask_b, reduce_dims, unbiased=False, keepdim=True, eps=self.eps)
+                _, var, count = masked_mean_var(x, mask_b, reduce_dims, unbiased=False, keepdim=True, eps=self.eps)
                 denom = var.clamp_min(self.eps)
 
             elif self.variance_type == "geochannel":
@@ -620,7 +251,7 @@ class VarNormMaskMSELoss(nn.Module):
             elif self.variance_type == "spatial":
                 # reduce over batch and channel -> keep spatial dims (and time if present)
                 reduce_dims = (0, 1)
-                _, var, count = _masked_mean_var(x, mask_b, reduce_dims, unbiased=False, keepdim=True, eps=self.eps)
+                _, var, count = masked_mean_var(x, mask_b, reduce_dims, unbiased=False, keepdim=True, eps=self.eps)
                 # put a relative floor based on mean variance to avoid tiny denom at a few pixels
                 mean_var = var.mean().item()
                 floor_val = max(self.eps, self.relative_floor_frac * mean_var)
@@ -637,11 +268,11 @@ class VarNormMaskMSELoss(nn.Module):
                 if ndim != 5:
                     # fallback: channel variance
                     reduce_dims = tuple(d for d in range(x.ndim) if d != 1)
-                    _, var, _ = _masked_mean_var(x, mask_b, reduce_dims, unbiased=False, keepdim=True, eps=self.eps)
+                    _, var, _ = masked_mean_var(x, mask_b, reduce_dims, unbiased=False, keepdim=True, eps=self.eps)
                 else:
                     # reduce over batch and time and spatial dims -> keep channel
                     reduce_dims = (0, 2, 3, 4)
-                    _, var, count = _masked_mean_var(x, mask_b, reduce_dims, unbiased=False, keepdim=True, eps=self.eps)
+                    _, var, count = masked_mean_var(x, mask_b, reduce_dims, unbiased=False, keepdim=True, eps=self.eps)
                 denom = var.clamp_min(self.eps)
 
             elif self.variance_type == "geotemporal":
@@ -738,7 +369,7 @@ class HeteroBiasCorrectionLoss(nn.Module):
         var_norm_mse = self.var_mse(y_pred=y_pred, y_true=y_true, var_field=var_field, mask=mask)
 
         # Identity-preserving term
-        mask_b = _expand_mask_to(y_true, mask).to(device=y_true.device, dtype=torch.bool)
+        mask_b = expand_mask_to(y_true, mask).to(device=y_true.device, dtype=torch.bool)
 
         true_bias = y_true - x_input
         bias_mag = true_bias.abs()
@@ -783,7 +414,7 @@ class GaussianNLLFromLogits(nn.Module):
         if mu.shape != target.shape:
             raise ValueError("mu and target must have same shape")
 
-        mask_b = _expand_mask_to(target, mask).to(device=target.device, dtype=torch.bool)
+        mask_b = expand_mask_to(target, mask).to(device=target.device, dtype=torch.bool)
         # Gaussian NLL per element (no reduction):
         # 0.5 * (log(2*pi*var) + (target-mu)^2 / var)
         var = var.clamp_min(self.eps)
@@ -1178,7 +809,7 @@ class GeoMaskedMSEMultiScaleLoss(nn.Module):
                 "Expected tensors with shape (N, C, H, W)"
             )
 
-        mask_b = _expand_mask_to(
+        mask_b = expand_mask_to(
             y_true,
             mask,
         ).to(
@@ -1381,7 +1012,7 @@ class SpatialCVaRMSELoss(nn.Module):
         y_true: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        mask_b = _expand_mask_to(
+        mask_b = expand_mask_to(
             y_true,
             mask,
         ).to(
@@ -1395,7 +1026,7 @@ class SpatialCVaRMSELoss(nn.Module):
             mask=mask_b,
         )
 
-        cvar_loss, _, _, _ = _spatial_cvar_mse(
+        cvar_loss, _, _, _ = spatial_cvar_mse(
             y_pred,
             y_true,
             mask_b,
@@ -1585,7 +1216,7 @@ class SpatialDegradationMSELoss(nn.Module):
 
             baseline_pred = baseline_pred.detach()
 
-        mask_b = _expand_mask_to(
+        mask_b = expand_mask_to(
             y_true,
             mask,
         ).to(
@@ -1608,14 +1239,14 @@ class SpatialDegradationMSELoss(nn.Module):
         model_error = y_pred - y_true
         baseline_error = baseline_pred - y_true
 
-        model_patch_mse, model_valid = _spatial_patch_mse(
+        model_patch_mse, model_valid = spatial_patch_mse(
             model_error,
             mask_b,
             patch_size=self.patch_size,
             eps=self.eps,
         )
 
-        baseline_patch_mse, baseline_valid = _spatial_patch_mse(
+        baseline_patch_mse, baseline_valid = spatial_patch_mse(
             baseline_error,
             mask_b,
             patch_size=self.patch_size,
