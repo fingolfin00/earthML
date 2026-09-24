@@ -482,6 +482,14 @@ def core_metrics(
             if d in {time_dim, lat_dim, lon_dim}
         )
 
+        power_chunks = {
+            dim: -1
+            for dim in power_dims
+        }
+
+        fc_power = fc.chunk(power_chunks)
+        an_power = an.chunk(power_chunks)
+
         # 1D PSD
         if power_dims in {
             (time_dim,),  # temporal
@@ -490,7 +498,7 @@ def core_metrics(
         }:
             if want(Metric.FC_POWER_SPECTRUM) or want(Metric.POWER_SPECTRUM_RATIO):
                 fc_ps = xrft.power_spectrum(
-                    fc,
+                    fc_power,
                     dim=power_dims,
                     detrend="linear",
                     window=True,
@@ -502,7 +510,7 @@ def core_metrics(
 
             if want(Metric.AN_POWER_SPECTRUM) or want(Metric.POWER_SPECTRUM_RATIO):
                 an_ps = xrft.power_spectrum(
-                    an,
+                    an_power,
                     dim=power_dims,
                     detrend="linear",
                     window=True,
@@ -519,7 +527,7 @@ def core_metrics(
         elif set(power_dims) == {lat_dim, lon_dim}:
             if want(Metric.FC_ISOTROPIC_POWER_SPECTRUM) or want(Metric.POWER_SPECTRUM_RATIO):
                 fc_iso_ps = xrft.isotropic_power_spectrum(
-                    fc,
+                    fc_power,
                     dim=power_dims,
                     detrend="linear",
                     window=True,
@@ -531,7 +539,7 @@ def core_metrics(
 
             if want(Metric.AN_ISOTROPIC_POWER_SPECTRUM) or want(Metric.POWER_SPECTRUM_RATIO):
                 an_iso_ps = xrft.isotropic_power_spectrum(
-                    an,
+                    an_power,
                     dim=power_dims,
                     detrend="linear",
                     window=True,
@@ -546,7 +554,7 @@ def core_metrics(
 
             if want(Metric.FC_POWER_SPECTRUM):
                 fc_ps = xrft.power_spectrum(
-                    fc,
+                    fc_power,
                     dim=power_dims,
                     detrend="linear",
                     window=True,
@@ -558,7 +566,7 @@ def core_metrics(
 
             if want(Metric.AN_POWER_SPECTRUM):
                 an_ps = xrft.power_spectrum(
-                    an,
+                    an_power,
                     dim=power_dims,
                     detrend="linear",
                     window=True,
@@ -1006,6 +1014,14 @@ def core_metrics(
                 if d in {time_dim, lat_dim, lon_dim}
             )
 
+            power_chunks = {
+                dim: -1
+                for dim in power_dims
+            }
+
+            fc_anom_power = fc_anom.chunk(power_chunks)
+            an_anom_power = an_anom.chunk(power_chunks)
+
             # 1D PSD
             if power_dims in {
                 (time_dim,),  # temporal
@@ -1014,7 +1030,7 @@ def core_metrics(
             }:
                 if want(Metric.FC_ANOM_POWER_SPECTRUM) or want(Metric.POWER_SPECTRUM_RATIO_ANOM):
                     fc_anom_ps = xrft.power_spectrum(
-                        fc_anom,
+                        fc_anom_power,
                         dim=power_dims,
                         detrend="linear",
                         window=True,
@@ -1026,7 +1042,7 @@ def core_metrics(
 
                 if want(Metric.AN_ANOM_POWER_SPECTRUM) or want(Metric.POWER_SPECTRUM_RATIO_ANOM):
                     an_anom_ps = xrft.power_spectrum(
-                        an_anom,
+                        an_anom_power,
                         dim=power_dims,
                         detrend="linear",
                         window=True,
@@ -1043,7 +1059,7 @@ def core_metrics(
             elif set(power_dims) == {lat_dim, lon_dim}:
                 if want(Metric.FC_ANOM_ISOTROPIC_POWER_SPECTRUM) or want(Metric.POWER_SPECTRUM_RATIO_ANOM):
                     fc_anom_iso_ps = xrft.isotropic_power_spectrum(
-                        fc_anom,
+                        fc_anom_power,
                         dim=power_dims,
                         detrend="linear",
                         window=True,
@@ -1055,7 +1071,7 @@ def core_metrics(
 
                 if want(Metric.AN_ANOM_ISOTROPIC_POWER_SPECTRUM) or want(Metric.POWER_SPECTRUM_RATIO_ANOM):
                     an_anom_iso_ps = xrft.isotropic_power_spectrum(
-                        an_anom,
+                        an_anom_power,
                         dim=power_dims,
                         detrend="linear",
                         window=True,
@@ -1070,7 +1086,7 @@ def core_metrics(
 
                 if want(Metric.FC_ANOM_POWER_SPECTRUM):
                     fc_anom_ps = xrft.power_spectrum(
-                        fc_anom,
+                        fc_anom_power,
                         dim=power_dims,
                         detrend="linear",
                         window=True,
@@ -1082,7 +1098,7 @@ def core_metrics(
 
                 if want(Metric.AN_ANOM_POWER_SPECTRUM):
                     an_anom_ps = xrft.power_spectrum(
-                        an_anom,
+                        an_anom_power,
                         dim=power_dims,
                         detrend="linear",
                         window=True,
