@@ -30,7 +30,7 @@ class GaussianNLLFromLogits(nn.Module):
         if mu.shape != target.shape:
             raise ValueError("mu and target must have same shape")
 
-        mask_b = _expand_mask_to(target, mask).to(device=target.device, dtype=torch.bool)
+        mask_b = expand_mask_to(target, mask).to(device=target.device, dtype=torch.bool)
         # Gaussian NLL per element (no reduction):
         # 0.5 * (log(2*pi*var) + (target-mu)^2 / var)
         var = var.clamp_min(self.eps)

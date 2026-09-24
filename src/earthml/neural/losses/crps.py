@@ -5,7 +5,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from .utils import _expand_mask_to
+from ..metrics import expand_mask_to
 
 
 # -------------------------
@@ -126,7 +126,7 @@ class EmpiricalCRPSLoss(nn.Module):
                 f"y_pred ({y_pred.shape}) and y_true ({y_true.shape}) must have the same shape"
             )
 
-        mask_b = _expand_mask_to(y_true, mask).to(device=y_true.device, dtype=torch.bool)
+        mask_b = expand_mask_to(y_true, mask).to(device=y_true.device, dtype=torch.bool)
 
         # Unpack packed ensemble dimension:
         # e.g. (N,C*R,H,W) -> (N,C,R,H,W)
