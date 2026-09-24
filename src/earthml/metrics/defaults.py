@@ -33,6 +33,8 @@ METRIC_DIFFERENCE_IMPROVEMENT = {
     "acc": HIGHER_BETTER_DIFF,
     "r2": HIGHER_BETTER_DIFF,
     "r2_anom": HIGHER_BETTER_DIFF,
+    "kendall_tau": HIGHER_BETTER_DIFF,
+    "kendall_tau_anom": HIGHER_BETTER_DIFF,
 
     # Spatial-gradient errors: lower is better
     "grad_rmse": LOWER_BETTER_DIFF,
@@ -55,9 +57,15 @@ METRIC_DIFFERENCE_IMPROVEMENT = {
 
     # Skill scores: higher is better
     "mse_skill_clim": HIGHER_BETTER_DIFF,
-    "mae_anom_skill_clim": HIGHER_BETTER_DIFF,
+    "rmse_skill_clim": HIGHER_BETTER_DIFF,
+    "mae_skill_clim": HIGHER_BETTER_DIFF,
+
     "mse_anom_skill_clim": HIGHER_BETTER_DIFF,
     "rmse_anom_skill_clim": HIGHER_BETTER_DIFF,
+    "mae_anom_skill_clim": HIGHER_BETTER_DIFF,
+
+    "ens_member_mse_skill_clim": HIGHER_BETTER_DIFF,
+    "mean_member_mse_skill_clim": HIGHER_BETTER_DIFF,
     "ens_member_mse_anom_skill_clim": HIGHER_BETTER_DIFF,
     "mean_member_mse_anom_skill_clim": HIGHER_BETTER_DIFF,
 
@@ -79,7 +87,20 @@ METRIC_DIFFERENCE_IMPROVEMENT = {
     "spread_skill_ratio": TARGET_ONE_DIFF,
     "spread_anom_skill_ratio": TARGET_ONE_DIFF,
 
+    # Brier score: lower is better
+    "brier_lower": LOWER_BETTER_DIFF,
+    "brier_middle": LOWER_BETTER_DIFF,
+    "brier_upper": LOWER_BETTER_DIFF,
+
+    "brier_anom_lower": LOWER_BETTER_DIFF,
+    "brier_anom_middle": LOWER_BETTER_DIFF,
+    "brier_anom_upper": LOWER_BETTER_DIFF,
+
     # ROC AUC: higher is better
+    "roc_lower": HIGHER_BETTER_DIFF,
+    "roc_middle": HIGHER_BETTER_DIFF,
+    "roc_upper": HIGHER_BETTER_DIFF,
+
     "roc_anom_lower": HIGHER_BETTER_DIFF,
     "roc_anom_middle": HIGHER_BETTER_DIFF,
     "roc_anom_upper": HIGHER_BETTER_DIFF,
@@ -153,8 +174,18 @@ METRIC_PERCENTAGE_IMPROVEMENT = {
     "spread_skill_ratio": TARGET_ONE_PERCENT,
     "spread_anom_skill_ratio": TARGET_ONE_PERCENT,
 
-    # No percentage form for corr / ACC / R² / skill scores / ROC AUC.
-    # Their natural improvement is an absolute difference (Δ).
+    # Brier score
+    "brier_lower": LOWER_BETTER_PERCENT,
+    "brier_middle": LOWER_BETTER_PERCENT,
+    "brier_upper": LOWER_BETTER_PERCENT,
+
+    "brier_anom_lower": LOWER_BETTER_PERCENT,
+    "brier_anom_middle": LOWER_BETTER_PERCENT,
+    "brier_anom_upper": LOWER_BETTER_PERCENT,
+
+    # No percentage form for correlation / Kendall tau / R² /
+    # skill scores / ROC AUC
+    # Their natural improvement is an absolute difference (Δ)
 }
 
 
@@ -199,7 +230,9 @@ METRIC_IMPROVEMENT_UNITS: dict[
     # Correlation / explained variance
     # -------------------------------------------------------------
     "corr": ("Δ",),
+    "kendall_tau": ("Δ",),
     "acc": ("Δ",),
+    "kendall_tau_anom": ("Δ",),
     "r2": ("Δ",),
     "r2_anom": ("Δ",),
 
@@ -250,19 +283,40 @@ METRIC_IMPROVEMENT_UNITS: dict[
     # Skill scores
     # -------------------------------------------------------------
     "mse_skill_clim": ("Δ",),
-    "mae_anom_skill_clim": ("Δ",),
+    "rmse_skill_clim": ("Δ",),
+    "mae_skill_clim": ("Δ",),
+
     "mse_anom_skill_clim": ("Δ",),
     "rmse_anom_skill_clim": ("Δ",),
+    "mae_anom_skill_clim": ("Δ",),
+
+    "ens_member_mse_skill_clim": ("Δ",),
+    "mean_member_mse_skill_clim": ("Δ",),
     "ens_member_mse_anom_skill_clim": ("Δ",),
     "mean_member_mse_anom_skill_clim": ("Δ",),
 
     # -------------------------------------------------------------
-    # ROC
+    # Brier score
     # -------------------------------------------------------------
+    "brier_lower": ("%", "Δ"),
+    "brier_middle": ("%", "Δ"),
+    "brier_upper": ("%", "Δ"),
+
+    "brier_anom_lower": ("%", "Δ"),
+    "brier_anom_middle": ("%", "Δ"),
+    "brier_anom_upper": ("%", "Δ"),
+
+    # -------------------------------------------------------------
+    # ROC AUC
+    # -------------------------------------------------------------
+    "roc_lower": ("Δ",),
+    "roc_middle": ("Δ",),
+    "roc_upper": ("Δ",),
+
     "roc_anom_lower": ("Δ",),
     "roc_anom_middle": ("Δ",),
     "roc_anom_upper": ("Δ",),
-}
+    }
 
 
 NORMALIZED_IMPROVEMENT_REFERENCE: dict[str, tuple[str, int]] = {
