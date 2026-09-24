@@ -159,6 +159,7 @@ class EarthMLLogger:
         sep: str = " ",
         end: str = "\n",
         level: int | str = logging.INFO,
+        console: bool = True,
     ) -> None:
         """
         Print values like built-in print(), while also saving plain text
@@ -187,19 +188,20 @@ class EarthMLLogger:
             else:
                 other_handlers.append(handler)
 
-        if rich_handlers:
-            for handler in rich_handlers:
-                handler.console.print(
+        if console:
+            if rich_handlers:
+                for handler in rich_handlers:
+                    handler.console.print(
+                        *args,
+                        sep=sep,
+                        end=end,
+                    )
+            else:
+                _SHARED_CONSOLE.print(
                     *args,
                     sep=sep,
                     end=end,
                 )
-        else:
-            _SHARED_CONSOLE.print(
-                *args,
-                sep=sep,
-                end=end,
-            )
 
         if not rendered_text:
             return
