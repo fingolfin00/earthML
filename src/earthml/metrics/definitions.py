@@ -51,12 +51,12 @@ class Metric(StrEnum):
     AN_GRAD_MAG = "an_grad_mag"
     GRAD_RMSE = "grad_rmse"
     # Spatial only
-    SCC = "spatial_corr"
+    SCC = "scc"
     # Power spectra
     FC_POWER_SPECTRUM = "fc_power_spectrum"
     AN_POWER_SPECTRUM = "an_power_spectrum"
     FC_ISOTROPIC_POWER_SPECTRUM = "fc_isotropic_power_spectrum"
-    AN_ISOTROPIC_POWER_SPECTRUM = "an_sotropic_power_spectrum"
+    AN_ISOTROPIC_POWER_SPECTRUM = "an_isotropic_power_spectrum"
     POWER_SPECTRUM_RATIO = "power_spectrum_ratio"
 
     # ------------------------------------------------------
@@ -115,7 +115,7 @@ class Metric(StrEnum):
     AN_ANOM_GRAD_MAG = "an_anom_grad_mag"
     GRAD_RMSE_ANOM = "grad_rmse_anom"
     # Spatial only
-    SCC_ANOM = "spatial_corr_anom"
+    SCC_ANOM = "scc_anom"
     # Anomaly power spectra
     FC_ANOM_POWER_SPECTRUM = "fc_anom_power_spectrum"
     AN_ANOM_POWER_SPECTRUM = "an_anom_power_spectrum"
