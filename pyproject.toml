@@ -34,6 +34,7 @@ dependencies = [
     "copernicusmarine>=2.3.0",
     "timm>=1.0.28",
     "cmap>=0.7.2",
+    "xrft>=1.0.1",
 ]
 
 [project.optional-dependencies]
