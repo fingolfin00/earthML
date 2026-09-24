@@ -56,11 +56,19 @@ if TYPE_CHECKING:
         select_clim_for_time,
     )
 
-    from .neural.losses import build_loss
-    from .neural.dataset import XarrayDataset
-    from .neural.nets import build_net
-    from .neural.normalize import Normalize, MonthlyNormalize
-    from .neural.module import SplitDataModule, SingleMonthBatchSampler
+    from .neural import (
+        build_loss,
+        build_net,
+        diagnostics,
+        RichEarlyStopping,
+        LearningRateChangePrinter,
+        XarrayDataset,
+        XarraySubset,
+        Normalize,
+        MonthlyNormalize,
+        SplitDataModule,
+        SingleMonthBatchSampler,
+    )
 
     from .logging import (
         EarthMLLogger,
@@ -97,7 +105,11 @@ __all__ = [
     # neural
     "build_loss",
     "build_net",
+    "diagnostics",
+    "RichEarlyStopping",
+    "LearningRateChangePrinter",
     "XarrayDataset",
+    "XarraySubset",
     "Normalize",
     "MonthlyNormalize",
     "SplitDataModule",
@@ -114,7 +126,7 @@ __all__ = [
     "save_zarr",
     "safe_chunk_spec",
     "ensure_time_coord",
-    # agggregation
+    # aggregation
     "aggregate_leadtime_ds",
     "aggregate_leadtime_da",
     "aggregate_leadtime_da_dayweighted",
@@ -168,13 +180,17 @@ _EXPORTS = {
     "SeqBPi": (".plots", "SeqBPi"),
     "SeqWRdY": (".plots", "SeqWRdY"),
 
-    "build_loss": (".neural.losses", "build_loss"),
-    "build_net": (".neural.nets", "build_net"),
-    "XarrayDataset": (".neural.dataset", "XarrayDataset"),
-    "Normalize": (".neural.normalize", "Normalize"),
-    "MonthlyNormalize": (".neural.normalize", "MonthlyNormalize"),
-    "SplitDataModule": (".neural.module", "SplitDataModule"),
-    "SingleMonthBatchSampler": (".neural.module", "SingleMonthBatchSampler"),
+    "build_loss": (".neural", "build_loss"),
+    "build_net": (".neural", "build_net"),
+    "diagnostics": (".neural", "diagnostics"),
+    "RichEarlyStopping": (".neural", "RichEarlyStopping"),
+    "LearningRateChangePrinter": (".neural", "LearningRateChangePrinter"),
+    "XarrayDataset": (".neural", "XarrayDataset"),
+    "XarraySubset": (".neural", "XarraySubset"),
+    "Normalize": (".neural", "Normalize"),
+    "MonthlyNormalize": (".neural", "MonthlyNormalize"),
+    "SplitDataModule": (".neural", "SplitDataModule"),
+    "SingleMonthBatchSampler": (".neural", "SingleMonthBatchSampler"),
 
 
     "get_metrics": (".metrics", "get_metrics"),
