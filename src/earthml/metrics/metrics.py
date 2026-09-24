@@ -6,7 +6,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import xarray as xr
+
+from scipy.stats import kendalltau
 import xskillscore as xs
+import xrft
 
 from ..base import (
     Settings,
@@ -90,13 +93,10 @@ def horizontal_gradient(
         EARTH_RADIUS_M * np.pi / 180.0
     )
 
-    grad_y = (
-        da.differentiate(
-            lat_dim,
-            edge_order=2,
-        )
-        / meters_per_degree_lat
-    )
+    grad_y = da.differentiate(
+        lat_dim,
+        edge_order=2,
+    ) / meters_per_degree_lat
 
     if periodic_longitude:
         forward = da.roll(
@@ -108,9 +108,7 @@ def horizontal_gradient(
             roll_coords=False,
         )
 
-        grad_x_per_degree = (
-            forward - backward
-        ) / (2.0 * dlon)
+        grad_x_per_degree = (forward - backward) / (2.0 * dlon)
 
     else:
         grad_x_per_degree = da.differentiate(
@@ -120,12 +118,7 @@ def horizontal_gradient(
 
     cos_lat = np.cos(lat_rad)
 
-    meters_per_degree_lon = (
-        EARTH_RADIUS_M
-        * cos_lat
-        * np.pi
-        / 180.0
-    )
+    meters_per_degree_lon = EARTH_RADIUS_M * cos_lat * np.pi / 180.0
 
     grad_x = xr.where(
         abs(cos_lat) > 1e-6,
@@ -133,12 +126,34 @@ def horizontal_gradient(
         np.nan,
     )
 
-    grad_mag = np.sqrt(
-        grad_x ** 2
-        + grad_y ** 2
-    )
+    grad_mag = np.sqrt(grad_x ** 2 + grad_y ** 2)
 
     return grad_x, grad_y, grad_mag
+
+
+def kendall_tau(
+    x: xr.DataArray,
+    y: xr.DataArray,
+    dim: str,
+) -> xr.DataArray:
+    """Xarray ufunc wrapper of SciPy Kendall's tau implementation"""
+    def _kendall_tau(x, y):
+        return kendalltau(
+            x,
+            y,
+            nan_policy="omit",
+        ).statistic
+
+    return xr.apply_ufunc(
+        _kendall_tau,
+        x,
+        y,
+        input_core_dims=[[dim], [dim]],
+        output_core_dims=[[]],
+        vectorize=True,
+        dask="parallelized",
+        output_dtypes=[float],
+    )
 
 
 def core_metrics(
@@ -190,6 +205,10 @@ def core_metrics(
 
     out = xr.Dataset()
 
+    # ------------------------------------------------------
+    # Orography
+    # ------------------------------------------------------
+
     static_orography_metrics = (
         Metric.OROGRAPHY,
         Metric.OROGRAPHY_GRAD_MAG,
@@ -231,6 +250,10 @@ def core_metrics(
                 reduce_orography(orography_grad_mag)
             )
 
+    # ------------------------------------------------------
+    # Error metrics
+    # ------------------------------------------------------
+
     if want(Metric.BIAS):
         out[Metric.BIAS.value] = error.weighted(weights).mean(dims)
 
@@ -243,22 +266,18 @@ def core_metrics(
     if want(Metric.RMSE):
         out[Metric.RMSE.value] = np.sqrt((error ** 2).weighted(weights).mean(dims))
 
+    # ------------------------------------------------------
+    # Normalized metrics
+    # ------------------------------------------------------
+
     if want(Metric.NMSE):
         nmse = (error ** 2).weighted(weights).mean(dims)
-        an_var_total = (
-            ((an - an.weighted(weights).mean(dims)) ** 2)
-            .weighted(weights)
-            .mean(dims)
-        )
+        an_var_total = ((an - an.weighted(weights).mean(dims)) ** 2).weighted(weights).mean(dims)
         out[Metric.NMSE.value] = nmse / an_var_total
 
     if want(Metric.NRMSE):
         rmse = np.sqrt((error ** 2).weighted(weights).mean(dims))
-        an_std_total = np.sqrt(
-            ((an - an.weighted(weights).mean(dims)) ** 2)
-            .weighted(weights)
-            .mean(dims)
-        )
+        an_std_total = np.sqrt(((an - an.weighted(weights).mean(dims)) ** 2).weighted(weights).mean(dims))
         out[Metric.NRMSE.value] = rmse / an_std_total
 
     if want(Metric.R2):
@@ -266,8 +285,13 @@ def core_metrics(
         sst = ((an - an.weighted(weights).mean(dims)) ** 2).weighted(weights).sum(dims)
         out[Metric.R2.value] = 1 - sse / sst
 
+    # ------------------------------------------------------
+    # Temporal metrics and MSE decomposition
+    # ------------------------------------------------------
+
     temporal_diagnostic_metrics = (
         Metric.CORR,
+        Metric.KENDALL_TAU,
         Metric.FC_STD,
         Metric.AN_STD,
         Metric.STD_RATIO,
@@ -285,29 +309,29 @@ def core_metrics(
                 "to be included in dims."
             )
 
-        # Work in float64 for numerically stable temporal diagnostics.
+        # Work in float64 for numerically stable temporal diagnostics
         fc_diag = fc.astype("float64")
         an_diag = an.astype("float64")
 
-        # Use exactly the same valid samples for forecast and analysis.
+        # Use exactly the same valid samples for forecast and analysis
         valid = fc_diag.notnull() & an_diag.notnull()
         fc_diag = fc_diag.where(valid)
         an_diag = an_diag.where(valid)
 
         error_diag = fc_diag - an_diag
 
-        # Temporal means.
+        # Temporal means
         fc_mean_t = fc_diag.mean(time_dim)
         an_mean_t = an_diag.mean(time_dim)
 
-        # Centered fields.
+        # Centered fields
         fc_centered = fc_diag - fc_mean_t
         an_centered = an_diag - an_mean_t
 
-        # Temporal bias.
+        # Temporal bias
         bias_t = error_diag.mean(time_dim)
 
-        # Population variance and covariance over time.
+        # Population variance and covariance over time
         fc_var_t = (fc_centered ** 2).mean(time_dim)
         an_var_t = (an_centered ** 2).mean(time_dim)
         cov_t = (fc_centered * an_centered).mean(time_dim)
@@ -315,11 +339,8 @@ def core_metrics(
         fc_std_t = np.sqrt(fc_var_t)
         an_std_t = np.sqrt(an_var_t)
 
-        # Correlation.
-        corr_t = safe_div(
-            cov_t,
-            fc_std_t * an_std_t,
-        )
+        # Correlation
+        corr_t = safe_div(cov_t, fc_std_t * an_std_t)
 
         # --------------------------------------------------------------
         # MSE decomposition
@@ -336,30 +357,37 @@ def core_metrics(
         # --------------------------------------------------------------
 
         mse_bias_component_t = bias_t ** 2
+        mse_std_component_t = (fc_std_t - an_std_t) ** 2
+        mse_corr_component_t = 2.0 * (fc_std_t * an_std_t - cov_t)
 
-        mse_std_component_t = (
-            fc_std_t - an_std_t
-        ) ** 2
-
-        mse_corr_component_t = (
-            2.0 * (fc_std_t * an_std_t - cov_t)
-        )
-
-        spatial_dims = tuple(
-            d for d in dims if d != time_dim
+        # Whatever remains after temporal metric is calculated
+        post_temporal_dims = tuple(
+            d for d in dims
+            if d != time_dim
         )
 
         def spatial_mean(
             da: xr.DataArray,
         ) -> xr.DataArray:
-            if not spatial_dims:
+            if not post_temporal_dims:
                 return da
+            return da.weighted(weights).mean(post_temporal_dims)
 
-            return da.weighted(weights).mean(spatial_dims)
+        # ------------------------------------------------------
+        # Correlation and STD
+        # ------------------------------------------------------
 
-        # Standard diagnostics.
         if want(Metric.CORR):
             out[Metric.CORR.value] = spatial_mean(corr_t)
+
+        if want(Metric.KENDALL_TAU):
+            kendall = kendall_tau(
+                fc_diag,
+                an_diag,
+                dim=time_dim,
+            )
+
+            out[Metric.KENDALL_TAU.value] = spatial_mean(kendall)
 
         if want(Metric.FC_STD):
             out[Metric.FC_STD.value] = spatial_mean(fc_std_t)
@@ -372,47 +400,33 @@ def core_metrics(
                 safe_div(fc_std_t, an_std_t)
             )
 
-        # MSE decomposition diagnostics.
-        mse_bias_component = spatial_mean(
-            mse_bias_component_t
-        )
-        mse_std_component = spatial_mean(
-            mse_std_component_t
-        )
-        mse_corr_component = spatial_mean(
-            mse_corr_component_t
-        )
+        # ------------------------------------------------------
+        # MSE decomposition metrics
+        # ------------------------------------------------------
+
+        mse_bias_component = spatial_mean(mse_bias_component_t)
+        mse_std_component = spatial_mean(mse_std_component_t)
+        mse_corr_component = spatial_mean(mse_corr_component_t)
 
         if want(Metric.MSE_BIAS_COMPONENT):
-            out[Metric.MSE_BIAS_COMPONENT.value] = (
-                mse_bias_component
-            )
+            out[Metric.MSE_BIAS_COMPONENT.value] = mse_bias_component
 
         if want(Metric.MSE_STD_COMPONENT):
-            out[Metric.MSE_STD_COMPONENT.value] = (
-                mse_std_component
-            )
+            out[Metric.MSE_STD_COMPONENT.value] = mse_std_component
 
         if want(Metric.MSE_CORR_COMPONENT):
-            out[Metric.MSE_CORR_COMPONENT.value] = (
-                mse_corr_component
-            )
+            out[Metric.MSE_CORR_COMPONENT.value] = mse_corr_component
 
         if want(Metric.CRMSE):
-            out[Metric.CRMSE.value] = np.sqrt(
-                mse_std_component
-                + mse_corr_component
-            )
+            out[Metric.CRMSE.value] = np.sqrt(mse_std_component + mse_corr_component)
 
         if want(Metric.REGRESSION_SLOPE):
-            regression_slope_t = safe_div(
-                cov_t,
-                an_var_t,
-            )
+            regression_slope_t = safe_div(cov_t, an_var_t)
+            out[Metric.REGRESSION_SLOPE.value] = spatial_mean(regression_slope_t)
 
-            out[Metric.REGRESSION_SLOPE.value] = (
-                spatial_mean(regression_slope_t)
-            )
+    # ------------------------------------------------------
+    # Spatial gradients
+    # ------------------------------------------------------
 
     spatial_gradient_metrics = (
         Metric.FC_GRAD_MAG,
@@ -434,48 +448,180 @@ def core_metrics(
         )
 
         if want(Metric.FC_GRAD_MAG):
-            out[Metric.FC_GRAD_MAG.value] = (
-                fc_grad_mag
-                .weighted(weights)
-                .mean(dims)
-            )
+            out[Metric.FC_GRAD_MAG.value] = fc_grad_mag.weighted(weights).mean(dims)
 
         if want(Metric.AN_GRAD_MAG):
-            out[Metric.AN_GRAD_MAG.value] = (
-                an_grad_mag
-                .weighted(weights)
-                .mean(dims)
-            )
+            out[Metric.AN_GRAD_MAG.value] = an_grad_mag.weighted(weights).mean(dims)
 
         if want(Metric.GRAD_RMSE):
-            gradient_squared_error = (
-                (fc_grad_x - an_grad_x) ** 2
-                + (fc_grad_y - an_grad_y) ** 2
-            )
+            gradient_squared_error = (fc_grad_x - an_grad_x) ** 2 + (fc_grad_y - an_grad_y) ** 2
+            out[Metric.GRAD_RMSE.value] = np.sqrt(gradient_squared_error.weighted(weights).mean(dims))
 
-            out[Metric.GRAD_RMSE.value] = np.sqrt(
-                gradient_squared_error
-                .weighted(weights)
-                .mean(dims)
-            )
+    # ------------------------------------------------------
+    # Power spectrum metrics
+    # Supported for 1D temporal/zonal/meridional spectra,
+    # raw 2D spatial spectra, and 1D isotropic spatial spectra
+    # ------------------------------------------------------
 
+    power_metrics = (
+        Metric.FC_POWER_SPECTRUM,
+        Metric.AN_POWER_SPECTRUM,
+        Metric.FC_ISOTROPIC_POWER_SPECTRUM,
+        Metric.AN_ISOTROPIC_POWER_SPECTRUM,
+        Metric.POWER_SPECTRUM_RATIO,
+    )
+
+    if any(want(metric) for metric in power_metrics):
+        power_dims = tuple(
+            d
+            for d in dims
+            if d in {time_dim, lat_dim, lon_dim}
+        )
+
+        # 1D PSD
+        if power_dims in {
+            (time_dim,),  # temporal
+            (lat_dim,),   # meridional
+            (lon_dim,),   # zonal
+        }:
+            if want(Metric.FC_POWER_SPECTRUM) or want(Metric.POWER_SPECTRUM_RATIO):
+                fc_ps = xrft.power_spectrum(
+                    fc,
+                    dim=power_dims,
+                    detrend="linear",
+                    window=True,
+                    scaling="density",
+                )
+
+                if want(Metric.FC_POWER_SPECTRUM):
+                    out[Metric.FC_POWER_SPECTRUM.value] = fc_ps
+
+            if want(Metric.AN_POWER_SPECTRUM) or want(Metric.POWER_SPECTRUM_RATIO):
+                an_ps = xrft.power_spectrum(
+                    an,
+                    dim=power_dims,
+                    detrend="linear",
+                    window=True,
+                    scaling="density",
+                )
+
+                if want(Metric.AN_POWER_SPECTRUM):
+                    out[Metric.AN_POWER_SPECTRUM.value] = an_ps
+
+            if want(Metric.POWER_SPECTRUM_RATIO):
+                out[Metric.POWER_SPECTRUM_RATIO.value] = safe_div(fc_ps, an_ps)
+
+        # 2D spatial field -> 1D isotropic spatial PSD
+        elif set(power_dims) == {lat_dim, lon_dim}:
+            if want(Metric.FC_ISOTROPIC_POWER_SPECTRUM) or want(Metric.POWER_SPECTRUM_RATIO):
+                fc_iso_ps = xrft.isotropic_power_spectrum(
+                    fc,
+                    dim=power_dims,
+                    detrend="linear",
+                    window=True,
+                    scaling="density",
+                )
+
+                if want(Metric.FC_ISOTROPIC_POWER_SPECTRUM):
+                    out[Metric.FC_ISOTROPIC_POWER_SPECTRUM.value] = fc_iso_ps
+
+            if want(Metric.AN_ISOTROPIC_POWER_SPECTRUM) or want(Metric.POWER_SPECTRUM_RATIO):
+                an_iso_ps = xrft.isotropic_power_spectrum(
+                    an,
+                    dim=power_dims,
+                    detrend="linear",
+                    window=True,
+                    scaling="density",
+                )
+
+                if want(Metric.AN_ISOTROPIC_POWER_SPECTRUM):
+                    out[Metric.AN_ISOTROPIC_POWER_SPECTRUM.value] = an_iso_ps
+
+            if want(Metric.POWER_SPECTRUM_RATIO):
+                out[Metric.POWER_SPECTRUM_RATIO.value] = safe_div(fc_iso_ps, an_iso_ps)
+
+            if want(Metric.FC_POWER_SPECTRUM):
+                fc_ps = xrft.power_spectrum(
+                    fc,
+                    dim=power_dims,
+                    detrend="linear",
+                    window=True,
+                    scaling="density",
+                )
+
+                if want(Metric.FC_POWER_SPECTRUM):
+                    out[Metric.FC_POWER_SPECTRUM.value] = fc_ps
+
+            if want(Metric.AN_POWER_SPECTRUM):
+                an_ps = xrft.power_spectrum(
+                    an,
+                    dim=power_dims,
+                    detrend="linear",
+                    window=True,
+                    scaling="density",
+                )
+
+                if want(Metric.AN_POWER_SPECTRUM):
+                    out[Metric.AN_POWER_SPECTRUM.value] = an_ps
+
+    # ------------------------------------------------------
+    # Spatial only metrics
+    # can produce only scalar and timeseries views
+    # ------------------------------------------------------
+
+    spatial_only_dims = (lat_dim, lon_dim)
+    reduce_space = all(dim in dims for dim in spatial_only_dims)
+
+    if want(Metric.SCC) and reduce_space:  
+        fc_spatial_mean = fc.weighted(weights).mean(spatial_only_dims)
+        an_spatial_mean = an.weighted(weights).mean(spatial_only_dims)
+
+        fc_centered_spatial = fc - fc_spatial_mean
+        an_centered_spatial = an - an_spatial_mean
+
+        cov_spatial = (fc_centered_spatial * an_centered_spatial).weighted(weights).mean(spatial_only_dims)
+
+        fc_spatial_std = np.sqrt((fc_centered_spatial ** 2).weighted(weights).mean(spatial_only_dims))
+        an_spatial_std = np.sqrt((an_centered_spatial ** 2).weighted(weights).mean(spatial_only_dims))
+
+        scc = safe_div(cov_spatial, fc_spatial_std * an_spatial_std)
+
+        remaining_dims = [
+            d
+            for d in dims
+            if d not in spatial_only_dims
+        ]
+
+        if remaining_dims:
+            scc = scc.mean(remaining_dims)
+
+        out[Metric.SCC.value] = scc
+
+    # ------------------------------------------------------
     # Probabilistic and ensemble metrics
+    # produced only if realization dim is present
+    # ------------------------------------------------------
+
     if realization_dim in fc.dims:
-        fc = fc.chunk({realization_dim: -1})
+
+        # --------------------------------------------------
+        # RMSE pooled across all ensemble members
+        # and the requested aggregation dimensions
+        # --------------------------------------------------
 
         if want(Metric.ENS_MEMBER_RMSE):
-            out[Metric.ENS_MEMBER_RMSE.value] = np.sqrt(
-                (error ** 2)
-                .weighted(weights)
-                .mean((realization_dim, *dims))
-            )
+            out[Metric.ENS_MEMBER_RMSE.value] = np.sqrt((error ** 2).weighted(weights).mean((realization_dim, *dims)))
+
+        # --------------------------------------------------
+        # Average RMSE of the individual ensemble members
+        # --------------------------------------------------
 
         if want(Metric.MEAN_MEMBER_RMSE):
-            out[Metric.MEAN_MEMBER_RMSE.value] = np.sqrt(
-                (error ** 2)
-                .weighted(weights)
-                .mean(dims)
-            ).mean(realization_dim)
+            out[Metric.MEAN_MEMBER_RMSE.value] = np.sqrt((error ** 2).weighted(weights).mean(dims)).mean(realization_dim)
+
+        # --------------------------------------------------
+        # Ensemble spread
+        # --------------------------------------------------
 
         if want(Metric.SPREAD) or want(Metric.SPREAD_SKILL_RATIO):
             spread = fc.std(realization_dim).weighted(weights).mean(dims)
@@ -484,13 +630,14 @@ def core_metrics(
                 out[Metric.SPREAD.value] = spread
 
             if want(Metric.SPREAD_SKILL_RATIO):
-                ens_member_rmse = np.sqrt(
-                    (error ** 2)
-                    .weighted(weights)
-                    .mean((realization_dim, *dims))
-                )
+                ens_member_rmse = np.sqrt((error ** 2).weighted(weights).mean((realization_dim, *dims)))
                 out[Metric.SPREAD_SKILL_RATIO.value] = spread / ens_member_rmse
 
+        # --------------------------------------------------
+        # Ensemble scores
+        # --------------------------------------------------
+
+        # Continuous ranked probability score (CRPS)
         if want(Metric.CRPS):
             out[Metric.CRPS.value] = xs.crps_ensemble(
                 observations=an.mean(dim=realization_dim),
@@ -500,12 +647,116 @@ def core_metrics(
                 weights=weights,
             )
 
+        # --------------------------------------------------
+        # Rank histogram
+        # --------------------------------------------------
+
         if want(Metric.RANK_HISTOGRAM):
             out[Metric.RANK_HISTOGRAM.value] = xs.rank_histogram(
                 observations=an.mean(dim=realization_dim),
                 forecasts=fc,
                 member_dim=realization_dim,
             )
+
+
+        # --------------------------------------------------
+        # Event-based ensemble scores
+        # --------------------------------------------------
+
+        event_based_scores = (
+            Metric.BRIER_LOWER,
+            Metric.BRIER_MIDDLE,
+            Metric.BRIER_UPPER,
+            Metric.ROC_LOWER,
+            Metric.ROC_MIDDLE,
+            Metric.ROC_UPPER,
+        )
+
+        if any(want(metric) for metric in event_based_scores):
+            an_for_terciles = an.mean(realization_dim).chunk({time_dim: -1})
+            fc_for_terciles = fc.chunk({realization_dim: -1})
+
+            # Terciles
+            q33 = an_for_terciles.quantile(1 / 3, dim=time_dim).reset_coords(drop=True)
+            q67 = an_for_terciles.quantile(2 / 3, dim=time_dim).reset_coords(drop=True)
+
+            # Events
+            an_event_lower = an_for_terciles <= q33
+            an_event_middle = (an_for_terciles > q33) & (an_for_terciles <= q67)
+            an_event_upper = an_for_terciles > q67
+
+            fc_event_lower = fc_for_terciles <= q33
+            fc_event_middle = (fc_for_terciles > q33) & (fc_for_terciles <= q67)
+            fc_event_upper = fc_for_terciles > q67
+
+            # --------------------------------------------------
+            # Brier score
+            # --------------------------------------------------
+
+            if want(Metric.BRIER_LOWER):
+                out[Metric.BRIER_LOWER.value] = xs.brier_score(
+                    observations=an_event_lower,
+                    forecasts=fc_event_lower,
+                    member_dim=realization_dim,
+                    dim=list(dims),
+                    fair=fair_correction,
+                    weights=weights,
+                )
+
+            if want(Metric.BRIER_MIDDLE):
+                out[Metric.BRIER_MIDDLE.value] = xs.brier_score(
+                    observations=an_event_middle,
+                    forecasts=fc_event_middle,
+                    member_dim=realization_dim,
+                    dim=list(dims),
+                    fair=fair_correction,
+                    weights=weights,
+                )
+
+            if want(Metric.BRIER_UPPER):
+                out[Metric.BRIER_UPPER.value] = xs.brier_score(
+                    observations=an_event_upper,
+                    forecasts=fc_event_upper,
+                    member_dim=realization_dim,
+                    dim=list(dims),
+                    fair=fair_correction,
+                    weights=weights,
+                )
+
+            # --------------------------------------------------
+            # Receiving operating characteristic (ROC)
+            # --------------------------------------------------
+
+            if want(Metric.ROC_LOWER):
+                fc_prob_lower = fc_event_lower.mean(realization_dim)
+                # print("ROC lower tercile probs calculated.")
+                out[Metric.ROC_LOWER.value] = xs.roc(
+                    observations=an_event_lower,
+                    forecasts=fc_prob_lower,
+                    dim=list(dims),
+                )
+
+            if want(Metric.ROC_MIDDLE):
+                fc_prob_middle = fc_event_middle.mean(realization_dim)
+                # print("ROC middle tercile probs calculated.")
+                out[Metric.ROC_MIDDLE.value] = xs.roc(
+                    observations=an_event_middle,
+                    forecasts=fc_prob_middle,
+                    dim=list(dims),
+                )
+
+            if want(Metric.ROC_UPPER):
+                fc_prob_upper = fc_event_upper.mean(realization_dim)
+                # print("ROC upper tercile probs calculated.")
+                out[Metric.ROC_UPPER.value] = xs.roc(
+                    observations=an_event_upper,
+                    forecasts=fc_prob_upper,
+                    dim=list(dims),
+                )
+
+    # ------------------------------------------------------
+    # Anomaly metrics
+    # ------------------------------------------------------
 
     if fc_clim is not None and an_clim is not None:
         valid_clim = fc_clim.notnull() & an_clim.notnull()
@@ -519,6 +770,10 @@ def core_metrics(
         if time_dim in dims:
             fc_anom = fc_anom.chunk({time_dim: -1})
             an_anom = an_anom.chunk({time_dim: -1})
+
+        # ------------------------------------------------------
+        # Anomaly error metrics
+        # ------------------------------------------------------
 
         error_anom = fc_anom - an_anom
 
@@ -534,13 +789,32 @@ def core_metrics(
         if want(Metric.RMSE_ANOM):
             out[Metric.RMSE_ANOM.value] = np.sqrt((error_anom ** 2).weighted(weights).mean(dims))
 
+        # ------------------------------------------------------
+        # Normalized anomaly metrics
+        # ------------------------------------------------------
+
+        if want(Metric.NMSE_ANOM):
+            nmse_anom = (error_anom ** 2).weighted(weights).mean(dims)
+            an_anom_var_total = ((an_anom - an_anom.weighted(weights).mean(dims)) ** 2).weighted(weights).mean(dims)
+            out[Metric.NMSE_ANOM.value] = nmse_anom / an_anom_var_total
+
+        if want(Metric.NRMSE_ANOM):
+            rmse_anom = np.sqrt((error_anom ** 2).weighted(weights).mean(dims))
+            an_anom_std_total = np.sqrt(((an_anom - an_anom.weighted(weights).mean(dims)) ** 2).weighted(weights).mean(dims))
+            out[Metric.NRMSE_ANOM.value] = rmse_anom / an_anom_std_total
+
         if want(Metric.R2_ANOM):
             sse_anom = ((error_anom) ** 2).weighted(weights).sum(dims)
             sst_anom = ((an_anom - an_anom.weighted(weights).mean(dims)) ** 2).weighted(weights).sum(dims)
             out[Metric.R2_ANOM.value] = 1 - sse_anom / sst_anom
 
+        # ------------------------------------------------------
+        # Temporal anomaly metrics and anomaly MSE decomposition
+        # ------------------------------------------------------
+
         anomaly_temporal_diagnostic_metrics = (
             Metric.ACC,
+            Metric.KENDALL_TAU_ANOM,
             Metric.FC_ANOM_STD,
             Metric.AN_ANOM_STD,
             Metric.STD_RATIO_ANOM,
@@ -561,60 +835,40 @@ def core_metrics(
                     "time dimension to be included in dims."
                 )
 
-            # Work in float64 for numerically stable diagnostics.
+            # Work in float64 for numerically stable diagnostics
             fc_anom_diag = fc_anom.astype("float64")
             an_anom_diag = an_anom.astype("float64")
 
-            # Use exactly the same valid samples.
-            valid_anom = (
-                fc_anom_diag.notnull()
-                & an_anom_diag.notnull()
-            )
+            # Use exactly the same valid samples
+            valid_anom = fc_anom_diag.notnull() & an_anom_diag.notnull()
 
             fc_anom_diag = fc_anom_diag.where(valid_anom)
             an_anom_diag = an_anom_diag.where(valid_anom)
 
-            error_anom_diag = (
-                fc_anom_diag - an_anom_diag
-            )
+            error_anom_diag = fc_anom_diag - an_anom_diag
 
-            # Temporal means.
+            # Temporal means
             fc_anom_mean_t = fc_anom_diag.mean(time_dim)
             an_anom_mean_t = an_anom_diag.mean(time_dim)
 
-            # Centered anomaly fields.
-            fc_anom_centered = (
-                fc_anom_diag - fc_anom_mean_t
-            )
-            an_anom_centered = (
-                an_anom_diag - an_anom_mean_t
-            )
+            # Centered anomaly fields
+            fc_anom_centered = fc_anom_diag - fc_anom_mean_t
+            an_anom_centered = an_anom_diag - an_anom_mean_t
 
-            # Temporal anomaly bias.
+            # Temporal anomaly bias
             bias_anom_t = error_anom_diag.mean(time_dim)
 
-            # Population variance and covariance.
-            fc_anom_var_t = (
-                fc_anom_centered ** 2
-            ).mean(time_dim)
+            # Population variance and covariance
+            fc_anom_var_t = (fc_anom_centered ** 2).mean(time_dim)
+            an_anom_var_t = (an_anom_centered ** 2).mean(time_dim)
 
-            an_anom_var_t = (
-                an_anom_centered ** 2
-            ).mean(time_dim)
-
-            cov_anom_t = (
-                fc_anom_centered
-                * an_anom_centered
-            ).mean(time_dim)
+            cov_anom_t = (fc_anom_centered * an_anom_centered).mean(time_dim)
 
             fc_anom_std_t = np.sqrt(fc_anom_var_t)
             an_anom_std_t = np.sqrt(an_anom_var_t)
 
-            # Anomaly correlation coefficient.
-            acc_t = safe_div(
-                cov_anom_t,
-                fc_anom_std_t * an_anom_std_t,
-            )
+            # Anomaly correlation coefficient
+            acc_t = safe_div(cov_anom_t, fc_anom_std_t * an_anom_std_t)
 
             # ----------------------------------------------------------
             # Anomaly MSE decomposition
@@ -624,118 +878,75 @@ def core_metrics(
             #          + corr_component_anom
             # ----------------------------------------------------------
 
-            mse_bias_component_anom_t = (
-                bias_anom_t ** 2
-            )
+            mse_bias_component_anom_t = bias_anom_t ** 2
+            mse_std_component_anom_t = (fc_anom_std_t - an_anom_std_t) ** 2
+            mse_corr_component_anom_t = 2.0 * (fc_anom_std_t * an_anom_std_t - cov_anom_t)
 
-            mse_std_component_anom_t = (
-                fc_anom_std_t - an_anom_std_t
-            ) ** 2
-
-            mse_corr_component_anom_t = (
-                2.0
-                * (
-                    fc_anom_std_t
-                    * an_anom_std_t
-                    - cov_anom_t
-                )
-            )
-
-            spatial_dims = tuple(
-                d for d in dims if d != time_dim
+            post_temporal_dims = tuple(
+                d for d in dims
+                if d != time_dim
             )
 
             def anomaly_spatial_mean(
                 da: xr.DataArray,
             ) -> xr.DataArray:
-                if not spatial_dims:
+                if not post_temporal_dims:
                     return da
+                return da.weighted(weights).mean(post_temporal_dims)
 
-                return da.weighted(weights).mean(
-                    spatial_dims
-                )
+            # ------------------------------------------------------
+            # Anomaly correlation and anomaly STD
+            # ------------------------------------------------------
 
-            # Standard anomaly diagnostics.
             if want(Metric.ACC):
-                out[Metric.ACC.value] = (
-                    anomaly_spatial_mean(acc_t)
+                out[Metric.ACC.value] = anomaly_spatial_mean(acc_t)
+
+            if want(Metric.KENDALL_TAU_ANOM):
+                kendall_anom = kendall_tau(
+                    fc_anom_diag,
+                    an_anom_diag,
+                    dim=time_dim,
                 )
+
+                out[Metric.KENDALL_TAU_ANOM.value] = anomaly_spatial_mean(kendall_anom)
 
             if want(Metric.FC_ANOM_STD):
-                out[Metric.FC_ANOM_STD.value] = (
-                    anomaly_spatial_mean(
-                        fc_anom_std_t
-                    )
-                )
+                out[Metric.FC_ANOM_STD.value] = anomaly_spatial_mean(fc_anom_std_t)
 
             if want(Metric.AN_ANOM_STD):
-                out[Metric.AN_ANOM_STD.value] = (
-                    anomaly_spatial_mean(
-                        an_anom_std_t
-                    )
-                )
+                out[Metric.AN_ANOM_STD.value] = anomaly_spatial_mean(an_anom_std_t)
 
             if want(Metric.STD_RATIO_ANOM):
-                out[Metric.STD_RATIO_ANOM.value] = (
-                    anomaly_spatial_mean(
-                        safe_div(
-                            fc_anom_std_t,
-                            an_anom_std_t,
-                        )
-                    )
-                )
+                out[Metric.STD_RATIO_ANOM.value] = anomaly_spatial_mean(safe_div(fc_anom_std_t, an_anom_std_t))
 
-            # MSE decomposition diagnostics.
-            mse_bias_component_anom = (
-                anomaly_spatial_mean(
-                    mse_bias_component_anom_t
-                )
-            )
+            # ------------------------------------------------------
+            # Anomaly MSE decomposition
+            # ------------------------------------------------------
 
-            mse_std_component_anom = (
-                anomaly_spatial_mean(
-                    mse_std_component_anom_t
-                )
-            )
-
-            mse_corr_component_anom = (
-                anomaly_spatial_mean(
-                    mse_corr_component_anom_t
-                )
-            )
+            mse_bias_component_anom = anomaly_spatial_mean(mse_bias_component_anom_t)
+            mse_std_component_anom = anomaly_spatial_mean(mse_std_component_anom_t)
+            mse_corr_component_anom = anomaly_spatial_mean(mse_corr_component_anom_t)
 
             if want(Metric.MSE_BIAS_COMPONENT_ANOM):
-                out[
-                    Metric.MSE_BIAS_COMPONENT_ANOM.value
-                ] = mse_bias_component_anom
+                out[Metric.MSE_BIAS_COMPONENT_ANOM.value] = mse_bias_component_anom
 
             if want(Metric.MSE_STD_COMPONENT_ANOM):
-                out[
-                    Metric.MSE_STD_COMPONENT_ANOM.value
-                ] = mse_std_component_anom
+                out[Metric.MSE_STD_COMPONENT_ANOM.value] = mse_std_component_anom
 
             if want(Metric.MSE_CORR_COMPONENT_ANOM):
-                out[
-                    Metric.MSE_CORR_COMPONENT_ANOM.value
-                ] = mse_corr_component_anom
+                out[Metric.MSE_CORR_COMPONENT_ANOM.value] = mse_corr_component_anom
 
             if want(Metric.CRMSE_ANOM):
-                out[Metric.CRMSE_ANOM.value] = np.sqrt(
-                    mse_std_component_anom
-                    + mse_corr_component_anom
-                )
+                out[Metric.CRMSE_ANOM.value] = np.sqrt(mse_std_component_anom + mse_corr_component_anom)
 
             if want(Metric.REGRESSION_SLOPE_ANOM):
-                regression_slope_anom_t = safe_div(
-                    cov_anom_t,
-                    an_anom_var_t,
-                )
+                regression_slope_anom_t = safe_div(cov_anom_t, an_anom_var_t)
 
-                out[
-                    Metric.REGRESSION_SLOPE_ANOM.value
-                ] = anomaly_spatial_mean(
-                    regression_slope_anom_t
-                )
+                out[Metric.REGRESSION_SLOPE_ANOM.value] = anomaly_spatial_mean(regression_slope_anom_t)
+
+        # ------------------------------------------------------
+        # Anomaly spatial gradients
+        # ------------------------------------------------------
 
         anomaly_spatial_gradient_metrics = (
             Metric.FC_ANOM_GRAD_MAG,
@@ -747,153 +958,239 @@ def core_metrics(
             want(metric)
             for metric in anomaly_spatial_gradient_metrics
         ):
-            (
-                fc_anom_grad_x,
-                fc_anom_grad_y,
-                fc_anom_grad_mag,
-            ) = horizontal_gradient(
+            fc_anom_grad_x, fc_anom_grad_y, fc_anom_grad_mag = horizontal_gradient(
                 fc_anom,
                 lat_dim=lat_dim,
                 lon_dim=lon_dim,
             )
 
-            (
-                an_anom_grad_x,
-                an_anom_grad_y,
-                an_anom_grad_mag,
-            ) = horizontal_gradient(
+            an_anom_grad_x, an_anom_grad_y, an_anom_grad_mag = horizontal_gradient(
                 an_anom,
                 lat_dim=lat_dim,
                 lon_dim=lon_dim,
             )
 
             if want(Metric.FC_ANOM_GRAD_MAG):
-                out[Metric.FC_ANOM_GRAD_MAG.value] = (
-                    fc_anom_grad_mag
-                    .weighted(weights)
-                    .mean(dims)
-                )
+                out[Metric.FC_ANOM_GRAD_MAG.value] = fc_anom_grad_mag.weighted(weights).mean(dims)
 
             if want(Metric.AN_ANOM_GRAD_MAG):
-                out[Metric.AN_ANOM_GRAD_MAG.value] = (
-                    an_anom_grad_mag
-                    .weighted(weights)
-                    .mean(dims)
-                )
+                out[Metric.AN_ANOM_GRAD_MAG.value] = an_anom_grad_mag.weighted(weights).mean(dims)
 
             if want(Metric.GRAD_RMSE_ANOM):
-                gradient_anom_squared_error = (
-                    (
-                        fc_anom_grad_x
-                        - an_anom_grad_x
-                    ) ** 2
-                    + (
-                        fc_anom_grad_y
-                        - an_anom_grad_y
-                    ) ** 2
-                )
+                gradient_anom_squared_error = (fc_anom_grad_x - an_anom_grad_x) ** 2 + (fc_anom_grad_y - an_anom_grad_y) ** 2
 
-                out[Metric.GRAD_RMSE_ANOM.value] = np.sqrt(
-                    gradient_anom_squared_error
-                    .weighted(weights)
-                    .mean(dims)
-                )
+                out[Metric.GRAD_RMSE_ANOM.value] = np.sqrt(gradient_anom_squared_error.weighted(weights).mean(dims))
 
-        if want(Metric.NMSE_ANOM):
-            nmse_anom = (error_anom ** 2).weighted(weights).mean(dims)
-            an_anom_var_total = (
-                ((an_anom - an_anom.weighted(weights).mean(dims)) ** 2)
-                .weighted(weights)
-                .mean(dims)
+        # ------------------------------------------------------
+        # Power spectrum metrics for anomalies
+        # Supported for 1D temporal/zonal/meridional spectra,
+        # raw 2D spatial spectra, and 1D isotropic spatial spectra
+        # ------------------------------------------------------
+
+        power_metrics_anom = (
+            Metric.FC_ANOM_POWER_SPECTRUM,
+            Metric.AN_ANOM_POWER_SPECTRUM,
+            Metric.FC_ANOM_ISOTROPIC_POWER_SPECTRUM,
+            Metric.AN_ANOM_ISOTROPIC_POWER_SPECTRUM,
+            Metric.POWER_SPECTRUM_RATIO_ANOM,
+        )
+
+        if any(want(metric) for metric in power_metrics_anom):
+            power_dims = tuple(
+                d
+                for d in dims
+                if d in {time_dim, lat_dim, lon_dim}
             )
-            out[Metric.NMSE_ANOM.value] = nmse_anom / an_anom_var_total
 
-        if want(Metric.NRMSE_ANOM):
-            rmse_anom = np.sqrt((error_anom ** 2).weighted(weights).mean(dims))
-            an_anom_std_total = np.sqrt(
-                ((an_anom - an_anom.weighted(weights).mean(dims)) ** 2)
-                .weighted(weights)
-                .mean(dims)
-            )
-            out[Metric.NRMSE_ANOM.value] = rmse_anom / an_anom_std_total
+            # 1D PSD
+            if power_dims in {
+                (time_dim,),  # temporal
+                (lat_dim,),   # meridional
+                (lon_dim,),   # zonal
+            }:
+                if want(Metric.FC_ANOM_POWER_SPECTRUM) or want(Metric.POWER_SPECTRUM_RATIO_ANOM):
+                    fc_anom_ps = xrft.power_spectrum(
+                        fc_anom,
+                        dim=power_dims,
+                        detrend="linear",
+                        window=True,
+                        scaling="density",
+                    )
+
+                    if want(Metric.FC_ANOM_POWER_SPECTRUM):
+                        out[Metric.FC_ANOM_POWER_SPECTRUM.value] = fc_anom_ps
+
+                if want(Metric.AN_ANOM_POWER_SPECTRUM) or want(Metric.POWER_SPECTRUM_RATIO_ANOM):
+                    an_anom_ps = xrft.power_spectrum(
+                        an_anom,
+                        dim=power_dims,
+                        detrend="linear",
+                        window=True,
+                        scaling="density",
+                    )
+
+                    if want(Metric.AN_ANOM_POWER_SPECTRUM):
+                        out[Metric.AN_ANOM_POWER_SPECTRUM.value] = an_anom_ps
+
+                if want(Metric.POWER_SPECTRUM_RATIO_ANOM):
+                    out[Metric.POWER_SPECTRUM_RATIO_ANOM.value] = safe_div(fc_anom_ps, an_anom_ps)
+
+            # 2D spatial field -> 1D isotropic spatial PSD
+            elif set(power_dims) == {lat_dim, lon_dim}:
+                if want(Metric.FC_ANOM_ISOTROPIC_POWER_SPECTRUM) or want(Metric.POWER_SPECTRUM_RATIO_ANOM):
+                    fc_anom_iso_ps = xrft.isotropic_power_spectrum(
+                        fc_anom,
+                        dim=power_dims,
+                        detrend="linear",
+                        window=True,
+                        scaling="density",
+                    )
+
+                    if want(Metric.FC_ANOM_ISOTROPIC_POWER_SPECTRUM):
+                        out[Metric.FC_ANOM_ISOTROPIC_POWER_SPECTRUM.value] = fc_anom_iso_ps
+
+                if want(Metric.AN_ANOM_ISOTROPIC_POWER_SPECTRUM) or want(Metric.POWER_SPECTRUM_RATIO_ANOM):
+                    an_anom_iso_ps = xrft.isotropic_power_spectrum(
+                        an_anom,
+                        dim=power_dims,
+                        detrend="linear",
+                        window=True,
+                        scaling="density",
+                    )
+
+                    if want(Metric.AN_ANOM_ISOTROPIC_POWER_SPECTRUM):
+                        out[Metric.AN_ANOM_ISOTROPIC_POWER_SPECTRUM.value] = an_anom_iso_ps
+
+                if want(Metric.POWER_SPECTRUM_RATIO_ANOM):
+                    out[Metric.POWER_SPECTRUM_RATIO_ANOM.value] = safe_div(fc_anom_iso_ps, an_anom_iso_ps)
+
+                if want(Metric.FC_ANOM_POWER_SPECTRUM):
+                    fc_anom_ps = xrft.power_spectrum(
+                        fc_anom,
+                        dim=power_dims,
+                        detrend="linear",
+                        window=True,
+                        scaling="density",
+                    )
+
+                    if want(Metric.FC_ANOM_POWER_SPECTRUM):
+                        out[Metric.FC_ANOM_POWER_SPECTRUM.value] = fc_anom_ps
+
+                if want(Metric.AN_ANOM_POWER_SPECTRUM):
+                    an_anom_ps = xrft.power_spectrum(
+                        an_anom,
+                        dim=power_dims,
+                        detrend="linear",
+                        window=True,
+                        scaling="density",
+                    )
+
+                    if want(Metric.AN_ANOM_POWER_SPECTRUM):
+                        out[Metric.AN_ANOM_POWER_SPECTRUM.value] = an_anom_ps
+
+        # ------------------------------------------------------
+        # Spatial only anomaly metrics
+        # can produce only scalar and timeseries views
+        # ------------------------------------------------------
+
+        if want(Metric.SCC_ANOM) and reduce_space:
+            fc_anom_spatial_mean = fc_anom.weighted(weights).mean(spatial_only_dims)
+            an_anom_spatial_mean = an_anom.weighted(weights).mean(spatial_only_dims)
+
+            fc_anom_centered_spatial = fc_anom - fc_anom_spatial_mean
+            an_anom_centered_spatial = an_anom - an_anom_spatial_mean
+
+            cov_spatial_anom = (fc_anom_centered_spatial * an_anom_centered_spatial).weighted(weights).mean(spatial_only_dims)
+
+            fc_anom_spatial_std = np.sqrt((fc_anom_centered_spatial ** 2).weighted(weights).mean(spatial_only_dims))
+            an_anom_spatial_std = np.sqrt((an_anom_centered_spatial ** 2).weighted(weights).mean(spatial_only_dims))
+
+            scc_anom = safe_div(cov_spatial_anom, fc_anom_spatial_std * an_anom_spatial_std)
+
+            remaining_dims = [
+                d
+                for d in dims
+                if d not in spatial_only_dims
+            ]
+
+            if remaining_dims:
+                scc_anom = scc_anom.mean(remaining_dims)
+
+            out[Metric.SCC_ANOM.value] = scc_anom
+
+        # ------------------------------------------------------
+        # Skills vs climatology
+        # need anomalies even for full fields
+        # ------------------------------------------------------
 
         if want(Metric.MSE_SKILL_CLIM):
             mse = (error ** 2).weighted(weights).mean(dims)
             clim_mse_anom = ((an_anom ** 2).weighted(weights).mean(dims)) * correction
-            out[Metric.MSE_SKILL_CLIM.value] = safe_div(
-                clim_mse_anom - mse,
-                clim_mse_anom,
-            )
+            out[Metric.MSE_SKILL_CLIM.value] = safe_div(clim_mse_anom - mse, clim_mse_anom)
+
+        if want(Metric.RMSE_SKILL_CLIM):
+            rmse = cast(xr.DataArray, np.sqrt((error ** 2).weighted(weights).mean(dims)))
+            clim_rmse_anom = cast(xr.DataArray, np.sqrt((an_anom ** 2).weighted(weights).mean(dims) * correction))
+            out[Metric.RMSE_SKILL_CLIM.value] = safe_div(clim_rmse_anom - rmse, clim_rmse_anom)
+
+        if want(Metric.MAE_SKILL_CLIM):
+            mae = abs(error).weighted(weights).mean(dims)
+            clim_mae_anom = abs(an_anom).weighted(weights).mean(dims)
+            out[Metric.MAE_SKILL_CLIM.value] = safe_div(clim_mae_anom - mae, clim_mae_anom)
 
         if want(Metric.MSE_ANOM_SKILL_CLIM):
             mse_anom = (error_anom ** 2).weighted(weights).mean(dims)
             clim_mse_anom = ((an_anom ** 2).weighted(weights).mean(dims)) * correction
-            out[Metric.MSE_ANOM_SKILL_CLIM.value] = safe_div(
-                clim_mse_anom - mse_anom,
-                clim_mse_anom,
-            )
+            out[Metric.MSE_ANOM_SKILL_CLIM.value] = safe_div(clim_mse_anom - mse_anom, clim_mse_anom)
 
         if want(Metric.RMSE_ANOM_SKILL_CLIM):
             rmse_anom = cast(xr.DataArray, np.sqrt((error_anom ** 2).weighted(weights).mean(dims)))
-            clim_rmse_anom = cast(xr.DataArray, np.sqrt((an_anom ** 2).weighted(weights).mean(dims))) * correction
-            out[Metric.RMSE_ANOM_SKILL_CLIM.value] = safe_div(
-                clim_rmse_anom - rmse_anom,
-                clim_rmse_anom,
-            )
+            clim_rmse_anom = cast(xr.DataArray, np.sqrt((an_anom ** 2).weighted(weights).mean(dims) * correction))
+            out[Metric.RMSE_ANOM_SKILL_CLIM.value] = safe_div(clim_rmse_anom - rmse_anom, clim_rmse_anom)
 
         if want(Metric.MAE_ANOM_SKILL_CLIM):
             mae_anom = abs(error_anom).weighted(weights).mean(dims)
-            clim_mae_anom = abs(an_anom).weighted(weights).mean(dims) * correction
-            out[Metric.MAE_ANOM_SKILL_CLIM.value] = safe_div(
-                clim_mae_anom - mae_anom,
-                clim_mae_anom,
-            )
+            clim_mae_anom = abs(an_anom).weighted(weights).mean(dims)
+            out[Metric.MAE_ANOM_SKILL_CLIM.value] = safe_div(clim_mae_anom - mae_anom, clim_mae_anom)
 
-        # Ensemble anomaly metrics
+        # ------------------------------------------------------
+        # Probabilistic and ensemble anomaly metrics
+        # produced only if realization dim is present
+        # ------------------------------------------------------
+
         if realization_dim in fc.dims:
+
+            # --------------------------------------------------
+            # Anomaly RMSE pooled across all ensemble members
+            # and the requested aggregation dimensions
+            # --------------------------------------------------
+
             if want(Metric.ENS_MEMBER_RMSE_ANOM):
-                out[Metric.ENS_MEMBER_RMSE_ANOM.value] = np.sqrt(
-                    (error_anom ** 2)
-                    .weighted(weights)
-                    .mean((realization_dim, *dims))
-                )
+                out[Metric.ENS_MEMBER_RMSE_ANOM.value] = np.sqrt((error_anom ** 2).weighted(weights).mean((realization_dim, *dims)))
+
+            # --------------------------------------------------
+            # Average anomaly RMSE of the individual ensemble members
+            # --------------------------------------------------
 
             if want(Metric.MEAN_MEMBER_RMSE_ANOM):
-                out[Metric.MEAN_MEMBER_RMSE_ANOM.value] = np.sqrt(
-                    (error_anom ** 2)
-                    .weighted(weights)
-                    .mean(dims)
-                ).mean(realization_dim)
+                out[Metric.MEAN_MEMBER_RMSE_ANOM.value] = np.sqrt((error_anom ** 2).weighted(weights).mean(dims)).mean(realization_dim)
 
-            if want(Metric.ENS_MEMBER_MSE_ANOM_SKILL_CLIM):
-                mse_anom = (error_anom ** 2).weighted(weights).mean((realization_dim, *dims))
-                clim_mse_anom = ((an_anom ** 2).weighted(weights).mean(dims)) * correction
-                out[Metric.ENS_MEMBER_MSE_ANOM_SKILL_CLIM.value] = safe_div(
-                    clim_mse_anom - mse_anom,
-                    clim_mse_anom,
-                )
-
-            if want(Metric.MEAN_MEMBER_MSE_ANOM_SKILL_CLIM):
-                mse_anom = ((error_anom ** 2).weighted(weights).mean(dims)).mean(realization_dim)
-                clim_mse_anom = (((an_anom ** 2).weighted(weights).mean(dims)) * correction)
-                out[Metric.MEAN_MEMBER_MSE_ANOM_SKILL_CLIM.value] = safe_div(
-                    clim_mse_anom - mse_anom,
-                    clim_mse_anom,
-                )
+            # --------------------------------------------------
+            # Anomaly ensemble spread
+            # --------------------------------------------------
 
             if want(Metric.SPREAD_ANOM) or want(Metric.SPREAD_ANOM_SKILL_RATIO):
                 spread = fc_anom.std(realization_dim).weighted(weights).mean(dims)
-                # spread = fc_anom.std(realization_dim).weighted(weights).mean(dims)
                 if want(Metric.SPREAD_ANOM):
                     out[Metric.SPREAD_ANOM.value] = spread
 
                 if want(Metric.SPREAD_ANOM_SKILL_RATIO):
-                    ens_member_rmse = np.sqrt(
-                        (error_anom ** 2)
-                        .weighted(weights)
-                        .mean((realization_dim, *dims))
-                    )
+                    ens_member_rmse = np.sqrt((error_anom ** 2).weighted(weights).mean((realization_dim, *dims)))
                     out[Metric.SPREAD_ANOM_SKILL_RATIO.value] = spread / ens_member_rmse
+
+            # --------------------------------------------------
+            # Anomaly continuous ranked probability score
+            # --------------------------------------------------
 
             if want(Metric.CRPS_ANOM):
                 out[Metric.CRPS_ANOM.value] = xs.crps_ensemble(
@@ -904,6 +1201,10 @@ def core_metrics(
                     weights=weights,
                 )
 
+            # --------------------------------------------------
+            # Anomaly rank histogram
+            # --------------------------------------------------
+
             if want(Metric.RANK_HISTOGRAM_ANOM):
                 out[Metric.RANK_HISTOGRAM_ANOM.value] = xs.rank_histogram(
                     observations=an_anom.mean(dim=realization_dim),
@@ -911,30 +1212,124 @@ def core_metrics(
                     member_dim=realization_dim,
                 )
 
-            if want(Metric.ROC_ANOM_LOWER) or want(Metric.ROC_ANOM_MIDDLE) or want(Metric.ROC_ANOM_UPPER):
-                an_for_terciles = an_anom.chunk({time_dim: -1})
-                fc_for_terciles = fc_anom.chunk({realization_dim: -1})
+            # --------------------------------------------------
+            # Event-based anomaly ensemble scores
+            # --------------------------------------------------
 
-                q33 = an_for_terciles.quantile(1 / 3, dim=time_dim).reset_coords(drop=True)
-                q67 = an_for_terciles.quantile(2 / 3, dim=time_dim).reset_coords(drop=True)
+            event_based_scores = (
+                Metric.BRIER_ANOM_LOWER,
+                Metric.BRIER_ANOM_MIDDLE,
+                Metric.BRIER_ANOM_UPPER,
+                Metric.ROC_ANOM_LOWER,
+                Metric.ROC_ANOM_MIDDLE,
+                Metric.ROC_ANOM_UPPER,
+            )
+
+            if any(want(metric) for metric in event_based_scores):
+                an_anom_for_terciles = an_anom.mean(realization_dim).chunk({time_dim: -1})
+                fc_anom_for_terciles = fc_anom.chunk({realization_dim: -1})
+
+                # Terciles
+                q33_anom = an_anom_for_terciles.quantile(1 / 3, dim=time_dim).reset_coords(drop=True)
+                q67_anom = an_anom_for_terciles.quantile(2 / 3, dim=time_dim).reset_coords(drop=True)
+
+                # Events
+                an_event_lower = an_anom_for_terciles <= q33_anom
+                an_event_middle = (an_anom_for_terciles > q33_anom) & (an_anom_for_terciles <= q67_anom)
+                an_event_upper = an_anom_for_terciles > q67_anom
+
+                fc_event_lower = fc_anom_for_terciles <= q33_anom
+                fc_event_middle = (fc_anom_for_terciles > q33_anom) & (fc_anom_for_terciles <= q67_anom)
+                fc_event_upper = fc_anom_for_terciles > q67_anom
+
+                # --------------------------------------------------
+                # Anomaly Brier score
+                # --------------------------------------------------
+
+                if want(Metric.BRIER_ANOM_LOWER):
+                    out[Metric.BRIER_ANOM_LOWER.value] = xs.brier_score(
+                        observations=an_event_lower,
+                        forecasts=fc_event_lower,
+                        member_dim=realization_dim,
+                        dim=list(dims),
+                        fair=fair_correction,
+                        weights=weights,
+                    )
+
+                if want(Metric.BRIER_ANOM_MIDDLE):
+                    out[Metric.BRIER_ANOM_MIDDLE.value] = xs.brier_score(
+                        observations=an_event_middle,
+                        forecasts=fc_event_middle,
+                        member_dim=realization_dim,
+                        dim=list(dims),
+                        fair=fair_correction,
+                        weights=weights,
+                    )
+
+                if want(Metric.BRIER_ANOM_UPPER):
+                    out[Metric.BRIER_ANOM_UPPER.value] = xs.brier_score(
+                        observations=an_event_upper,
+                        forecasts=fc_event_upper,
+                        member_dim=realization_dim,
+                        dim=list(dims),
+                        fair=fair_correction,
+                        weights=weights,
+                    )
+
+                # --------------------------------------------------
+                # Anomaly receiving operating characteristic (ROC)
+                # --------------------------------------------------
 
                 if want(Metric.ROC_ANOM_LOWER):
-                    obs_lower = an_for_terciles <= q33
-                    fc_prob_lower = (fc_for_terciles <= q33).mean(realization_dim)
+                    fc_prob_lower = fc_event_lower.mean(realization_dim)
                     # print("ROC lower tercile probs calculated.")
-                    out[Metric.ROC_ANOM_LOWER.value] = xs.roc(obs_lower, fc_prob_lower, dim=list(dims))
+                    out[Metric.ROC_ANOM_LOWER.value] = xs.roc(
+                        observations=an_event_lower,
+                        forecasts=fc_prob_lower,
+                        dim=list(dims),
+                    )
+
                 if want(Metric.ROC_ANOM_MIDDLE):
-                    obs_middle = (an_for_terciles > q33) & (an_for_terciles <= q67)
-                    fc_prob_middle = (
-                        (fc_for_terciles > q33) & (fc_for_terciles <= q67)
-                    ).mean(realization_dim)
+                    fc_prob_middle = fc_event_middle.mean(realization_dim)
                     # print("ROC middle tercile probs calculated.")
-                    out[Metric.ROC_ANOM_MIDDLE.value] = xs.roc(obs_middle, fc_prob_middle, dim=list(dims))
+                    out[Metric.ROC_ANOM_MIDDLE.value] = xs.roc(
+                        observations=an_event_middle,
+                        forecasts=fc_prob_middle,
+                        dim=list(dims),
+                    )
+
                 if want(Metric.ROC_ANOM_UPPER):
-                    obs_upper = an_for_terciles > q67
-                    fc_prob_upper = (fc_for_terciles > q67).mean(realization_dim)
+                    fc_prob_upper = fc_event_upper.mean(realization_dim)
                     # print("ROC upper tercile probs calculated.")
-                    out[Metric.ROC_ANOM_UPPER.value] = xs.roc(obs_upper, fc_prob_upper, dim=list(dims))
+                    out[Metric.ROC_ANOM_UPPER.value] = xs.roc(
+                        observations=an_event_upper,
+                        forecasts=fc_prob_upper,
+                        dim=list(dims),
+                    )
+
+            # ------------------------------------------------------
+            # Probabilistic skills vs climatology
+            # ------------------------------------------------------
+
+            if want(Metric.ENS_MEMBER_MSE_SKILL_CLIM):
+                mse = (error ** 2).weighted(weights).mean((realization_dim, *dims))
+                clim_mse_anom = ((an_anom ** 2).weighted(weights).mean(dims)) * correction
+                out[Metric.ENS_MEMBER_MSE_SKILL_CLIM.value] = safe_div(clim_mse_anom - mse, clim_mse_anom)
+
+            if want(Metric.MEAN_MEMBER_MSE_SKILL_CLIM):
+                mse = ((error ** 2).weighted(weights).mean(dims)).mean(realization_dim)
+                clim_mse_anom = (((an_anom ** 2).weighted(weights).mean(dims)) * correction)
+                out[Metric.MEAN_MEMBER_MSE_SKILL_CLIM.value] = safe_div(clim_mse_anom - mse, clim_mse_anom)
+
+            if want(Metric.ENS_MEMBER_MSE_ANOM_SKILL_CLIM):
+                mse_anom = (error_anom ** 2).weighted(weights).mean((realization_dim, *dims))
+                clim_mse_anom = ((an_anom ** 2).weighted(weights).mean(dims)) * correction
+                out[Metric.ENS_MEMBER_MSE_ANOM_SKILL_CLIM.value] = safe_div(clim_mse_anom - mse_anom, clim_mse_anom)
+
+            if want(Metric.MEAN_MEMBER_MSE_ANOM_SKILL_CLIM):
+                mse_anom = ((error_anom ** 2).weighted(weights).mean(dims)).mean(realization_dim)
+                clim_mse_anom = (((an_anom ** 2).weighted(weights).mean(dims)) * correction)
+                out[Metric.MEAN_MEMBER_MSE_ANOM_SKILL_CLIM.value] = safe_div(clim_mse_anom - mse_anom, clim_mse_anom)
 
     return out
 
