@@ -258,6 +258,7 @@ class ConvNeXtTransformerUNet(EarthMLLightningModule):
         weight_decay: float,
         norm: str | None,
         supervised: bool,
+        latitudes: torch.Tensor | None = None,
         loss_params: dict[str, dict[str, Any]] | None = None,
         n_channels: int = 3,
         n_classes: int = 1,
@@ -285,6 +286,7 @@ class ConvNeXtTransformerUNet(EarthMLLightningModule):
             **loss_params.get("net", {}),
             optimizer_lr=learning_rate,
             weight_decay=weight_decay,
+            latitudes=latitudes,
         )
 
         self.loss_name = loss
