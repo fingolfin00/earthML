@@ -1,34 +1,148 @@
 from typing import Literal
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator
 
-import lightning as L
+import numpy as np
+
 import torch
-
 import torch.nn.functional as F
-from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch import nn
 from torch.utils.data import DataLoader, BatchSampler
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+import lightning as L
+from lightning.pytorch.callbacks import Callback, EarlyStopping, RichProgressBar
+from lightning.pytorch.utilities.types import OptimizerLRScheduler
+
+from torchmetrics import MetricCollection
 
 from ..logging import get_logger
 from .dataset import XarrayDataset, XarraySubset
-from .metrics import MaskedMAE, MaskedRMSE, MaskedSpatialCorr
-from .losses.mse import SpatialCVaRDiagnostics
+from .metrics import (
+    MaskedBias,
+    MaskedGeoBias,
+    MaskedGeoMAE,
+    MaskedGeoRMSE,
+    MaskedGeoSpatialCorr,
+    MaskedGeoStdRatio,
+    MaskedGeoTemporalCorr,
+    MaskedMAE,
+    MaskedRMSE,
+    MaskedSpatialCorr,
+    MaskedStdRatio,
+    MaskedTemporalCorr,
+)
 
 
 logger = get_logger(__name__)
 
+
 SplitStrategy = Literal[
     "explicit",  # separately supplied train and validation datasets
-    "time",  # chronological percentage split by initialization time
-    "random",  # random percentage split by initialization time
+    "time",      # chronological percentage split by initialization time
+    "random",    # random percentage split by initialization time
 ]
 
-Stage = Literal["train", "validation", "test"]
+Stage = Literal[
+    "train",
+    "validation",
+    "test",
+]
 
+# ------------------------------------------------------
+# Callbacks
+# ------------------------------------------------------
+
+def rich_print(
+    trainer: L.Trainer,
+    message: str,
+) -> None:
+    progress_bar = trainer.progress_bar_callback
+
+    if isinstance(progress_bar, RichProgressBar):
+        progress = getattr(
+            progress_bar,
+            "progress",
+            None,
+        )
+
+        if progress is not None:
+            progress.console.print(message)
+
+            logger.print(
+                message,
+                console=False,
+            )
+            return
+
+    logger.print(message)
+
+
+class RichEarlyStopping(EarlyStopping):
+    @staticmethod
+    def _log_info(
+        trainer: L.Trainer,
+        message: str,
+        log_rank_zero_only: bool,
+    ) -> None:
+        if (
+            log_rank_zero_only
+            and trainer.global_rank != 0
+        ):
+            return
+
+        rich_print(
+            trainer,
+            message,
+        )
+
+class LearningRateChangePrinter(Callback):
+    def __init__(
+        self,
+        *,
+        rtol: float = 1e-12,
+        atol: float = 0.0,
+    ) -> None:
+        super().__init__()
+
+        self.rtol = rtol
+        self.atol = atol
+
+        self.previous_lr: float | None = None
+
+    def on_train_epoch_start(
+        self,
+        trainer: L.Trainer,
+        pl_module: L.LightningModule,
+    ) -> None:
+        optimizer = trainer.optimizers[0]
+
+        current_lr = float(
+            optimizer.param_groups[0]["lr"]
+        )
+
+        if self.previous_lr is None:
+            self.previous_lr = current_lr
+            return
+
+        if not np.isclose(
+            current_lr,
+            self.previous_lr,
+            rtol=self.rtol,
+            atol=self.atol,
+        ):
+            rich_print(
+                trainer,
+                (
+                    f"[cyan]Epoch {trainer.current_epoch}: learning rate changed "
+                    f"{self.previous_lr} → "
+                    f"{current_lr}[/cyan]"
+                ),
+            )
+
+        self.previous_lr = current_lr
+
+# ------------------------------------------------------
+# Module
+# ------------------------------------------------------
 
 class EarthMLLightningModule(L.LightningModule):
     optimizer_lr: float
@@ -42,46 +156,133 @@ class EarthMLLightningModule(L.LightningModule):
         self,
         optimizer_lr: float = 1e-3,
         weight_decay: float = 1e-4,
-        patch_degradation_vmin: float = -1,
-        patch_degradation_vmax: float = 1,
+        latitudes: torch.Tensor | None = None,
     ) -> None:
         super().__init__()
 
         self.optimizer_lr = optimizer_lr
         self.weight_decay = weight_decay
 
-        self.train_mae = MaskedMAE()
-        self.train_rmse = MaskedRMSE()
+        # ------------------------------------------------------
+        # Metric configuration
+        # ------------------------------------------------------
 
-        self.val_mae = MaskedMAE()
-        self.val_rmse = MaskedRMSE()
+        if latitudes is not None:
+            latitudes = torch.as_tensor(
+                latitudes,
+                dtype=torch.float32,
+            )
 
-        self.test_mae = MaskedMAE()
-        self.test_rmse = MaskedRMSE()
-        self.test_scc = MaskedSpatialCorr()
+        self.register_buffer(
+            "metric_latitudes",
+            latitudes,
+            persistent=True,
+        )
 
-        self.test_step_outputs: list[dict[str, torch.Tensor]] = []
+        self._configure_metrics(latitudes)
+
+        # ------------------------------------------------------
+        # Test outputs
+        # ------------------------------------------------------
+
+        self.test_step_outputs: list[
+            dict[str, torch.Tensor]
+        ] = []
+
         self.test_preds: torch.Tensor | None = None
         self.test_targets: torch.Tensor | None = None
         self.test_months: torch.Tensor | None = None
         self.test_masks: torch.Tensor | None = None
 
-        self.spatial_diagnostics: SpatialCVaRDiagnostics | None = None
+    def _configure_metrics(
+        self,
+        latitudes: torch.Tensor | None,
+    ) -> None:
+        """
+        Configure train, validation and test metrics.
 
-        self.train_worst_patch_counts: torch.Tensor | None = None
-        self.val_worst_patch_counts: torch.Tensor | None = None
-        self.test_worst_patch_counts: torch.Tensor | None = None
+        If latitude coordinates are available, use cosine-latitude
+        weighted geographic metrics.
 
-        self.train_patch_degradation_sum: torch.Tensor | None = None
-        self.val_patch_degradation_sum: torch.Tensor | None = None
-        self.test_patch_degradation_sum: torch.Tensor | None = None
+        Otherwise preserve the previous equal-grid-cell weighting.
+        """
+        if latitudes is None:
+            base_metrics = MetricCollection(
+                {
+                    "bias": MaskedBias(),
+                    "mae": MaskedMAE(),
+                    "rmse": MaskedRMSE(),
+                    "std_ratio": MaskedStdRatio(),
+                    "tcc": MaskedTemporalCorr(),
+                }
+            )
 
-        self.train_patch_degradation_count = 0
-        self.val_patch_degradation_count = 0
-        self.test_patch_degradation_count = 0
+            test_metrics = MetricCollection(
+                {
+                    "bias": MaskedBias(),
+                    "mae": MaskedMAE(),
+                    "rmse": MaskedRMSE(),
+                    "std_ratio": MaskedStdRatio(),
+                    "tcc": MaskedTemporalCorr(),
+                    "scc": MaskedSpatialCorr(),
+                },
+                prefix="test_",
+            )
 
-        self.patch_degradation_vmin = patch_degradation_vmin
-        self.patch_degradation_vmax = patch_degradation_vmax
+        else:
+            base_metrics = MetricCollection(
+                {
+                    "bias": MaskedGeoBias(
+                        latitudes,
+                    ),
+                    "mae": MaskedGeoMAE(
+                        latitudes,
+                    ),
+                    "rmse": MaskedGeoRMSE(
+                        latitudes,
+                    ),
+                    "std_ratio": MaskedGeoStdRatio(
+                        latitudes,
+                    ),
+                    "tcc": MaskedGeoTemporalCorr(
+                        latitudes,
+                    ),
+                }
+            )
+
+            test_metrics = MetricCollection(
+                {
+                    "bias": MaskedGeoBias(
+                        latitudes,
+                    ),
+                    "mae": MaskedGeoMAE(
+                        latitudes,
+                    ),
+                    "rmse": MaskedGeoRMSE(
+                        latitudes,
+                    ),
+                    "std_ratio": MaskedGeoStdRatio(
+                        latitudes,
+                    ),
+                    "tcc": MaskedGeoTemporalCorr(
+                        latitudes,
+                    ),
+                    "scc": MaskedGeoSpatialCorr(
+                        latitudes,
+                    ),
+                },
+                prefix="test_",
+            )
+
+        self.train_metrics = base_metrics.clone(
+            prefix="train_",
+        )
+
+        self.val_metrics = base_metrics.clone(
+            prefix="val_",
+        )
+
+        self.test_metrics = test_metrics
 
     def _log_loss_components(
         self,
@@ -130,19 +331,23 @@ class EarthMLLightningModule(L.LightningModule):
             months=months,
         )
 
-        # Probabilistic losses may return distribution parameters. Metrics use
-        # only the predictive mean.
+        # Probabilistic losses may return distribution parameters.
+        # Metrics use only the predictive mean.
         if self.loss_name == "GaussianNLLFromLogits":
-            mu, _ = torch.chunk(pred, 2, dim=1)
+            mu, _ = torch.chunk(
+                pred,
+                2,
+                dim=1,
+            )
         else:
             mu = pred
 
         mu = mu.contiguous()
+
         batch_size = x.shape[0]
 
         if stage == "train":
-            self.train_mae.update(mu, y, mask)
-            self.train_rmse.update(mu, y, mask)
+            metrics = self.train_metrics
 
             self.log(
                 "train_loss",
@@ -153,22 +358,9 @@ class EarthMLLightningModule(L.LightningModule):
                 logger=True,
                 batch_size=batch_size,
             )
-            self.log(
-                "train_mae",
-                self.train_mae,
-                on_step=False,
-                on_epoch=True,
-            )
-            self.log(
-                "train_rmse",
-                self.train_rmse,
-                on_step=False,
-                on_epoch=True,
-            )
 
         elif stage == "validation":
-            self.val_mae.update(mu, y, mask)
-            self.val_rmse.update(mu, y, mask)
+            metrics = self.val_metrics
 
             self.log(
                 "val_loss",
@@ -179,25 +371,9 @@ class EarthMLLightningModule(L.LightningModule):
                 logger=True,
                 batch_size=batch_size,
             )
-            self.log(
-                "val_mae",
-                self.val_mae,
-                on_step=False,
-                on_epoch=True,
-                prog_bar=True,
-            )
-            self.log(
-                "val_rmse",
-                self.val_rmse,
-                on_step=False,
-                on_epoch=True,
-                prog_bar=True,
-            )
 
         else:
-            self.test_mae.update(mu, y, mask)
-            self.test_rmse.update(mu, y, mask)
-            self.test_scc.update(mu, y, mask)
+            metrics = self.test_metrics
 
             self.log(
                 "test_loss",
@@ -207,305 +383,52 @@ class EarthMLLightningModule(L.LightningModule):
                 logger=True,
                 batch_size=batch_size,
             )
-            self.log(
-                "test_mae",
-                self.test_mae,
-                on_step=False,
-                on_epoch=True,
-                prog_bar=True,
-            )
-            self.log(
-                "test_rmse",
-                self.test_rmse,
-                on_step=False,
-                on_epoch=True,
-                prog_bar=True,
-            )
-            self.log(
-                "test_scc",
-                self.test_scc,
-                on_step=False,
-                on_epoch=True,
-                prog_bar=True,
-            )
 
-            self.test_step_outputs.append(
-                {
-                    "preds": mu.detach().float().cpu(),
-                    "targets": y.detach().float().cpu(),
-                    "mask": mask.detach().cpu(),
-                    "months": months.detach().cpu(),
-                }
-            )
+        # ------------------------------------------------------
+        # Metrics
+        # ------------------------------------------------------
+
+        metrics.update(
+            mu,
+            y,
+            mask,
+        )
+
+        self.log_dict(
+            metrics,
+            on_step=False,
+            on_epoch=True,
+            logger=True,
+        )
+
+        # ------------------------------------------------------
+        # Loss-specific components
+        # ------------------------------------------------------
 
         self._log_loss_components(
             stage,
             batch_size=batch_size,
         )
 
-        self._log_spatial_diagnostics(
-            prediction=mu,
-            target=y,
-            mask=mask,
-            stage=stage,
-        )
+        # ------------------------------------------------------
+        # Store test predictions for post-test diagnostics/output
+        # ------------------------------------------------------
+
+        if stage == "test":
+            self.test_step_outputs.append(
+                {
+                    "preds": mu.detach().cpu(),
+                    "targets": y.detach().cpu(),
+                    "months": months.detach().cpu(),
+                    "mask": mask.detach().cpu(),
+                }
+            )
 
         return loss
 
-
-    def configure_spatial_diagnostics(
-        self,
-        *,
-        latitudes: torch.Tensor,
-        patch_size: int,
-        cvar_fraction: float = 0.2,
-        eps: float = 1e-8,
-    ) -> None:
-        self.spatial_diagnostics = SpatialCVaRDiagnostics(
-            latitudes=latitudes,
-            patch_size=patch_size,
-            cvar_fraction=cvar_fraction,
-            eps=eps,
-        )
-
-
-    def _update_patch_degradation(
-        self,
-        *,
-        stage: Stage,
-        patch_degradation: torch.Tensor,
-    ) -> None:
-        sum_attr = {
-            "train": "train_patch_degradation_sum",
-            "validation": "val_patch_degradation_sum",
-            "test": "test_patch_degradation_sum",
-        }[stage]
-
-        count_attr = {
-            "train": "train_patch_degradation_count",
-            "validation": "val_patch_degradation_count",
-            "test": "test_patch_degradation_count",
-        }[stage]
-
-        current = getattr(self, sum_attr)
-
-        values = patch_degradation.detach()
-
-        if current is None:
-            current = torch.zeros_like(values)
-
-        current += values
-
-        setattr(self, sum_attr, current)
-        setattr(
-            self,
-            count_attr,
-            getattr(self, count_attr) + 1,
-        )
-
-
-    def _log_patch_degradation_map(
-        self,
-        stage: Stage,
-    ) -> None:
-        sum_attr = {
-            "train": "train_patch_degradation_sum",
-            "validation": "val_patch_degradation_sum",
-            "test": "test_patch_degradation_sum",
-        }[stage]
-
-        count_attr = {
-            "train": "train_patch_degradation_count",
-            "validation": "val_patch_degradation_count",
-            "test": "test_patch_degradation_count",
-        }[stage]
-
-        total = getattr(self, sum_attr)
-        count = getattr(self, count_attr)
-
-        if total is None or count == 0:
-            return
-
-        values = (
-            total / count
-        ).detach().float().cpu().numpy()
-
-        experiment = getattr(
-            self.logger,
-            "experiment",
-            None,
-        )
-
-        if (
-            experiment is None
-            or not hasattr(experiment, "add_figure")
-        ):
-            return
-
-        vmax = max(
-            abs(values.min()),
-            abs(values.max()),
-            1e-8,
-        )
-
-        fig, ax = plt.subplots(figsize=(5, 3))
-
-        image = ax.imshow(
-            values,
-            vmin=self.patch_degradation_vmin,
-            vmax=self.patch_degradation_vmax,
-            cmap="RdBu_r",
-            origin="lower",
-        )
-
-        ax.set_title("Mean patch degradation")
-        ax.set_xlabel("Longitude patch")
-        ax.set_ylabel("Latitude patch")
-
-        fig.colorbar(
-            image,
-            ax=ax,
-            orientation="horizontal",
-            label="Model MSE - baseline MSE",
-            pad=0.12,
-            fraction=0.07,
-        )
-
-        fig.tight_layout()
-
-        experiment.add_figure(
-            f"{stage}_spatial/patch_degradation",
-            fig,
-            global_step=self.current_epoch,
-        )
-
-        plt.close(fig)
-
-
-    def _log_spatial_diagnostics(
-        self,
-        prediction: torch.Tensor,
-        target: torch.Tensor,
-        mask: torch.Tensor,
-        stage: Stage,
-    ) -> None:
-        if self.spatial_diagnostics is None:
-            return
-
-        diagnostics = self.spatial_diagnostics(
-            prediction,
-            target,
-            mask=mask,
-        )
-
-        batch_size = prediction.shape[0]
-
-        for name in (
-            "global_geo_mse",
-            "cvar_mse",
-            "cvar_ratio",
-            "mean_patch_degradation",
-            "mean_degraded_patch_degradation",
-            "mean_positive_patch_degradation",
-            "degraded_patch_fraction",
-            "relative_degraded_patch_fraction_gt_1pct",
-            "relative_degraded_patch_fraction_gt_5pct",
-            "relative_degraded_patch_fraction_gt_10pct",
-            "max_patch_degradation",
-        ):
-            self.log(
-                f"{stage}_spatial_{name}",
-                diagnostics[name],
-                on_step=False,
-                on_epoch=True,
-                logger=True,
-                batch_size=batch_size,
-            )
-
-        self._update_patch_degradation(
-            stage=stage,
-            patch_degradation=diagnostics[
-                "patch_degradation"
-            ],
-        )
-
-        self._update_worst_patch_counts(
-            stage=stage,
-            locations=diagnostics[
-                "worst_patch_locations"
-            ],
-            shape=diagnostics[
-                "spatial_patch_mse"
-            ].shape,
-        )
-
-    def _update_worst_patch_counts(
-        self,
-        *,
-        stage: Stage,
-        locations: torch.Tensor,
-        shape: torch.Size,
-    ) -> None:
-        attr = {
-            "train": "train_worst_patch_counts",
-            "validation": "val_worst_patch_counts",
-            "test": "test_worst_patch_counts",
-        }[stage]
-
-        counts = getattr(self, attr)
-
-        if (
-            counts is None
-            or tuple(counts.shape) != tuple(shape)
-        ):
-            counts = torch.zeros(
-                shape,
-                device=self.device,
-                dtype=torch.float32,
-            )
-
-        counts[
-            locations[:, 0],
-            locations[:, 1],
-        ] += 1.0
-
-        setattr(self, attr, counts)
-
-    def _log_worst_patch_map(
-        self,
-        stage: Stage,
-    ) -> None:
-        attr = {
-            "train": "train_worst_patch_counts",
-            "validation": "val_worst_patch_counts",
-            "test": "test_worst_patch_counts",
-        }[stage]
-
-        counts = getattr(self, attr)
-
-        if counts is None:
-            return
-
-        normalized = (
-            counts
-            / counts.max().clamp_min(1.0)
-        )
-
-        experiment = getattr(
-            self.logger,
-            "experiment",
-            None,
-        )
-
-        if experiment is None:
-            return
-
-        experiment.add_image(
-            f"{stage}_spatial/worst_patch_frequency",
-            normalized.unsqueeze(0),
-            global_step=self.current_epoch,
-        )
-
+    # ==========================================================
+    # Spatial utilities
+    # ==========================================================
 
     @staticmethod
     def center_crop_to(
@@ -514,8 +437,16 @@ class EarthMLLightningModule(L.LightningModule):
         target_w: int,
     ) -> torch.Tensor:
         _, _, height, width = x.shape
-        offset_y = max((height - target_h) // 2, 0)
-        offset_x = max((width - target_w) // 2, 0)
+
+        offset_y = max(
+            (height - target_h) // 2,
+            0,
+        )
+
+        offset_x = max(
+            (width - target_w) // 2,
+            0,
+        )
 
         return x[
             :,
@@ -530,8 +461,11 @@ class EarthMLLightningModule(L.LightningModule):
         target_h: int,
         target_w: int,
     ) -> torch.Tensor:
-        """Center-crop or replicate-pad ``x`` to the requested size."""
+        """
+        Center-crop or replicate-pad x to the requested size.
+        """
         _, _, height, width = x.shape
+
         delta_h = target_h - height
         delta_w = target_w - width
 
@@ -544,39 +478,73 @@ class EarthMLLightningModule(L.LightningModule):
                 min(height, target_h),
                 min(width, target_w),
             )
+
             _, _, height, width = x.shape
+
             delta_h = target_h - height
             delta_w = target_w - width
 
         if delta_h != 0 or delta_w != 0:
             pad_left = delta_w // 2
             pad_right = delta_w - pad_left
+
             pad_top = delta_h // 2
             pad_bottom = delta_h - pad_top
 
             x = F.pad(
                 x,
-                (pad_left, pad_right, pad_top, pad_bottom),
+                (
+                    pad_left,
+                    pad_right,
+                    pad_top,
+                    pad_bottom,
+                ),
                 mode="replicate",
             )
 
         return x
 
-    def training_step(self, batch, batch_idx: int) -> torch.Tensor:
-        return self._shared_step(batch, "train")
+    # ==========================================================
+    # Lightning steps
+    # ==========================================================
 
-    def validation_step(self, batch, batch_idx: int) -> None:
-        self._shared_step(batch, "validation")
+    def training_step(
+        self,
+        batch,
+        batch_idx: int,
+    ) -> torch.Tensor:
+        return self._shared_step(
+            batch,
+            "train",
+        )
 
-    def test_step(self, batch, batch_idx: int) -> None:
-        self._shared_step(batch, "test")
+    def validation_step(
+        self,
+        batch,
+        batch_idx: int,
+    ) -> None:
+        self._shared_step(
+            batch,
+            "validation",
+        )
+
+    def test_step(
+        self,
+        batch,
+        batch_idx: int,
+    ) -> None:
+        self._shared_step(
+            batch,
+            "test",
+        )
+
+    # ==========================================================
+    # Epoch hooks
+    # ==========================================================
 
     def on_train_epoch_start(self) -> None:
-        self.train_worst_patch_counts = None
-        self.train_patch_degradation_sum = None
-        self.train_patch_degradation_count = 0
-
         scheduler = self.lr_schedulers()
+
         current_lr = scheduler.get_last_lr()[0]
 
         self.log(
@@ -586,91 +554,102 @@ class EarthMLLightningModule(L.LightningModule):
             on_epoch=True,
             prog_bar=True,
         )
-        logger.info(
-            "Epoch %s: learning rate = %s",
-            self.current_epoch,
-            current_lr,
-        )
-
-    def on_train_epoch_end(self) -> None:
-        self._log_worst_patch_map("train")
-        self._log_patch_degradation_map("train")
 
     def on_validation_epoch_end(self) -> None:
         if self.trainer.sanity_checking:
             return
-        self._log_worst_patch_map("validation")
-        self._log_patch_degradation_map("validation")
 
     def on_test_epoch_start(self) -> None:
         self.test_step_outputs.clear()
+
         self.test_preds = None
         self.test_targets = None
-        self.test_masks = None
         self.test_months = None
-        self.test_worst_patch_counts = None
-        self.test_patch_degradation_sum = None
-        self.test_patch_degradation_count = 0
+        self.test_masks = None
 
     def on_test_epoch_end(self) -> None:
-        final_test_mae = self.test_mae.compute()
-        final_test_rmse = self.test_rmse.compute()
-        final_test_scc = self.test_scc.compute()
+        test_metrics = self.test_metrics.compute()
 
         logger.info(
-            "Test Results - MAE: %.4f, RMSE: %.4f, SCC: %.4f",
-            final_test_mae,
-            final_test_rmse,
-            final_test_scc,
+            (
+                "Test Results - "
+                "Bias: %.4f, "
+                "MAE: %.4f, "
+                "RMSE: %.4f, "
+                "Std ratio: %.4f, "
+                "TCC: %.4f, "
+                "SCC: %.4f"
+            ),
+            test_metrics["test_bias"],
+            test_metrics["test_mae"],
+            test_metrics["test_rmse"],
+            test_metrics["test_std_ratio"],
+            test_metrics["test_tcc"],
+            test_metrics["test_scc"],
         )
 
         if not self.test_step_outputs:
-            raise RuntimeError("Testing produced no prediction batches.")
+            raise RuntimeError(
+                "Testing produced no prediction batches."
+            )
 
         self.test_preds = torch.cat(
-            [output["preds"] for output in self.test_step_outputs],
+            [
+                output["preds"]
+                for output in self.test_step_outputs
+            ],
             dim=0,
         )
 
         self.test_targets = torch.cat(
-            [output["targets"] for output in self.test_step_outputs],
+            [
+                output["targets"]
+                for output in self.test_step_outputs
+            ],
             dim=0,
         )
 
         self.test_months = torch.cat(
-            [output["months"] for output in self.test_step_outputs],
+            [
+                output["months"]
+                for output in self.test_step_outputs
+            ],
             dim=0,
         )
 
         self.test_masks = torch.cat(
-            [output["mask"] for output in self.test_step_outputs],
+            [
+                output["mask"]
+                for output in self.test_step_outputs
+            ],
             dim=0,
         )
 
-        self._log_worst_patch_map("test")
-        self._log_patch_degradation_map("test")
-
         self.test_step_outputs.clear()
 
-    def on_validation_epoch_start(self) -> None:
-        self.val_worst_patch_counts = None
-        self.val_patch_degradation_sum = None
-        self.val_patch_degradation_count = 0
+    # ==========================================================
+    # Optimizer
+    # ==========================================================
 
-    def configure_optimizers(self) -> OptimizerLRScheduler:
+    def configure_optimizers(
+        self,
+    ) -> OptimizerLRScheduler:
+        # TODO: allow passing optimizer and lr scheduler settings
         optimizer = torch.optim.AdamW(
             self.parameters(),
             lr=self.optimizer_lr,
             weight_decay=self.weight_decay,
         )
 
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode="min",
-            # mode="max", # in original NOAA implemenetation: probably a bug, definetely a bug
-            factor=0.1,
-            patience=4,
-            min_lr=1e-8,
+        scheduler = (
+            torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode="min",
+                # mode="max", # in original NOAA implemenetation: probably a bug, definetely a bug
+                factor=0.1,
+                patience=4,
+                min_lr=1e-8,
+            )
         )
 
         return {
@@ -682,6 +661,10 @@ class EarthMLLightningModule(L.LightningModule):
                 "frequency": 1,
             },
         }
+
+    # ==========================================================
+    # Loss dispatch
+    # ==========================================================
 
     def compute_loss(
         self,
@@ -698,7 +681,10 @@ class EarthMLLightningModule(L.LightningModule):
             "HuberLoss",
             "GeoMSELoss",
         }:
-            return self.loss(prediction, target)
+            return self.loss(
+                prediction,
+                target,
+            )
 
         if self.loss_name in {
             "MaskedMSELoss",
@@ -714,9 +700,7 @@ class EarthMLLightningModule(L.LightningModule):
                 mask=mask,
             )
 
-        if self.loss_name in (
-            "GeoMaskedMSEMultiScaleLoss",
-        ):
+        if self.loss_name == "GeoMaskedMSEMultiScaleLoss":
             return self.loss(
                 y_pred=prediction,
                 y_true=target,
@@ -748,7 +732,8 @@ class EarthMLLightningModule(L.LightningModule):
             )
 
         raise ValueError(
-            f"No loss-call rule is defined for {self.loss_name!r}"
+            f"No loss-call rule is defined for "
+            f"{self.loss_name!r}"
         )
 
 
