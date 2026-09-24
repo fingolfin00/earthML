@@ -1,8 +1,9 @@
 from .utils import (
     safe_label,
     lead_label,
-    plot_map,
     plot_profile,
+    plot_timeseries,
+    plot_map,
     plot_rank_histogram,
     plot_metric_diff_scatter,
     ScatterPoint,
@@ -48,8 +49,9 @@ __all__ = [
     "PlotMode",
     "FieldModel",
     # plotting
-    "plot_map",
     "plot_profile",
+    "plot_timeseries",
+    "plot_map",
     "plot_rank_histogram",
     "plot_metric_diff_scatter",
     "ScatterPoint",

@@ -565,6 +565,123 @@ def add_spatial_regions(
             )
 
 
+def metric_style(
+    var: str,
+    metric: str,
+    da: xr.DataArray | None = None,
+    *,
+    var_plot_config: dict | None = None,
+    impro_plot_config: dict | None = None,
+    is_skill: bool = False,
+    improvement_unit: ImprovementUnit | None = None,
+) -> tuple[Colormap, BoundaryNorm | TwoSlopeNorm | LogNorm, np.ndarray]:
+    var_plot_config = var_plot_config or {}
+    impro_plot_config = impro_plot_config or {}
+
+    try:
+        if is_skill:
+            cfg = get_skill_plot_config(
+                var,
+                metric,
+                var_plot_config,
+                impro_plot_config,
+                improvement_unit=improvement_unit,
+            )
+        else:
+            cfg = get_plot_config(var, metric, var_plot_config)
+
+    except KeyError:
+        if da is None:
+            raise
+
+        vmin = float(da.quantile(0.02, skipna=True))
+        vmax = float(da.quantile(0.98, skipna=True))
+        ticks = np.linspace(vmin, vmax, 11)
+        cmap = plt.get_cmap("viridis")
+        norm = BoundaryNorm(
+            boundaries=ticks,
+            ncolors=cmap.N,
+            clip=False,
+        )
+        return cmap, norm, ticks
+
+    tick_cfg = cfg["ticks"]
+
+    if isinstance(tick_cfg, int):
+        ticks = np.linspace(
+            cfg["vmin"],
+            cfg["vmax"],
+            tick_cfg,
+        )
+    else:
+        ticks = np.asarray(
+            tick_cfg,
+            dtype=float,
+        )
+
+    if is_skill:
+        if not cfg["vmin"] < 0 < cfg["vmax"]:
+            raise ValueError(
+                f"Skill/improvement plot for {metric!r} requires "
+                f"vmin < 0 < vmax, got "
+                f"vmin={cfg['vmin']}, vmax={cfg['vmax']}"
+            )
+
+        norm = TwoSlopeNorm(
+            vmin=cfg["vmin"],
+            vcenter=0.0,
+            vmax=cfg["vmax"],
+        )
+
+    elif metric in {
+        "std_ratio",
+        "std_ratio_anom",
+        "regression_slope",
+        "regression_slope_anom",
+        "spread_skill_ratio",
+        "spread_anom_skill_ratio",
+    }:
+        norm = LogNorm(
+            vmin=cfg["vmin"],
+            vmax=cfg["vmax"],
+        )
+
+    else:
+        norm = BoundaryNorm(
+            boundaries=ticks,
+            ncolors=cfg["cmap"].N,
+            clip=True,
+        )
+
+    return cfg["cmap"], norm, ticks
+
+
+def get_plot_metric_unit_and_scale(
+    da: xr.DataArray,
+    *,
+    var: str,
+    metric: str,
+    var_plot_config: dict,
+) -> tuple[str, float]:
+    cfg = get_plot_config(var, metric, var_plot_config)
+
+    if not cfg.get("scale_units", True):
+        return "", 1.0
+
+    unit = da.attrs.get("units") or VARIABLE_UNITS.get(var, "")
+
+    unit_conversion = UNIT_CONVERSIONS.get(unit, (unit, 1.0))
+    if isinstance(unit_conversion, dict):
+        plot_unit, scale = unit_conversion[var]
+    else:
+        plot_unit, scale = unit_conversion
+
+    if metric in SQUARED_METRICS:
+        return f"{plot_unit}²", scale**2
+
+    return plot_unit, scale
+
+
 def plot_profile(
     das: xr.DataArray | xr.Dataset | Sequence[xr.DataArray | xr.Dataset],
     *,
@@ -1462,121 +1579,497 @@ def plot_profile(
     plt.close(fig)
 
 
-def metric_style(
+def plot_timeseries(
+    das: xr.DataArray | xr.Dataset | Sequence[xr.DataArray | xr.Dataset],
+    *,
     var: str,
     metric: str,
-    da: xr.DataArray | None = None,
-    *,
-    var_plot_config: dict | None = None,
-    impro_plot_config: dict | None = None,
-    is_skill: bool = False,
+    models: str | Sequence[str],
+    labels: str | Sequence[str] | None = None,
+    out_file: Path,
+    time_range: tuple[str, str],
+    lead_value: object | None = None,
+    leadtime_dim: str = "leadtime",
+    time_dim: str | None = None,
+    das_member: (
+        xr.DataArray
+        | xr.Dataset
+        | Sequence[xr.DataArray | xr.Dataset | None]
+        | None
+    ) = None,
+    realization_dim: str = "realization",
+    spread: Literal["std", "minmax"] = "std",
+    plot_single_members: bool = False,
+    ylim: tuple[float, float] | None = None,
+    plot_title: bool = True,
+    plot_labels: bool = True,
+    plot_legend: bool = True,
+    title_strftime: str = "%Y",
     improvement_unit: ImprovementUnit | None = None,
-) -> tuple[Colormap, BoundaryNorm | TwoSlopeNorm | LogNorm, np.ndarray]:
+    var_plot_config: dict | None = None,
+    force_scale: int | float | None = None,
+    model_colors: dict[str, object] | None = None,
+    model_linestyles: dict[str, str] | None = None,
+    timeseries_zero_line: bool = False,
+    figsize: tuple[float, float] = (12.0, 6.0),
+    title_size: float | None = None,
+    label_size: float | None = None,
+    tick_size: float | None = None,
+    dpi: int = 200,
+) -> None:
+    """Plot one or more metric time series."""
+
     var_plot_config = var_plot_config or {}
-    impro_plot_config = impro_plot_config or {}
 
-    try:
-        if is_skill:
-            cfg = get_skill_plot_config(
-                var,
-                metric,
-                var_plot_config,
-                impro_plot_config,
-                improvement_unit=improvement_unit,
-            )
-        else:
-            cfg = get_plot_config(var, metric, var_plot_config)
+    model_list = (
+        [models]
+        if isinstance(models, str)
+        else list(models)
+    )
 
-    except KeyError:
-        if da is None:
-            raise
-
-        vmin = float(da.quantile(0.02, skipna=True))
-        vmax = float(da.quantile(0.98, skipna=True))
-        ticks = np.linspace(vmin, vmax, 11)
-        cmap = plt.get_cmap("viridis")
-        norm = BoundaryNorm(
-            boundaries=ticks,
-            ncolors=cmap.N,
-            clip=False,
+    label_list = (
+        model_list
+        if labels is None
+        else (
+            [labels]
+            if isinstance(labels, str)
+            else list(labels)
         )
-        return cmap, norm, ticks
+    )
 
-    tick_cfg = cfg["ticks"]
-
-    if isinstance(tick_cfg, int):
-        ticks = np.linspace(
-            cfg["vmin"],
-            cfg["vmax"],
-            tick_cfg,
+    if len(label_list) != len(model_list):
+        raise ValueError(
+            "Select the same number of labels and models. "
+            f"Got {len(label_list)} labels and "
+            f"{len(model_list)} models."
         )
+
+    plot_das = convert_to_da_list(
+        das,
+        var,
+    )
+
+    if len(plot_das) != len(model_list):
+        raise ValueError(
+            "Select the same number of models and timeseries DataArrays. "
+            f"Got {len(model_list)} models and "
+            f"{len(plot_das)} DataArrays."
+        )
+
+    if das_member is None:
+        plot_das_member = [None] * len(plot_das)
     else:
-        ticks = np.asarray(
-            tick_cfg,
-            dtype=float,
+        plot_das_member = convert_to_da_list(
+            das_member,
+            var,
         )
 
-    if is_skill:
-        if not cfg["vmin"] < 0 < cfg["vmax"]:
+        if len(plot_das_member) != len(plot_das):
             raise ValueError(
-                f"Skill/improvement plot for {metric!r} requires "
-                f"vmin < 0 < vmax, got "
-                f"vmin={cfg['vmin']}, vmax={cfg['vmax']}"
+                "Select the same number of timeseries and member DataArrays."
             )
 
-        norm = TwoSlopeNorm(
-            vmin=cfg["vmin"],
-            vcenter=0.0,
-            vmax=cfg["vmax"],
+    # ----------------------------------------------------------
+    # Improvement representation
+    # ----------------------------------------------------------
+
+    if improvement_unit is None:
+        inferred_units = {
+            unit
+            for model in model_list
+            if (
+                unit := get_improvement_unit_from_model(model)
+            )
+            is not None
+        }
+
+        if len(inferred_units) > 1:
+            raise ValueError(
+                "All curves in one timeseries must use the same "
+                "improvement representation."
+            )
+
+        if inferred_units:
+            improvement_unit = next(iter(inferred_units))
+
+    sample_da = next(
+        (
+            da
+            for da in plot_das
+            if da is not None
+        ),
+        None,
+    )
+
+    if sample_da is None:
+        raise ValueError(
+            "No timeseries DataArray is available to plot."
         )
 
-    elif metric in {
-        "std_ratio",
-        "std_ratio_anom",
-        "regression_slope",
-        "regression_slope_anom",
-        "spread_skill_ratio",
-        "spread_anom_skill_ratio",
+    # ----------------------------------------------------------
+    # Determine time dimension
+    # ----------------------------------------------------------
+
+    if time_dim is None:
+        time_dim = sample_da.earthml.guessed_dims.time
+
+    if time_dim is None:
+        raise ValueError(
+            "Could not determine time dimension."
+        )
+
+    # ----------------------------------------------------------
+    # Metric units / scaling
+    # ----------------------------------------------------------
+
+    if improvement_unit in {
+        "%",
+        "normalized",
     }:
-        norm = LogNorm(
-            vmin=cfg["vmin"],
-            vmax=cfg["vmax"],
+        plot_unit = (
+            "%"
+            if improvement_unit == "%"
+            else ""
         )
+        scale = 1.0
 
     else:
-        norm = BoundaryNorm(
-            boundaries=ticks,
-            ncolors=cfg["cmap"].N,
-            clip=True,
+        plot_unit, scale = get_plot_metric_unit_and_scale(
+            sample_da,
+            var=var,
+            metric=metric,
+            var_plot_config=var_plot_config,
         )
 
-    return cfg["cmap"], norm, ticks
+    if force_scale is not None:
+        scale = float(force_scale)
 
+    # ----------------------------------------------------------
+    # Figure
+    # ----------------------------------------------------------
 
-def get_plot_metric_unit_and_scale(
-    da: xr.DataArray,
-    *,
-    var: str,
-    metric: str,
-    var_plot_config: dict,
-) -> tuple[str, float]:
-    cfg = get_plot_config(var, metric, var_plot_config)
+    fig, ax = plt.subplots(
+        figsize=figsize,
+    )
 
-    if not cfg.get("scale_units", True):
-        return "", 1.0
+    for (
+        model,
+        label,
+        da,
+        da_member,
+    ) in zip(
+        model_list,
+        label_list,
+        plot_das,
+        plot_das_member,
+        strict=True,
+    ):
+        if da is None:
+            continue
 
-    unit = da.attrs.get("units") or VARIABLE_UNITS.get(var, "")
+        series = da
 
-    unit_conversion = UNIT_CONVERSIONS.get(unit, (unit, 1.0))
-    if isinstance(unit_conversion, dict):
-        plot_unit, scale = unit_conversion[var]
+        if (
+            lead_value is not None
+            and leadtime_dim in series.dims
+        ):
+            series = series.sel(
+                {leadtime_dim: lead_value}
+            )
+
+        series = series.squeeze(drop=True)
+
+        if time_dim not in series.dims:
+            raise ValueError(
+                f"Time dimension {time_dim!r} not found in "
+                f"timeseries dimensions {series.dims}."
+            )
+
+        extra_dims = [
+            dim
+            for dim in series.dims
+            if dim != time_dim
+        ]
+
+        if extra_dims:
+            raise ValueError(
+                "Unexpected dimensions remain before plotting timeseries: "
+                f"{extra_dims}. Expected only {time_dim!r}, "
+                f"got {series.dims}."
+            )
+
+        with ProgressBar():
+            series = (
+                series
+                .reset_coords(drop=True)
+                .compute()
+                / scale
+            )
+
+        color = (
+            model_colors[model]
+            if (
+                model_colors is not None
+                and model in model_colors
+            )
+            else MODEL_COLORS.get(model)
+        )
+
+        linestyle = (
+            model_linestyles.get(
+                model,
+                "-",
+            )
+            if model_linestyles is not None
+            else "-"
+        )
+
+        x = series[time_dim].values
+
+        ax.plot(
+            x,
+            series.values,
+            linewidth=1.4,
+            linestyle=linestyle,
+            label=label,
+            color=color,
+        )
+
+        # ------------------------------------------------------
+        # Ensemble/member spread
+        # ------------------------------------------------------
+
+        if (
+            da_member is None
+            or realization_dim not in da_member.dims
+        ):
+            continue
+
+        member_series = da_member
+
+        if (
+            lead_value is not None
+            and leadtime_dim in member_series.dims
+        ):
+            member_series = member_series.sel(
+                {leadtime_dim: lead_value}
+            )
+
+        member_series = member_series.squeeze(drop=True)
+
+        extra_dims = [
+            dim
+            for dim in member_series.dims
+            if dim not in {
+                time_dim,
+                realization_dim,
+            }
+        ]
+
+        if extra_dims:
+            raise ValueError(
+                "Unexpected dimensions remain before plotting "
+                f"member timeseries: {extra_dims}."
+            )
+
+        with ProgressBar():
+            member_series = (
+                member_series
+                .reset_coords(drop=True)
+                .compute()
+                / scale
+            )
+
+        if plot_single_members:
+            for i in range(
+                member_series.sizes[realization_dim]
+            ):
+                ax.plot(
+                    x,
+                    member_series.isel(
+                        {realization_dim: i}
+                    ).values,
+                    linewidth=0.6,
+                    alpha=0.25,
+                    color=color,
+                )
+
+        member_mean = member_series.mean(
+            realization_dim,
+            skipna=True,
+        )
+
+        if spread == "std":
+            member_spread = member_series.std(
+                realization_dim,
+                skipna=True,
+            )
+            lower = member_mean - member_spread
+            upper = member_mean + member_spread
+
+        elif spread == "minmax":
+            lower = member_series.min(
+                realization_dim,
+                skipna=True,
+            )
+            upper = member_series.max(
+                realization_dim,
+                skipna=True,
+            )
+
+        else:
+            raise ValueError(
+                f"Unsupported spread={spread!r}. "
+                "Choose 'std' or 'minmax'."
+            )
+
+        ax.fill_between(
+            x,
+            lower.values,
+            upper.values,
+            alpha=0.18,
+            color=color,
+        )
+
+    # ----------------------------------------------------------
+    # Labels
+    # ----------------------------------------------------------
+
+    metric_name = METRIC_NAMES.get(
+        metric,
+        metric,
+    )
+
+    if improvement_unit == "%":
+        title_metric = (
+            f"{metric_name} improvement"
+        )
+        ylabel = (
+            f"{metric_name} improvement [%]"
+        )
+
+    elif improvement_unit == "Δ":
+        title_metric = (
+            f"{metric_name} improvement difference"
+        )
+        ylabel = (
+            f"{title_metric} [{plot_unit}]"
+            if plot_unit
+            else title_metric
+        )
+
+    elif improvement_unit == "normalized":
+        title_metric = (
+            f"{metric_name} normalized improvement"
+        )
+        ylabel = title_metric
+
     else:
-        plot_unit, scale = unit_conversion
+        metric_unit = METRIC_UNITS.get(
+            metric,
+            "",
+        )
 
-    if metric in SQUARED_METRICS:
-        return f"{plot_unit}²", scale**2
+        metric_unit = (
+            metric_unit.format(
+                unit=plot_unit
+            )
+            if metric_unit
+            else ""
+        )
 
-    return plot_unit, scale
+        title_metric = metric_name
+
+        ylabel = (
+            f"{metric_name} [{metric_unit}]"
+            if metric_unit
+            else metric_name
+        )
+
+    if plot_title:
+        start_time = datetime.strptime(
+            time_range[0],
+            "%Y-%m-%d",
+        ).strftime(
+            title_strftime
+        )
+
+        end_time = datetime.strptime(
+            time_range[1],
+            "%Y-%m-%d",
+        ).strftime(
+            title_strftime
+        )
+
+        lead_label_str = ""
+
+        if lead_value is not None:
+            lead_label_str = (
+                f" · leadtime="
+                f"{lead_label(sample_da, lead_value, leadtime_dim)}"
+            )
+
+        ax.set_title(
+            f"{VARIABLE_NAMES[var]} · "
+            f"{title_metric} · "
+            f"{start_time}-{end_time}"
+            f"{lead_label_str}",
+            fontsize=title_size,
+        )
+
+    if plot_labels:
+        ax.set_xlabel(
+            "Time",
+            fontsize=label_size,
+        )
+
+        ax.set_ylabel(
+            ylabel,
+            fontsize=label_size,
+        )
+
+    if ylim is not None:
+        ax.set_ylim(*ylim)
+
+    ax.tick_params(
+        axis="both",
+        labelsize=tick_size,
+    )
+
+    if timeseries_zero_line:
+        ax.axhline(
+            0.0,
+            linewidth=1.0,
+            linestyle="--",
+            alpha=0.6,
+        )
+
+    ax.grid(
+        True,
+        alpha=0.3,
+    )
+
+    if plot_legend:
+        ax.legend()
+
+    # ----------------------------------------------------------
+    # Save
+    # ----------------------------------------------------------
+
+    out_file.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    fig.tight_layout()
+
+    fig.savefig(
+        out_file,
+        dpi=dpi,
+        bbox_inches="tight",
+    )
+
+    plt.close(fig)
 
 
 def plot_map(
