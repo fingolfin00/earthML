@@ -27,6 +27,7 @@ from .definitions import (
     Metric,
     DETERMINISTIC_METRICS,
     PROBABILISTIC_METRICS,
+    POWER_METRICS,
 )
 
 
@@ -45,6 +46,9 @@ def is_deterministic(metric: str | Metric) -> bool:
 
 def is_probabilistic(metric: str | Metric) -> bool:
     return as_metric(metric) in PROBABILISTIC_METRICS
+
+def is_power(metric: str | Metric) -> bool:
+    return as_metric(metric) in POWER_METRICS
 
 
 EARTH_RADIUS_M = 6_371_000.0

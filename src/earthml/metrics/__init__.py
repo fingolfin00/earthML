@@ -12,6 +12,7 @@ from .metrics import (
     safe_div,
     is_deterministic,
     is_probabilistic,
+    is_power,
     get_metrics,
     get_scalar_metrics,
     groupby_period,
@@ -45,6 +46,7 @@ __all__ = [
     # utils
     "is_deterministic",
     "is_probabilistic",
+    "is_power",
     "safe_percent",
     "safe_div",
     "groupby_period",
