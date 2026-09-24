@@ -127,6 +127,35 @@ DEFAULT_PLOT_CONFIG = {
         "cmap": SeqPiBRdY,
         "scale_units": False,
     },
+    "kendall_tau": {
+        "vmin": -1,
+        "vmax": 1,
+        "ticks": 21,
+        "cmap": SeqPiBRdY,
+        "scale_units": False,
+    },
+    "scc": {
+        "vmin": -1,
+        "vmax": 1,
+        "ticks": 21,
+        "cmap": SeqPiBRdY,
+        "scale_units": False,
+    },
+
+    "kendall_tau_anom": {
+        "vmin": -1,
+        "vmax": 1,
+        "ticks": 21,
+        "cmap": SeqPiBRdY,
+        "scale_units": False,
+    },
+    "scc_anom": {
+        "vmin": -1,
+        "vmax": 1,
+        "ticks": 21,
+        "cmap": SeqPiBRdY,
+        "scale_units": False,
+    },
 
     # Standard deviation / ratios
     "fc_std": {
@@ -299,6 +328,22 @@ DEFAULT_PLOT_CONFIG = {
         "cmap": SeqPiBRdY,
         "scale_units": False,
     },
+    "mae_skill_clim": {
+        "vmin": -4,
+        "vmax": 1,
+        "ticks": [-4, -3, -2, -1.5, -0.9, -0.7, -0.5, -0.3, -0.2, -0.1,
+                0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
+        "cmap": SeqPiBRdY,
+        "scale_units": False,
+    },
+    "rmse_skill_clim": {
+        "vmin": -4,
+        "vmax": 1,
+        "ticks": [-4, -3, -2, -1.5, -0.9, -0.7, -0.5, -0.3, -0.2, -0.1,
+                0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
+        "cmap": SeqPiBRdY,
+        "scale_units": False,
+    },
     "mae_anom_skill_clim": {
         "vmin": -4,
         "vmax": 1,
@@ -331,6 +376,22 @@ DEFAULT_PLOT_CONFIG = {
         "vmin": -4,
         "vmax": 1,
         "ticks": [-4, -3, -2, -1.5, -0.9, -0.7, -0.5, -0.3, -0.2, -0.1, 0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
+        "cmap": SeqPiBRdY,
+        "scale_units": False,
+    },
+    "ens_member_mse_skill_clim": {
+        "vmin": -4,
+        "vmax": 1,
+        "ticks": [-4, -3, -2, -1.5, -0.9, -0.7, -0.5, -0.3, -0.2, -0.1,
+                0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
+        "cmap": SeqPiBRdY,
+        "scale_units": False,
+    },
+    "mean_member_mse_skill_clim": {
+        "vmin": -4,
+        "vmax": 1,
+        "ticks": [-4, -3, -2, -1.5, -0.9, -0.7, -0.5, -0.3, -0.2, -0.1,
+                0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
         "cmap": SeqPiBRdY,
         "scale_units": False,
     },
@@ -409,7 +470,73 @@ DEFAULT_PLOT_CONFIG = {
         "scale_units": True,
     },
 
+    # Brier score
+    "brier_lower": {
+        "vmin": 0,
+        "vmax": 1,
+        "ticks": 21,
+        "cmap": SeqWRdY,
+        "scale_units": False,
+    },
+    "brier_middle": {
+        "vmin": 0,
+        "vmax": 1,
+        "ticks": 21,
+        "cmap": SeqWRdY,
+        "scale_units": False,
+    },
+    "brier_upper": {
+        "vmin": 0,
+        "vmax": 1,
+        "ticks": 21,
+        "cmap": SeqWRdY,
+        "scale_units": False,
+    },
+
+    "brier_anom_lower": {
+        "vmin": 0,
+        "vmax": 1,
+        "ticks": 21,
+        "cmap": SeqWRdY,
+        "scale_units": False,
+    },
+    "brier_anom_middle": {
+        "vmin": 0,
+        "vmax": 1,
+        "ticks": 21,
+        "cmap": SeqWRdY,
+        "scale_units": False,
+    },
+    "brier_anom_upper": {
+        "vmin": 0,
+        "vmax": 1,
+        "ticks": 21,
+        "cmap": SeqWRdY,
+        "scale_units": False,
+    },
+
     # ROC AUC
+    "roc_lower": {
+        "vmin": 0,
+        "vmax": 1,
+        "ticks": 21,
+        "cmap": SeqPiBRdY,
+        "scale_units": False,
+    },
+    "roc_middle": {
+        "vmin": 0,
+        "vmax": 1,
+        "ticks": 21,
+        "cmap": SeqPiBRdY,
+        "scale_units": False,
+    },
+    "roc_upper": {
+        "vmin": 0,
+        "vmax": 1,
+        "ticks": 21,
+        "cmap": SeqPiBRdY,
+        "scale_units": False,
+    },
     "roc_anom_lower": {
         "vmin": 0,
         "vmax": 1,
@@ -480,6 +607,9 @@ METRIC_NAMES = {
     "rmse": "RMSE",
     "nrmse": "Normalized RMSE",
     "r2": "R²",
+    # Correlation
+    "kendall_tau": "Kendall's τ",
+    "scc": "Spatial Correlation",
     "corr": "Correlation",
     "fc_std": "Forecast STD",
     "an_std": "Analysis STD",
@@ -491,6 +621,9 @@ METRIC_NAMES = {
     "mse_anom": "Anomaly MSE",
     "rmse_anom": "Anomaly RMSE",
     "nrmse_anom": "Normalized Anomaly RMSE",
+    # Anomaly correlation
+    "kendall_tau_anom": "Anomaly Kendall's τ",
+    "scc_anom": "Anomaly Spatial Correlation",
     "acc": "ACC",
     "r2_anom": "Anomaly R²",
     "fc_anom_std": "Forecast Anomaly STD",
@@ -526,6 +659,10 @@ METRIC_NAMES = {
     "rmse_anom_skill_clim": "Anomaly RMSE Skill vs Climatology",
     "ens_member_mse_anom_skill_clim": "Pooled Ensemble-Member Anomaly MSE Skill vs Climatology",
     "mean_member_mse_anom_skill_clim": "Mean Member Anomaly MSE Skill vs Climatology",
+    "mae_skill_clim": "MAE Skill vs Climatology",
+    "rmse_skill_clim": "RMSE Skill vs Climatology",
+    "ens_member_mse_skill_clim": "Pooled Ensemble-Member MSE Skill vs Climatology",
+    "mean_member_mse_skill_clim": "Mean Member MSE Skill vs Climatology",
 
     # Probabilistic / ensemble
     "ens_member_rmse": "Pooled Ensemble-Member RMSE",
@@ -542,9 +679,39 @@ METRIC_NAMES = {
     "spread_anom_skill_ratio": "Anomaly Spread-Skill Ratio",
     "crps_anom": "Anomaly CRPS",
     "rank_histogram_anom": "Anomaly Rank Histogram",
+
+    # Brier
+    "brier_lower": "Brier Score, Lower Tercile",
+    "brier_middle": "Brier Score, Middle Tercile",
+    "brier_upper": "Brier Score, Upper Tercile",
+
+    "brier_anom_lower": "Brier Score, Lower Tercile Anomaly",
+    "brier_anom_middle": "Brier Score, Middle Tercile Anomaly",
+    "brier_anom_upper": "Brier Score, Upper Tercile Anomaly",
+
+    # ROC
+    "roc_lower": "ROC AUC, Lower Tercile",
+    "roc_middle": "ROC AUC, Middle Tercile",
+    "roc_upper": "ROC AUC, Upper Tercile",
+
     "roc_anom_lower": "ROC AUC, Lower Tercile Anomaly",
     "roc_anom_middle": "ROC AUC, Middle Tercile Anomaly",
     "roc_anom_upper": "ROC AUC, Upper Tercile Anomaly",
+
+    # Power spectra
+    "fc_power_spectrum": "Forecast Power Spectrum",
+    "an_power_spectrum": "Analysis Power Spectrum",
+    "power_spectrum_ratio": "Forecast / Analysis Power Spectrum Ratio",
+
+    "fc_isotropic_power_spectrum": "Forecast Isotropic Power Spectrum",
+    "an_isotropic_power_spectrum": "Analysis Isotropic Power Spectrum",
+
+    "fc_anom_power_spectrum": "Forecast Anomaly Power Spectrum",
+    "an_anom_power_spectrum": "Analysis Anomaly Power Spectrum",
+    "power_spectrum_ratio_anom": "Forecast / Analysis Anomaly Power Spectrum Ratio",
+
+    "fc_anom_isotropic_power_spectrum": "Forecast Anomaly Isotropic Power Spectrum",
+    "an_anom_isotropic_power_spectrum": "Analysis Anomaly Isotropic Power Spectrum",
 }
 
 METRIC_UNITS = {
@@ -561,6 +728,8 @@ METRIC_UNITS = {
 
     # Correlation / variance metrics
     "corr": "",
+    "kendall_tau": "",
+    "scc": "",
     "r2": "",
     "fc_std": "{unit}",
     "an_std": "{unit}",
@@ -575,6 +744,8 @@ METRIC_UNITS = {
 
     # Anomaly correlation / variance metrics
     "acc": "",
+    "kendall_tau_anom": "",
+    "scc_anom": "",
     "r2_anom": "",
     "fc_anom_std": "{unit}",
     "an_anom_std": "{unit}",
@@ -604,12 +775,16 @@ METRIC_UNITS = {
     "regression_slope_anom": "",
 
     # Skill scores
-    "mse_skill_clim": "%",
-    "mae_anom_skill_clim": "%",
-    "mse_anom_skill_clim": "%",
-    "rmse_anom_skill_clim": "%",
-    "ens_member_mse_anom_skill_clim": "%",
-    "mean_member_rmse_anom_skill_clim": "%",
+    "mae_skill_clim": "",
+    "rmse_skill_clim": "",
+    "mse_skill_clim": "",
+    "mae_anom_skill_clim": "",
+    "mse_anom_skill_clim": "",
+    "rmse_anom_skill_clim": "",
+    "ens_member_mse_anom_skill_clim": "",
+    "mean_member_rmse_anom_skill_clim": "",
+    "ens_member_mse_skill_clim": "",
+    "mean_member_mse_skill_clim": "",
 
     # Ensemble metrics
     "ens_member_rmse": "{unit}",
@@ -627,10 +802,34 @@ METRIC_UNITS = {
     "crps_anom": "{unit}",
     "rank_histogram_anom": "count",
 
+    # Brier
+    "brier_lower": "",
+    "brier_middle": "",
+    "brier_upper": "",
+    "brier_anom_lower": "",
+    "brier_anom_middle": "",
+    "brier_anom_upper": "",
+
     # ROC
+    "roc_lower": "",
+    "roc_middle": "",
+    "roc_upper": "",
     "roc_anom_lower": "",
     "roc_anom_middle": "",
     "roc_anom_upper": "",
+
+    # Power spectrum
+    "fc_power_spectrum": "",
+    "an_power_spectrum": "",
+    "fc_isotropic_power_spectrum": "",
+    "an_isotropic_power_spectrum": "",
+    "power_spectrum_ratio": "",
+
+    "fc_anom_power_spectrum": "",
+    "an_anom_power_spectrum": "",
+    "fc_anom_isotropic_power_spectrum": "",
+    "an_anom_isotropic_power_spectrum": "",
+    "power_spectrum_ratio_anom": "",
 }
 
 
