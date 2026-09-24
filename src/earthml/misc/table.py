@@ -18,8 +18,9 @@ class Table:
         title: str | None = None,
         params_name: str | None = None,
         twocols: bool = False,
+        nested_rows: bool = False,
         max_depth: int = 4,
-    ) -> RichTable | None:
+    ) -> None:
         # Accept ExperimentConfig (dataclass) or dict
         if not isinstance(data, dict) and not is_dataclass(data):
             raise TypeError(
@@ -38,6 +39,60 @@ class Table:
             title = data_name if title is None else title
 
         has_inner_dicts = self._has_inner_dicts(data)
+
+        highligher = ReprHighlighter()
+        params_name = "params" if params_name is None else params_name
+
+        if nested_rows and has_inner_dicts:
+            self.table = RichTable(
+                title=title,
+                show_header=True,
+            )
+
+            self.table.add_column(
+                "Section",
+                style="magenta",
+                no_wrap=True,
+            )
+            self.table.add_column(
+                params_name,
+                style="cyan",
+                no_wrap=True,
+            )
+            self.table.add_column(
+                "Value",
+                justify="right",
+            )
+
+            sections = list(data.items())
+
+            for section_index, (section, values) in enumerate(sections):
+                if not isinstance(values, dict):
+                    self.table.add_row(
+                        str(section),
+                        "",
+                        highligher(str(values)),
+                    )
+                    continue
+
+                if section_index > 0:
+                    self.table.add_section()
+
+                for metric_index, (metric, value) in enumerate(values.items()):
+                    section_label = (
+                        str(section)
+                        if metric_index == 0
+                        else ""
+                    )
+
+                    self.table.add_row(
+                        section_label,
+                        str(metric),
+                        highligher(str(value)),
+                    )
+
+            return
+
         rich_params = {
             "title": title,
             "show_header": bool(has_inner_dicts and title and not twocols),
@@ -45,8 +100,6 @@ class Table:
         self.table = RichTable(**rich_params)
 
         rowheads = self._get_rowheads(data)  # check only first inner level
-        highligher = ReprHighlighter()
-        params_name = "params" if params_name is None else params_name
 
         if has_inner_dicts and rowheads and not twocols:
             self.table.add_column(params_name, style="magenta")
