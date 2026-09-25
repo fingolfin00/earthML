@@ -366,11 +366,12 @@ def smart_tick_formatter(ticks):
         if np.isclose(x, 0):
             return "0"
 
-        return (
-            f"{x:.{fixed_precision}f}"
-            .rstrip("0")
-            .rstrip(".")
-        )
+        label = f"{x:.{fixed_precision}f}"
+
+        if "." in label:
+            label = label.rstrip("0").rstrip(".")
+
+        return label
 
     # ----------------------------------------------------------
     # Scientific representation
