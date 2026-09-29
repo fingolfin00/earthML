@@ -343,9 +343,13 @@ def build_metric_improvements(
     metric: str,
     baseline_model: str,
     target_model: str,
+    improvement_units: tuple[ImprovementUnit, ...] | None = None,
 ) -> dict[str, xr.DataArray]:
     """
-    Build all configured improvement representations for one metric.
+    Build configured improvement representations for one metric.
+
+    If improvement_units is None, use all representations configured
+    for the metric in METRIC_IMPROVEMENT_UNITS.
     """
 
     if metric not in baseline_ds:
@@ -360,8 +364,19 @@ def build_metric_improvements(
             f"{target_model!r}."
         )
 
-    if metric not in METRIC_IMPROVEMENT_UNITS:
+    configured_units = METRIC_IMPROVEMENT_UNITS.get(metric)
+
+    if configured_units is None:
         return {}
+
+    if improvement_units is None:
+        units = configured_units
+    else:
+        units = tuple(
+            unit
+            for unit in configured_units
+            if unit in improvement_units
+        )
 
     baseline, target = xr.align(
         baseline_ds[metric],
@@ -375,15 +390,9 @@ def build_metric_improvements(
         "normalized": "normalized",
     }
 
-    result: dict[
-        str,
-        xr.DataArray,
-    ] = {}
+    result: dict[str, xr.DataArray] = {}
 
-    for improvement_unit in (
-        METRIC_IMPROVEMENT_UNITS[metric]
-    ):
-
+    for improvement_unit in units:
         reference = None
         reference_power = 1
 
@@ -392,29 +401,22 @@ def build_metric_improvements(
         # ----------------------------------------------------------
 
         if metric in STD_REFERENCE_METRICS:
-
-            reference_metric = (
-                STD_REFERENCE_METRICS[metric]
-            )
+            reference_metric = STD_REFERENCE_METRICS[metric]
 
             if reference_metric not in baseline_ds:
                 raise KeyError(
                     f"Improvement for {metric!r} requires "
-                    f"baseline reference metric "
-                    f"{reference_metric!r}, but it is missing "
-                    f"from model {baseline_model!r}."
+                    f"baseline reference metric {reference_metric!r}, "
+                    f"but it is missing from model {baseline_model!r}."
                 )
 
-            reference = (
-                baseline_ds[reference_metric]
-            )
+            reference = baseline_ds[reference_metric]
 
         # ----------------------------------------------------------
         # Normalized reference
         # ----------------------------------------------------------
 
         if improvement_unit == "normalized":
-
             if metric not in NORMALIZED_IMPROVEMENT_REFERENCE:
                 raise KeyError(
                     f"No normalized-improvement reference "
@@ -424,9 +426,7 @@ def build_metric_improvements(
             (
                 reference_metric,
                 reference_power,
-            ) = NORMALIZED_IMPROVEMENT_REFERENCE[
-                metric
-            ]
+            ) = NORMALIZED_IMPROVEMENT_REFERENCE[metric]
 
             if reference_metric not in baseline_ds:
                 raise KeyError(
@@ -436,26 +436,18 @@ def build_metric_improvements(
                     f"from model {baseline_model!r}."
                 )
 
-            reference = (
-                baseline_ds[reference_metric]
-            )
+            reference = baseline_ds[reference_metric]
 
-        improvement = (
-            build_metric_improvement(
-                baseline,
-                target,
-                metric=metric,
-                improvement_unit=improvement_unit,
-                reference=reference,
-                reference_power=reference_power,
-            )
+        improvement = build_metric_improvement(
+            baseline,
+            target,
+            metric=metric,
+            improvement_unit=improvement_unit,
+            reference=reference,
+            reference_power=reference_power,
         )
 
-        suffix = (
-            improvement_suffix[
-                improvement_unit
-            ]
-        )
+        suffix = improvement_suffix[improvement_unit]
 
         model_name = (
             f"{target_model}_vs_"
