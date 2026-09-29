@@ -31,6 +31,7 @@ METRIC_DIFFERENCE_IMPROVEMENT = {
     # Higher is better
     "corr": HIGHER_BETTER_DIFF,
     "acc": HIGHER_BETTER_DIFF,
+    "scc": HIGHER_BETTER_DIFF,
     "r2": HIGHER_BETTER_DIFF,
     "r2_anom": HIGHER_BETTER_DIFF,
     "kendall_tau": HIGHER_BETTER_DIFF,
@@ -232,6 +233,7 @@ METRIC_IMPROVEMENT_UNITS: dict[
     "corr": ("Δ",),
     "kendall_tau": ("Δ",),
     "acc": ("Δ",),
+    "scc": ("Δ",),
     "kendall_tau_anom": ("Δ",),
     "r2": ("Δ",),
     "r2_anom": ("Δ",),
