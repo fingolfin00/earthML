@@ -86,6 +86,8 @@ class Settings:
     seasonal_encoding: bool = False
     ensemble_encoding: bool = False
     spatial_encoding: bool = False
+    orography_encoding: bool = False
+    orography_path: Path | None = None
     input_realization_avg: bool = False
 
     net_name: Literal["SmaAt_UNet", "ConvNeXtTransformerUNet"] = "SmaAt_UNet"
@@ -242,6 +244,9 @@ class Settings:
 
         if self.spatial_encoding:
             parts.append("spe")
+
+        if self.orography_encoding:
+            parts.append("oroe")
 
         if self.input_realization_avg:
             parts.append("ensmean")
@@ -551,6 +556,7 @@ class Settings:
             "data_root_dir",
             "exp_root_dir",
             "plot_root_dir",
+            "orography_path",
         ):
             value = getattr(self, name)
             if value is not None and not isinstance(value, Path):
@@ -742,6 +748,7 @@ class Settings:
             "seasonal_encoding",
             "ensemble_encoding",
             "spatial_encoding",
+            "orography_encoding",
             "input_realization_avg",
             "target_realization_avg",
         ):
