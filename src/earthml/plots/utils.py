@@ -1601,9 +1601,12 @@ def plot_timeseries(
     realization_dim: str = "realization",
     spread: Literal["std", "minmax"] = "std",
     plot_single_members: bool = False,
+    train_end: str | None = None,
+    val_end: str | None = None,
     ylim: tuple[float, float] | None = None,
     plot_title: bool = True,
     plot_labels: bool = True,
+    title_suffix: str = "",
     plot_legend: bool = True,
     title_strftime: str = "%Y",
     improvement_unit: ImprovementUnit | None = None,
@@ -2014,7 +2017,8 @@ def plot_timeseries(
             f"{VARIABLE_NAMES[var]} · "
             f"{title_metric} · "
             f"{start_time}-{end_time}"
-            f"{lead_label_str}",
+            f"{lead_label_str}"
+            f"{title_suffix}",
             fontsize=title_size,
         )
 
@@ -2043,6 +2047,24 @@ def plot_timeseries(
             linewidth=1.0,
             linestyle="--",
             alpha=0.6,
+        )
+
+    if train_end is not None:
+        ax.axvline(
+            np.datetime64(train_end),
+            color="red",
+            linestyle="--",
+            linewidth=1.3,
+            label="Train end",
+        )
+
+    if val_end is not None:
+        ax.axvline(
+            np.datetime64(val_end),
+            color="blue",
+            linestyle="--",
+            linewidth=1.3,
+            label="Val end",
         )
 
     ax.grid(
@@ -3144,7 +3166,7 @@ def plot_field_map(
         im,
     )
     cb.ax.xaxis.set_major_formatter(
-        FuncFormatter(smart_tick_formatter(ticks))
+        FuncFormatter(smart_tick_formatter(levels))
     )
 
     if plot_labels:
