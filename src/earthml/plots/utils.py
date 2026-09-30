@@ -1601,8 +1601,17 @@ def plot_timeseries(
     realization_dim: str = "realization",
     spread: Literal["std", "minmax"] = "std",
     plot_single_members: bool = False,
+    train_start: str | None = None,
     train_end: str | None = None,
     val_end: str | None = None,
+    test_end: str | None = None,
+    extrema_periods: Sequence[
+        Literal["train", "val", "test", "full"]
+    ] | None = None,
+    extrema_n_min: int = 0,
+    extrema_n_max: int = 0,
+    extrema_annotate: bool = True,
+    extrema_print: bool = False,
     ylim: tuple[float, float] | None = None,
     plot_title: bool = True,
     plot_labels: bool = True,
@@ -1622,6 +1631,127 @@ def plot_timeseries(
     dpi: int = 200,
 ) -> None:
     """Plot one or more metric time series."""
+
+    def _extrema_period_mask(
+        times: np.ndarray,
+        period: Literal["train", "val", "test", "full"],
+    ) -> np.ndarray:
+        times = np.asarray(times).astype("datetime64[ns]")
+
+        if period == "full":
+            return np.ones(times.shape, dtype=bool)
+
+        if period == "train":
+            if train_end is None:
+                raise ValueError(
+                    "train_end is required for train-period extrema."
+                )
+
+            start = (
+                train_start
+                if train_start is not None
+                else time_range[0]
+            )
+
+            return (
+                (times >= np.datetime64(start))
+                & (times <= np.datetime64(train_end))
+            )
+
+        if period == "val":
+            if train_end is None or val_end is None:
+                raise ValueError(
+                    "train_end and val_end are required "
+                    "for validation-period extrema."
+                )
+
+            return (
+                (times > np.datetime64(train_end))
+                & (times <= np.datetime64(val_end))
+            )
+
+        if period == "test":
+            if val_end is None:
+                raise ValueError(
+                    "val_end is required for test-period extrema."
+                )
+
+            end = (
+                test_end
+                if test_end is not None
+                else time_range[1]
+            )
+
+            return (
+                (times > np.datetime64(val_end))
+                & (times <= np.datetime64(end))
+            )
+
+        raise ValueError(
+            f"Unsupported extrema period {period!r}."
+        )
+
+
+    def _find_extrema(
+        series: xr.DataArray,
+        period: Literal["train", "val", "test", "full"],
+    ) -> list[tuple[str, int, np.datetime64, float]]:
+        values = np.asarray(series.values, dtype=float)
+        times = np.asarray(series[time_dim].values)
+
+        mask = (
+            np.isfinite(values)
+            & _extrema_period_mask(times, period)
+        )
+
+        indices = np.flatnonzero(mask)
+
+        if indices.size == 0:
+            return []
+
+        extrema: list[
+            tuple[str, int, np.datetime64, float]
+        ] = []
+
+        period_values = values[indices]
+
+        if extrema_n_min > 0:
+            order = np.argsort(period_values)
+
+            for rank, local_idx in enumerate(
+                order[:extrema_n_min],
+                start=1,
+            ):
+                idx = indices[local_idx]
+
+                extrema.append(
+                    (
+                        "min",
+                        rank,
+                        times[idx],
+                        float(values[idx]),
+                    )
+                )
+
+        if extrema_n_max > 0:
+            order = np.argsort(period_values)[::-1]
+
+            for rank, local_idx in enumerate(
+                order[:extrema_n_max],
+                start=1,
+            ):
+                idx = indices[local_idx]
+
+                extrema.append(
+                    (
+                        "max",
+                        rank,
+                        times[idx],
+                        float(values[idx]),
+                    )
+                )
+
+        return extrema
 
     var_plot_config = var_plot_config or {}
 
@@ -1838,6 +1968,101 @@ def plot_timeseries(
             label=label,
             color=color,
         )
+
+        # ------------------------------------------------------
+        # Timeseries extrema
+        # ------------------------------------------------------
+
+        if extrema_periods:
+            annotation_index = 0
+
+            for extrema_period in extrema_periods:
+                extrema = _find_extrema(
+                    series,
+                    extrema_period,
+                )
+
+                if extrema_print:
+                    print(
+                        f"  {model:>16s} | {metric} | "
+                        f"lead={lead_value} | "
+                        f"period={extrema_period}"
+                    )
+
+                for (
+                    kind,
+                    rank,
+                    extrema_time,
+                    extrema_value,
+                ) in extrema:
+
+                    time_str = np.datetime_as_string(
+                        extrema_time,
+                        unit="h",
+                    )
+
+                    if extrema_print:
+                        print(
+                            f"    {kind} {rank}: "
+                            f"{extrema_value:.6g} @ "
+                            f"{time_str}"
+                        )
+
+                    if not extrema_annotate:
+                        continue
+
+                    ax.scatter(
+                        extrema_time,
+                        extrema_value,
+                        s=28,
+                        color=color,
+                        zorder=5,
+                    )
+
+                    # Alternate labels above/below the curve.
+                    above = annotation_index % 2 == 0
+
+                    xytext = (
+                        6,
+                        12 if above else -12,
+                    )
+
+                    ax.annotate(
+                        (
+                            f"{extrema_period} {kind}{rank}\n"
+                            f"{time_str}\n"
+                            f"{extrema_value:.4g}"
+                        ),
+                        xy=(
+                            extrema_time,
+                            extrema_value,
+                        ),
+                        xytext=xytext,
+                        textcoords="offset points",
+                        ha="left",
+                        va=(
+                            "bottom"
+                            if above
+                            else "top"
+                        ),
+                        fontsize=8,
+                        color=color,
+                        bbox={
+                            "boxstyle": "round,pad=0.2",
+                            "facecolor": "white",
+                            "edgecolor": color,
+                            "alpha": 0.8,
+                        },
+                        arrowprops={
+                            "arrowstyle": "-",
+                            "color": color,
+                            "alpha": 0.6,
+                            "linewidth": 0.8,
+                        },
+                        zorder=6,
+                    )
+
+                    annotation_index += 1
 
         # ------------------------------------------------------
         # Ensemble/member spread
