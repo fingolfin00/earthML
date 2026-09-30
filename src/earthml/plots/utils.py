@@ -2274,22 +2274,34 @@ def plot_timeseries(
             alpha=0.6,
         )
 
-    if train_end is not None:
+    plot_start = np.datetime64(time_range[0])
+    plot_end = np.datetime64(time_range[1])
+
+    def _in_plot_range(value: str | None) -> bool:
+        if value is None:
+            return False
+
+        t = np.datetime64(value)
+        return plot_start <= t <= plot_end
+
+    if _in_plot_range(train_end):
         ax.axvline(
             np.datetime64(train_end),
-            color="red",
             linestyle="--",
-            linewidth=1.3,
+            linewidth=1.0,
+            color="black",
+            alpha=0.7,
             label="Train end",
         )
 
-    if val_end is not None:
+    if _in_plot_range(val_end):
         ax.axvline(
             np.datetime64(val_end),
-            color="blue",
             linestyle="--",
-            linewidth=1.3,
-            label="Val end",
+            linewidth=1.0,
+            color="black",
+            alpha=0.7,
+            label="Validation end",
         )
 
     ax.grid(
