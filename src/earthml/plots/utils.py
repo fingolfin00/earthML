@@ -354,13 +354,17 @@ def smart_tick_formatter(ticks):
 
     fixed_precision = 0
 
-    while (
-        np.unique(
-            np.round(finite_ticks, fixed_precision)
-        ).size
-        < finite_ticks.size
+    while not np.allclose(
+        np.round(finite_ticks, fixed_precision),
+        finite_ticks,
+        rtol=0,
+        atol=10 ** (-(fixed_precision + 6)),
     ):
         fixed_precision += 1
+
+        # Safety against pathological floating-point values.
+        if fixed_precision >= 10:
+            break
 
     def fixed_format(x):
         if np.isclose(x, 0):
@@ -421,17 +425,11 @@ def smart_tick_formatter(ticks):
         for x in finite_ticks
     ]
 
-    fixed_length = max(
-        map(len, fixed_labels)
-    )
-
-    scientific_length = max(
-        map(len, scientific_labels)
-    )
+    fixed_length = max(map(len, fixed_labels))
+    scientific_length = max(map(len, scientific_labels))
 
     use_scientific = (
-        scientific_length
-        < fixed_length
+        scientific_length < fixed_length
     )
 
     def formatter(x, _):
@@ -3402,9 +3400,16 @@ def plot_field_map(
         ax,
         im,
     )
-    cb.ax.xaxis.set_major_formatter(
-        FuncFormatter(smart_tick_formatter(levels))
+
+    colorbar_ticks = cb.get_ticks()
+    formatter = FuncFormatter(
+        smart_tick_formatter(colorbar_ticks)
     )
+
+    if cb.orientation == "horizontal":
+        cb.ax.xaxis.set_major_formatter(formatter)
+    else:
+        cb.ax.yaxis.set_major_formatter(formatter)
 
     if plot_labels:
         cb.set_label(
@@ -3413,6 +3418,7 @@ def plot_field_map(
             else VARIABLE_NAMES.get(var, var.upper()),
             fontsize=label_size,
         )
+
     cb.ax.tick_params(labelsize=tick_size)
 
     out_file.parent.mkdir(
