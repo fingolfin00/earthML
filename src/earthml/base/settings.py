@@ -441,6 +441,7 @@ class Settings:
             "data_root_dir",
             "exp_root_dir",
             "plot_root_dir",
+            "orography_path",
         }
         for name in path_fields:
             if config.get(name) is not None:
