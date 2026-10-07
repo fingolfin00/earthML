@@ -1,4 +1,4 @@
-from typing import cast, Literal
+from typing import cast
 from collections.abc import Sequence
 
 from pathlib import Path
@@ -24,6 +24,7 @@ from .definitions import (
     MetricKind,
     LeadtimeAgg,
     MetricAgg,
+    PeriodReference,
     Metric,
     DETERMINISTIC_METRICS,
     PROBABILISTIC_METRICS,
@@ -1449,9 +1450,6 @@ def groupby_period(
         ).groupby("month_hour")
 
     return da.groupby(f"{time_dim}.{clim_period}")
-
-
-PeriodReference = Literal["init", "valid"]
 
 
 def _default_period_dim(

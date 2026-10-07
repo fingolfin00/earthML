@@ -11,6 +11,7 @@ MetricAgg = Literal[
     "spatial_rmse", # sqrt(mean(point-wise MSE))
 ]
 ImprovementUnit = Literal["%", "Δ", "normalized"]
+PeriodReference = Literal["init", "valid"]
 
 
 class Metric(StrEnum):

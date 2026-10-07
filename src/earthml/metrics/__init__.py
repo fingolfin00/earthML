@@ -4,6 +4,7 @@ from .definitions import (
     RealizationAgg,
     MetricAgg,
     ImprovementUnit,
+    PeriodReference,
 )
 
 from .metrics import (
@@ -43,6 +44,7 @@ __all__ = [
     "MetricAgg",
     "Metric",
     "ImprovementUnit",
+    "PeriodReference",
     # utils
     "is_deterministic",
     "is_probabilistic",
