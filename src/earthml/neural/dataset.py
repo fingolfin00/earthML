@@ -399,11 +399,65 @@ class XarrayDataset(Dataset):
 
         months = int(self.months[idx].item()) if hasattr(self, "months") else None
 
-        if self.transform_x:
-            x = self.transform_x(x, months=months, **self.transform_x_args)
+        if (
+            self.transform_x
+            and getattr(
+                self.transform_x,
+                "mode",
+                None,
+            ) == "sample"
+        ):
+            if self.transform_y is None:
+                raise ValueError(
+                    "Sample normalization requires "
+                    "both transform_x and transform_y."
+                )
 
-        if self.transform_y:
-            y = self.transform_y(y, months=months, **self.transform_y_args)
+            if getattr(
+                self.transform_y,
+                "mode",
+                None,
+            ) != "sample":
+                raise ValueError(
+                    "When transform_x uses mode='sample', "
+                    "transform_y must also use mode='sample'."
+                )
+
+            # Statistics come ONLY from the input sample.
+            sample_mean, sample_std = (
+                self.transform_x.sample_params(x)
+            )
+
+            x = self.transform_x(
+                x,
+                mean=sample_mean,
+                std=sample_std,
+                months=months,
+                **self.transform_x_args,
+            )
+
+            y = self.transform_y(
+                y,
+                mean=sample_mean,
+                std=sample_std,
+                months=months,
+                **self.transform_y_args,
+            )
+
+        else:
+            if self.transform_x:
+                x = self.transform_x(
+                    x,
+                    months=months,
+                    **self.transform_x_args,
+                )
+
+            if self.transform_y:
+                y = self.transform_y(
+                    y,
+                    months=months,
+                    **self.transform_y_args,
+                )
 
         x = x.masked_fill(~mx, 0.0)
         y = y.masked_fill(~my, 0.0)
