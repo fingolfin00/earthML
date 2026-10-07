@@ -4,6 +4,7 @@ from typing import Literal, Sequence
 import joblib, torch
 
 from ..logging import get_logger
+from .dataset import XarrayDataset, XarraySubset
 
 
 logger = get_logger(__name__)
@@ -277,9 +278,9 @@ class Normalize:
 
     def fit(
         self,
-        dataset,
+        dataset: XarrayDataset | XarraySubset,
         *,
-        dim: str = "x",
+        dim: Literal["x", "y"] = "x",
         filepath: str | Path | None = None,
     ) -> "Normalize":
         data = getattr(dataset, dim)
