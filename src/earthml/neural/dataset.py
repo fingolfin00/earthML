@@ -31,6 +31,7 @@ class XarrayDataset(Dataset):
         fill_nan_value: float = 0.0,
         pass_mask_as_input_extra_channel: bool = False,
         torch_mask: Literal["target", "input", "both"] = "both",
+        sample_target_stats: Literal["input", "target"] = "target",
     ):
         """
         input_ds: xarray.Dataset
@@ -52,6 +53,7 @@ class XarrayDataset(Dataset):
         fill_nan_value: value used to fill NaNs
         pass_mask_as_input_extra_channel: pass mask as input channel
         torch_mask: final mask to apply
+        sample_target_stats: use input or target statistics for target data
         """
         self.fill_nan_value = fill_nan_value
 
@@ -69,6 +71,8 @@ class XarrayDataset(Dataset):
         self.target_realization_avg = target_realization_avg
         self.output_realizations = output_realizations
         self.pass_mask_as_input_extra_channel = pass_mask_as_input_extra_channel
+
+        self.sample_target_stats = sample_target_stats
 
         # NumPy arrays with NaNs for missing data
         self.x_np = self._transpose_dims_ds_to_da(self.input_ds).to_numpy()
@@ -401,31 +405,21 @@ class XarrayDataset(Dataset):
 
         if (
             self.transform_x
-            and getattr(
-                self.transform_x,
-                "mode",
-                None,
-            ) == "sample"
+            and self.transform_x.mode == "sample"
         ):
             if self.transform_y is None:
                 raise ValueError(
-                    "Sample normalization requires "
-                    "both transform_x and transform_y."
+                    "Sample normalization requires both transforms."
                 )
 
-            if getattr(
-                self.transform_y,
-                "mode",
-                None,
-            ) != "sample":
+            if self.transform_y.mode != self.transform_x.mode:
                 raise ValueError(
-                    "When transform_x uses mode='sample', "
-                    "transform_y must also use mode='sample'."
+                    "Input and target normalization modes must match."
                 )
 
-            # Statistics come ONLY from the input sample.
-            sample_mean, sample_std = (
-                self.transform_x.sample_params(x)
+            sample_mean, sample_std = self.transform_x.sample_params(
+                x,
+                mask=mx,
             )
 
             x = self.transform_x(
@@ -436,10 +430,18 @@ class XarrayDataset(Dataset):
                 **self.transform_x_args,
             )
 
+            if self.sample_target_stats == "input":
+                target_mean, target_std = sample_mean, sample_std
+            else:
+                target_mean, target_std = self.transform_y.sample_params(
+                    y,
+                    mask=my,
+                )
+
             y = self.transform_y(
                 y,
-                mean=sample_mean,
-                std=sample_std,
+                mean=target_mean,
+                std=target_std,
                 months=months,
                 **self.transform_y_args,
             )
