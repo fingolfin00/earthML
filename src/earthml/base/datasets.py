@@ -289,18 +289,18 @@ def get_and_subset_datasets(
     else:
         ds_list: list[xr.Dataset] = []
 
-        if s.input_mlfc_train.exists():
-            ds = open_engine(s.input_mlfc_train)
+        if s.output_mlfc_train.exists():
+            ds = open_engine(s.output_mlfc_train)
             if ds is not None:
                 ds_list.append(ds)
 
-        if s.input_mlfc_val.exists():
-            ds = open_engine(s.input_mlfc_val)
+        if s.output_mlfc_val.exists():
+            ds = open_engine(s.output_mlfc_val)
             if ds is not None:
                 ds_list.append(ds)
 
-        if s.input_mlfc_test.exists():
-            ds = open_engine(s.input_mlfc_test)
+        if s.output_mlfc_test.exists():
+            ds = open_engine(s.output_mlfc_test)
             if ds is not None:
                 ds_list.append(ds)
 
