@@ -102,6 +102,7 @@ class Settings:
     target_realization_avg: bool = False
     fill_nan_value: float = 0.0
     torch_mask: Literal["target", "input", "both"] = "target"
+    sample_target_stats: Literal["target", "input"] = "target"
 
     training_norm: Literal["BatchNorm2d", "GroupNorm", "InstanceNorm2d", "LayerNorm"] = "GroupNorm"
 
@@ -188,15 +189,15 @@ class Settings:
         return self._find_dataset(self.model_an, self.var_file_an)
 
     @property
-    def input_mlfc_train(self) -> Path:
+    def output_mlfc_train(self) -> Path:
         return self.output_dir / "train_corrected.zarr"
 
     @property
-    def input_mlfc_val(self) -> Path:
+    def output_mlfc_val(self) -> Path:
         return self.output_dir / "val_corrected.zarr"
 
     @property
-    def input_mlfc_test(self) -> Path:
+    def output_mlfc_test(self) -> Path:
         return self.output_dir / "test_corrected.zarr"
 
     @property
@@ -653,6 +654,7 @@ class Settings:
         check_literal("normalization", Literal["full", "monthly"])
         check_literal("normalization_mode", NormalizationMode)
         check_literal("torch_mask", Literal["target", "input", "both"])
+        check_literal("sample_target_stats", Literal["target", "input"])
         check_literal("trainer_precision", TrainerPrecision)
 
         if not isinstance(self.leadtime_unit, LeadtimeUnit):
