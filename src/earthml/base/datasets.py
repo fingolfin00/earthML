@@ -159,7 +159,7 @@ def save_zarr(
         )
 
     encoding = {
-        name: {"compressor": compressor}
+        name: {"compressors": compressor}
         for name in ds.data_vars
     }
 
