@@ -11,6 +11,7 @@ logger = get_logger(__name__)
 
 
 NormalizationMode = Literal[
+    "none",
     "global",
     "channel",
     "gridpoint",
@@ -24,6 +25,9 @@ class Normalize:
 
     Supported modes
     ---------------
+    none:
+        No normalization
+
     global:
         One mean/std over samples, channels and spatial dimensions.
         Stored shape: (1, 1, 1, 1)
@@ -68,14 +72,16 @@ class Normalize:
         self.included_channels: tuple[int, ...] | None = None
         self.excluded_channels: tuple[int, ...] | None = None
 
+
     def fitted(self) -> bool:
-        if self.mode == "sample":
+        if self.mode in ("none", "sample"):
             return self.n_channels is not None
 
         return (
             self.mean is not None
             and self.std is not None
         )
+
 
     def _reduce_dims(self) -> tuple[int, ...]:
         match self.mode:
@@ -94,6 +100,7 @@ class Normalize:
                 raise ValueError(
                     f"Unsupported normalization mode: {self.mode!r}"
                 )
+
 
     @staticmethod
     def _prepare_mask(
@@ -121,6 +128,7 @@ class Normalize:
             mask.to(device=data.device, dtype=torch.bool)
             & finite_mask
         )
+
 
     @staticmethod
     def _masked_mean_std(
@@ -301,12 +309,10 @@ class Normalize:
     def sample_params(
         self,
         tensor: torch.Tensor,
+        mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.mode != "sample":
-            raise ValueError(
-                "sample_params() is only available "
-                "for mode='sample'."
-            )
+            raise ValueError("sample_params() is only available for mode='sample'")
 
         included = self._select_included_channels(
             tensor
@@ -328,6 +334,10 @@ class Normalize:
             )
 
         valid_mask = torch.isfinite(included)
+
+        if mask is not None:
+            included_mask = self._select_included_channels(mask)
+            valid_mask &= included_mask.bool()
 
         mean, std = self._masked_mean_std(
             included,
@@ -360,10 +370,10 @@ class Normalize:
         )
 
         # ----------------------------------------------------------
-        # Dynamic per-sample normalization
+        # Do not fit for none and sample modes
         # ----------------------------------------------------------
 
-        if self.mode == "sample":
+        if self.mode in ("none", "sample"):
             if filepath is not None:
                 self.save(filepath)
 
@@ -403,6 +413,7 @@ class Normalize:
             self.save(filepath)
 
         return self
+
 
     def _params_for(
         self,
@@ -454,16 +465,14 @@ class Normalize:
         std: torch.Tensor | None = None,
         **kwargs,
     ) -> torch.Tensor:
-        included = self._select_included_channels(
-            tensor
-        )
+        if self.mode == "none":
+            return tensor
+
+        included = self._select_included_channels(tensor)
 
         if self.mode == "sample":
             if (mean is None) != (std is None):
-                raise ValueError(
-                    "mean and std must either both be "
-                    "provided or both be omitted."
-                )
+                raise ValueError("mean and std must either both be provided or both be omitted")
 
             if mean is None:
                 mean, std = self.sample_params(
@@ -496,18 +505,11 @@ class Normalize:
 
         else:
             if mean is not None or std is not None:
-                raise ValueError(
-                    "Explicit mean/std parameters are only "
-                    "supported for mode='sample'."
-                )
+                raise ValueError("Explicit mean/std parameters are only supported for mode='sample'")
 
-            mean, std = self._params_for(
-                included
-            )
+            mean, std = self._params_for(included)
 
-        normalized = (
-            included - mean
-        ) / std
+        normalized = (included - mean) / std
 
         return self._restore_included_channels(
             tensor,
@@ -523,14 +525,15 @@ class Normalize:
         std: torch.Tensor | None = None,
         **kwargs,
     ) -> torch.Tensor:
-        included = self._select_included_channels(
-            tensor
-        )
+        if self.mode == "none":
+            return tensor
+
+        included = self._select_included_channels(tensor)
 
         if self.mode == "sample":
             if mean is None or std is None:
                 raise ValueError(
-                    "mode='sample' requires mean and std "
+                    f"mode={self.mode} requires mean and std "
                     "for inverse normalization."
                 )
 
@@ -544,13 +547,9 @@ class Normalize:
             )
 
         else:
-            mean, std = self._params_for(
-                included
-            )
+            mean, std = self._params_for(included)
 
-        restored = (
-            included * std + mean
-        )
+        restored = (included * std + mean)
 
         return self._restore_included_channels(
             tensor,
