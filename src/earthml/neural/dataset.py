@@ -31,7 +31,8 @@ class XarrayDataset(Dataset):
         fill_nan_value: float = 0.0,
         pass_mask_as_input_extra_channel: bool = False,
         torch_mask: Literal["target", "input", "both"] = "both",
-        sample_target_stats: Literal["input", "target"] = "target",
+        sample_target_mean: Literal["input", "target"] = "input",
+        sample_target_std: Literal["input", "target"] = "input",
     ):
         """
         input_ds: xarray.Dataset
@@ -53,7 +54,8 @@ class XarrayDataset(Dataset):
         fill_nan_value: value used to fill NaNs
         pass_mask_as_input_extra_channel: pass mask as input channel
         torch_mask: final mask to apply
-        sample_target_stats: use input or target statistics for target data
+        sample_target_mean: use input or target mean for target data normalization
+        sample_target_std: use input or target std for target data normalization
         """
         self.fill_nan_value = fill_nan_value
 
@@ -72,7 +74,8 @@ class XarrayDataset(Dataset):
         self.output_realizations = output_realizations
         self.pass_mask_as_input_extra_channel = pass_mask_as_input_extra_channel
 
-        self.sample_target_stats = sample_target_stats
+        self.sample_target_mean = sample_target_mean
+        self.sample_target_std = sample_target_std
 
         # NumPy arrays with NaNs for missing data
         self.x_np = self._transpose_dims_ds_to_da(self.input_ds).to_numpy()
@@ -403,66 +406,92 @@ class XarrayDataset(Dataset):
 
         months = int(self.months[idx].item()) if hasattr(self, "months") else None
 
-        if (
-            self.transform_x
-            and self.transform_x.mode == "sample"
-        ):
-            if self.transform_y is None:
-                raise ValueError(
-                    "Sample normalization requires both transforms."
+        # ----------------------------------------------------------
+        # Normalization
+        # ----------------------------------------------------------
+
+        if self.transform_x is not None:
+            input_kwargs = {}
+
+            if self.transform_x.uses_sample_stats:
+                sample_mean, sample_std = self.transform_x.sample_params(
+                    x, mask=mx,
                 )
 
-            if self.transform_y.mode != self.transform_x.mode:
-                raise ValueError(
-                    "Input and target normalization modes must match."
-                )
+                if self.transform_x.mean_spec == "sample":
+                    input_kwargs["mean"] = sample_mean
 
-            sample_mean, sample_std = self.transform_x.sample_params(
-                x,
-                mask=mx,
-            )
+                if self.transform_x.std_spec == "sample":
+                    input_kwargs["std"] = sample_std
 
             x = self.transform_x(
                 x,
-                mean=sample_mean,
-                std=sample_std,
+                mask=mx,
                 months=months,
+                **input_kwargs,
                 **self.transform_x_args,
             )
 
-            if self.sample_target_stats == "input":
-                target_mean, target_std = sample_mean, sample_std
-            else:
-                target_mean, target_std = self.transform_y.sample_params(
-                    y,
-                    mask=my,
-                )
+        if self.transform_y is not None:
+            target_kwargs = {}
+
+            if self.transform_y.uses_sample_stats:
+                input_mean = input_std = None
+                target_mean = target_std = None
+
+                if (
+                    self.transform_y.mean_spec == "sample"
+                    and self.sample_target_mean == "input"
+                ) or (
+                    self.transform_y.std_spec == "sample"
+                    and self.sample_target_std == "input"
+                ):
+                    input_mean, input_std = self.transform_x.sample_params(
+                        self.x[idx],
+                        mask=mx,
+                    )
+
+                if (
+                    self.transform_y.mean_spec == "sample"
+                    and self.sample_target_mean == "target"
+                ) or (
+                    self.transform_y.std_spec == "sample"
+                    and self.sample_target_std == "target"
+                ):
+                    target_mean, target_std = self.transform_y.sample_params(
+                        y,
+                        mask=my,
+                    )
+
+                if self.transform_y.mean_spec == "sample":
+                    target_kwargs["mean"] = (
+                        input_mean
+                        if self.sample_target_mean == "input"
+                        else target_mean
+                    )
+
+                if self.transform_y.std_spec == "sample":
+                    target_kwargs["std"] = (
+                        input_std
+                        if self.sample_target_std == "input"
+                        else target_std
+                    )
 
             y = self.transform_y(
                 y,
-                mean=target_mean,
-                std=target_std,
+                mask=my,
                 months=months,
+                **target_kwargs,
                 **self.transform_y_args,
             )
 
+        if self.transform_x is None:
+            x_fill = self.fill_nan_value
         else:
-            if self.transform_x:
-                x = self.transform_x(
-                    x,
-                    months=months,
-                    **self.transform_x_args,
-                )
+            x_fill = 0.0
 
-            if self.transform_y:
-                y = self.transform_y(
-                    y,
-                    months=months,
-                    **self.transform_y_args,
-                )
-
-        x = x.masked_fill(~mx, 0.0)
-        y = y.masked_fill(~my, 0.0)
+        x = x.masked_fill(~mx, x_fill)
+        y = y.masked_fill(~my, 0.0) # must not contribute to the loss
 
         if self.pass_mask_as_input_extra_channel:
             if self.channel_representation == "realization":
