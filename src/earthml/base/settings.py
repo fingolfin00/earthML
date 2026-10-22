@@ -80,8 +80,13 @@ class Settings:
     output_realizations: Literal["deterministic", "ensemble"] = "deterministic"
     split_strategy: SplitStrategy = "time"
     shuffle_train_batch: bool = True
+
     normalization: Literal["full", "monthly"] = "full"
-    normalization_mode: NormalizationMode = "channel"
+
+    normalization_input_mean: NormalizationMode = "channel"
+    normalization_input_std: NormalizationMode = "channel"
+    normalization_target_mean: NormalizationMode = "channel"
+    normalization_target_std: NormalizationMode = "channel"
 
     seasonal_encoding: bool = False
     ensemble_encoding: bool = False
@@ -102,7 +107,8 @@ class Settings:
     target_realization_avg: bool = False
     fill_nan_value: float = 0.0
     torch_mask: Literal["target", "input", "both"] = "target"
-    sample_target_stats: Literal["target", "input"] = "target"
+    sample_target_mean: Literal["input", "target"] = "input"
+    sample_target_std: Literal["input", "target"] = "input"
 
     training_norm: Literal["BatchNorm2d", "GroupNorm", "InstanceNorm2d", "LayerNorm"] = "GroupNorm"
 
@@ -264,7 +270,20 @@ class Settings:
         parts += [
             f"c-{self.channel_representation}",
             f"l{self.lead_period_offset:+d}",
-            f"{self.normalization}-{self.normalization_mode}",
+            f"{self.normalization}",
+            f"im-{self.normalization_input_mean}",
+            f"is-{self.normalization_input_std}",
+            f"tm-{self.normalization_target_mean}",
+            f"ts-{self.normalization_target_std}",
+        ]
+
+        if self.normalization_target_mean == "sample":
+            parts.append(f"sm-{self.sample_target_mean}")
+
+        if self.normalization_target_std == "sample":
+            parts.append(f"ss-{self.sample_target_std}")
+
+        parts += [
             self.net_name.lower(),
             self.loss_name.lower().replace("loss", ""),
             self.extra_suffix_folder,
@@ -537,6 +556,11 @@ class Settings:
 
 
     def __post_init__(self) -> None:
+        if self.normalization == "monthly":
+            raise NotImplementedError(
+                "Monthly normalization has not yet been migrated."
+            )
+
         if self.root_dir is None:
             missing = [
                 name
@@ -652,9 +676,9 @@ class Settings:
         check_literal("output_realizations", Literal["deterministic", "ensemble"])
         check_literal("split_strategy", SplitStrategy)
         check_literal("normalization", Literal["full", "monthly"])
-        check_literal("normalization_mode", NormalizationMode)
         check_literal("torch_mask", Literal["target", "input", "both"])
-        check_literal("sample_target_stats", Literal["target", "input"])
+        check_literal("sample_target_mean", Literal["input", "target"])
+        check_literal("sample_target_std", Literal["input", "target"])
         check_literal("trainer_precision", TrainerPrecision)
 
         if not isinstance(self.leadtime_unit, LeadtimeUnit):
@@ -746,6 +770,35 @@ class Settings:
                     raise ValueError(
                         "Longitude bounds must lie within [-360, 360]."
                     )
+
+        normalization_fields = (
+            "normalization_input_mean",
+            "normalization_input_std",
+            "normalization_target_mean",
+            "normalization_target_std",
+        )
+
+        allowed_modes = {"global", "channel", "gridpoint", "sample"}
+
+        for name in normalization_fields:
+            value = getattr(self, name)
+
+            if isinstance(value, str):
+                if value not in allowed_modes:
+                    raise ValueError(
+                        f"{name}: unsupported normalization mode {value!r}"
+                    )
+
+            elif isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise TypeError(
+                    f"{name} must be a normalization mode or a number."
+                )
+
+            elif not math.isfinite(value):
+                raise ValueError(f"{name} must be finite.")
+
+            elif name.endswith("_std") and value <= 0:
+                raise ValueError(f"{name} must be positive.")
 
         for name in (
             "seasonal_encoding",
