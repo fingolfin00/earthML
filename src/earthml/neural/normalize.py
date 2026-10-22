@@ -10,96 +10,68 @@ from .dataset import XarrayDataset, XarraySubset
 logger = get_logger(__name__)
 
 
-NormalizationMode = Literal[
-    "none",
-    "global",
-    "channel",
-    "gridpoint",
-    "sample",
-]
+NormalizationMode = float | int | torch.Tensor | Literal["global", "channel", "gridpoint", "sample"]
 
 
 class Normalize:
-    """
-    Configurable tensor normalizer.
+    """Independently configure mean and standard deviation.
 
-    Supported modes
-    ---------------
-    none:
-        No normalization
-
-    global:
-        One mean/std over samples, channels and spatial dimensions.
-        Stored shape: (1, 1, 1, 1)
-
-    channel:
-        One mean/std per channel over samples and spatial dimensions.
-        Stored shape: (1, C, 1, 1)
-
-    gridpoint:
-        One mean/std per channel and grid point over samples.
-        Stored shape: (1, C, H, W)
-
-    sample:
-        One mean/std per sample and channel over spatial dimensions.
-        Statistics are calculated dynamically for each input sample.
-
-        For batched data:
-            (N, C, H, W) -> mean/std shape (N, C, 1, 1)
-
-        For single samples:
-            (C, H, W) -> mean/std shape (C, 1, 1)
+    Numeric/tensor values are fixed. Global/channel/gridpoint statistics are
+    fitted on training data. Sample statistics are calculated dynamically.
+    Data has shape (N,C,H,W), or (C,H,W) for a single sample.
     """
 
     def __init__(
         self,
-        mean: torch.Tensor | None = None,
-        std: torch.Tensor | None = None,
+        mean: NormalizationMode = "channel",
+        std: NormalizationMode = "channel",
         *,
-        mode: NormalizationMode = "channel",
         eps: float = 1e-6,
         exclude_channels: Sequence[int] | None = None,
     ) -> None:
-        self.mean = mean
-        self.std = std
-        self.mode = mode
+        self.mean_spec = mean
+        self.std_spec = std
+        self.mean: torch.Tensor | None = None
+        self.std: torch.Tensor | None = None
         self.eps = eps
-
         self.exclude_channels = tuple(exclude_channels or ())
-
-        # Resolved after fit(), so negative channel indices can be supported.
         self.n_channels: int | None = None
         self.included_channels: tuple[int, ...] | None = None
         self.excluded_channels: tuple[int, ...] | None = None
+        for spec in (mean, std):
+            if isinstance(spec, str) and spec not in {
+                "global", "channel", "gridpoint", "sample"
+            }:
+                raise ValueError(f"Unknown statistic specification: {spec!r}")
 
 
     def fitted(self) -> bool:
-        if self.mode in ("none", "sample"):
-            return self.n_channels is not None
-
         return (
-            self.mean is not None
-            and self.std is not None
+            self.n_channels is not None
+            and (self.mean is not None or self._is_sample(self.mean_spec))
+            and (self.std is not None or self._is_sample(self.std_spec))
         )
 
 
-    def _reduce_dims(self) -> tuple[int, ...]:
-        match self.mode:
-            case "global":
-                return (0, 1, 2, 3)
-            case "channel":
-                return (0, 2, 3)
-            case "gridpoint":
-                return (0,)
-            case "sample":
-                raise RuntimeError(
-                    "Sample normalization statistics are calculated "
-                    "dynamically and do not use _reduce_dims()."
-                )
-            case _:
-                raise ValueError(
-                    f"Unsupported normalization mode: {self.mode!r}"
-                )
+    @staticmethod
+    def _is_sample(spec: NormalizationMode) -> bool:
+        return isinstance(spec, str) and spec == "sample"
+
+    @property
+    def uses_sample_stats(self) -> bool:
+        return (
+            self._is_sample(self.mean_spec)
+            or self._is_sample(self.std_spec)
+        )
+
+
+    @staticmethod
+    def _reduce_dims(spec: str) -> tuple[int, ...]:
+        return {
+            "global": (0, 1, 2, 3),
+            "channel": (0, 2, 3),
+            "gridpoint": (0,),
+        }[spec]
 
 
     @staticmethod
@@ -311,42 +283,23 @@ class Normalize:
         tensor: torch.Tensor,
         mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if self.mode != "sample":
-            raise ValueError("sample_params() is only available for mode='sample'")
+        """Return masked spatial mean/std for each sample and included channel."""
+        included = self._select_included_channels(tensor)
 
-        included = self._select_included_channels(
-            tensor
+        reduce_dims = (2, 3) if included.ndim == 4 else (1, 2)
+
+        included_mask = (
+            self._select_included_channels(mask) if mask is not None else None
         )
 
-        if included.ndim == 4:
-            # (N,C,H,W)
-            reduce_dims = (2, 3)
+        valid = torch.isfinite(included)
 
-        elif included.ndim == 3:
-            # (C,H,W)
-            reduce_dims = (1, 2)
+        if included_mask is not None:
+            valid &= included_mask.bool()
 
-        else:
-            raise ValueError(
-                "Expected tensor shape (N,C,H,W) "
-                "or (C,H,W), "
-                f"got {tuple(included.shape)}"
-            )
-
-        valid_mask = torch.isfinite(included)
-
-        if mask is not None:
-            included_mask = self._select_included_channels(mask)
-            valid_mask &= included_mask.bool()
-
-        mean, std = self._masked_mean_std(
-            included,
-            valid_mask,
-            reduce_dims=reduce_dims,
-            eps=self.eps,
+        return self._masked_mean_std(
+            included, valid, reduce_dims=reduce_dims, eps=self.eps
         )
-
-        return mean, std
 
 
     def fit(
@@ -360,54 +313,50 @@ class Normalize:
         mask = getattr(dataset, f"{dim}_mask", None)
 
         if data.ndim != 4:
-            raise ValueError(
-                "Expected dataset data shape (N,C,H,W), "
-                f"got {tuple(data.shape)}"
-            )
+            raise ValueError(f"Expected (N,C,H,W), got {tuple(data.shape)}")
 
-        self._set_channel_configuration(
-            data.shape[1]
-        )
+        self._set_channel_configuration(data.shape[1])
 
-        # ----------------------------------------------------------
-        # Do not fit for none and sample modes
-        # ----------------------------------------------------------
+        included = self._select_included_channels(data)
 
-        if self.mode in ("none", "sample"):
-            if filepath is not None:
-                self.save(filepath)
+        included_mask = self._select_included_channels(mask) if mask is not None else None
+        valid_mask = self._prepare_mask(included, included_mask)
 
-            return self
+        fitted_stats: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
 
-        # ----------------------------------------------------------
-        # Existing fitted normalization modes
-        # ----------------------------------------------------------
+        for name, spec in (("mean", self.mean_spec), ("std", self.std_spec)):
+            if self._is_sample(spec):
+                value = None
 
-        data_for_fit = self._select_included_channels(
-            data
-        )
+            elif isinstance(spec, str):
+                if spec not in fitted_stats:
+                    fitted_stats[spec] = self._masked_mean_std(
+                        included, valid_mask,
+                        reduce_dims=self._reduce_dims(spec), eps=self.eps,
+                    )
+                value = fitted_stats[spec][0 if name == "mean" else 1]
 
-        if mask is not None:
-            mask_for_fit = (
-                self._select_included_channels(mask)
-            )
-        else:
-            mask_for_fit = None
+            else:
+                value = torch.as_tensor(spec, dtype=data.dtype)
 
-        valid_mask = self._prepare_mask(
-            data_for_fit,
-            mask_for_fit,
-        )
+            if value is not None:
+                value = value.detach().cpu()
 
-        mean, std = self._masked_mean_std(
-            data_for_fit,
-            valid_mask,
-            reduce_dims=self._reduce_dims(),
-            eps=self.eps,
-        )
+                if not torch.isfinite(value).all():
+                    raise ValueError(f"{name} must be finite")
 
-        self.mean = mean.detach().cpu()
-        self.std = std.detach().cpu()
+                if name == "std" and not torch.all(value > 0):
+                    raise ValueError("std must be positive")
+
+                try:
+                    torch.broadcast_shapes(included.shape, value.shape)
+                except RuntimeError as exc:
+                    raise ValueError(
+                        f"{name} shape {tuple(value.shape)} cannot broadcast "
+                        f"to {tuple(included.shape)}"
+                    ) from exc
+
+            setattr(self, name, value)
 
         if filepath is not None:
             self.save(filepath)
@@ -415,46 +364,46 @@ class Normalize:
         return self
 
 
-    def _params_for(
+    def _resolve_param(
         self,
-        tensor: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        if not self.fitted():
-            raise ValueError("Normalizer is not fitted")
+        name: Literal["mean", "std"],
+        included: torch.Tensor,
+        provided: torch.Tensor | None,
+        sample_value: torch.Tensor | None,
+        *,
+        inverse: bool,
+    ) -> torch.Tensor:
+        spec = self.mean_spec if name == "mean" else self.std_spec
 
-        if tensor.ndim == 4:
-            mean = self.mean
-            std = self.std
-        elif tensor.ndim == 3:
-            mean = self.mean.squeeze(0)
-            std = self.std.squeeze(0)
+        if spec == "sample" if isinstance(spec, str) else False:
+            value = provided if provided is not None else sample_value
+
+            if value is None:
+                raise ValueError(
+                    f"Inverse normalization needs the original sample {name}"
+                    if inverse else f"Missing sample {name}"
+                )
+
         else:
-            raise ValueError(
-                "Expected tensor shape (N,C,H,W) or (C,H,W), "
-                f"got {tuple(tensor.shape)}"
-            )
+            if provided is not None:
+                raise ValueError(f"Cannot override non-sample {name}")
+
+            value = getattr(self, name)
+
+        if not isinstance(value, torch.Tensor):
+            value = torch.as_tensor(value)
+
+        if included.ndim == 3 and value.ndim == 4 and value.shape[0] == 1:
+            value = value.squeeze(0)
+
+        value = value.to(device=included.device, dtype=included.dtype)
 
         try:
-            torch.broadcast_shapes(
-                tensor.shape,
-                mean.shape,
-            )
+            torch.broadcast_shapes(included.shape, value.shape)
         except RuntimeError as exc:
-            raise ValueError(
-                f"Stored parameter shape {tuple(mean.shape)} cannot be "
-                f"broadcast to tensor shape {tuple(tensor.shape)}"
-            ) from exc
+            raise ValueError(f"{name} shape cannot broadcast to data") from exc
 
-        return (
-            mean.to(
-                device=tensor.device,
-                dtype=tensor.dtype,
-            ),
-            std.to(
-                device=tensor.device,
-                dtype=tensor.dtype,
-            ),
-        )
+        return value
 
 
     def __call__(
@@ -463,58 +412,28 @@ class Normalize:
         *,
         mean: torch.Tensor | None = None,
         std: torch.Tensor | None = None,
+        mask: torch.Tensor | None = None,
         **kwargs,
     ) -> torch.Tensor:
-        if self.mode == "none":
-            return tensor
+        if not self.fitted():
+            raise ValueError("Normalizer is not fitted")
 
         included = self._select_included_channels(tensor)
 
-        if self.mode == "sample":
-            if (mean is None) != (std is None):
-                raise ValueError("mean and std must either both be provided or both be omitted")
+        sample_mean = sample_std = None
 
-            if mean is None:
-                mean, std = self.sample_params(
-                    tensor
-                )
-            else:
-                mean = mean.to(
-                    device=included.device,
-                    dtype=included.dtype,
-                )
-                std = std.to(
-                    device=included.device,
-                    dtype=included.dtype,
-                )
+        if self.uses_sample_stats and (
+            (self._is_sample(self.mean_spec) and mean is None)
+            or (self._is_sample(self.std_spec) and std is None)
+        ):
+            sample_mean, sample_std = self.sample_params(tensor, mask=mask)
 
-                try:
-                    torch.broadcast_shapes(
-                        included.shape,
-                        mean.shape,
-                        std.shape,
-                    )
-                except RuntimeError as exc:
-                    raise ValueError(
-                        "Provided sample normalization "
-                        "parameters cannot broadcast to "
-                        f"tensor shape {tuple(included.shape)}: "
-                        f"mean={tuple(mean.shape)}, "
-                        f"std={tuple(std.shape)}"
-                    ) from exc
+        mu = self._resolve_param("mean", included, mean, sample_mean, inverse=False)
+        sigma = self._resolve_param("std", included, std, sample_std, inverse=False)
 
-        else:
-            if mean is not None or std is not None:
-                raise ValueError("Explicit mean/std parameters are only supported for mode='sample'")
+        normalized = (included - mu) / sigma
 
-            mean, std = self._params_for(included)
-
-        normalized = (included - mean) / std
-
-        return self._restore_included_channels(
-            tensor,
-            normalized,
-        )
+        return self._restore_included_channels(tensor, normalized)
 
 
     def inverse_tensor(
@@ -525,41 +444,18 @@ class Normalize:
         std: torch.Tensor | None = None,
         **kwargs,
     ) -> torch.Tensor:
-        if self.mode == "none":
-            return tensor
+        if not self.fitted():
+            raise ValueError("Normalizer is not fitted")
 
         included = self._select_included_channels(tensor)
 
-        if self.mode == "sample":
-            if mean is None or std is None:
-                raise ValueError(
-                    f"mode={self.mode} requires mean and std "
-                    "for inverse normalization."
-                )
+        mu = self._resolve_param("mean", included, mean, None, inverse=True)
+        sigma = self._resolve_param("std", included, std, None, inverse=True)
 
-            mean = mean.to(
-                device=included.device,
-                dtype=included.dtype,
-            )
-            std = std.to(
-                device=included.device,
-                dtype=included.dtype,
-            )
+        return self._restore_included_channels(tensor, included * sigma + mu)
 
-        else:
-            mean, std = self._params_for(included)
 
-        restored = (included * std + mean)
-
-        return self._restore_included_channels(
-            tensor,
-            restored,
-        )
-
-    def save(
-        self,
-        filepath: str | Path,
-    ) -> None:
+    def save(self, filepath: str | Path) -> None:
         if not self.fitted():
             raise ValueError("Cannot save an unfitted normalizer")
 
@@ -567,20 +463,11 @@ class Normalize:
 
 
     @classmethod
-    def load(
-        cls,
-        filepath: str | Path,
-    ) -> "Normalize":
+    def load(cls, filepath: str | Path) -> "Normalize":
         loaded = joblib.load(filepath)
 
-        if not isinstance(loaded, cls):
-            raise TypeError(
-                f"Expected {cls.__name__}, "
-                f"got {type(loaded).__name__}"
-            )
-
-        if not loaded.fitted():
-            raise ValueError("Loaded normalizer is not fitted")
+        if not isinstance(loaded, cls) or not loaded.fitted():
+            raise ValueError("Loaded object is not a fitted Normalize")
 
         return loaded
 
