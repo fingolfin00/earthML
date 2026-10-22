@@ -1610,6 +1610,7 @@ def plot_timeseries(
     extrema_n_max: int = 0,
     extrema_annotate: bool = True,
     extrema_print: bool = False,
+    annotate_times: tuple[str, ...] | None = None,
     ylim: tuple[float, float] | None = None,
     plot_title: bool = True,
     plot_labels: bool = True,
@@ -1958,6 +1959,8 @@ def plot_timeseries(
 
         x = series[time_dim].values
 
+        annotation_index = 0
+
         ax.plot(
             x,
             series.values,
@@ -1972,8 +1975,6 @@ def plot_timeseries(
         # ------------------------------------------------------
 
         if extrema_periods:
-            annotation_index = 0
-
             for extrema_period in extrema_periods:
                 extrema = _find_extrema(
                     series,
@@ -2061,6 +2062,85 @@ def plot_timeseries(
                     )
 
                     annotation_index += 1
+
+        # ------------------------------------------------------
+        # Manually selected timestamps
+        # ------------------------------------------------------
+
+        if annotate_times:
+            times = np.asarray(
+                series[time_dim].values,
+                dtype="datetime64[ns]",
+            )
+            values = np.asarray(series.values, dtype=float)
+
+            requested_times = pd.to_datetime(
+                annotate_times
+            ).to_numpy(dtype="datetime64[ns]")
+
+            for requested_time in requested_times:
+                indices = np.flatnonzero(
+                    times == requested_time
+                )
+
+                if indices.size == 0:
+                    continue
+
+                idx = indices[0]
+                value = float(values[idx])
+
+                if not np.isfinite(value):
+                    continue
+
+                time_str = np.datetime_as_string(
+                    requested_time,
+                    unit="h",
+                )
+
+                ax.scatter(
+                    requested_time,
+                    value,
+                    s=28,
+                    color=color,
+                    zorder=5,
+                )
+
+                above = annotation_index % 2 == 0
+
+                ax.annotate(
+                    (
+                        f"{time_str}\n"
+                        f"{value:.4g}"
+                    ),
+                    xy=(
+                        requested_time,
+                        value,
+                    ),
+                    xytext=(
+                        6,
+                        12 if above else -12,
+                    ),
+                    textcoords="offset points",
+                    ha="left",
+                    va="bottom" if above else "top",
+                    fontsize=8,
+                    color=color,
+                    bbox={
+                        "boxstyle": "round,pad=0.2",
+                        "facecolor": "white",
+                        "edgecolor": color,
+                        "alpha": 0.8,
+                    },
+                    arrowprops={
+                        "arrowstyle": "-",
+                        "color": color,
+                        "alpha": 0.6,
+                        "linewidth": 0.8,
+                    },
+                    zorder=6,
+                )
+
+                annotation_index += 1
 
         # ------------------------------------------------------
         # Ensemble/member spread
