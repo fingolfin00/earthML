@@ -2411,16 +2411,42 @@ def get_scalar_metrics(
             f"Unsupported metric_agg_mode={metric_agg_mode!r}"
         ) from exc
 
-    fields = get_metrics(
+    # Temporal reference metrics cannot be calculated with
+    # metric_kind="timeseries", because time is not reduced
+    temporal_references = {
+        "an_std",
+        "an_anom_std",
+    }
+
+    requested_metrics = (
+        [metrics]
+        if isinstance(metrics, str)
+        else list(metrics)
+    )
+
+    reference_metrics = [
+        metric
+        for metric in requested_metrics
+        if (
+            metric_agg_mode == "timeseries_avg"
+            and metric in temporal_references
+        )
+    ]
+
+    regular_metrics = [
+        metric
+        for metric in requested_metrics
+        if metric not in reference_metrics
+    ]
+
+    metric_kwargs = dict(
         an=an,
         fc=fc,
         var=var,
-        metric_kind=metric_kind,
         leadtime_agg=leadtime_agg_mode,
         realization_agg=realization_agg,
         an_clim=an_clim,
         fc_clim=fc_clim,
-        metrics=metrics,
         leadtime_windows=leadtime_windows,
         leadtime_agg_coord=leadtime_agg_coord,
         clim_period=clim_period,
@@ -2429,6 +2455,43 @@ def get_scalar_metrics(
         periods_requested=periods_requested,
         leadtime_unit=leadtime_unit,
     )
+
+    fields = (
+        get_metrics(
+            metric_kind=metric_kind,
+            metrics=regular_metrics,
+            **metric_kwargs,
+        )
+        if regular_metrics
+        else xr.Dataset()
+    )
+
+    if reference_metrics:
+        reference_fields = get_metrics(
+            metric_kind="scalar",
+            metrics=reference_metrics,
+            **metric_kwargs,
+        )
+
+        resolved_period_dim = (
+            period_dim
+            if period_dim is not None
+            else _default_period_dim(
+                period_reference,
+                clim_period,
+            )
+        )
+
+        if resolved_period_dim in fields.dims:
+            reference_fields = reference_fields.sel({
+                resolved_period_dim:
+                    fields[resolved_period_dim]
+            })
+
+        fields = xr.merge(
+            [fields, reference_fields],
+            join="exact",
+        )
 
     profiles = average_metric_fields(
         fields,
