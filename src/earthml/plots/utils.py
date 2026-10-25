@@ -3081,6 +3081,7 @@ def plot_metric_diff_scatter(
     color_by: str = "variable",
     marker_by: str = "leadtime",
     shade_by: str = "total_months",
+    category_labels: dict[str, dict[object, str]] | None = None,
     title: str | None = None,
     xlabel: str | None = None,
     ylabel: str | None = None,
@@ -3126,6 +3127,10 @@ def plot_metric_diff_scatter(
     color_values = sorted({point_field(p, color_by) for p in points}, key=str)
     marker_values = sorted({point_field(p, marker_by) for p in points}, key=str)
     shade_values = sorted({point_field(p, shade_by) for p in points}, key=str)
+
+    category_labels = category_labels or {}
+    def get_category_label(field: str, value: object) -> str:
+        return category_labels.get(field, {}).get(value, str(value))
 
     cmap = plt.get_cmap(cmap_name)
 
@@ -3227,7 +3232,7 @@ def plot_metric_diff_scatter(
                 markersize=7,
                 markerfacecolor=base_color(value),
                 markeredgecolor=edgecolor,
-                label=str(value),
+                label=get_category_label(color_by, value),
             )
         )
 
@@ -3243,7 +3248,7 @@ def plot_metric_diff_scatter(
                 markersize=7,
                 markerfacecolor=lighten(neutral_base, shade_strength * i / denom),
                 markeredgecolor=edgecolor,
-                label=str(value),
+                label=get_category_label(shade_by, value),
             )
         )
 
@@ -3257,11 +3262,16 @@ def plot_metric_diff_scatter(
                 markersize=7,
                 markerfacecolor="white",
                 markeredgecolor="black",
-                label=str(value),
+                label=get_category_label(marker_by, value),
             )
         )
 
-    leg = ax.legend(handles=handles, loc="upper left", fontsize=9, frameon=False)
+    leg = ax.legend(
+        handles=handles,
+        loc="best",
+        fontsize=9,
+        frameon=False,
+    )
 
     for txt in leg.get_texts():
         if txt.get_text() in {
