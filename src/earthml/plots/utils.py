@@ -1623,6 +1623,7 @@ def plot_timeseries(
     force_scale: int | float | None = None,
     model_colors: dict[str, object] | None = None,
     model_linestyles: dict[str, str] | None = None,
+    timeseries_mean_line: bool = False,
     timeseries_zero_line: bool = False,
     figsize: tuple[float, float] = (12.0, 6.0),
     title_size: float | None = None,
@@ -1970,6 +1971,29 @@ def plot_timeseries(
             label=label,
             color=color,
         )
+
+        # ------------------------------------------------------
+        # Timeseries mean
+        # ------------------------------------------------------
+
+        if timeseries_mean_line:
+            plot_values = series.sel(
+                {time_dim: slice(*time_range)}
+            ).values
+
+            finite_values = plot_values[np.isfinite(plot_values)]
+
+            if finite_values.size:
+                mean_value = float(finite_values.mean())
+
+                ax.axhline(
+                    mean_value,
+                    linewidth=1.5,
+                    linestyle="--",
+                    color=color,
+                    alpha=0.8,
+                    label=f"{label} mean ({mean_value:.4g})",
+                )
 
         # ------------------------------------------------------
         # Timeseries extrema
