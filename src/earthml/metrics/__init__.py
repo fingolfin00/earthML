@@ -4,6 +4,7 @@ from .definitions import (
     RealizationAgg,
     MetricAgg,
     ImprovementUnit,
+    ImprovementAgg,
     PeriodReference,
 )
 
@@ -25,6 +26,7 @@ from .improvement import (
     build_metric_improvement,
     build_metric_improvements,
     get_required_improvement_metrics,
+    get_aggregated_metric_improvements,
 )
 
 from .significance import (
@@ -45,6 +47,7 @@ __all__ = [
     "MetricAgg",
     "Metric",
     "ImprovementUnit",
+    "ImprovementAgg",
     "PeriodReference",
     # utils
     "is_deterministic",
@@ -62,6 +65,7 @@ __all__ = [
     "build_metric_improvement",
     "build_metric_improvements",
     "get_required_improvement_metrics",
+    "get_aggregated_metric_improvements",
     # significance
     "get_metric_improvement_significance",
     # climatology

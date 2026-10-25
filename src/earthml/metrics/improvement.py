@@ -1,5 +1,7 @@
 import xarray as xr
 
+from .definitions import MetricAgg, ImprovementAgg
+from .metrics import average_metric_fields
 from .defaults import (
     ImprovementUnit,
     METRIC_DIFFERENCE_IMPROVEMENT,
@@ -17,6 +19,7 @@ STD_REFERENCE_METRICS = {
 
 def get_required_improvement_metrics(
     metrics: list[str],
+    improvement_units: tuple[ImprovementUnit, ...] | None = None,
 ) -> list[str]:
     """
     Return requested metrics plus any auxiliary metrics required to
@@ -37,12 +40,20 @@ def get_required_improvement_metrics(
     required = list(metrics)
 
     for metric in metrics:
-
         # Not every plotted metric needs to support model improvement.
         # Examples: an_std, an_anom_std.
         units = METRIC_IMPROVEMENT_UNITS.get(metric)
 
         if units is None:
+            continue
+
+        if improvement_units is not None:
+            units = tuple(
+                unit for unit in units
+                if unit in improvement_units
+            )
+
+        if not units:
             continue
 
         # ----------------------------------------------------------
@@ -458,3 +469,77 @@ def build_metric_improvements(
         result[model_name] = improvement
 
     return result
+
+
+def get_aggregated_metric_improvements(
+    baseline_fields: xr.Dataset,
+    target_fields: xr.Dataset,
+    *,
+    an: xr.Dataset,
+    metric: str,
+    baseline_model: str,
+    target_model: str,
+    metric_agg_mode: MetricAgg,
+    improvement_agg_mode: ImprovementAgg = "after",
+    improvement_units: tuple[ImprovementUnit, ...] | None = None,
+) -> dict[str, xr.DataArray]:
+    """
+    Calculate metric improvements with configurable aggregation order.
+
+    "before":
+        Calculate improvements from intermediate metric fields,
+        then aggregate each improvement.
+
+    "after":
+        Aggregate intermediate metric fields first,
+        then calculate improvements.
+
+    Auxiliary reference metrics are processed with the same
+    aggregation order.
+    """
+
+    if improvement_agg_mode not in {"before", "after"}:
+        raise ValueError(
+            f"Unsupported improvement_agg_mode="
+            f"{improvement_agg_mode!r}."
+        )
+
+    if improvement_agg_mode == "before":
+        improvements = build_metric_improvements(
+            baseline_fields,
+            target_fields,
+            metric=metric,
+            baseline_model=baseline_model,
+            target_model=target_model,
+            improvement_units=improvement_units,
+        )
+
+        return {
+            name: average_metric_fields(
+                da,
+                an=an,
+                metric_agg_mode=metric_agg_mode,
+            )
+            for name, da in improvements.items()
+        }
+
+    baseline_aggregated = average_metric_fields(
+        baseline_fields,
+        an=an,
+        metric_agg_mode=metric_agg_mode,
+    )
+
+    target_aggregated = average_metric_fields(
+        target_fields,
+        an=an,
+        metric_agg_mode=metric_agg_mode,
+    )
+
+    return build_metric_improvements(
+        baseline_aggregated,
+        target_aggregated,
+        metric=metric,
+        baseline_model=baseline_model,
+        target_model=target_model,
+        improvement_units=improvement_units,
+    )

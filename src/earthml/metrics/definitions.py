@@ -11,6 +11,7 @@ MetricAgg = Literal[
     "timeseries_avg",   # mean(timeseries of spatial RMSE))
 ]
 ImprovementUnit = Literal["%", "Δ", "normalized"]
+ImprovementAgg = Literal["before", "after"]
 PeriodReference = Literal["init", "valid"]
 
 
