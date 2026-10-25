@@ -1614,6 +1614,7 @@ def plot_timeseries(
     ylim: tuple[float, float] | None = None,
     plot_title: bool = True,
     plot_labels: bool = True,
+    x_label: str | None = None,
     title_suffix: str = "",
     plot_legend: bool = True,
     title_strftime: str = "%Y",
@@ -2242,6 +2243,8 @@ def plot_timeseries(
     # Labels
     # ----------------------------------------------------------
 
+    xlabel = "Time" if x_label is None else str(x_label)
+
     metric_name = METRIC_NAMES.get(
         metric,
         metric,
@@ -2327,7 +2330,7 @@ def plot_timeseries(
 
     if plot_labels:
         ax.set_xlabel(
-            "Time",
+            xlabel,
             fontsize=label_size,
         )
 
