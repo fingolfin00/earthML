@@ -713,7 +713,7 @@ def plot_profile(
 
     # Categorical/profile-axis styling
     profile_point_colors: dict[str, object] | None = None,
-    profile_markers: bool = False,
+    profile_markers: bool | dict[str, bool] = False,
     profile_marker_size: float = 50,
     profile_connect: bool = True,
     profile_tick_rotation: float = 0,
@@ -1010,8 +1010,7 @@ def plot_profile(
                     profile
                 )
 
-                # Short lead times lighter,
-                # long lead times darker.
+                # Short lead times lighter, long lead times darker
                 color = base_color
 
                 if n_select > 1:
@@ -1064,7 +1063,13 @@ def plot_profile(
                         color=color,
                     )
 
-                if profile_markers:
+                show_marker = (
+                    profile_markers.get(model, False)
+                    if isinstance(profile_markers, dict)
+                    else profile_markers
+                )
+
+                if show_marker:
                     for j, (xpos, coord_value, yvalue) in enumerate(
                         zip(
                             x,
