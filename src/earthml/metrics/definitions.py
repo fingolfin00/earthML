@@ -6,9 +6,9 @@ MetricKind = Literal["scalar", "maps", "time_lon", "time_lat", "timeseries"]
 LeadtimeAgg = Literal["single", "aggregated", "seasonal_window"]
 RealizationAgg = Literal["member", "ensemble_mean"]
 MetricAgg = Literal[
-    "global",       # sqrt(mean(error^2))
-    "spatial_avg",  # mean(point-wise RMSE)
-    "spatial_rmse", # sqrt(mean(point-wise MSE))
+    "global",           # sqrt(mean(error^2))
+    "spatial_avg",      # mean(point-wise RMSE)
+    "timeseries_avg",   # mean(timeseries of spatial RMSE))
 ]
 ImprovementUnit = Literal["%", "Δ", "normalized"]
 PeriodReference = Literal["init", "valid"]

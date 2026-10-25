@@ -15,6 +15,7 @@ from .metrics import (
     is_probabilistic,
     is_power,
     get_metrics,
+    average_metric_fields,
     get_scalar_metrics,
     groupby_period,
     stack_hour_clim,
@@ -55,6 +56,7 @@ __all__ = [
     "stack_hour_clim",
     # metrics
     "get_metrics",
+    "average_metric_fields",
     "get_scalar_metrics",
     # improvement
     "build_metric_improvement",
