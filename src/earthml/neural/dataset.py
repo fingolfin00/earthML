@@ -400,6 +400,7 @@ class XarrayDataset(Dataset):
                 input_valid = mx.any(dim=0, keepdim=True)
                 mask = input_valid & my
             else:
+                # TODO implicit broadcasting unhandled
                 mask = mx & my
         else:
             raise ValueError(f"Unsupported torch_mask={self.torch_mask}")
@@ -414,8 +415,9 @@ class XarrayDataset(Dataset):
             input_kwargs = {}
 
             if self.transform_x.uses_sample_stats:
-                sample_mean, sample_std = self.transform_x.sample_params(
-                    x, mask=mx,
+                sample_mean, sample_std = self.transform_x.resolve_sample_mean_or_std(
+                    tensor=x,
+                    mask=mx,
                 )
 
                 if self.transform_x.mean_spec == "sample":
@@ -446,10 +448,19 @@ class XarrayDataset(Dataset):
                     self.transform_y.std_spec == "sample"
                     and self.sample_target_std == "input"
                 ):
-                    input_mean, input_std = self.transform_x.sample_params(
-                        self.x[idx],
+                    input_mean, input_std = self.transform_x.resolve_sample_mean_or_std(
+                        tensor=self.x[idx],
                         mask=mx,
                     )
+
+                    n_target_channels = len(self.transform_y.included_channels)
+
+                    if input_mean.shape[0] != n_target_channels:
+                        raise ValueError(
+                            "Input-derived sample statistics are incompatible with target "
+                            f"normalization: input has {input_mean.shape[0]} included channels, "
+                            f"target expects {n_target_channels}."
+                        )
 
                 if (
                     self.transform_y.mean_spec == "sample"
@@ -458,8 +469,8 @@ class XarrayDataset(Dataset):
                     self.transform_y.std_spec == "sample"
                     and self.sample_target_std == "target"
                 ):
-                    target_mean, target_std = self.transform_y.sample_params(
-                        y,
+                    target_mean, target_std = self.transform_y.resolve_sample_mean_or_std(
+                        tensor=y,
                         mask=my,
                     )
 
@@ -631,3 +642,19 @@ class XarraySubset(Dataset):
     @property
     def transform_y_args(self):
         return self.dataset.transform_y_args
+
+    @property
+    def sample_target_mean(self):
+        return self.dataset.sample_target_mean
+
+    @sample_target_mean.setter
+    def sample_target_mean(self, value):
+        self.dataset.sample_target_mean = value
+
+    @property
+    def sample_target_std(self):
+        return self.dataset.sample_target_std
+
+    @sample_target_std.setter
+    def sample_target_std(self, value):
+        self.dataset.sample_target_std = value

@@ -79,9 +79,9 @@ class Normalize:
         data: torch.Tensor,
         mask: torch.Tensor | None,
     ) -> torch.Tensor:
-        if data.ndim != 4:
+        if data.ndim not in (3, 4):
             raise ValueError(
-                "Expected data shape (N,C,H,W), "
+                "Expected data shape (N,C,H,W) or (C,H,W), "
                 f"got {tuple(data.shape)}"
             )
 
@@ -203,6 +203,33 @@ class Normalize:
         return included, excluded
 
 
+    @staticmethod
+    def _validate_statistic(
+        name: Literal["mean", "std"],
+        value: torch.Tensor,
+        data_shape: tuple[int, ...],
+    ) -> None:
+        if not torch.isfinite(value).all():
+            raise ValueError(f"{name} must be finite")
+
+        if name == "std" and not torch.all(value > 0):
+            raise ValueError("std must be positive")
+
+        try:
+            result_shape = torch.broadcast_shapes(data_shape, value.shape)
+        except RuntimeError as exc:
+            raise ValueError(
+                f"{name} shape {tuple(value.shape)} cannot broadcast "
+                f"to data shape {data_shape}"
+            ) from exc
+
+        if result_shape != data_shape:
+            raise ValueError(
+                f"{name} shape {tuple(value.shape)} would expand "
+                f"data shape {data_shape} to {result_shape}"
+            )
+
+
     def _set_channel_configuration(
         self,
         n_channels: int,
@@ -219,8 +246,12 @@ class Normalize:
         tensor: torch.Tensor,
     ) -> None:
         if self.n_channels is None or self.included_channels is None:
+            raise ValueError("Normalizer channel configuration is not initialized")
+
+        if tensor.ndim not in (3, 4):
             raise ValueError(
-                "Normalizer channel configuration is not initialized."
+                "Expected tensor shape (N,C,H,W) or (C,H,W), "
+                f"got {tuple(tensor.shape)}"
             )
 
         channel_dim = 1 if tensor.ndim == 4 else 0
@@ -229,7 +260,7 @@ class Normalize:
         if actual_channels != self.n_channels:
             raise ValueError(
                 f"Normalizer was fitted with {self.n_channels} channels, "
-                f"but received a tensor with {actual_channels} channels."
+                f"but received a tensor with {actual_channels} channels"
             )
 
 
@@ -278,30 +309,6 @@ class Normalize:
         return result
 
 
-    def sample_params(
-        self,
-        tensor: torch.Tensor,
-        mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return masked spatial mean/std for each sample and included channel."""
-        included = self._select_included_channels(tensor)
-
-        reduce_dims = (2, 3) if included.ndim == 4 else (1, 2)
-
-        included_mask = (
-            self._select_included_channels(mask) if mask is not None else None
-        )
-
-        valid = torch.isfinite(included)
-
-        if included_mask is not None:
-            valid &= included_mask.bool()
-
-        return self._masked_mean_std(
-            included, valid, reduce_dims=reduce_dims, eps=self.eps
-        )
-
-
     def fit(
         self,
         dataset: XarrayDataset | XarraySubset,
@@ -331,30 +338,29 @@ class Normalize:
             elif isinstance(spec, str):
                 if spec not in fitted_stats:
                     fitted_stats[spec] = self._masked_mean_std(
-                        included, valid_mask,
-                        reduce_dims=self._reduce_dims(spec), eps=self.eps,
+                        data=included,
+                        mask=valid_mask,
+                        reduce_dims=self._reduce_dims(spec),
+                        eps=self.eps,
                     )
                 value = fitted_stats[spec][0 if name == "mean" else 1]
 
             else:
                 value = torch.as_tensor(spec, dtype=data.dtype)
 
+                if value.ndim == 1:
+                    value = value.reshape(1, -1, 1, 1)
+                elif value.ndim == 3:
+                    value = value.unsqueeze(0)
+
             if value is not None:
                 value = value.detach().cpu()
 
-                if not torch.isfinite(value).all():
-                    raise ValueError(f"{name} must be finite")
-
-                if name == "std" and not torch.all(value > 0):
-                    raise ValueError("std must be positive")
-
-                try:
-                    torch.broadcast_shapes(included.shape, value.shape)
-                except RuntimeError as exc:
-                    raise ValueError(
-                        f"{name} shape {tuple(value.shape)} cannot broadcast "
-                        f"to {tuple(included.shape)}"
-                    ) from exc
+                self._validate_statistic(
+                    name,
+                    value,
+                    (1, *included.shape[1:]),
+                )
 
             setattr(self, name, value)
 
@@ -364,7 +370,7 @@ class Normalize:
         return self
 
 
-    def _resolve_param(
+    def _resolve_mean_or_std(
         self,
         name: Literal["mean", "std"],
         included: torch.Tensor,
@@ -375,7 +381,7 @@ class Normalize:
     ) -> torch.Tensor:
         spec = self.mean_spec if name == "mean" else self.std_spec
 
-        if spec == "sample" if isinstance(spec, str) else False:
+        if self._is_sample(spec):
             value = provided if provided is not None else sample_value
 
             if value is None:
@@ -398,12 +404,48 @@ class Normalize:
 
         value = value.to(device=included.device, dtype=included.dtype)
 
-        try:
-            torch.broadcast_shapes(included.shape, value.shape)
-        except RuntimeError as exc:
-            raise ValueError(f"{name} shape cannot broadcast to data") from exc
+        if self._is_sample(spec):
+            expected_shape = (
+                (*included.shape[:2], 1, 1)
+                if included.ndim == 4
+                else (included.shape[0], 1, 1)
+            )
+
+            if value.shape != expected_shape:
+                raise ValueError(
+                    f"Sample {name} must have shape {expected_shape}, "
+                    f"got {tuple(value.shape)}"
+                )
+
+        self._validate_statistic(
+            name,
+            value,
+            tuple(included.shape),
+        )
 
         return value
+
+
+    def resolve_sample_mean_or_std(
+        self,
+        tensor: torch.Tensor,
+        mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return masked spatial mean/std for each sample and included channel"""
+
+        included = self._select_included_channels(tensor)
+
+        reduce_dims = (2, 3) if included.ndim == 4 else (1, 2)
+
+        included_mask = self._select_included_channels(mask) if mask is not None else None
+        valid_mask = self._prepare_mask(included, included_mask)
+
+        return self._masked_mean_std(
+            data=included,
+            mask=valid_mask,
+            reduce_dims=reduce_dims,
+            eps=self.eps,
+        )
 
 
     def __call__(
@@ -426,10 +468,10 @@ class Normalize:
             (self._is_sample(self.mean_spec) and mean is None)
             or (self._is_sample(self.std_spec) and std is None)
         ):
-            sample_mean, sample_std = self.sample_params(tensor, mask=mask)
+            sample_mean, sample_std = self.resolve_sample_mean_or_std(tensor, mask=mask)
 
-        mu = self._resolve_param("mean", included, mean, sample_mean, inverse=False)
-        sigma = self._resolve_param("std", included, std, sample_std, inverse=False)
+        mu = self._resolve_mean_or_std("mean", included, mean, sample_mean, inverse=False)
+        sigma = self._resolve_mean_or_std("std", included, std, sample_std, inverse=False)
 
         normalized = (included - mu) / sigma
 
@@ -449,13 +491,16 @@ class Normalize:
 
         included = self._select_included_channels(tensor)
 
-        mu = self._resolve_param("mean", included, mean, None, inverse=True)
-        sigma = self._resolve_param("std", included, std, None, inverse=True)
+        mu = self._resolve_mean_or_std("mean", included, mean, None, inverse=True)
+        sigma = self._resolve_mean_or_std("std", included, std, None, inverse=True)
 
         return self._restore_included_channels(tensor, included * sigma + mu)
 
 
-    def save(self, filepath: str | Path) -> None:
+    def save(
+        self,
+        filepath: str | Path,
+    ) -> None:
         if not self.fitted():
             raise ValueError("Cannot save an unfitted normalizer")
 
@@ -463,7 +508,10 @@ class Normalize:
 
 
     @classmethod
-    def load(cls, filepath: str | Path) -> "Normalize":
+    def load(
+        cls,
+        filepath: str | Path,
+    ) -> "Normalize":
         loaded = joblib.load(filepath)
 
         if not isinstance(loaded, cls) or not loaded.fitted():
