@@ -42,8 +42,8 @@ class ChannelAttention(nn.Module):
     ) -> None:
         super(ChannelAttention, self).__init__()
         self.input_channels = input_channels
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.max_pool = nn.AdaptiveMaxPool2d(1)
+        # self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        # self.max_pool = nn.AdaptiveMaxPool2d(1)
         #  https://github.com/luuuyi/CBAM.PyTorch/blob/master/model/resnet_cbam.py
         #  uses Convolutions instead of Linear
         self.MLP = nn.Sequential(
@@ -55,8 +55,11 @@ class ChannelAttention(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Take the input and apply average and max pooling
-        avg_values = self.avg_pool(x).contiguous()
-        max_values = self.max_pool(x).contiguous()
+        # avg_values = self.avg_pool(x).contiguous()
+        # max_values = self.max_pool(x).contiguous()
+        # deterministic operations
+        avg_values = x.mean(dim=(2, 3), keepdim=True).contiguous()
+        max_values = x.amax(dim=(2, 3), keepdim=True).contiguous()
         out = self.MLP(avg_values) + self.MLP(max_values)
         scale = x * torch.sigmoid(out).unsqueeze(2).unsqueeze(3).expand_as(x)
         return scale
