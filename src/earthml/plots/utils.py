@@ -1630,6 +1630,8 @@ def plot_timeseries(
     model_linestyles: dict[str, str] | None = None,
     timeseries_mean_line: bool = False,
     timeseries_zero_line: bool = False,
+    timeseries_zero_line_color: str = "red",
+    timeseries_improved_percentage: bool = False,
     figsize: tuple[float, float] = (12.0, 6.0),
     title_size: float | None = None,
     label_size: float | None = None,
@@ -1892,6 +1894,9 @@ def plot_timeseries(
         figsize=figsize,
     )
 
+    mean_values = []
+    mean_colors = []
+
     for (
         model,
         label,
@@ -1968,14 +1973,30 @@ def plot_timeseries(
 
         annotation_index = 0
 
-        ax.plot(
+        # Add percentage of good samples
+        legend_label = label
+
+        if timeseries_improved_percentage and improvement_unit is not None:
+            plot_values = series.sel(
+                {time_dim: slice(*time_range)}
+            ).values
+
+            finite_values = plot_values[np.isfinite(plot_values)]
+
+            if finite_values.size:
+                improved_percentage = 100.0 * np.mean(finite_values > 0)
+                legend_label = f"{label} ({improved_percentage:.1f}% improved)"
+
+        line, = ax.plot(
             x,
             series.values,
             linewidth=1.4,
             linestyle=linestyle,
-            label=label,
+            label=legend_label,
             color=color,
         )
+
+        color = line.get_color()
 
         # ------------------------------------------------------
         # Timeseries mean
@@ -1991,13 +2012,15 @@ def plot_timeseries(
             if finite_values.size:
                 mean_value = float(finite_values.mean())
 
+                mean_values.append(mean_value)
+                mean_colors.append(color)
+
                 ax.axhline(
                     mean_value,
                     linewidth=1.5,
                     linestyle="--",
                     color=color,
                     alpha=0.8,
-                    label=f"{label} mean ({mean_value:.4g})",
                 )
 
         # ------------------------------------------------------
@@ -2381,7 +2404,8 @@ def plot_timeseries(
             0.0,
             linewidth=1.0,
             linestyle="--",
-            alpha=0.6,
+            color=timeseries_zero_line_color,
+            alpha=0.8,
         )
 
     plot_start = np.datetime64(time_range[0])
@@ -2412,6 +2436,34 @@ def plot_timeseries(
             color="black",
             alpha=0.7,
             label="Validation end",
+        )
+
+    # Secondary axis
+    if timeseries_mean_line and mean_values:
+        ax_mean = ax.twinx()
+
+        # Share the same scale as the primary y-axis
+        ax_mean.set_ylim(ax.get_ylim())
+
+        # Position ticks at the mean values
+        ax_mean.set_yticks(mean_values)
+
+        ax_mean.set_yticklabels(
+            [f"{value:.4g}" for value in mean_values]
+        )
+
+        # Match each tick label to its model color
+        for tick_label, color in zip(
+            ax_mean.get_yticklabels(),
+            mean_colors,
+            strict=True,
+        ):
+            tick_label.set_color(color)
+
+        ax_mean.tick_params(
+            axis="y",
+            labelsize=tick_size,
+            length=0,
         )
 
     ax.grid(
