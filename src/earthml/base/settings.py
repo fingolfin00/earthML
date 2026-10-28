@@ -76,6 +76,7 @@ class Settings:
     seed: int = 42
 
     channel_representation: Literal["variable", "realization", "init_period"] = "variable"
+
     init_period_dim: ClimPeriod = ClimPeriod.MONTH
     output_realizations: Literal["deterministic", "ensemble"] = "deterministic"
     split_strategy: SplitStrategy = "time"
@@ -88,6 +89,7 @@ class Settings:
     normalization_target_mean: NormalizationMode = "channel"
     normalization_target_std: NormalizationMode = "channel"
 
+    temporal_evolution_encoding: tuple[int, ...] = ()
     seasonal_encoding: bool = False
     ensemble_encoding: bool = False
     spatial_encoding: bool = False
@@ -242,6 +244,13 @@ class Settings:
             "anomaly_residual_realization",
         ):
             parts.append(f"clim-{self.clim_period}")
+
+        if self.temporal_evolution_encoding:
+            offsets = ",".join(
+                f"{offset:+d}"
+                for offset in sorted(self.temporal_evolution_encoding)
+            )
+            parts.append(f"te{offsets}")
 
         if self.seasonal_encoding and self.channel_representation != "init_period":
             parts.append("se")
@@ -451,11 +460,14 @@ class Settings:
                 return path
         raise FileNotFoundError(f"No dataset found for {base} (.zarr or .nc)")
 
+
     @classmethod
     def from_json(cls, path: Path, **overrides) -> "Settings":
         with open(path) as f:
             config = json.load(f)
+
         config.pop("config_hash", None)
+
         path_fields = {
             "root_dir",
             "data_root_dir",
@@ -463,15 +475,24 @@ class Settings:
             "plot_root_dir",
             "orography_path",
         }
+
         for name in path_fields:
             if config.get(name) is not None:
                 config[name] = Path(config[name])
+
+        if "temporal_evolution_encoding" in config:
+            config["temporal_evolution_encoding"] = tuple(
+                config["temporal_evolution_encoding"]
+            )
+
         config.update(overrides)
         return cls(**config)
+
 
     @classmethod
     def field_names(cls) -> set[str]:
         return {f.name for f in fields(cls)}
+
 
     def equals(self, other: "Settings", *, ignore: set[str] | None = None) -> bool:
         ignore = ignore or set()
@@ -484,6 +505,7 @@ class Settings:
             a.pop(field_name, None)
             b.pop(field_name, None)
         return a == b
+
 
     def comparison_key(self, *, ignore: set[str] | None = None) -> str:
         ignore = ignore or set()
@@ -799,6 +821,39 @@ class Settings:
 
             elif name.endswith("_std") and value <= 0:
                 raise ValueError(f"{name} must be positive.")
+
+        # Embedding validation
+        offsets = self.temporal_evolution_encoding
+
+        if not isinstance(offsets, tuple):
+            raise TypeError(
+                "temporal_evolution_encoding must be a tuple."
+            )
+
+        if any(
+            isinstance(offset, bool) or not isinstance(offset, int)
+            for offset in offsets
+        ):
+            raise TypeError(
+                "temporal_evolution_encoding must contain integers."
+            )
+
+        if 0 in offsets:
+            raise ValueError(
+                "temporal_evolution_encoding cannot contain 0: "
+                "the central forecast is already included."
+            )
+
+        if len(offsets) != len(set(offsets)):
+            raise ValueError(
+                "temporal_evolution_encoding cannot contain duplicates."
+            )
+
+        if offsets and self.split_strategy == "random":
+            raise ValueError(
+                "Random splitting is not supported with "
+                "temporal_evolution_encoding."
+            )
 
         for name in (
             "seasonal_encoding",

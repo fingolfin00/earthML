@@ -8,8 +8,9 @@ import torch
 from torch.utils.data import Dataset
 
 from ..base import ClimPeriod
-
 from ..logging import get_logger
+
+from .channels import ChannelInfo, validate_channels
 
 
 logger = get_logger(__name__)
@@ -33,6 +34,8 @@ class XarrayDataset(Dataset):
         torch_mask: Literal["target", "input", "both"] = "both",
         sample_target_mean: Literal["input", "target"] = "input",
         sample_target_std: Literal["input", "target"] = "input",
+        input_channels: Sequence[ChannelInfo] | None = None,
+        target_channels: Sequence[ChannelInfo] | None = None,
     ):
         """
         input_ds: xarray.Dataset
@@ -56,6 +59,8 @@ class XarrayDataset(Dataset):
         torch_mask: final mask to apply
         sample_target_mean: use input or target mean for target data normalization
         sample_target_std: use input or target std for target data normalization
+        input_channels: descriptors of source xarray variables, in desired order
+        target_channels: descriptors of source xarray variables, in desired order
         """
         self.fill_nan_value = fill_nan_value
 
@@ -77,8 +82,15 @@ class XarrayDataset(Dataset):
         self.sample_target_mean = sample_target_mean
         self.sample_target_std = sample_target_std
 
+        # Channel descriptors describe source variables here. Below they are expanded
+        # to reflect the final Torch channel ordering (realizations/periods/masks).
+        source_x = self._prepare_source_channels(self.input_ds, input_channels, "input")
+        source_y = self._prepare_source_channels(self.target_ds, target_channels, "target")
+
         # NumPy arrays with NaNs for missing data
-        self.x_np = self._transpose_dims_ds_to_da(self.input_ds).to_numpy()
+        self.x_np = self._transpose_dims_ds_to_da(
+            self.input_ds, variables=[c.name for c in source_x]
+        ).to_numpy()
         self.x_np = np.asarray(self.x_np, dtype=np.float32)
         assert len(self.x_np.shape) > 3 and len(self.x_np.shape) < 6, f"Input has shape {self.x_np.shape}"
         # if x_np.ndim == 5 and x_np.shape[1] == 1:
@@ -86,7 +98,9 @@ class XarrayDataset(Dataset):
         self.mask_x_np = np.isfinite(self.x_np)       # True where valid, False where masked
         self.x_np_filled = np.where(self.mask_x_np, self.x_np, fill_nan_value)
 
-        self.y_np = self._transpose_dims_ds_to_da(self.target_ds).to_numpy()
+        self.y_np = self._transpose_dims_ds_to_da(
+            self.target_ds, variables=[c.name for c in source_y]
+        ).to_numpy()
         self.y_np = np.asarray(self.y_np, dtype=np.float32)
         assert len(self.y_np.shape) > 3 and len(self.y_np.shape) < 6, f"Target has shape {self.y_np.shape}"
         # if y_np.ndim == 5 and y_np.shape[1] == 1:
@@ -308,9 +322,150 @@ class XarrayDataset(Dataset):
             # assert self.x.shape[1] == self.y.shape[1], f"Mismatched channel dimension: x={self.x.shape}, y={self.y.shape}"
             assert self.x.shape[2:] == self.y.shape[2:], f"Mismatched spatial dimensions: x={self.x.shape}, y={self.y.shape}"
 
+        # Metadata order is exactly the order of tensor channels after packing
+        self.tensor_input_channels = self._expand_channel_info(
+            source_x,
+            representation=channel_representation,
+            realization_count=(self.x_np.shape[2] if self.x_np.ndim == 5 else 1),
+            period_count=(12 if channel_representation == "init_period" else 1),
+        )
+
+        self.target_channels = self._expand_channel_info(
+            source_y,
+            representation=("realization" if channel_representation == "realization" else "variable"),
+            realization_count=(
+                (self.x_np.shape[2] if self.x_np.ndim == 5 else 1)
+                if channel_representation == "realization" and output_realizations == "ensemble"
+                else 1
+            ),
+            period_count=1,
+        )
+
+        self.input_channels = self.tensor_input_channels
+
+        if self.pass_mask_as_input_extra_channel:
+            if channel_representation == "realization":
+                self.input_channels += (ChannelInfo(name="input_mask", normalize=False),)
+            else:
+                self.input_channels += tuple(
+                    ChannelInfo(name=f"mask__{c.name}", normalize=False)
+                    for c in self.tensor_input_channels
+                )
+
+        validate_channels(self.input_channels)
+        validate_channels(self.target_channels)
+
+        if len(self.tensor_input_channels) != self.x.shape[1]:
+            raise ValueError(
+                "Input channel metadata does not match tensor shape: "
+                f"{len(self.tensor_input_channels)} != {self.x.shape[1]}"
+            )
+
+        if len(self.target_channels) != self.y.shape[1]:
+            raise ValueError(
+                "Target channel metadata does not match tensor shape: "
+                f"{len(self.target_channels)} != {self.y.shape[1]}"
+            )
+
         self.months = self._make_sample_months()
         assert len(self.months) == len(self.x)
 
+    @staticmethod
+    def _prepare_source_channels(
+        ds: xr.Dataset,
+        channels: Sequence[ChannelInfo] | None,
+        label: str,
+    ) -> tuple[ChannelInfo, ...]:
+        variables = tuple(v for v in ds.data_vars)
+
+        if channels is None:
+            channels = tuple(
+                ChannelInfo(
+                    name=name,
+                    variable=ds[name].attrs.get(
+                        "channel_variable",
+                        name,
+                    ),
+                    temporal_offset=ds[name].attrs.get(
+                        "channel_temporal_offset",
+                        None,
+                    ),
+                    normalize=ds[name].attrs.get(
+                        "channel_normalize",
+                        True,
+                    ),
+                )
+                for name in variables
+            )
+        else:
+            channels = tuple(channels)
+
+        validate_channels(channels)
+
+        names = tuple(c.name for c in channels)
+        if len(names) != len(variables) or set(names) != set(variables):
+            raise ValueError(
+                f"{label} channels must describe exactly the xarray data variables: "
+                f"expected={variables}, received={names}"
+            )
+
+        return channels
+
+    @staticmethod
+    def _expand_channel_info(
+        channels: tuple[ChannelInfo, ...],
+        *,
+        representation: str,
+        realization_count: int,
+        period_count: int,
+    ) -> tuple[ChannelInfo, ...]:
+        from dataclasses import replace
+
+        if representation == "realization":
+            return tuple(
+                replace(c, name=f"{c.name}__r{r}")
+                for c in channels for r in range(realization_count)
+            ) if realization_count > 1 else channels
+
+        if representation == "init_period":
+            # Tensor flatten(1, 2) uses period-major, then variable-major order
+            return tuple(
+                replace(c, name=f"{c.name}__period{period}")
+                for period in range(period_count) for c in channels
+            )
+
+        return channels
+
+
+    def target_to_input_channel_indices(self) -> tuple[int, ...]:
+        """Map target channels to central input channels, in target order.
+
+        Only unambiguous, normalizable central channels can supply target
+        sample statistics. Works on final tensor channel descriptors.
+        """
+        mapping: list[int] = []
+        for target in self.target_channels:
+            if target.variable is None:
+                raise ValueError(f"Target {target.name!r} has no physical variable")
+
+            candidates = [
+                i for i, channel in enumerate(self.tensor_input_channels)
+                if channel.variable == target.variable
+                and channel.temporal_offset in (0, None)
+                and channel.normalize
+            ]
+
+            explicit = [i for i in candidates if self.tensor_input_channels[i].temporal_offset == 0]
+            candidates = explicit if explicit else candidates
+
+            if len(candidates) != 1:
+                raise ValueError(
+                    f"Target {target.name!r} requires exactly one central input "
+                    f"channel for {target.variable!r}, found {candidates}"
+                )
+            mapping.append(candidates[0])
+
+        return tuple(mapping)
 
     def _make_sample_months(self) -> torch.Tensor:
         times = pd.DatetimeIndex(self.input_ds.time.values)
@@ -337,21 +492,14 @@ class XarrayDataset(Dataset):
     @staticmethod
     def _transpose_dims_ds_to_da(
         ds: xr.Dataset,
-        excluded_vars: str | Sequence[str] | None = "_has_var"
+        variables: Sequence[str] | None = None,
     ) -> xr.DataArray:
-        # Normalize to set
-        if excluded_vars is None:
-            excluded_vars_set = set()
-        elif isinstance(excluded_vars, str):
-            excluded_vars_set = {excluded_vars}
-        else:
-            excluded_vars_set = set(excluded_vars)
-
-        vars = [v for v in ds.data_vars if v not in excluded_vars_set]
-        if not vars:
-            raise ValueError("No data variables left after exclusion")
-
-        da = ds[vars].to_array()
+        selected = tuple(ds.data_vars) if variables is None else tuple(variables)
+        if not selected:
+            raise ValueError("Dataset contains no data variables")
+        if len(selected) != len(set(selected)) or any(v not in ds.data_vars for v in selected):
+            raise ValueError(f"Invalid xarray variable selection: {selected}")
+        da = ds[list(selected)].to_array()
 
         required_dims = {
             'time': ds.earthml.guessed_dims.time,
@@ -453,14 +601,21 @@ class XarrayDataset(Dataset):
                         mask=mx,
                     )
 
-                    n_target_channels = len(self.transform_y.included_channels)
-
-                    if input_mean.shape[0] != n_target_channels:
-                        raise ValueError(
-                            "Input-derived sample statistics are incompatible with target "
-                            f"normalization: input has {input_mean.shape[0]} included channels, "
-                            f"target expects {n_target_channels}."
-                        )
+                    central_indices = self.target_to_input_channel_indices()
+                    included = self.transform_x.included_channels
+                    if included is None:
+                        raise ValueError("Input normalizer has no channel configuration")
+                    positions = {channel: position for position, channel in enumerate(included)}
+                    try:
+                        selected = [positions[index] for index in central_indices]
+                    except KeyError as exc:
+                        raise ValueError("Central forecast channel is excluded from input normalization") from exc
+                    input_mean = input_mean[selected]
+                    input_std = input_std[selected]
+                    # Target sample statistics follow the target normalizer's included ordering.
+                    target_included = self.transform_y.included_channels
+                    if target_included is None or len(selected) != len(target_included):
+                        raise ValueError("Target/input sample-statistics channel mapping mismatch")
 
                 if (
                     self.transform_y.mean_spec == "sample"
@@ -590,6 +745,21 @@ class XarraySubset(Dataset):
     @property
     def months(self) -> torch.Tensor:
         return self.dataset.months[self.indices]
+
+    def target_to_input_channel_indices(self) -> tuple[int, ...]:
+        return self.dataset.target_to_input_channel_indices()
+
+    @property
+    def input_channels(self) -> tuple[ChannelInfo, ...]:
+        return self.dataset.input_channels
+
+    @property
+    def tensor_input_channels(self) -> tuple[ChannelInfo, ...]:
+        return self.dataset.tensor_input_channels
+
+    @property
+    def target_channels(self) -> tuple[ChannelInfo, ...]:
+        return self.dataset.target_channels
 
     @property
     def channel_representation(self):

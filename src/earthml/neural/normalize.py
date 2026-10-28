@@ -322,6 +322,24 @@ class Normalize:
         if data.ndim != 4:
             raise ValueError(f"Expected (N,C,H,W), got {tuple(data.shape)}")
 
+        # Use tensor-channel metadata
+        metadata = (
+            dataset.tensor_input_channels if dim == "x" else dataset.target_channels
+        )
+
+        if len(metadata) != data.shape[1]:
+            raise ValueError("Channel metadata does not match data shape")
+
+        excluded_by_metadata = tuple(i for i, c in enumerate(metadata) if not c.normalize)
+
+        if self.exclude_channels and excluded_by_metadata:
+            old_excluded = self._resolve_channels(data.shape[1])[1]
+
+            if old_excluded != excluded_by_metadata:
+                raise ValueError("Explicit channel exclusions conflict with channel metadata")
+        elif not self.exclude_channels:
+            self.exclude_channels = excluded_by_metadata
+
         self._set_channel_configuration(data.shape[1])
 
         included = self._select_included_channels(data)
