@@ -724,6 +724,20 @@ def plot_profile(
     label_size: float | None = None,
     tick_size: float | None = None,
     dpi: int = 200,
+
+    # Custom profile bands
+    profile_band_bounds: dict[str, tuple[float, float]] | None = None,
+    profile_band_lower: (
+        xr.DataArray | xr.Dataset
+        | Sequence[xr.DataArray | xr.Dataset | None]
+        | None
+    ) = None,
+    profile_band_upper: (
+        xr.DataArray | xr.Dataset
+        | Sequence[xr.DataArray | xr.Dataset | None]
+        | None
+    ) = None,
+    profile_band_alpha: float = 0.18,
 ) -> None:
     """Plot one or more 1-D metric profiles.
 
@@ -800,6 +814,60 @@ def plot_profile(
                 f"Got {len(plot_das)} profiles and "
                 f"{len(plot_das_member)} member arrays."
             )
+
+    # ----------------------------------------------------------
+    # Custom band generation
+    # ----------------------------------------------------------
+
+    plot_bands_lower = (
+        [None] * len(plot_das)
+        if profile_band_lower is None
+        else convert_to_da_list(profile_band_lower, var)
+    )
+
+    plot_bands_upper = (
+        [None] * len(plot_das)
+        if profile_band_upper is None
+        else convert_to_da_list(profile_band_upper, var)
+    )
+
+    if (
+        len(plot_bands_lower) != len(plot_das)
+        or len(plot_bands_upper) != len(plot_das)
+    ):
+        raise ValueError("Profile bands must match the number of models")
+
+    if any(
+        (lower is None) != (upper is None)
+        for lower, upper in zip(
+            plot_bands_lower,
+            plot_bands_upper,
+            strict=True,
+        )
+    ):
+        raise ValueError("Each profile band requires both lower and upper bounds")
+
+    if profile_band_bounds is not None:
+        bounds = profile_band_bounds.get(metric)
+
+        if bounds is not None:
+            if profile_band_lower is not None or profile_band_upper is not None:
+                raise ValueError("Cannot combine profile_band_bounds with explicit profile_band_lower/upper")
+
+            lower_offset, upper_offset = bounds
+
+            if lower_offset > upper_offset:
+                raise ValueError("Profile band lower offset exceeds upper offset")
+
+            plot_bands_lower = [
+                None if da is None else da + lower_offset
+                for da in plot_das
+            ]
+
+            plot_bands_upper = [
+                None if da is None else da + upper_offset
+                for da in plot_das
+            ]
 
     # ----------------------------------------------------------
     # Improvement representation
@@ -920,14 +988,17 @@ def plot_profile(
         label,
         da,
         da_member,
+        band_lower,
+        band_upper,
     ) in zip(
         model_list,
         label_list,
         plot_das,
         plot_das_member,
+        plot_bands_lower,
+        plot_bands_upper,
         strict=True,
     ):
-
         base_color = (
             model_colors[model]
             if (
@@ -1036,19 +1107,53 @@ def plot_profile(
                             "Choose 'shades' or 'colors'."
                         )
 
-                if (
-                    n_select > 1
-                    and base_color is not None
-                ):
-                    shade_amount = (
-                        0.65
-                        * (n_select - 1 - i)
-                        / max(1, n_select - 1)
+                # Create custom band
+                if band_lower is not None and band_upper is not None:
+
+                    lower = band_lower
+                    upper = band_upper
+
+                    if select_dim is not None:
+                        lower = lower.sel({select_dim: value})
+                        upper = upper.sel({select_dim: value})
+
+                    lower, upper = xr.align(
+                        lower,
+                        upper,
+                        join="exact",
                     )
 
-                    color = lighten(
-                        base_color,
-                        shade_amount,
+                    lower = lower.sel({profile_dim: profile[profile_dim]})
+                    upper = upper.sel({profile_dim: profile[profile_dim]})
+
+                    if (
+                        lower.dims != (profile_dim,)
+                        or upper.dims != (profile_dim,)
+                    ):
+                        raise ValueError(
+                            "Profile band bounds must contain only "
+                            f"{profile_dim!r} after selection."
+                        )
+
+                    with ProgressBar():
+                        lower, upper = xr.compute(
+                            lower.reset_coords(drop=True) / scale,
+                            upper.reset_coords(drop=True) / scale,
+                        )
+
+                    if np.any(lower.values > upper.values):
+                        raise ValueError(
+                            "Profile band lower bound exceeds upper bound."
+                        )
+
+                    ax.fill_between(
+                        x,
+                        lower.values,
+                        upper.values,
+                        color=color,
+                        alpha=profile_band_alpha,
+                        linewidth=0,
+                        zorder=1,
                     )
 
                 curve_label = label
