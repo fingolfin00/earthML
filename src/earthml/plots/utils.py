@@ -752,6 +752,8 @@ def plot_profile(
         | None
     ) = None,
     profile_band_alpha: float = 0.18,
+    neural_spread: Literal["std", "minmax"] | None = None,
+    neural_spread_alpha: float = 0.18,
 ) -> None:
     """Plot one or more 1-D metric profiles.
 
@@ -1067,6 +1069,25 @@ def plot_profile(
                         f"{profile.dims}."
                     )
 
+                # Neural training variability is distinct from physical ensemble spread.
+                neural_lower = neural_upper = None
+                if neural_spread is not None:
+                    if neural_spread not in {"std", "minmax"}:
+                        raise ValueError(f"Unsupported neural_spread={neural_spread!r}")
+                    if "neural_member" in profile.dims:
+                        if neural_spread == "std":
+                            neural_mean = profile.mean("neural_member", skipna=True)
+                            neural_std = profile.std("neural_member", skipna=True)
+                            neural_lower = neural_mean - neural_std
+                            neural_upper = neural_mean + neural_std
+                        else:
+                            neural_lower = profile.min("neural_member", skipna=True)
+                            neural_upper = profile.max("neural_member", skipna=True)
+                        profile = profile.mean("neural_member", skipna=True)
+                    elif {"neural_band_lower", "neural_band_upper"} <= set(profile.coords):
+                        neural_lower = profile.coords["neural_band_lower"]
+                        neural_upper = profile.coords["neural_band_upper"]
+
                 extra_dims = [
                     dim
                     for dim in profile.dims
@@ -1120,6 +1141,40 @@ def plot_profile(
                         raise ValueError(
                             f"Unsupported select_colors={select_colors!r}. "
                             "Choose 'shades' or 'colors'."
+                        )
+
+                if neural_lower is not None and neural_upper is not None:
+                    with ProgressBar():
+                        neural_lower, neural_upper = xr.compute(
+                            neural_lower.reset_coords(drop=True) / scale,
+                            neural_upper.reset_coords(drop=True) / scale,
+                        )
+                    if profile_dim not in neural_lower.dims or neural_lower.ndim != 1:
+                        raise ValueError("Neural profile spread must be one-dimensional")
+                    if profile_dim == "experiment":
+                        center = profile.values
+                        ax.errorbar(
+                            x,
+                            center,
+                            yerr=np.stack([
+                                np.maximum(0, center - neural_lower.values),
+                                np.maximum(0, neural_upper.values - center),
+                            ]),
+                            fmt="none",
+                            ecolor=color,
+                            alpha=max(neural_spread_alpha, 0.5),
+                            capsize=3,
+                            zorder=2,
+                        )
+                    else:
+                        ax.fill_between(
+                            x,
+                            neural_lower.values,
+                            neural_upper.values,
+                            color=color,
+                            alpha=neural_spread_alpha,
+                            linewidth=0,
+                            zorder=1,
                         )
 
                 # Create custom band
