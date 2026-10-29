@@ -23,7 +23,7 @@ from matplotlib.colors import (
     Colormap,
     to_rgb,
 )
-from matplotlib.patches import Rectangle, Polygon
+from matplotlib.patches import Rectangle, Polygon, Patch
 from matplotlib.ticker import FuncFormatter
 from matplotlib.font_manager import FontProperties
 
@@ -690,21 +690,31 @@ def plot_profile(
     labels: str | Sequence[str] | None = None,
     out_file: Path,
     time_range: tuple[str, str],
+
     profile_dim: str = "leadtime",
     profile_label: str,
+    realization_dim: str = "realization",
+
     select_dim: str | None = "start_date",
     select_value: str | int | float | Sequence[str | int | float] = "all",
     select_unit: str | None = "months",
     select_colors: Literal["shades", "colors"] = "shades",
+
     das_member: xr.DataArray | xr.Dataset | Sequence[xr.DataArray | xr.Dataset | None] | None = None,
-    realization_dim: str = "realization",
     spread: Literal["std", "minmax"] = "std",
     plot_single_members: bool = False,
     ylim: tuple[float, float] | None = None,
+
     plot_title: bool = True,
     plot_labels: bool = True,
     title_strftime: str = "%Y",
+    title_suffix: str = "",
+
     plot_legend: bool = True,
+    legend_separate: bool = False,
+    legend_descriptions: dict[str, str] | None = None,
+    legend_ncol: int = 1,
+
     improvement_unit: ImprovementUnit | None = None,
     var_plot_config: dict | None = None,
     force_scale: int | float | None = None,
@@ -722,6 +732,7 @@ def plot_profile(
     figsize: tuple[float, float] = (12.0, 8.0),
     title_size: float | None = None,
     label_size: float | None = None,
+    legend_size: float | None = None,
     tick_size: float | None = None,
     dpi: int = 200,
 
@@ -1508,7 +1519,8 @@ def plot_profile(
             f"{VARIABLE_NAMES[var]} · "
             f"{title_metric} · "
             f"{start_time}-{end_time}"
-            f"{selection_label}",
+            f"{selection_label}"
+            f"{title_suffix}",
             fontsize=title_size,
         )
 
@@ -1666,7 +1678,59 @@ def plot_profile(
     ax.grid(True, alpha=0.3)
 
     if plot_legend:
-        ax.legend()
+        handles, legend_labels = ax.get_legend_handles_labels()
+
+        if legend_descriptions:
+            if profile_dim == "experiment":
+                # Experiment descriptions correspond to colored points
+                for index, description in legend_descriptions.items():
+                    point_color = (profile_point_colors or {}).get(index, "none")
+                    handles.append(
+                        Patch(
+                            facecolor=point_color,
+                            edgecolor="black" if point_color == "none" else "none",
+                        )
+                    )
+                    legend_labels.append(f"{index}: {description}")
+            else:
+                legend_labels = [
+                    f"{label}: {legend_descriptions[label]}"
+                    if label in legend_descriptions else label
+                    for label in legend_labels
+                ]
+
+        if handles:
+            if legend_separate:
+                legend_fig = plt.figure(
+                    figsize=(8, max(1.2, 0.38 * len(handles)))
+                )
+                legend_fig.legend(
+                    handles,
+                    legend_labels,
+                    loc="center",
+                    frameon=False,
+                    fontsize=legend_size,
+                    ncol=legend_ncol,
+                )
+
+                legend_file = out_file.with_name(
+                    f"{out_file.stem}_legend.png"
+                )
+                legend_file.parent.mkdir(parents=True, exist_ok=True)
+                legend_fig.savefig(
+                    legend_file, dpi=dpi, bbox_inches="tight"
+                )
+                plt.close(legend_fig)
+            else:
+                ax.legend(
+                    handles,
+                    legend_labels,
+                    loc="upper left",
+                    bbox_to_anchor=(1.02, 1),
+                    borderaxespad=0,
+                    fontsize=legend_size,
+                    ncol=legend_ncol,
+                )
 
     # ----------------------------------------------------------
     # Save
