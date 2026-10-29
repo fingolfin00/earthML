@@ -5,6 +5,7 @@ from enum import StrEnum
 MetricKind = Literal["scalar", "maps", "time_lon", "time_lat", "timeseries"]
 LeadtimeAgg = Literal["single", "aggregated", "seasonal_window"]
 RealizationAgg = Literal["member", "ensemble_mean"]
+NeuralAgg = Literal["member", "ensemble_mean", "ensemble"]
 MetricAgg = Literal[
     "global",           # sqrt(mean(error^2))
     "spatial_avg",      # mean(point-wise RMSE)

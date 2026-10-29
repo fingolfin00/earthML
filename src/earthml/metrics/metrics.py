@@ -23,6 +23,7 @@ from .climatology import calculate_save_and_subset_climatologies
 from .definitions import (
     MetricKind,
     LeadtimeAgg,
+    NeuralAgg,
     MetricAgg,
     PeriodReference,
     Metric,
@@ -2016,6 +2017,7 @@ def get_metrics(
     metric_kind: MetricKind,
     leadtime_agg: LeadtimeAgg,
     realization_agg: bool,
+    neural_agg: NeuralAgg = "member",
     fc_clim: xr.Dataset | None = None,
     an_clim: xr.Dataset | None = None,
     orography_path: str | Path | None = None,
@@ -2236,7 +2238,7 @@ def get_metrics(
             }
         )
 
-    # Valid-time grouping must happen before collapsing individual leadtimes.
+    # Valid-time grouping must happen before collapsing individual leadtimes
     if period_reference == "valid" and leadtime_agg == "aggregated":
         raise ValueError(
             "period_reference='valid' is not supported with "
@@ -2285,6 +2287,17 @@ def get_metrics(
         if realization_dim_fc is not None:
             fc_da = fc_da.mean(realization_dim_fc)
             fc_clim_da = fc_clim_da.mean(realization_dim_fc) if fc_clim_da is not None else None
+
+    # Neural ensemble aggregation
+    if neural_agg == "ensemble_mean":
+        if "neural_member" in fc_da.dims:
+            fc_da = fc_da.mean("neural_member")
+
+        if fc_clim_da is not None and "neural_member" in fc_clim_da.dims:
+            fc_clim_da = fc_clim_da.mean("neural_member")
+
+    elif neural_agg not in ("member", "ensemble"):
+        raise ValueError(f"Unsupported neural_agg={neural_agg!r}")
 
     def _metric_dims(
         kind: MetricKind,
