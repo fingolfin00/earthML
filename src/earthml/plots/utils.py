@@ -1069,24 +1069,24 @@ def plot_profile(
                         f"{profile.dims}."
                     )
 
-                # Neural training variability is distinct from physical ensemble spread.
+                # Average memberwise metrics for the central curve.
+                # Spread is an optional visualization, not a metric change.
                 neural_lower = neural_upper = None
-                if neural_spread is not None:
-                    if neural_spread not in {"std", "minmax"}:
+                if "neural_member" in profile.dims:
+                    if neural_spread not in {None, "std", "minmax"}:
                         raise ValueError(f"Unsupported neural_spread={neural_spread!r}")
-                    if "neural_member" in profile.dims:
-                        if neural_spread == "std":
-                            neural_mean = profile.mean("neural_member", skipna=True)
-                            neural_std = profile.std("neural_member", skipna=True)
-                            neural_lower = neural_mean - neural_std
-                            neural_upper = neural_mean + neural_std
-                        else:
-                            neural_lower = profile.min("neural_member", skipna=True)
-                            neural_upper = profile.max("neural_member", skipna=True)
-                        profile = profile.mean("neural_member", skipna=True)
-                    elif {"neural_band_lower", "neural_band_upper"} <= set(profile.coords):
-                        neural_lower = profile.coords["neural_band_lower"]
-                        neural_upper = profile.coords["neural_band_upper"]
+                    neural_mean = profile.mean("neural_member", skipna=True)
+                    if neural_spread == "std":
+                        neural_std = profile.std("neural_member", skipna=True)
+                        neural_lower = neural_mean - neural_std
+                        neural_upper = neural_mean + neural_std
+                    elif neural_spread == "minmax":
+                        neural_lower = profile.min("neural_member", skipna=True)
+                        neural_upper = profile.max("neural_member", skipna=True)
+                    profile = neural_mean
+                elif neural_spread is not None and {"neural_band_lower", "neural_band_upper"} <= set(profile.coords):
+                    neural_lower = profile.coords["neural_band_lower"]
+                    neural_upper = profile.coords["neural_band_upper"]
 
                 extra_dims = [
                     dim
@@ -1836,6 +1836,8 @@ def plot_timeseries(
     realization_dim: str = "realization",
     spread: Literal["std", "minmax"] = "std",
     plot_single_members: bool = False,
+    neural_spread: Literal["std", "minmax"] | None = None,
+    neural_spread_alpha: float = 0.18,
     train_start: str | None = None,
     train_end: str | None = None,
     val_end: str | None = None,
@@ -2155,6 +2157,20 @@ def plot_timeseries(
                 {leadtime_dim: lead_value}
             )
 
+        neural_lower = neural_upper = None
+        if "neural_member" in series.dims:
+            neural_mean = series.mean("neural_member", skipna=True)
+            if neural_spread == "std":
+                neural_std = series.std("neural_member", skipna=True)
+                neural_lower = neural_mean - neural_std
+                neural_upper = neural_mean + neural_std
+            elif neural_spread == "minmax":
+                neural_lower = series.min("neural_member", skipna=True)
+                neural_upper = series.max("neural_member", skipna=True)
+            elif neural_spread is not None:
+                raise ValueError(f"Unsupported neural_spread={neural_spread!r}")
+            series = neural_mean
+
         series = series.squeeze(drop=True)
 
         if time_dim not in series.dims:
@@ -2225,6 +2241,25 @@ def plot_timeseries(
         )
 
         color = line.get_color()
+
+        if neural_lower is not None and neural_upper is not None:
+            with ProgressBar():
+                neural_bounds = xr.Dataset({
+                    "lower": neural_lower.reset_coords(drop=True) / scale,
+                    "upper": neural_upper.reset_coords(drop=True) / scale,
+                }).compute()
+                neural_lower = neural_bounds["lower"]
+                neural_upper = neural_bounds["upper"]
+            neural_lower = neural_lower.squeeze(drop=True)
+            neural_upper = neural_upper.squeeze(drop=True)
+            ax.fill_between(
+                x,
+                neural_lower.values,
+                neural_upper.values,
+                color=color,
+                alpha=neural_spread_alpha,
+                linewidth=0,
+            )
 
         # ------------------------------------------------------
         # Timeseries mean
