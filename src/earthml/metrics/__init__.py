@@ -8,6 +8,10 @@ from .definitions import (
     PeriodReference,
 )
 
+from .defaults import (
+    STD_REFERENCE_METRICS,
+)
+
 from .metrics import (
     Metric,
     safe_percent,
@@ -41,6 +45,7 @@ from .climatology import (
 
 
 __all__ = [
+    "STD_REFERENCE_METRICS",
     "MetricKind",
     "LeadtimeAgg",
     "RealizationAgg",

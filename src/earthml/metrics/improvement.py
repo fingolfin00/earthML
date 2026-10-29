@@ -1,6 +1,11 @@
+import numpy as np
 import xarray as xr
 
-from .definitions import MetricAgg, ImprovementAgg
+from .definitions import (
+    MetricAgg,
+    ImprovementAgg,
+    ImprovementStatistic,
+)
 from .metrics import average_metric_fields
 from .defaults import (
     ImprovementUnit,
@@ -8,13 +13,8 @@ from .defaults import (
     METRIC_PERCENTAGE_IMPROVEMENT,
     METRIC_IMPROVEMENT_UNITS,
     NORMALIZED_IMPROVEMENT_REFERENCE,
+    STD_REFERENCE_METRICS,
 )
-
-
-STD_REFERENCE_METRICS = {
-    "fc_std": "an_std",
-    "fc_anom_std": "an_anom_std",
-}
 
 
 def get_required_improvement_metrics(
@@ -138,6 +138,27 @@ def metric_difference_improvement(
         original,
         corrected,
     )
+
+
+def metric_improved_indicator(
+    original: xr.DataArray,
+    corrected: xr.DataArray,
+    metric: str,
+    *,
+    reference: xr.DataArray | None = None,
+) -> xr.DataArray:
+    """1 if corrected improves over original, 0 otherwise; NaN if invalid."""
+
+    improvement = metric_difference_improvement(
+        original,
+        corrected,
+        metric,
+        reference=reference,
+    )
+
+    return (improvement > 0).where(
+        np.isfinite(improvement)
+    ).astype(float)
 
 
 def metric_percentage_improvement(
@@ -482,6 +503,7 @@ def get_aggregated_metric_improvements(
     metric_agg_mode: MetricAgg,
     improvement_agg_mode: ImprovementAgg = "after",
     improvement_units: tuple[ImprovementUnit, ...] | None = None,
+    improvement_statistics: tuple[ImprovementStatistic, ...] = ("value",),
 ) -> dict[str, xr.DataArray]:
     """
     Calculate metric improvements with configurable aggregation order.
@@ -500,46 +522,111 @@ def get_aggregated_metric_improvements(
 
     if improvement_agg_mode not in {"before", "after"}:
         raise ValueError(
-            f"Unsupported improvement_agg_mode="
-            f"{improvement_agg_mode!r}."
+            f"Unsupported improvement_agg_mode={improvement_agg_mode!r}."
         )
 
-    if improvement_agg_mode == "before":
-        improvements = build_metric_improvements(
-            baseline_fields,
-            target_fields,
-            metric=metric,
-            baseline_model=baseline_model,
-            target_model=target_model,
-            improvement_units=improvement_units,
+    if not set(improvement_statistics) <= {
+        "value", "improved_percentage"
+    }:
+        raise ValueError(
+            f"Invalid improvement_statistics={improvement_statistics!r}"
         )
 
-        return {
-            name: average_metric_fields(
-                da,
+    result = {}
+
+    if "value" in improvement_statistics:
+
+        if improvement_agg_mode == "before":
+            improvements = build_metric_improvements(
+                baseline_fields,
+                target_fields,
+                metric=metric,
+                baseline_model=baseline_model,
+                target_model=target_model,
+                improvement_units=improvement_units,
+            )
+
+            result.update({
+                name: average_metric_fields(
+                    da,
+                    an=an,
+                    metric_agg_mode=metric_agg_mode,
+                )
+                for name, da in improvements.items()
+            })
+
+        else:
+            baseline_aggregated = average_metric_fields(
+                baseline_fields,
                 an=an,
                 metric_agg_mode=metric_agg_mode,
             )
-            for name, da in improvements.items()
+
+            target_aggregated = average_metric_fields(
+                target_fields,
+                an=an,
+                metric_agg_mode=metric_agg_mode,
+            )
+
+            result.update(
+                build_metric_improvements(
+                    baseline_aggregated,
+                    target_aggregated,
+                    metric=metric,
+                    baseline_model=baseline_model,
+                    target_model=target_model,
+                    improvement_units=improvement_units,
+                )
+            )
+
+    if "improved_percentage" in improvement_statistics:
+
+        if metric_agg_mode == "global":
+            raise ValueError(
+                "improved_percentage requires spatial_avg "
+                "or timeseries_avg aggregation."
+            )
+
+        if metric not in baseline_fields or metric not in target_fields:
+            raise KeyError(
+                f"Missing intermediate field for metric {metric!r}."
+            )
+
+        reference = None
+
+        if metric in STD_REFERENCE_METRICS:
+            reference_metric = STD_REFERENCE_METRICS[metric]
+            reference = baseline_fields[reference_metric]
+
+        baseline, target = xr.align(
+            baseline_fields[metric],
+            target_fields[metric],
+            join="exact",
+        )
+
+        indicator = metric_improved_indicator(
+            baseline,
+            target,
+            metric,
+            reference=reference,
+        )
+
+        percentage = 100 * average_metric_fields(
+            indicator,
+            an=an,
+            metric_agg_mode=metric_agg_mode,
+        )
+
+        percentage.attrs = {
+            "units": "%",
+            "long_name": f"{metric} improved samples",
         }
 
-    baseline_aggregated = average_metric_fields(
-        baseline_fields,
-        an=an,
-        metric_agg_mode=metric_agg_mode,
-    )
+        name = (
+            f"{target_model}_vs_"
+            f"{baseline_model}_improved_percentage"
+        )
 
-    target_aggregated = average_metric_fields(
-        target_fields,
-        an=an,
-        metric_agg_mode=metric_agg_mode,
-    )
+        result[name] = percentage
 
-    return build_metric_improvements(
-        baseline_aggregated,
-        target_aggregated,
-        metric=metric,
-        baseline_model=baseline_model,
-        target_model=target_model,
-        improvement_units=improvement_units,
-    )
+    return result

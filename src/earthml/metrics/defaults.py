@@ -4,6 +4,11 @@ from .metrics import safe_percent
 from .definitions import ImprovementUnit
 
 
+STD_REFERENCE_METRICS = {
+    "fc_std": "an_std",
+    "fc_anom_std": "an_anom_std",
+}
+
 # Absolute difference improvement.
 # Positive always means corrected forecast is better.
 

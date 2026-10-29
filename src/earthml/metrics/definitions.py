@@ -12,6 +12,7 @@ MetricAgg = Literal[
 ]
 ImprovementUnit = Literal["%", "Δ", "normalized"]
 ImprovementAgg = Literal["before", "after"]
+ImprovementStatistic = Literal["value", "improved_percentage"]
 PeriodReference = Literal["init", "valid"]
 
 
@@ -126,8 +127,8 @@ class Metric(StrEnum):
     POWER_SPECTRUM_RATIO_ANOM = "power_spectrum_ratio_anom"
     # Skills vs climatology
     MSE_SKILL_CLIM = "mse_skill_clim"
-    RMSE_SKILL_CLIM = "mse_skill_clim"
-    MAE_SKILL_CLIM = "mse_skill_clim"
+    RMSE_SKILL_CLIM = "rmse_skill_clim"
+    MAE_SKILL_CLIM = "mae_skill_clim"
     # Anomaly skills vs climatology
     MSE_ANOM_SKILL_CLIM = "mse_anom_skill_clim"
     RMSE_ANOM_SKILL_CLIM = "rmse_anom_skill_clim"
