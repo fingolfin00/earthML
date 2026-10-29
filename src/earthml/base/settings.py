@@ -89,6 +89,8 @@ class Settings:
     normalization_target_mean: NormalizationMode = "channel"
     normalization_target_std: NormalizationMode = "channel"
 
+    climatology_encoding: bool = False
+    climatology_error_encoding: bool = False
     temporal_evolution_encoding: tuple[int, ...] = ()
     seasonal_encoding: bool = False
     ensemble_encoding: bool = False
@@ -244,6 +246,12 @@ class Settings:
             "anomaly_residual_realization",
         ):
             parts.append(f"clim-{self.clim_period}")
+
+        if self.climatology_encoding:
+            parts.append("clime")
+
+        if self.climatology_error_encoding:
+            parts.append("climerre")
 
         if self.temporal_evolution_encoding:
             offsets = ",".join(
