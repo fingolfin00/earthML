@@ -73,7 +73,8 @@ class Settings:
     target_mode: TargetMode = "analysis"
     clim_period: ClimPeriod = ClimPeriod.MONTH
 
-    seed: int = 42
+    seed: int | tuple[int, ...] = 42
+    neural_repeats: int = 1
 
     channel_representation: Literal["variable", "realization", "init_period"] = "variable"
 
@@ -443,6 +444,30 @@ class Settings:
             parts.append(f"{key}{value}")
         return "_".join(parts)
 
+
+    @property
+    def neural_members(self) -> tuple[tuple[int, int], ...]:
+        seeds = (
+            self.seed
+            if isinstance(self.seed, tuple)
+            else (self.seed,)
+        )
+
+        return tuple(
+            (seed, repeat)
+            for seed in seeds
+            for repeat in range(self.neural_repeats)
+        )
+
+
+    @property
+    def neural_ensemble(self) -> bool:
+        return (
+            isinstance(self.seed, tuple)
+            or self.neural_repeats > 1
+        )
+
+
     def make_dirs(self) -> None:
         for directory in (
             self.exp_dir,
@@ -492,6 +517,9 @@ class Settings:
             config["temporal_evolution_encoding"] = tuple(
                 config["temporal_evolution_encoding"]
             )
+
+        if isinstance(config.get("seed"), list):
+            config["seed"] = tuple(config["seed"])
 
         config.update(overrides)
         return cls(**config)
@@ -756,6 +784,34 @@ class Settings:
                 "seasonal_window_size cannot exceed the number of leadtimes."
             )
 
+        if isinstance(self.neural_repeats, bool) or not isinstance(self.neural_repeats, int):
+            raise TypeError("neural_repeats must be an integer.")
+
+        if self.neural_repeats < 1:
+            raise ValueError("neural_repeats must be at least 1.")
+
+        if isinstance(self.seed, tuple):
+            if not self.seed:
+                raise ValueError("seed cannot be an empty tuple.")
+
+            if any(
+                isinstance(seed, bool) or not isinstance(seed, int)
+                for seed in self.seed
+            ):
+                raise TypeError("seed tuple must contain only integers.")
+
+            if len(set(self.seed)) != len(self.seed):
+                raise ValueError("seeds must be unique.")
+
+            if any(seed < 0 for seed in self.seed):
+                raise ValueError("seeds must be non-negative.")
+
+        elif isinstance(self.seed, bool) or not isinstance(self.seed, int):
+            raise TypeError("seed must be an int or tuple of ints.")
+
+        elif self.seed < 0:
+            raise ValueError("seed must be non-negative.")
+
         if self.region is not None:
             if not isinstance(self.region, dict):
                 raise TypeError("region must be a dictionary or None.")
@@ -886,7 +942,6 @@ class Settings:
         int_fields = (
             "train_subsamples",
             "val_subsamples",
-            "seed",
             "batch_size",
             "max_epochs",
             "accumulate_grad_batches",
@@ -898,9 +953,6 @@ class Settings:
                 continue
             if isinstance(value, bool) or not isinstance(value, int):
                 raise TypeError(f"{name} must be an integer.")
-            if name == "seed":
-                if value < 0:
-                    raise ValueError("seed must be non-negative.")
             elif value <= 0:
                 raise ValueError(f"{name} must be positive.")
 
