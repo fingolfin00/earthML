@@ -90,6 +90,8 @@ class Settings:
     normalization_target_mean: NormalizationMode = "channel"
     normalization_target_std: NormalizationMode = "channel"
 
+    extra_input_variables: tuple[str, ...] = ()
+
     climatology_encoding: bool = False
     climatology_error_encoding: bool = False
     temporal_evolution_encoding: tuple[int, ...] = ()
@@ -224,6 +226,13 @@ class Settings:
         return self.output_clim_dir / "train_corrected_clim.zarr"
 
     @property
+    def extra_input_fc(self) -> tuple[Path, ...]:
+        return tuple(
+            self._find_dataset(self.model_fc, var)
+            for var in self.extra_input_variables
+        )
+
+    @property
     def output_name(self) -> str:
         parts = [
             self.var_fc,
@@ -234,6 +243,11 @@ class Settings:
             f"te{pd.Timestamp(self.test_start):%Y%m}-{pd.Timestamp(self.test_end):%Y%m}",
             str(self.target_mode),
         ]
+
+        if self.extra_input_variables:
+            parts.append(
+                "x-" + "-".join(self.extra_input_variables)
+            )
 
         if self.train_subsamples is not None:
             parts.append(f"{self.train_subsamples}s")
@@ -518,6 +532,11 @@ class Settings:
                 config["temporal_evolution_encoding"]
             )
 
+        if "extra_input_variables" in config:
+            config["extra_input_variables"] = tuple(
+                config["extra_input_variables"]
+            )
+
         if isinstance(config.get("seed"), list):
             config["seed"] = tuple(config["seed"])
 
@@ -664,6 +683,27 @@ class Settings:
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must be a non-empty string.")
+
+        if not isinstance(self.extra_input_variables, tuple):
+            raise TypeError("extra_input_variables must be a tuple.")
+
+        if any(
+            not isinstance(var, str) or not var.strip()
+            for var in self.extra_input_variables
+        ):
+            raise ValueError(
+                "extra_input_variables must contain non-empty strings."
+            )
+
+        if len(set(self.extra_input_variables)) != len(self.extra_input_variables):
+            raise ValueError(
+                "extra_input_variables cannot contain duplicates."
+            )
+
+        if self.var_fc in self.extra_input_variables:
+            raise ValueError(
+                "extra_input_variables cannot contain var_fc."
+            )
 
         if not isinstance(self.loss_kwargs, dict):
             raise TypeError("loss_kwargs must be a dictionary.")
