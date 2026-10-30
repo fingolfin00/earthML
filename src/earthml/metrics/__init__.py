@@ -31,6 +31,7 @@ from .improvement import (
     build_metric_improvements,
     get_required_improvement_metrics,
     get_aggregated_metric_improvements,
+    metric_improved_indicator,
 )
 
 from .significance import (
@@ -71,6 +72,7 @@ __all__ = [
     "build_metric_improvements",
     "get_required_improvement_metrics",
     "get_aggregated_metric_improvements",
+    "metric_improved_indicator",
     # significance
     "get_metric_improvement_significance",
     # climatology
