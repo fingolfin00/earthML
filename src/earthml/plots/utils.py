@@ -704,7 +704,7 @@ def plot_profile(
     select_colors: Literal["shades", "colors"] = "shades",
 
     das_member: xr.DataArray | xr.Dataset | Sequence[xr.DataArray | xr.Dataset | None] | None = None,
-    spread: Literal["std", "minmax"] = "std",
+    physical_spread: Literal["std", "minmax"] | None = None,
     plot_single_members: bool = False,
     ylim: tuple[float, float] | None = None,
 
@@ -752,8 +752,13 @@ def plot_profile(
         | None
     ) = None,
     profile_band_alpha: float = 0.18,
+
+    # Neural ensemble
     neural_spread: Literal["std", "minmax"] | None = None,
     neural_spread_alpha: float = 0.18,
+    plot_neural_members: bool = False,
+    neural_member_alpha: float = 0.35,
+    neural_member_linewidth: float = 0.7,
 ) -> None:
     """Plot one or more 1-D metric profiles.
 
@@ -1069,13 +1074,19 @@ def plot_profile(
                         f"{profile.dims}."
                     )
 
-                # Average memberwise metrics for the central curve.
-                # Spread is an optional visualization, not a metric change.
+                # Average memberwise metrics for the central curve
                 neural_lower = neural_upper = None
+                neural_members = None
+
                 if "neural_member" in profile.dims:
+                    if plot_neural_members:
+                        neural_members = profile
+
                     if neural_spread not in {None, "std", "minmax"}:
                         raise ValueError(f"Unsupported neural_spread={neural_spread!r}")
+
                     neural_mean = profile.mean("neural_member", skipna=True)
+
                     if neural_spread == "std":
                         neural_std = profile.std("neural_member", skipna=True)
                         neural_lower = neural_mean - neural_std
@@ -1083,7 +1094,9 @@ def plot_profile(
                     elif neural_spread == "minmax":
                         neural_lower = profile.min("neural_member", skipna=True)
                         neural_upper = profile.max("neural_member", skipna=True)
+
                     profile = neural_mean
+
                 elif neural_spread is not None and {"neural_band_lower", "neural_band_upper"} <= set(profile.coords):
                     neural_lower = profile.coords["neural_band_lower"]
                     neural_upper = profile.coords["neural_band_upper"]
@@ -1143,14 +1156,40 @@ def plot_profile(
                             "Choose 'shades' or 'colors'."
                         )
 
+                # Neural members
+                if neural_members is not None:
+                    with ProgressBar():
+                        neural_members = (
+                            neural_members.reset_coords(drop=True) / scale
+                        ).compute()
+
+                    for j in range(neural_members.sizes["neural_member"]):
+                        member_profile = neural_members.isel(neural_member=j)
+
+                        ax.plot(
+                            x,
+                            member_profile.values,
+                            color=color,
+                            alpha=neural_member_alpha,
+                            linewidth=neural_member_linewidth,
+                            linestyle="-",
+                            zorder=2,
+                        )
+
+                # Neural spread
                 if neural_lower is not None and neural_upper is not None:
                     with ProgressBar():
-                        neural_lower, neural_upper = xr.compute(
-                            neural_lower.reset_coords(drop=True) / scale,
-                            neural_upper.reset_coords(drop=True) / scale,
-                        )
+                        neural_bounds = xr.Dataset({
+                            "lower": neural_lower.reset_coords(drop=True) / scale,
+                            "upper": neural_upper.reset_coords(drop=True) / scale,
+                        }).compute()
+
+                    neural_lower = neural_bounds["lower"]
+                    neural_upper = neural_bounds["upper"]
+
                     if profile_dim not in neural_lower.dims or neural_lower.ndim != 1:
                         raise ValueError("Neural profile spread must be one-dimensional")
+
                     if profile_dim == "experiment":
                         center = profile.values
                         ax.errorbar(
@@ -1206,10 +1245,7 @@ def plot_profile(
                         )
 
                     with ProgressBar():
-                        lower, upper = xr.compute(
-                            lower.reset_coords(drop=True) / scale,
-                            upper.reset_coords(drop=True) / scale,
-                        )
+                        lower, upper = (lower.reset_coords(drop=True) / scale).compute(), (upper.reset_coords(drop=True) / scale).compute()
 
                     if np.any(lower.values > upper.values):
                         raise ValueError(
@@ -1278,6 +1314,9 @@ def plot_profile(
         # ------------------------------------------------------
         # Ensemble/member profiles
         # ------------------------------------------------------
+
+        if not plot_single_members and physical_spread is None:
+            continue
 
         if (
             da_member is None
@@ -1397,78 +1436,52 @@ def plot_profile(
                         color=color,
                     )
 
-            member_mean = (
-                member_profile.mean(
-                    realization_dim,
-                    skipna=True,
-                )
+            member_mean = member_profile.mean(
+                realization_dim,
+                skipna=True,
             )
 
-            if spread == "std":
-                member_spread = (
-                    member_profile.std(
-                        realization_dim,
-                        skipna=True,
+            if physical_spread is not None:
+                if physical_spread == "std":
+                    member_spread = (
+                        member_profile.std(
+                            realization_dim,
+                            skipna=True,
+                        )
                     )
-                )
 
-                lower = member_mean - member_spread
-                upper = member_mean + member_spread
+                    lower = member_mean - member_spread
+                    upper = member_mean + member_spread
 
-            elif spread == "minmax":
-                lower = (
-                    member_profile.min(
-                        realization_dim,
-                        skipna=True,
+                elif physical_spread == "minmax":
+                    lower = (
+                        member_profile.min(
+                            realization_dim,
+                            skipna=True,
+                        )
                     )
-                )
 
-                upper = (
-                    member_profile.max(
-                        realization_dim,
-                        skipna=True,
+                    upper = (
+                        member_profile.max(
+                            realization_dim,
+                            skipna=True,
+                        )
                     )
+
+                else:
+                    raise ValueError(
+                        f"Unsupported physical_spread="
+                        f"{physical_spread!r}. "
+                        "Choose 'std' or 'minmax'."
+                    )
+
+                ax.fill_between(
+                    x,
+                    lower.values,
+                    upper.values,
+                    alpha=0.18,
+                    color=color,
                 )
-
-            else:
-                raise ValueError(
-                    f"Unsupported spread="
-                    f"{spread!r}. "
-                    "Choose 'std' or 'minmax'."
-                )
-
-            ax.fill_between(
-                x,
-                lower.values,
-                upper.values,
-                alpha=0.18,
-                color=color,
-            )
-
-            member_label = (
-                f"{label} member mean"
-            )
-
-            if n_select > 1:
-                unit = (
-                    select_unit[:1].upper()
-                    if select_unit
-                    else ""
-                )
-
-                member_label = (
-                    f"{member_label} · "
-                    f"{value}{unit}"
-                )
-
-            ax.plot(
-                x,
-                member_mean.values,
-                linewidth=1.4,
-                linestyle="--",
-                label=member_label,
-                color=color,
-            )
 
     # ----------------------------------------------------------
     # Y label / metric title
@@ -1822,11 +1835,14 @@ def plot_timeseries(
     metric: str,
     models: str | Sequence[str],
     labels: str | Sequence[str] | None = None,
+
     out_file: Path,
+
     time_range: tuple[str, str],
     lead_value: object | None = None,
     leadtime_dim: str = "leadtime",
     time_dim: str | None = None,
+
     das_member: (
         xr.DataArray
         | xr.Dataset
@@ -1834,14 +1850,20 @@ def plot_timeseries(
         | None
     ) = None,
     realization_dim: str = "realization",
-    spread: Literal["std", "minmax"] = "std",
+    physical_spread: Literal["std", "minmax"] | None = None,
     plot_single_members: bool = False,
+
     neural_spread: Literal["std", "minmax"] | None = None,
     neural_spread_alpha: float = 0.18,
+    plot_neural_members: bool = False,
+    neural_member_alpha: float = 0.35,
+    neural_member_linewidth: float = 0.7,
+
     train_start: str | None = None,
     train_end: str | None = None,
     val_end: str | None = None,
     test_end: str | None = None,
+
     extrema_periods: Sequence[
         Literal["train", "val", "test", "full"]
     ] | None = None,
@@ -1850,6 +1872,7 @@ def plot_timeseries(
     extrema_annotate: bool = True,
     extrema_print: bool = False,
     annotate_times: tuple[str, ...] | None = None,
+
     ylim: tuple[float, float] | None = None,
     plot_title: bool = True,
     plot_labels: bool = True,
@@ -1857,15 +1880,20 @@ def plot_timeseries(
     title_suffix: str = "",
     plot_legend: bool = True,
     title_strftime: str = "%Y",
+
     improvement_unit: ImprovementUnit | Literal["improved_percentage"] | None = None,
+
     var_plot_config: dict | None = None,
+
     force_scale: int | float | None = None,
+
     model_colors: dict[str, object] | None = None,
     model_linestyles: dict[str, str] | None = None,
     timeseries_mean_line: bool = False,
     timeseries_zero_line: bool = False,
     timeseries_zero_line_color: str = "red",
     timeseries_improved_percentage: float | None = None,
+
     figsize: tuple[float, float] = (12.0, 6.0),
     title_size: float | None = None,
     label_size: float | None = None,
@@ -2158,8 +2186,14 @@ def plot_timeseries(
             )
 
         neural_lower = neural_upper = None
+        neural_members = None
+
         if "neural_member" in series.dims:
+            if plot_neural_members:
+                neural_members = series
+
             neural_mean = series.mean("neural_member", skipna=True)
+
             if neural_spread == "std":
                 neural_std = series.std("neural_member", skipna=True)
                 neural_lower = neural_mean - neural_std
@@ -2169,6 +2203,7 @@ def plot_timeseries(
                 neural_upper = series.max("neural_member", skipna=True)
             elif neural_spread is not None:
                 raise ValueError(f"Unsupported neural_spread={neural_spread!r}")
+
             series = neural_mean
 
         series = series.squeeze(drop=True)
@@ -2193,12 +2228,7 @@ def plot_timeseries(
             )
 
         with ProgressBar():
-            series = (
-                series
-                .reset_coords(drop=True)
-                .compute()
-                / scale
-            )
+            series = series.reset_coords(drop=True).compute() / scale
 
         color = (
             model_colors[model]
@@ -2242,16 +2272,39 @@ def plot_timeseries(
 
         color = line.get_color()
 
+        # ----------------------------------------------------------
+        # Neural ensemble
+        # ----------------------------------------------------------
+
+        if neural_members is not None:
+            with ProgressBar():
+                neural_members = (
+                    neural_members.reset_coords(drop=True) / scale
+                ).compute()
+
+            for j in range(neural_members.sizes["neural_member"]):
+                ax.plot(
+                    x,
+                    neural_members.isel(neural_member=j).values,
+                    color=color,
+                    alpha=neural_member_alpha,
+                    linewidth=neural_member_linewidth,
+                    zorder=2,
+                )
+
         if neural_lower is not None and neural_upper is not None:
             with ProgressBar():
                 neural_bounds = xr.Dataset({
                     "lower": neural_lower.reset_coords(drop=True) / scale,
                     "upper": neural_upper.reset_coords(drop=True) / scale,
                 }).compute()
+
                 neural_lower = neural_bounds["lower"]
                 neural_upper = neural_bounds["upper"]
+
             neural_lower = neural_lower.squeeze(drop=True)
             neural_upper = neural_upper.squeeze(drop=True)
+
             ax.fill_between(
                 x,
                 neural_lower.values,
@@ -2459,8 +2512,11 @@ def plot_timeseries(
                 annotation_index += 1
 
         # ------------------------------------------------------
-        # Ensemble/member spread
+        # Ensemble physical spread
         # ------------------------------------------------------
+
+        if not plot_single_members and physical_spread is None:
+            continue
 
         if (
             da_member is None
@@ -2496,12 +2552,7 @@ def plot_timeseries(
             )
 
         with ProgressBar():
-            member_series = (
-                member_series
-                .reset_coords(drop=True)
-                .compute()
-                / scale
-            )
+            member_series = member_series.reset_coords(drop=True).compute() / scale
 
         if plot_single_members:
             for i in range(
@@ -2522,37 +2573,38 @@ def plot_timeseries(
             skipna=True,
         )
 
-        if spread == "std":
-            member_spread = member_series.std(
-                realization_dim,
-                skipna=True,
-            )
-            lower = member_mean - member_spread
-            upper = member_mean + member_spread
+        if physical_spread is not None:
+            if physical_spread == "std":
+                member_spread = member_series.std(
+                    realization_dim,
+                    skipna=True,
+                )
+                lower = member_mean - member_spread
+                upper = member_mean + member_spread
 
-        elif spread == "minmax":
-            lower = member_series.min(
-                realization_dim,
-                skipna=True,
-            )
-            upper = member_series.max(
-                realization_dim,
-                skipna=True,
-            )
+            elif physical_spread == "minmax":
+                lower = member_series.min(
+                    realization_dim,
+                    skipna=True,
+                )
+                upper = member_series.max(
+                    realization_dim,
+                    skipna=True,
+                )
 
-        else:
-            raise ValueError(
-                f"Unsupported spread={spread!r}. "
-                "Choose 'std' or 'minmax'."
-            )
+            else:
+                raise ValueError(
+                    f"Unsupported physical_spread={physical_spread!r}. "
+                    "Choose 'std' or 'minmax'."
+                )
 
-        ax.fill_between(
-            x,
-            lower.values,
-            upper.values,
-            alpha=0.18,
-            color=color,
-        )
+            ax.fill_between(
+                x,
+                lower.values,
+                upper.values,
+                alpha=0.18,
+                color=color,
+            )
 
     # ----------------------------------------------------------
     # Labels
@@ -3880,22 +3932,45 @@ def plot_field_timeseries(
     member_series: dict[str, xr.DataArray | None] | None,
     var: str,
     title: str | None = None,
+
     out_file: Path,
+
     time_dim: str = "time",
     spatial_dims: tuple[str, str] = ("latitude", "longitude"),
+
+    series_linestyle: str = "--",
+    series_linewidth: float = 1.4,
+
+    series_offsets: dict[str, float] | None = None,
+    offset_linewidth: float = 1.0,
+    offset_linestyle: str = "--",
+    offset_alpha: float = 0.35,
+
     realization_dim: str = "realization",
-    spread: Literal["std", "minmax"] = "std",
-    val_end: str | None = None,
-    train_end: str | None = None,
+    physical_spread: Literal["std", "minmax"] | None = None,
     plot_single_members: bool = True,
     member_linestyle: str = "-",
-    series_linestyle: str = "--",
-    series_offsets: dict[str, float] | None = None,
+    member_linewidth: float = 0.5,
+    member_alpha: float = 0.2,
+
+    neural_spread: Literal["std", "minmax"] | None = None,
+    neural_spread_alpha: float = 0.18,
+    plot_neural_members: bool = False,
+    neural_member_linestyle: str = "-",
+    neural_member_linewidth: float = 0.7,
+    neural_member_alpha: float = 0.35,
+
+    val_end: str | None = None,
+    train_end: str | None = None,
+    reference_linestyle: str = "--",
+    reference_linewidth: float = 1.3,
+
     plot_title: bool = True,
     plot_labels: bool = True,
     title_size: float | None = None,
     label_size: float | None = None,
     tick_size: float | None = None,
+    figsize: tuple[float, float] = (16, 8),
     dpi: int = 200,
 ) -> None:
     valid = {name: da for name, da in series.items() if da is not None}
@@ -3951,7 +4026,7 @@ def plot_field_timeseries(
         for name in reduced_members
     }
 
-    fig, ax = plt.subplots(figsize=(16, 8))
+    fig, ax = plt.subplots(figsize=figsize)
 
     if series_offsets:
         for name, offset in series_offsets.items():
@@ -3960,9 +4035,9 @@ def plot_field_timeseries(
             ax.axhline(
                 offset,
                 color=color,
-                linewidth=1,
-                alpha=0.35,
-                linestyle="--",
+                linewidth=offset_linewidth,
+                alpha=offset_alpha,
+                linestyle=offset_linestyle,
                 zorder=0,
             )
 
@@ -3975,6 +4050,54 @@ def plot_field_timeseries(
 
         offset = 0.0 if series_offsets is None else series_offsets.get(name, 0.0)
 
+        # Neural ensemble
+        neural_lower = neural_upper = None
+
+        if da is not None and "neural_member" in da.dims:
+            if neural_spread not in (None, "std", "minmax"):
+                raise ValueError(
+                    f"Unsupported neural_spread={neural_spread!r}"
+                )
+
+            with ProgressBar():
+                da = da.compute()
+
+            if plot_neural_members:
+                for j in range(da.sizes["neural_member"]):
+                    ax.plot(
+                        da[time_dim].values,
+                        da.isel(neural_member=j).values + offset,
+                        color=color,
+                        alpha=neural_member_alpha,
+                        linewidth=neural_member_linewidth,
+                        linestyle=neural_member_linestyle,
+                        zorder=2,
+                    )
+
+            neural_mean = da.mean("neural_member", skipna=True)
+
+            if neural_spread == "std":
+                neural_std = da.std("neural_member", skipna=True)
+                neural_lower = neural_mean - neural_std
+                neural_upper = neural_mean + neural_std
+
+            elif neural_spread == "minmax":
+                neural_lower = da.min("neural_member", skipna=True)
+                neural_upper = da.max("neural_member", skipna=True)
+
+            da = neural_mean
+
+        if neural_lower is not None and neural_upper is not None:
+            ax.fill_between(
+                da[time_dim].values,
+                neural_lower.values + offset,
+                neural_upper.values + offset,
+                color=color,
+                alpha=neural_spread_alpha,
+                linewidth=0,
+                zorder=1,
+            )
+
         if da is not None:
             x = da[time_dim].values
         elif member_da is not None:
@@ -3982,67 +4105,62 @@ def plot_field_timeseries(
         else:
             continue
 
-        if member_da is not None:
+        # Physical ensemble
+        if member_da is not None and (
+            plot_single_members or physical_spread is not None
+        ):
             with ProgressBar():
                 member_da = member_da.compute()
 
             if plot_single_members:
                 for i in range(member_da.sizes[realization_dim]):
                     member_da_i = member_da.isel({realization_dim: i})
-
                     ax.plot(
                         x,
                         member_da_i.values + offset,
                         linestyle=member_linestyle,
-                        linewidth=0.5,
-                        alpha=0.2,
+                        linewidth=member_linewidth,
+                        alpha=member_alpha,
                         color=color,
                     )
 
             member_mean = member_da.mean(realization_dim, skipna=True)
 
             # Spread setting and validation
-            if spread == "std":
-                member_std = member_da.std(
-                    realization_dim,
-                    skipna=True,
+            if physical_spread is not None:
+                if physical_spread == "std":
+                    member_std = member_da.std(
+                        realization_dim,
+                        skipna=True,
+                    )
+                    lower = member_mean - member_std
+                    upper = member_mean + member_std
+
+                elif physical_spread == "minmax":
+                    lower = member_da.min(
+                        realization_dim,
+                        skipna=True,
+                    )
+                    upper = member_da.max(
+                        realization_dim,
+                        skipna=True,
+                    )
+
+                else:
+                    raise ValueError(
+                        f"Unsupported physical_spread={physical_spread!r}. "
+                        "Choose 'std' or 'minmax'."
+                    )
+
+                ax.fill_between(
+                    x,
+                    lower.values + offset,
+                    upper.values + offset,
+                    alpha=0.18,
+                    color=color,
                 )
-                lower = member_mean - member_std
-                upper = member_mean + member_std
 
-            elif spread == "minmax":
-                lower = member_da.min(
-                    realization_dim,
-                    skipna=True,
-                )
-                upper = member_da.max(
-                    realization_dim,
-                    skipna=True,
-                )
-
-            else:
-                raise ValueError(
-                    f"Unsupported spread={spread!r}. "
-                    "Choose 'std' or 'minmax'."
-                )
-
-            ax.fill_between(
-                x,
-                lower.values + offset,
-                upper.values + offset,
-                alpha=0.18,
-                color=color,
-            )
-
-            ax.plot(
-                x,
-                member_mean.values + offset,
-                linestyle=member_linestyle,
-                linewidth=1.4,
-                color=color,
-                label=f"{name} member mean",
-            )
-
+        # Main lines
         if da is not None:
             with ProgressBar():
                 da = da.compute()
@@ -4050,18 +4168,19 @@ def plot_field_timeseries(
             ax.plot(
                 x,
                 da.values + offset,
-                linewidth=1.4,
+                linewidth=series_linewidth,
                 linestyle=series_linestyle,
                 color=color,
                 label=name,
             )
 
+    # Refrence lines
     if train_end is not None:
         ax.axvline(
             np.datetime64(train_end),
             color="red",
-            linestyle="--",
-            linewidth=1.3,
+            linestyle=reference_linestyle,
+            linewidth=reference_linewidth,
             label="Train end",
         )
 
@@ -4069,8 +4188,8 @@ def plot_field_timeseries(
         ax.axvline(
             np.datetime64(val_end),
             color="blue",
-            linestyle="--",
-            linewidth=1.3,
+            linestyle=reference_linestyle,
+            linewidth=reference_linewidth,
             label="Val end",
         )
 
@@ -4080,10 +4199,14 @@ def plot_field_timeseries(
     if plot_labels:
         ax.set_xlabel(time_dim, fontsize=label_size)
         ax.set_ylabel(ylabel, fontsize=label_size)
+
     ax.tick_params(axis="both", labelsize=tick_size)
+
     ax.grid(True, alpha=0.3)
+
     ax.legend()
 
+    # Offsets
     if series_offsets:
         ax2 = ax.twinx()
         ax2.set_ylim(ax.get_ylim())
@@ -4099,7 +4222,10 @@ def plot_field_timeseries(
             label.set_color(SERIES_COLORS.get(name))
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
+
     plt.tight_layout()
     plt.savefig(out_file, dpi=dpi, bbox_inches="tight")
+
     print(f"Saved timeseries: {out_file}")
+
     plt.close(fig)
