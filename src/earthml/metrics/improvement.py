@@ -4,11 +4,11 @@ import xarray as xr
 from .definitions import (
     MetricAgg,
     ImprovementAgg,
+    ImprovementUnit,
     ImprovementStatistic,
 )
 from .metrics import average_metric_fields
 from .defaults import (
-    ImprovementUnit,
     METRIC_DIFFERENCE_IMPROVEMENT,
     METRIC_PERCENTAGE_IMPROVEMENT,
     METRIC_IMPROVEMENT_UNITS,
