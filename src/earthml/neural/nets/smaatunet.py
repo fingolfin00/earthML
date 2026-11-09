@@ -339,6 +339,8 @@ class SmaAt_UNet(EarthMLLightningModule):
         reduction_ratio: int = 16,
         base_channels: int = 64,
         depth: int = 5, # total encoder levels, including input block
+        use_cbam: bool = True,
+        use_unet_skip_connections: bool = True,
     ) -> None:
         if depth < 2:
             raise ValueError(f"depth must be at least 2, got {depth}")
@@ -367,6 +369,8 @@ class SmaAt_UNet(EarthMLLightningModule):
         self.bilinear = bilinear
         self.depth = depth
 
+        self.use_unet_skip_connections = use_unet_skip_connections
+
         out_channels = 2 * n_classes if needs_var else n_classes
         factor = 2 if bilinear else 1
 
@@ -390,7 +394,7 @@ class SmaAt_UNet(EarthMLLightningModule):
                 reduction_ratio=reduction_ratio,
                 norm=norm,
                 longitude_padding=longitude_padding,
-            )
+            ) if use_cbam else nn.Identity()
         ])
 
         # Encoder
@@ -419,7 +423,7 @@ class SmaAt_UNet(EarthMLLightningModule):
                     reduction_ratio=reduction_ratio,
                     norm=norm,
                     longitude_padding=longitude_padding,
-                )
+                ) if use_cbam else nn.Identity()
             )
 
         # Decoder
@@ -483,6 +487,9 @@ class SmaAt_UNet(EarthMLLightningModule):
         x = skips.pop()
 
         for up in self.ups:
-            x = up(x, skips.pop())
+            skip = skips.pop()
+            if not self.use_unet_skip_connections:
+                skip = torch.zeros_like(skip)
+            x = up(x, skip)
 
         return self.outc(x)
