@@ -34,6 +34,7 @@ class Flatten(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x.contiguous().flatten(1)
 
+
 class ChannelAttention(nn.Module):
     def __init__(
         self,
@@ -41,9 +42,9 @@ class ChannelAttention(nn.Module):
         reduction_ratio: int = 16,
     ) -> None:
         super(ChannelAttention, self).__init__()
+
         self.input_channels = input_channels
-        # self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        # self.max_pool = nn.AdaptiveMaxPool2d(1)
+
         #  https://github.com/luuuyi/CBAM.PyTorch/blob/master/model/resnet_cbam.py
         #  uses Convolutions instead of Linear
         self.MLP = nn.Sequential(
@@ -54,15 +55,22 @@ class ChannelAttention(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Take the input and apply average and max pooling
-        # avg_values = self.avg_pool(x).contiguous()
-        # max_values = self.max_pool(x).contiguous()
-        # deterministic operations
+        # Spatial reductions for channel attention
+        # avg_pool = nn.AdaptiveAvgPool2d(1)
+        # max_pool = nn.AdaptiveMaxPool2d(1)
+        # avg_values = avg_pool(x).contiguous()
+        # max_values = max_pool(x).contiguous()
+
+        # Avoid adaptive pooling kernels that may have nondeterministic backward implementations on some CUDA configurations
         avg_values = x.mean(dim=(2, 3), keepdim=True).contiguous()
         max_values = x.amax(dim=(2, 3), keepdim=True).contiguous()
+
         out = self.MLP(avg_values) + self.MLP(max_values)
-        scale = x * torch.sigmoid(out).unsqueeze(2).unsqueeze(3).expand_as(x)
+
+        scale = x * torch.sigmoid(out).unsqueeze(2).unsqueeze(3) # .expand_as(x)
+
         return scale
+
 
 class SpatialAttention(nn.Module):
     def __init__(
@@ -85,10 +93,12 @@ class SpatialAttention(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         avg_out = torch.mean(x, dim=1, keepdim=True)
-        max_out, _ = torch.max(x, dim=1, keepdim=True)
+        max_out = x.amax(dim=1, keepdim=True)
+
         out = torch.cat([avg_out, max_out], dim=1)
         out = self.conv(out)
         out = self.norm(out)
+
         return x * torch.sigmoid(out)
 
 
@@ -102,10 +112,12 @@ class CBAM(nn.Module):
         longitude_padding: Literal["circular", "replicate", "zero"] = "zero",
     ) -> None:
         super().__init__()
+
         self.channel_att = ChannelAttention(
             input_channels,
             reduction_ratio=reduction_ratio,
         )
+
         self.spatial_att = SpatialAttention(
             kernel_size=kernel_size,
             norm=norm,
@@ -115,6 +127,7 @@ class CBAM(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = self.channel_att(x)
         out = self.spatial_att(out)
+
         return out
 
 
@@ -149,7 +162,7 @@ class DepthwiseSeparableConv(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.pointwise(self.depthwise(x))
 
-# class DoubleConvDS(CustomLightningModule):
+
 class DoubleConvDS(L.LightningModule):
     """(convolution => [BN] => ReLU) * 2"""
     def __init__(
@@ -158,22 +171,19 @@ class DoubleConvDS(L.LightningModule):
         out_channels: int,
         mid_channels: int | None = None,
         kernels_per_layer: int = 1,
+        kernel_size: int = 3,
         norm: str | None = "BatchNorm2d",
         longitude_padding: Literal["circular", "replicate", "zero"] = "zero",
     ) -> None:
         super().__init__()
         if not mid_channels:
             mid_channels = out_channels
-        # print("DoubleConvDS params:")
-        # print(f" in_channels: {in_channels}")
-        # print(f" mid_channels: {mid_channels}")
-        # print(f" out_channels: {out_channels}")
-        # print(f" kernels_per_layer: {kernels_per_layer}")
+
         self.double_conv = nn.Sequential(
             DepthwiseSeparableConv(
                 in_channels,
                 mid_channels,
-                kernel_size=3,
+                kernel_size=kernel_size,
                 kernels_per_layer=kernels_per_layer,
                 longitude_padding=longitude_padding,
             ),
@@ -182,7 +192,7 @@ class DoubleConvDS(L.LightningModule):
             DepthwiseSeparableConv(
                 mid_channels,
                 out_channels,
-                kernel_size=3,
+                kernel_size=kernel_size,
                 kernels_per_layer=kernels_per_layer,
                 longitude_padding=longitude_padding,
             ),
@@ -193,6 +203,7 @@ class DoubleConvDS(L.LightningModule):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.double_conv(x)
 
+
 class DownDS(nn.Module):
     """Downscaling with maxpool then double conv"""
     def __init__(
@@ -200,6 +211,7 @@ class DownDS(nn.Module):
         in_channels: int,
         out_channels: int,
         kernels_per_layer: int = 1,
+        kernel_size: int = 3,
         norm: str | None = "BatchNorm2d",
         longitude_padding: Literal["circular", "replicate", "zero"] = "zero",
     ) -> None:
@@ -210,6 +222,7 @@ class DownDS(nn.Module):
                 in_channels,
                 out_channels,
                 kernels_per_layer=kernels_per_layer,
+                kernel_size=kernel_size,
                 norm=norm,
                 longitude_padding=longitude_padding,
             ),
@@ -226,6 +239,7 @@ class UpDS(nn.Module):
         out_channels: int,
         bilinear: bool = True,
         kernels_per_layer: int = 1,
+        kernel_size: int = 3,
         norm: str | None = "BatchNorm2d",
         longitude_padding: Literal["circular", "replicate", "zero"] = "zero",
     ) -> None:
@@ -234,17 +248,19 @@ class UpDS(nn.Module):
         self.bilinear = bilinear
 
         if bilinear:
-            self.up = None
+            # Delegate interpolation to forward
             # self.up = nn.Upsample(
             #     scale_factor=2,
             #     mode="bilinear",
             #     align_corners=True,
             # )
+
             self.conv = DoubleConvDS(
                 in_channels,
                 out_channels,
                 in_channels // 2,
                 kernels_per_layer=kernels_per_layer,
+                kernel_size=kernel_size,
                 norm=norm,
                 longitude_padding=longitude_padding,
             )
@@ -255,10 +271,12 @@ class UpDS(nn.Module):
                 kernel_size=2,
                 stride=2,
             )
+
             self.conv = DoubleConvDS(
                 in_channels,
                 out_channels,
                 kernels_per_layer=kernels_per_layer,
+                kernel_size=kernel_size,
                 norm=norm,
                 longitude_padding=longitude_padding,
             )
@@ -289,11 +307,11 @@ class UpDS(nn.Module):
         x = torch.cat([x2, x1], dim=1)
         return self.conv(x)
 
-        # x1 = self.up(x1)
+        # Old padding implementation, kept for reference
 
+        # x1 = self.up(x1)
         # diff_y = x2.size(2) - x1.size(2)
         # diff_x = x2.size(3) - x1.size(3)
-
         # x1 = F.pad(
         #     x1,
         #     [
@@ -303,7 +321,6 @@ class UpDS(nn.Module):
         #         diff_y - diff_y // 2,
         #     ],
         # )
-
         # return self.conv(torch.cat([x2, x1], dim=1))
 
 
@@ -314,7 +331,12 @@ class OutConv(nn.Module):
         out_channels: int,
     ) -> None:
         super(OutConv, self).__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+
+        self.conv = nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size=1,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.conv(x)
@@ -335,6 +357,8 @@ class SmaAt_UNet(EarthMLLightningModule):
         zero_init_output: bool = False,
         longitude_padding: Literal["circular", "replicate", "zero"] = "zero",
         kernels_per_layer: int = 2,
+        conv_kernel_size: int = 3,
+        cbam_kernel_size: int = 7,
         bilinear: bool = True,
         reduction_ratio: int = 16,
         base_channels: int = 64,
@@ -344,6 +368,9 @@ class SmaAt_UNet(EarthMLLightningModule):
     ) -> None:
         if depth < 2:
             raise ValueError(f"depth must be at least 2, got {depth}")
+
+        if conv_kernel_size < 1 or conv_kernel_size % 2 == 0:
+            raise ValueError("conv_kernel_size must be a positive odd integer")
 
         loss_params = loss_params or {"loss": {}, "net": {}}
 
@@ -384,6 +411,7 @@ class SmaAt_UNet(EarthMLLightningModule):
             n_channels,
             channels[0],
             kernels_per_layer=kernels_per_layer,
+            kernel_size=conv_kernel_size,
             norm=norm,
             longitude_padding=longitude_padding,
         )
@@ -394,6 +422,7 @@ class SmaAt_UNet(EarthMLLightningModule):
                 reduction_ratio=reduction_ratio,
                 norm=norm,
                 longitude_padding=longitude_padding,
+                kernel_size=cbam_kernel_size,
             ) if use_cbam else nn.Identity()
         ])
 
@@ -412,6 +441,7 @@ class SmaAt_UNet(EarthMLLightningModule):
                     in_ch,
                     out_ch,
                     kernels_per_layer=kernels_per_layer,
+                    kernel_size=conv_kernel_size,
                     norm=norm,
                     longitude_padding=longitude_padding,
                 )
@@ -423,6 +453,7 @@ class SmaAt_UNet(EarthMLLightningModule):
                     reduction_ratio=reduction_ratio,
                     norm=norm,
                     longitude_padding=longitude_padding,
+                    kernel_size=cbam_kernel_size,
                 ) if use_cbam else nn.Identity()
             )
 
@@ -442,6 +473,7 @@ class SmaAt_UNet(EarthMLLightningModule):
                     out_ch,
                     bilinear,
                     kernels_per_layer=kernels_per_layer,
+                    kernel_size=conv_kernel_size,
                     norm=norm,
                     longitude_padding=longitude_padding,
                 )
