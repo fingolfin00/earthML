@@ -1179,16 +1179,25 @@ def plot_profile(
                 # Neural spread
                 if neural_lower is not None and neural_upper is not None:
                     with ProgressBar():
-                        neural_bounds = xr.Dataset({
-                            "lower": neural_lower.reset_coords(drop=True) / scale,
-                            "upper": neural_upper.reset_coords(drop=True) / scale,
-                        }).compute()
+                        neural_lower = (
+                            neural_lower.reset_coords(drop=True) / scale
+                        ).compute()
 
-                    neural_lower = neural_bounds["lower"]
-                    neural_upper = neural_bounds["upper"]
+                        neural_upper = (
+                            neural_upper.reset_coords(drop=True) / scale
+                        ).compute()
 
-                    if profile_dim not in neural_lower.dims or neural_lower.ndim != 1:
-                        raise ValueError("Neural profile spread must be one-dimensional")
+                    if (
+                        neural_lower.dims != (profile_dim,)
+                        or neural_upper.dims != (profile_dim,)
+                    ):
+                        raise ValueError(
+                            f"Invalid neural spread for model={model!r}, "
+                            f"metric={metric!r}, profile_dim={profile_dim!r}.\n"
+                            f"Profile: dims={profile.dims}, shape={profile.shape}\n"
+                            f"Lower: dims={neural_lower.dims}, shape={neural_lower.shape}\n"
+                            f"Upper: dims={neural_upper.dims}, shape={neural_upper.shape}"
+                        )
 
                     if profile_dim == "experiment":
                         center = profile.values
@@ -2294,13 +2303,13 @@ def plot_timeseries(
 
         if neural_lower is not None and neural_upper is not None:
             with ProgressBar():
-                neural_bounds = xr.Dataset({
-                    "lower": neural_lower.reset_coords(drop=True) / scale,
-                    "upper": neural_upper.reset_coords(drop=True) / scale,
-                }).compute()
+                neural_lower = (
+                    neural_lower.reset_coords(drop=True) / scale
+                ).compute()
 
-                neural_lower = neural_bounds["lower"]
-                neural_upper = neural_bounds["upper"]
+                neural_upper = (
+                    neural_upper.reset_coords(drop=True) / scale
+                ).compute()
 
             neural_lower = neural_lower.squeeze(drop=True)
             neural_upper = neural_upper.squeeze(drop=True)
